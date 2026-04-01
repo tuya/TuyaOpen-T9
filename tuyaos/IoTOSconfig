@@ -1,0 +1,15 @@
+menuconfig VENDOR_CONFIG
+    bool "vendor config"
+    default y
+
+    config HAVE_PSRAM
+        bool "have psram"
+        default y
+
+    config PSRAM_SIZE
+        depends on HAVE_PSRAM
+        int "psram size"
+        range 8 16
+        default 8
+
+

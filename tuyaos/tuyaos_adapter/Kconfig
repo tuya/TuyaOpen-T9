@@ -1,0 +1,86 @@
+menu "TKL_CONFIG"
+    config TUYA_DEBUG_FIRMWARE
+        bool "Generate debug firmware"
+        default n
+        select SWD_DEBUG_MODE
+
+    config CPU_INDEX
+        int "cpu index"
+        default 255
+
+    config TUYA_LCD
+        bool "tuya lcd"
+        default y
+
+    menu "TUYA LCD Driver"
+        depends on TUYA_LCD
+
+        config TUYA_ST7701S
+            bool "lcd st7701s"
+            default y
+
+        config TUYA_ST7701SN
+            bool "lcd st7701sn"
+            default y
+
+        config LCD_SPI_GC9A01
+            bool "lcd gc9a01"
+            default y
+    endmenu
+
+    menu "TUYA LCD Type"
+        choice LCD_TYPE
+            depends on TUYA_LCD
+            prompt "lcd type select"
+            default TUYA_LCD_RGB565
+
+            config TUYA_LCD_RGB565
+                bool "rgb565"
+            config TUYA_LCD_RGB888
+                bool "rgb888"
+        endchoice
+    endmenu
+
+    config TUYA_PAGE_TILEVIEW
+        bool "Config Tuya GUI Gesture"
+        default n
+
+    config TUYA_TEST_CLI
+        bool "tuya test"
+        default n
+
+    config VND_CAL_VERSION
+        int "cal file version"
+        range 1 3
+        default 1
+
+    config ENABLE_TUYA_LVGL_TEST_DEMO
+        int "enable tuya lvgl test demo"
+        range 0 1
+        default 0
+
+    config TUYA_ENABLE_QSPI_FLASH
+        bool "enable tuya qspi flash"
+        default n
+
+    config TUYA_QSPI_FLASH_TYPE
+        string "qspi flash type"
+        default "gd25q127c"
+
+    config USE_PRIVATE_HELIX
+        bool "use private helix"
+        default n
+
+    config TUYA_USE_MTD
+        bool "use mtd as fs device"
+        default n
+
+
+    config DMA_USR_CHAN_ID_MIN
+        int "dma user min"
+        default 8
+
+    config DMA_USR_CHAN_CNT
+        int "dma user number"
+        default 4
+endmenu

@@ -1,0 +1,65 @@
+/**
+* @file tkl_watchdog.c
+* @brief Common process - adapter the watchdog api
+* @version 0.1
+* @date 2021-08-06
+*
+* @copyright Copyright 2020-2021 Tuya Inc. All Rights Reserved.
+*
+*/
+#include "tkl_watchdog.h"
+
+#include "drv_model_pub.h"
+#include <driver/wdt.h>
+
+#define WDT_RST_MASK             (0x1FF)
+#define PMU_WDT_RST_REG           (0x44000000+0x2*4)
+
+#define SYS_CPU_26M_WDT_CLK_DIV_ADDR      (0x44010000+0xa*4)
+
+extern void bk_printf(const char *fmt, ...);
+
+static void bk_wdt_rst_enable(void) {
+    int level = rtos_disable_int();
+
+    REG_WRITE(SYS_CPU_26M_WDT_CLK_DIV_ADDR, 0xc);
+    REG_WRITE(PMU_WDT_RST_REG, WDT_RST_MASK);
+
+    rtos_enable_int(level);
+}
+
+UINT_T tkl_watchdog_init(TUYA_WDOG_BASE_CFG_T *cfg)
+{
+    if (cfg->interval_ms > 30000) {
+        cfg->interval_ms = 30000;
+    }
+    bk_printf("tkl_watchdog_init interval_ms(%d)!\r\n", cfg->interval_ms);
+
+#if 0
+    bk_wdt_rst_enable();
+
+    bk_wdt_start((uint32_t)cfg->interval_ms);
+    bk_wdt_feed();
+#endif
+
+    return cfg->interval_ms;
+}
+
+OPERATE_RET tkl_watchdog_deinit(VOID_T)
+{
+#if 0
+    bk_wdt_stop();
+#endif
+    return OPRT_OK;
+}
+
+extern __IRAM_SEC uint64_t bk_aon_rtc_get_ms(void);
+extern beken_time_t rtos_get_time( void );
+OPERATE_RET tkl_watchdog_refresh(VOID_T)
+{
+    // bk_printf("---trace %s %lld %d\r\n", __func__, bk_aon_rtc_get_ms(), rtos_get_time());
+#if 0
+    bk_wdt_feed();
+#endif
+    return OPRT_OK;
+}
