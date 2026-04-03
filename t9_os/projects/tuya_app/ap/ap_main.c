@@ -29,8 +29,8 @@ static void entry_app_main(void)
         tuya_upgrade_main();
     }else {
 
-        extern int tkl_sleep_param_check_and_set(void);
-        tkl_sleep_param_check_and_set();
+        // extern int tkl_sleep_param_check_and_set(void);
+        // tkl_sleep_param_check_and_set();
 
         bk_printf("go to tuya\r\n");
         tuya_app_main();

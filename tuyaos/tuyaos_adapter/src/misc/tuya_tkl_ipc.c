@@ -17,7 +17,7 @@ static TKL_MUTEX_HANDLE ipc_sync_mutex= NULL;
 static struct ipc_msg_s *ipc_req_msg = NULL;
 
 extern void tkl_hci_ipc_func(struct ipc_msg_s *msg);
-extern void tkl_sys_ipc_func(struct ipc_msg_s *msg);
+// extern void tkl_sys_ipc_func(struct ipc_msg_s *msg);
 // extern void tkl_wired_ipc_func(struct ipc_msg_s *msg);
 
 static OPERATE_RET __tuya_ipc_cb(struct ipc_msg_s *msg )
@@ -26,13 +26,14 @@ static OPERATE_RET __tuya_ipc_cb(struct ipc_msg_s *msg )
         tkl_semaphore_post(ipc_ack_sem);
     }else {
         switch (msg->type) {
+#if 0
             case TKL_IPC_TYPE_HCI:
                 tkl_hci_ipc_func(msg);
                 break;
             case TKL_IPC_TYPE_SYS:
                 tkl_sys_ipc_func(msg);
                 break;
-
+#endif
 #if 0
             case TKL_IPC_TYPE_WIRED:
                 tkl_wired_ipc_func(msg);

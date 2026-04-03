@@ -37,10 +37,19 @@ set(incs
 	pwm
 	)
 
-list(APPEND incs
-	${armino_path}/$ENV{PROJECT_DIR}/config/${target}/
-)
-
+# Modified by Tuya Start
+# PROJECT_DIR may be absolute (e.g. project() sets CMAKE_CURRENT_LIST_DIR) or relative to SDK.
+# Prepending ${armino_path} to an absolute path yields invalid includes (e.g. cp/home/user/...).
+if(IS_ABSOLUTE "$ENV{PROJECT_DIR}")
+	if(EXISTS "$ENV{PROJECT_DIR}/cp/config/${target}")
+		list(APPEND incs "$ENV{PROJECT_DIR}/cp/config/${target}/")
+	elseif(EXISTS "$ENV{PROJECT_DIR}/config/${target}")
+		list(APPEND incs "$ENV{PROJECT_DIR}/config/${target}/")
+	endif()
+else()
+	list(APPEND incs "${armino_path}/$ENV{PROJECT_DIR}/config/${target}/")
+endif()
+# Modified by Tuya End
 set(srcs
 	sys_ctrl/sys_driver.c
 	sys_ctrl/sys_driver_common.c

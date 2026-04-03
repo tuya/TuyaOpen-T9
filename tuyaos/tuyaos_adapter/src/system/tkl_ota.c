@@ -60,28 +60,53 @@ typedef struct {
     OTA_TYPE_E ota_type;//0-diff; 1-seg_A; 2-seg_B
 }UG_PROC_S;
 
-extern unsigned char _ty_section_start, _ty_section_end;
-extern unsigned char __vector_core0_table;
-#define AP_FIRMWARE_START_ADDRESS       (void*)&__vector_core0_table
-#define TUYA_SECTION_START_ADDRESS      (void*)&_ty_section_start
 #define OTA_GAP_SIZE                    (512 * 1024)
 
-static int inline __tkl_ota_erase_limit_check(uint32_t patch_size)
+/**
+ * @brief BK segmented OTA erase headroom check (32B virtual <-> 34B physical).
+ * @note Legacy used linker symbols __vector_core0_table and _ty_section_start to get
+ *       (tuya_section - vector_base) + 1MiB as raw_size. That ties the adapter to SMP/Tuya
+ *       ld layout. Here raw_size is derived only from TUYA_FLASH_TYPE_APP partition size.
+ */
+static int inline __tkl_ota_erase_limit_check(UINT32_T patch_size)
 {
-    uint32_t raw_size = (uint32_t)(TUYA_SECTION_START_ADDRESS - AP_FIRMWARE_START_ADDRESS) + 1048576;
-    uint32_t occupy_size = raw_size / 32 * 34;
     TUYA_FLASH_BASE_INFO_T info;
-    tkl_flash_get_one_type_info(TUYA_FLASH_TYPE_APP, &info);
-    uint32_t available_space = info.partition[0].size - occupy_size;
-    uint32_t max_available = available_space - OTA_GAP_SIZE;
+    UINT32_T part_sz;
+    UINT32_T max_v;
+    UINT32_T raw_size;
+    UINT32_T occupy_size;
+    UINT32_T available_space;
+    UINT32_T max_available;
 
-    // 纯压缩UG包在生成时候就已经校验通过，此处仅判断可覆盖分段包长度是否允许
+    if (tkl_flash_get_one_type_info(TUYA_FLASH_TYPE_APP, &info) != OPRT_OK) {
+        return 1;
+    }
+
+    part_sz = info.partition[0].size;
+    max_v = (part_sz / 34U) * 32U;
+    raw_size = max_v;
+    if (raw_size > 1048576U) {
+        raw_size -= 1048576U;
+    }
+    occupy_size = (raw_size / 32U) * 34U;
+    if (part_sz > occupy_size) {
+        available_space = part_sz - occupy_size;
+    } else {
+        available_space = 0;
+    }
+    if (available_space > (UINT32_T)OTA_GAP_SIZE) {
+        max_available = available_space - (UINT32_T)OTA_GAP_SIZE;
+    } else {
+        max_available = 0;
+    }
+
+    /* 纯压缩UG包在生成时候就已经校验通过，此处仅判断可覆盖分段包长度是否允许 */
     if (patch_size < max_available) {
         return 1;
-    } else {
-        bk_printf("ota package check error, max patch allowed: %d, actually: %d\r\n", patch_size, max_available);
-        return 0;
     }
+
+    bk_printf("ota package check error, max patch allowed: %d, actually: %d\r\n", max_available, patch_size);
+    return 0;
 }
 
 /***********************************************************
@@ -529,5 +554,3 @@ OPERATE_RET tkl_ota_get_old_firmware_info(TUYA_OTA_FIRMWARE_INFO_T **info)
 }
 
 #endif
-
-

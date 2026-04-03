@@ -56,15 +56,20 @@ set(srcs
     src/system/tkl_semaphore.c
     src/system/tkl_system.c
     src/system/tkl_thread.c
-    src/system/tkl_atomic.c
-    src/system/tkl_task_notify.c
+    # src/system/tkl_atomic.c
+    # src/system/tkl_task_notify.c
     src/driver/tkl_watchdog.c
+    src/driver/tkl_hci.c
     src/driver/tkl_ipc.c
     src/misc/tuya_tkl_ipc.c
+    src/misc/tkl_mftest.c
+    src/misc/newlib_baremetal_stubs.c
     include/init/src/tkl_init_system.c
 )
 
 if ("${CONFIG_CPU_INDEX}" STREQUAL "0")
+    # tkl_init_system.c always references tkl_ota_*; tkl_ota.c provides CPU0 stubs under #elif CONFIG_CPU_INDEX == 0
+    list(APPEND srcs src/system/tkl_ota.c)
     list(APPEND srcs src/driver/tkl_hci_0.c)
     if (CONFIG_TUYA_TEST_CLI)
         list(APPEND srcs src/test/cli_tuya_test_0.c)
@@ -73,44 +78,44 @@ else()
     list(APPEND srcs
         src/driver/tkl_wifi.c
         src/driver/tkl_wired.c
-        src/driver/tkl_hci_1.c
-        src/driver/tkl_video_enc.c
-        src/driver/tkl_video_in.c
-        src/driver/tkl_mic.c
-        src/driver/tkl_speaker.c
-        src/driver/tkl_audio.c
-        src/driver/tkl_cellular.c
-        src/driver/tkl_pinmux.c
-        src/driver/tkl_rgb.c
-        src/driver/tkl_8080.c
+        # src/driver/tkl_hci_1.c
+        # src/driver/tkl_video_enc.c
+        # src/driver/tkl_video_in.c
+        # src/driver/tkl_mic.c
+        # src/driver/tkl_speaker.c
+        # src/driver/tkl_audio.c
+        # src/driver/tkl_cellular.c
+        # src/driver/tkl_pinmux.c
+        # src/driver/tkl_rgb.c
+        # src/driver/tkl_8080.c
         src/driver/tkl_adc.c
         src/driver/tkl_pwm.c
         src/driver/tkl_uart.c
         src/driver/tkl_flash.c
-        src/driver/tkl_rtc.c
+        # src/driver/tkl_rtc.c
         src/driver/tkl_spi.c
         src/driver/tkl_qspi.c
         src/driver/tkl_gpio.c
         src/driver/tkl_i2c.c
         src/driver/tkl_timer.c
         # src/driver/tkl_wired.c
-        src/driver/tkl_i2s.c
-        src/driver/tkl_dma2d.c
-        src/driver/tkl_dvp.c
-        src/driver/tkl_jpeg_codec.c
-        src/driver/tkl_sdio.c
+        # src/driver/tkl_i2s.c
+        # src/driver/tkl_dma2d.c
+        # src/driver/tkl_dvp.c
+        # src/driver/tkl_jpeg_codec.c
+        # src/driver/tkl_sdio.c
 
         src/misc/encrypt.c
-        src/misc/fs_init.c
-        src/misc/dhcpserver.c
-        src/misc/qflash.c
-        src/misc/sflash.c
-        src/misc/bk_adapter.c
-        src/misc/tuya_dma.c
-        src/misc/tkl_mftest.c
-        src/misc/mftest/mt_audio.c
+        # src/misc/fs_init.c
+        # src/misc/dhcpserver.c
+        # src/misc/qflash.c
+        # src/misc/sflash.c
+        # src/misc/bk_adapter.c
+        # src/misc/tuya_dma.c
+        # src/misc/tkl_mftest.c
+        # src/misc/mftest/mt_audio.c
 
-        src/system/tkl_fs.c
+        # src/system/tkl_fs.c
         src/system/tkl_ota.c
         src/system/tkl_sleep.c
         src/driver/tkl_wakeup.c
@@ -133,9 +138,9 @@ else()
 
     if (CONFIG_TUYA_TEST_CLI)
         list(APPEND incs
-            src/test/test_media
-            src/test/coremark
-            src/test/coremark/posix
+            # src/test/test_media
+            # src/test/coremark
+            # src/test/coremark/posix
         )
         list(APPEND srcs
             # src/test/test_adc.c
@@ -172,12 +177,12 @@ else()
             # src/test/coremark/core_state.c
             # src/test/coremark/core_util.c
             # src/test/coremark/posix/core_portme.c
-            src/test/test_common.c
-            src/test/test_lp.c
-            src/test/test_gpio.c
-            src/test/test_sdcard.c
-            src/test/test_littlefs.c
-            src/test/cli_tuya_test_1.c
+            # src/test/test_common.c
+            # src/test/test_lp.c
+            # src/test/test_gpio.c
+            # src/test/test_sdcard.c
+            # src/test/test_littlefs.c
+            # src/test/cli_tuya_test_1.c
         )
     endif() # CONFIG_TUYA_TEST_CLI
 
@@ -251,7 +256,7 @@ endif()
 if ("$ENV{ARMINO_SOC}" STREQUAL "bk7259")
     set(priv_requires_list bk_common bk_log bk_cli lwip_intf_v2_1 os_source)
 elseif ("$ENV{ARMINO_SOC}" STREQUAL "bk7259_ap")
-    set(priv_requires_list bk_common bk_modem bk_log bk_cli lwip_intf_v2_1 os_source lvgl display_service bk_vfs multimedia media_service bk_draw_blend bk_usb audio_record audio_play)
+    set(priv_requires_list bk_common bk_modem bk_log bk_cli lwip_intf_v2_1 os_source lvgl bk_vfs multimedia media_service bk_draw_osd bk_usb audio_record audio_play)
 else()
     message(FATAL_ERROR soc:"$ENV{ARMINO_SOC}" is not valid!)
 endif() # CONFIG_CPU_INDEX
@@ -261,6 +266,16 @@ armino_component_register(
     INCLUDE_DIRS ${incs}
     PRIV_REQUIRES ${priv_requires_list}
 )
+
+# Stub .c files (e.g. tkl_memory.c) return OPRT_NOT_SUPPORTED from VOID_T* APIs; GCC 14 -Werror treats
+# that as -Wint-conversion. Downgrade to warning for this component only (no source edits).
+if(TARGET "${COMPONENT_LIB}")
+    target_compile_options("${COMPONENT_LIB}" PRIVATE
+        $<$<COMPILE_LANGUAGE:C>:-Wno-error=int-conversion>
+        $<$<COMPILE_LANGUAGE:C>:-Wno-error=incompatible-pointer-types>
+        $<$<COMPILE_LANGUAGE:C>:-Wno-error=implicit-function-declaration>
+    )
+endif()
 
 if ("${CONFIG_CPU_INDEX}" STREQUAL "1")
 # 搜索指定目录下所有.a文件

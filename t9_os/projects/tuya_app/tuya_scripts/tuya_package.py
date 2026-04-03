@@ -124,7 +124,7 @@ class TuyaPackager:
     def __init__(self, args):
         self.app_name    = os.environ.get('TUYA_APP_NAME', '').strip()
         self.version     = os.environ.get('TUYA_APP_VERSION', '').strip()
-        self.platform    = os.environ.get('TUYA_APP_PLATFORM', '').strip() or 'bk7258'
+        self.platform    = os.environ.get('TUYA_APP_PLATFORM', '').strip() or 'bk7259'
         self.project_dir = os.environ.get('TUYA_PROJECT_DIR', '').strip()
         self.app_config  = os.environ.get('TUYA_APP_CONFIG_FILE', '').strip()
         self.verbose     = args.verbose
@@ -146,13 +146,25 @@ class TuyaPackager:
             print_info(f"项目目录: {self.project_dir}")
             print_info(f"配置文件: {self.app_config}")
 
-        # 切换到正确的工作目录
-        self.work_dir = os.path.join(self.project_dir, "vendor/T5/t5_os")
+        # Armino 根目录：.../t9_os（本文件在 t9_os/projects/tuya_app/tuya_scripts/ 下，需向上 4 级）
+        _armino_root = Path(__file__).resolve().parent.parent.parent.parent
+        self.work_dir = str(_armino_root)
         os.chdir(self.work_dir)
 
         # 设置路径
         self.tuya_app_demo_path = "projects/tuya_app"
         self.scripts_dir = f"{self.tuya_app_demo_path}/tuya_scripts"
+
+        _bl2_under_build = (
+            _armino_root / "build" / self.platform / "tuya_app" / self.platform / "bl2.bin"
+        )
+        _bl2_under_files = _armino_root / self.scripts_dir / "files" / "bl2.bin"
+        if _bl2_under_build.is_file():
+            _bl2_rel = f"build/{self.platform}/tuya_app/{self.platform}/bl2.bin"
+        elif _bl2_under_files.is_file():
+            _bl2_rel = "projects/tuya_app/tuya_scripts/files/bl2.bin"
+        else:
+            _bl2_rel = f"build/{self.platform}/tuya_app/{self.platform}/bl2.bin"
 
         # 设置输出路径 - 从环境变量读取CI_PACKAGE_PATH
         ci_path = os.environ.get('CI_PACKAGE_PATH', '').strip()
@@ -173,14 +185,13 @@ class TuyaPackager:
             'create_ua': f"{self.scripts_dir}/create_ua_file.py",
             'parse_flash': f"{self.scripts_dir}/parse_flash_table.py",
             'get_section': f"{self.scripts_dir}/get_map_section.py",
-            #'smp_ota': f"{self.scripts_dir}/create_ug_file.py",
-            'smp_ota': f"{self.scripts_dir}/create_ug_file",
+            'smp_ota': f"{self.scripts_dir}/create_ug_file.py",
             'ota_select': f"{self.scripts_dir}/user_ota_select.py",
         }
 
         # 文件路径
         self.files = {
-            'bl2_bin': "projects/tuya_app/tuya_scripts/files/bl2.bin",
+            'bl2_bin': _bl2_rel,
             'cp_bin': f"build/{self.platform}/tuya_app/{self.platform}/app.bin",
             'ap_bin': f"build/{self.platform}/tuya_app/{self.platform}_ap/app.bin",
             'all_bin': f"build/{self.platform}/tuya_app/package/all-app.bin",
@@ -208,6 +219,24 @@ class TuyaPackager:
             capture_output=True
         )
         return int(result.stdout.strip())
+
+    def get_section_offset_optional(self, map_file: str, section: str):
+        """
+        同 get_section_offset，但 map 中无该符号时返回 None。
+        SMP 关闭时 AP 链接脚本导出 __vector_table 而非 __vector_core0_table。
+        """
+        result = subprocess.run(
+            ['python3', self.tools['get_section'], map_file, section],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode != 0:
+            return None
+        try:
+            return int(result.stdout.strip().split()[0])
+        except (ValueError, IndexError):
+            return None
 
     def get_ota_mode(self) -> str:
         """获取OTA模式"""
@@ -247,17 +276,69 @@ class TuyaPackager:
             # 恢复原目录
             os.chdir(current_dir)
 
+    def get_partition_size_optional(self, partition_name: str):
+        """
+        查询分区大小；分区不存在时返回 None（T9 分区表可能无 primary_tuyaboot）。
+        """
+        current_dir = os.getcwd()
+        try:
+            parse_flash_abs = os.path.abspath(self.tools['parse_flash'])
+            partition_dir = os.path.dirname(self.files['partition'])
+            os.chdir(partition_dir)
+            result = subprocess.run(
+                ['python3', parse_flash_abs, partition_name, 'size'],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if result.returncode != 0:
+                return None
+            return int(result.stdout.strip())
+        except (ValueError, OSError):
+            return None
+        finally:
+            os.chdir(current_dir)
+
     def calculate_split_point(self) -> int:
         """获取涂鸦段信息"""
         if self.verbose:
             print_info("获取涂鸦段信息...")
-        ap_ty_section_addr = self.get_section_offset(self.files['ap_map'], '_ty_section_start')
-        ap_start_section_addr = self.get_section_offset(self.files['ap_map'], '__vector_core0_table')
+        ap_start_section_addr = self.get_section_offset_optional(
+            self.files['ap_map'], '__vector_core0_table'
+        )
+        if ap_start_section_addr is None:
+            ap_start_section_addr = self.get_section_offset_optional(
+                self.files['ap_map'], '__vector_table'
+            )
+        if ap_start_section_addr is None:
+            raise RuntimeError(
+                "AP app.map 中未找到 __vector_core0_table 或 __vector_table（请检查 SMP 与链接脚本）"
+            )
 
-        """bl2 + cp + a-section"""
+        # _ty_section_start 仅在 ld 含 .ty_text_section 时存在；否则用 __etext 或退回与向量同址
+        ap_ty_section_addr = self.get_section_offset_optional(
+            self.files['ap_map'], '_ty_section_start'
+        )
+        if ap_ty_section_addr is None:
+            ap_ty_section_addr = self.get_section_offset_optional(
+                self.files['ap_map'], '__etext'
+            )
+        if ap_ty_section_addr is None:
+            if self.verbose:
+                print_warning(
+                    "未找到 _ty_section_start / __etext，split 使用 AP 向量基址（无独立涂鸦 Flash 段）"
+                )
+            ap_ty_section_addr = ap_start_section_addr
 
-        bl2_physical_size = self.get_partition_size('primary_tuyaboot')
-        bl2_raw_size = int((bl2_physical_size * 32) / 34)
+        """bl2 + cp + a-section (no tuyaboot row => bl2_raw_size = 0)"""
+
+        bl2_sz = self.get_partition_size_optional('primary_tuyaboot')
+        if bl2_sz is None:
+            bl2_sz = self.get_partition_size_optional('primary_bootloader')
+        if bl2_sz is None:
+            bl2_raw_size = 0
+        else:
+            bl2_raw_size = int((bl2_sz * 32) / 34)
 
         cp_physical_size = self.get_partition_size('primary_cp_app')
         cp_raw_size = int((cp_physical_size * 32) / 34)
@@ -295,9 +376,9 @@ class TuyaPackager:
         print_info(f"生成OTA文件 (模式: {ota_mode}, OTA分区大小: {ota_size})...")
 
         if ota_mode == "compress":
-            # 生成SMP OTA文件
+            # 生成SMP OTA文件（使用仓库内 Python 脚本，避免预编译 create_ug_file 与宿主环境不兼容）
             cmd = [
-                self.tools['smp_ota'],
+                'python3', self.tools['smp_ota'],
                 self.files['ua_bin'],
                 '-o', self.files['smp_ty_ota'],
                 '--total-size', '8024064',
@@ -313,7 +394,7 @@ class TuyaPackager:
         elif ota_mode == "partition":
             # 生成SMP OTA文件
             cmd = [
-                self.tools['smp_ota'],
+                'python3', self.tools['smp_ota'],
                 self.files['ua_bin'],
                 '-o', self.files['smp_ty_ota'],
                 '--total-size', '8024064',

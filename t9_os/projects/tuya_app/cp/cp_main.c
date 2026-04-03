@@ -9,6 +9,7 @@
 #include "FreeRTOS.h"
 #include "task.h"
 #include "tuya_cloud_types.h"
+#include "customer_msg.h"
 
 extern OPERATE_RET tuya_ipc_init(void);
 extern void rtos_set_user_app_entry(beken_thread_function_t entry);

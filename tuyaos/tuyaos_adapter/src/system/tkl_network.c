@@ -914,24 +914,24 @@ OPERATE_RET tkl_net_sethostname(CONST CHAR_T *hostname)
 */
 OPERATE_RET tkl_net_set_default_netif_by_ip(const TUYA_IP_ADDR_T addr)
 {
-    int ret;
-    ip_addr_t ip; 
-    struct netif *netif;
+    // int ret;
+    // ip_addr_t ip; 
+    // struct netif *netif;
 
-    if (!addr) {
-        return OPRT_INVALID_PARM;
-    }
+    // if (!addr) {
+    //     return OPRT_INVALID_PARM;
+    // }
 
-    ip.addr = htonl(addr);
-    netif = netif_get_by_ipaddr(ip);
-    if (NULL == netif) {
-        return OPRT_COM_ERROR;
-    }
-    ret = netifapi_netif_set_default(netif);
-    if (ERR_OK != ret) {
-        bk_printf("set IP addres 0x%x as default route failed(err=%d)\r\n", addr, ret);
-        return OPRT_COM_ERROR;
-    }
+    // ip.addr = htonl(addr);
+    // netif = netif_get_by_ipaddr(ip);
+    // if (NULL == netif) {
+    //     return OPRT_COM_ERROR;
+    // }
+    // ret = netifapi_netif_set_default(netif);
+    // if (ERR_OK != ret) {
+    //     bk_printf("set IP addres 0x%x as default route failed(err=%d)\r\n", addr, ret);
+    //     return OPRT_COM_ERROR;
+    // }
 
     return OPRT_OK;
 }

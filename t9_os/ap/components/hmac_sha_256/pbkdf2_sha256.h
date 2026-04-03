@@ -82,7 +82,8 @@ PBKDF2_SHA256_DEF void hmac_sha256_update(HMAC_SHA256_CTX *hmac, const uint8_t *
 // resets state to hmac_sha256_init
 PBKDF2_SHA256_DEF void hmac_sha256_final(HMAC_SHA256_CTX *hmac, uint8_t *md);
 
-PBKDF2_SHA256_DEF void pbkdf2_sha256(HMAC_SHA256_CTX *ctx,
+// Modified by Tuya
+PBKDF2_SHA256_DEF void bk_hmac_pbkdf2_sha256(HMAC_SHA256_CTX *ctx,
     const uint8_t *key, uint32_t keylen, const uint8_t *salt, uint32_t saltlen, uint32_t rounds,
     uint8_t *dk, uint32_t dklen);
 

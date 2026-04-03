@@ -263,12 +263,14 @@ function(__project_init components_var test_components_var)
         armino_build_get_property(armino_path ARMINO_PATH)
         get_filename_component(sub_sys ${armino_path} NAME) #ap/cp
 
-        if("${sub_sys}" STREQUAL "ap")
+        # Modified by Tuya Start
+        # Register EXTRA_COMPONENTS_DIRS for both AP and CP (e.g. tuyaos_adapter under vendor/T9/tuyaos).
+        if("${sub_sys}" STREQUAL "ap" OR "${sub_sys}" STREQUAL "cp")
             foreach(component_dir ${EXTRA_COMPONENTS_DIRS})
                 __project_component_dir("${component_dir}")
             endforeach()
         endif()
-
+        # Modified by Tuya End
         # Look for components in the usual places: CMAKE_CURRENT_LIST_DIR/main,
         # CMAKE_CURRENT_LIST_DIR/components, and the extra component dirs
         if(EXISTS "${CMAKE_CURRENT_LIST_DIR}/${sub_sys}")

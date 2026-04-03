@@ -43,6 +43,11 @@ else
 	export APP_VERSION := $(APP_VERSION)
 endif
 
+# Modified by Tuya Start
+# So CMake/ninja (tuya_link_sdk_libs.cmake) can resolve lib$(APP_NAME).a when linking app.elf.
+export APP_NAME
+# Modified by Tuya End
+
 ifeq ("$(PROJECT)", "")
 	export PROJECT := app
 else

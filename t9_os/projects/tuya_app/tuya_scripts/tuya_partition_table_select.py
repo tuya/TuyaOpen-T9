@@ -10,17 +10,18 @@
 功能说明：
 1. 解析 app_resource_config.json 文件，获取ota模式
 2. 判断目标文件 auto_partitions.csv 是否与源文件相同
-3. 如果不相同则覆盖替换文件，并在t5_os目录下执行make clean操作
+3. 如果不相同则覆盖替换文件，并在 vendor/T9/t9_os 目录下执行 make clean
 4. 如果文件相同则不做任何操作
 
 使用方法:
     python3 tuya_partition_table_select.py <app_config.json>
 
 示例:
-    python3 vendor/T5/t5_os/projects/tuya_app/tuya_scripts/tuya_partition_table_select.py \\
-        apps/t5_common_user_config_ai_baseline_ty/app_resource_config.json
+    python3 vendor/T9/t9_os/projects/tuya_app/tuya_scripts/tuya_partition_table_select.py \\
+        apps/t5_lowpower_pair_demo/app_resource_config.json
 
-注意：需要设置环境变量 TUYA_PROJECT_DIR 指向工程根目录
+注意：需要设置环境变量 TUYA_PROJECT_DIR 指向工程根目录。
+可选环境变量 TARGET_PLATFORM 或 TUYA_APP_PLATFORM（默认 bk7259），与 build.sh 中芯片目标一致。
 
 Copyright © 2025 Tuya Inc.
 """
@@ -39,6 +40,18 @@ GREEN = '\033[92m'
 CYAN = '\033[96m'
 YELLOW = '\033[93m'
 RESET = '\033[0m'
+
+# T9 SDK: projects/tuya_app 相对工程根目录的路径前缀
+T9_TUYA_APP_REL = os.path.join('vendor', 'T9', 't9_os', 'projects', 'tuya_app')
+T9_OS_ROOT_REL = os.path.join('vendor', 'T9', 't9_os')
+
+
+def _get_target_platform() -> str:
+    """Read chip target: TARGET_PLATFORM, else TUYA_APP_PLATFORM (build.sh); default bk7259."""
+    plat = (os.environ.get('TARGET_PLATFORM') or os.environ.get('TUYA_APP_PLATFORM') or 'bk7259').strip()
+    if not plat or '..' in plat or '/' in plat or '\\' in plat:
+        return 'bk7259'
+    return plat
 
 
 def print_error(message: str):
@@ -133,8 +146,7 @@ def select_partition_table(mode: str, verbose: bool = False) -> bool:
         print_error("环境变量 TUYA_PROJECT_DIR 未设置")
         return False
     
-    # 固定平台为 bk7258
-    platform = 'bk7258'
+    platform = _get_target_platform()
     
     # 确定源文件
     if mode == 'compress':
@@ -147,17 +159,17 @@ def select_partition_table(mode: str, verbose: bool = False) -> bool:
         print_error(f"不支持的OTA模式: {mode}")
         return False
     
-    # 构建完整路径（基于工程根目录的绝对路径）
-    source_path = os.path.join(project_dir, 'vendor/T5/t5_os/projects/tuya_app/tuya_scripts/files', source_file)
-    dest_dir = os.path.join(project_dir, 'vendor/T5/t5_os/projects/tuya_app/partitions', platform)
+    # 构建完整路径（基于工程根目录的绝对路径，T9 t9_os）
+    source_path = os.path.join(project_dir, T9_TUYA_APP_REL, 'tuya_scripts', 'files', source_file)
+    dest_dir = os.path.join(project_dir, T9_TUYA_APP_REL, 'partitions', platform)
     dest_path = os.path.join(dest_dir, 'auto_partitions.csv')
-    t5_os_dir = os.path.join(project_dir, 'vendor/T5/t5_os')
+    t9_os_dir = os.path.join(project_dir, T9_OS_ROOT_REL)
     
     # 规范化路径
     source_path = os.path.normpath(source_path)
     dest_dir = os.path.normpath(dest_dir)
     dest_path = os.path.normpath(dest_path)
-    t5_os_dir = os.path.normpath(t5_os_dir)
+    t9_os_dir = os.path.normpath(t9_os_dir)
     
     if verbose:
         print_info(f"OTA模式: {mode} ({mode_desc})")
@@ -201,11 +213,11 @@ def select_partition_table(mode: str, verbose: bool = False) -> bool:
         
         # 执行 make clean
         if verbose:
-            print_info(f"在 {t5_os_dir} 目录执行 make clean...")
+            print_info(f"在 {t9_os_dir} 目录执行 make clean...")
         
         result = subprocess.run(
             ['make', 'clean'],
-            cwd=t5_os_dir,
+            cwd=t9_os_dir,
             capture_output=True,
             text=True
         )
@@ -236,7 +248,7 @@ def main(config_file, verbose):
     
     CONFIG_FILE: 应用配置文件路径（app_resource_config.json）
     
-    注意：需要设置环境变量 TUYA_PROJECT_DIR
+    注意：需要设置环境变量 TUYA_PROJECT_DIR；可选 TARGET_PLATFORM 或 TUYA_APP_PLATFORM（默认 bk7259）。
     """
     try:
         # 检查环境变量
@@ -249,7 +261,7 @@ def main(config_file, verbose):
             print_info("=" * 60)
             print_info(f"工程目录: {project_dir}")
             print_info(f"配置文件: {config_file}")
-            print_info(f"目标平台: bk7258")
+            print_info(f"目标平台: {_get_target_platform()}")
             print_info("=" * 60)
         
         # 加载配置文件

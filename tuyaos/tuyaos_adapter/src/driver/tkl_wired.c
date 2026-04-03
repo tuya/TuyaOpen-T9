@@ -43,25 +43,33 @@ OPERATE_RET tkl_wired_init(TKL_WIRED_BASE_CFG_T *cfg)
  */
 OPERATE_RET tkl_wired_get_status(TKL_WIRED_STAT_E *status)
 {
-    struct netif *netif;
-    uint32_t ip;
-    uint32_t mask;
-    uint32_t gw;
+    if (status == NULL) {
+        return OPRT_INVALID_PARM;
+    }
 #ifdef CONFIG_ETH
-    netif = (struct netif *)net_get_eth_handle();
-    if (NULL == netif) {
-         return OPRT_COM_ERROR;
-    }
+    {
+        struct netif *netif;
+        uint32_t ip;
+        uint32_t mask;
+        uint32_t gw;
 
-    ip = netif->ip_addr.addr;
-    mask = netif->netmask.addr;
-    gw = netif->gw.addr;
+        netif = (struct netif *)net_get_eth_handle();
+        if (NULL == netif) {
+            return OPRT_COM_ERROR;
+        }
 
-    if (netif_is_up(netif) && ip && mask && gw) {
-         *status = TKL_WIRED_LINK_UP;
-    } else {
-         *status = TKL_WIRED_LINK_DOWN;
+        ip = netif->ip_addr.addr;
+        mask = netif->netmask.addr;
+        gw = netif->gw.addr;
+
+        if (netif_is_up(netif) && ip && mask && gw) {
+            *status = TKL_WIRED_LINK_UP;
+        } else {
+            *status = TKL_WIRED_LINK_DOWN;
+        }
     }
+#else
+    *status = TKL_WIRED_LINK_DOWN;
 #endif
     return OPRT_OK;
 }
@@ -88,8 +96,8 @@ OPERATE_RET tkl_wired_set_status_cb(TKL_WIRED_STATUS_CHANGE_CB cb)
  */
 OPERATE_RET tkl_wired_get_ip(NW_IP_S *ip)
 {
-    unsigned int ip_addr;
 #ifdef CONFIG_ETH
+    unsigned int ip_addr;
     struct netif * netif = net_get_eth_handle();
     if (NULL == netif) {
          return OPRT_COM_ERROR;

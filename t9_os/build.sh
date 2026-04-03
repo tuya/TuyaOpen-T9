@@ -24,6 +24,9 @@ export TUYA_APP_PATH=$APP_PATH
 export TUYA_APP_NAME=$APP_BIN_NAME
 export TUYA_APP_VERSION=$USER_SW_VER
 export TUYA_APP_PLATFORM=$TARGET_PLATFORM
+# Same as Make's APP_NAME for CMake (tuya_link_sdk_libs.cmake).
+export APP_NAME=$APP_BIN_NAME
+export APP_VERSION=$USER_SW_VER
 
 current_env_inifo=$(uname -a)
 echo "env info: ${current_env_inifo}"
@@ -85,7 +88,7 @@ fi
 sdk_config_file=${TUYA_PROJECT_DIR}/include/base/include/tuya_iot_config.h
 if [ ! -f ${sdk_config_file} ]; then
     echo "${sdk_config_file} is not exist"
-    exit -1;
+    exit 1
 fi
 
 TUYA_APP_DEMO_PATH=projects/tuya_app
@@ -94,7 +97,7 @@ echo "APP_DIR:"$APP_DIR
 
 boot_file=cp/components/bk_libs/bk7259/bootloader/normal_bootloader/bootloader.bin
 check_value=$(md5sum ${boot_file} | awk '{print $1}')
-ori_value=eed24a0637a4e96749aba006807eb3b7
+ori_value=5144e0bcded88867631e5a296680ff69
 if [ "x${check_value}" != "x${ori_value}" ]; then
     echo -e "\033[1;31m bootloader.bin check failed, the file had been changed, please update md5 value in build.sh \033[0m"
     exit
@@ -219,7 +222,7 @@ gpio_config_file=${TUYA_APP_DEMO_PATH}/ap/config/${TARGET_PLATFORM}_ap/usr_gpio_
 echo "python3 ${update_gpio_config_script} ${app_config_file} ${default_gpio_config_file} -o ${gpio_config_file}"
 if ! python3 ${update_gpio_config_script} ${app_config_file} ${default_gpio_config_file} -o ${gpio_config_file}; then
     echo "update config error"
-    exit -1
+    exit 1
 fi
 
 # compress_mode_file=${TUYA_APP_DEMO_PATH}/tuya_scripts/files/tuya_ota_compress_table.csv
@@ -229,21 +232,21 @@ fi
 # 判断文件是否相投，不相同则需要覆盖替换文件，并在t9_os目录下执行make clean操作
 # 如果是纯压缩模式，把 compress_mode_file文件覆盖auto_partitions.csv
 # 如果是分段模式，把 partition_mode_file文件覆盖auto_partitions.csv
-tuya_partition_table_select=${TUYA_PROJECT_DIR}/vendor/T9/t9_os/${TUYA_APP_DEMO_PATH}/tuya_scripts/tuya_partition_table_select.py
-if ! python3 ${tuya_partition_table_select} ${app_config_file}; then
-    echo "select partition table error"
-    exit -1
-fi
+# tuya_partition_table_select=${TUYA_PROJECT_DIR}/vendor/T9/t9_os/${TUYA_APP_DEMO_PATH}/tuya_scripts/tuya_partition_table_select.py
+# if ! python3 ${tuya_partition_table_select} ${app_config_file}; then
+#     echo "select partition table error"
+#     exit -1
+# fi
 
 echo "Start Compile"
 
 echo "make ${TARGET_PLATFORM} PROJECT=tuya_app BUILD_DIR=../build APP_NAME=$APP_BIN_NAME APP_VERSION=$USER_SW_VER -j"
 make ${TARGET_PLATFORM} PROJECT=tuya_app APP_NAME=$APP_BIN_NAME APP_VERSION=$USER_SW_VER -j
-res=$(echo $?)
+res=$?
 
-if [ "x$res" != "x0" ]; then
+if [ "$res" != "0" ]; then
     echo "make failed, $res"
-    exit -1
+    exit 1
 fi
 
 # 分析并输出内存使用信息

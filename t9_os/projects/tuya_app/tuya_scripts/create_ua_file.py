@@ -61,6 +61,7 @@ def convert_to_bytes(length_str):
 
 def parse_file(file):
     """解析分区表 CSV 文件"""
+    Part_Item.instances.clear()
     last_end_address = 0
     with open(file, newline='', encoding='utf-8') as csvfile:
         csvreader = csv.reader(csvfile)
@@ -88,9 +89,8 @@ def parse_file(file):
             else:
                 current_start_address = hex(last_end_address)
 
-            # CSV 中的 length 是 Flash 实际占用空间
-            # 固件可用空间 = Flash 占用 × 32/34
-            # 例如：68K Flash 占用 → 64K 固件可用空间
+            # auto_partitions.csv 表头：code 类型 Size 为「逻辑/bin 容量」，
+            # Flash 占用为 bin*34/32。UA 拼接上限应对齐逻辑容量（勿再 *32/34）。
             Part_Item(name, current_start_address, length_bytes)
 
             # 更新结束地址（使用 Flash 占用大小）
@@ -114,6 +114,51 @@ def pad_file_to_4k(path: str, max_size: int = None) -> None:
             f.write(bytes([0xFF] * pad))
 
 
+def create_padded_file_cp_ap_only(cp_path, ap_path, output_path):
+    """
+    T9 等分区表无 primary_tuyaboot 时：UA = CP + AP（与 _raw 拼接规则一致）。
+    """
+    cp = Part_Item.find_partition('primary_cp_app')
+    ap = Part_Item.find_partition('primary_ap_app')
+    if not cp:
+        print("错误: 未找到 'primary_cp_app' 分区", file=sys.stderr)
+        sys.exit(1)
+    if not ap:
+        print("错误: 未找到 'primary_ap_app' 分区", file=sys.stderr)
+        sys.exit(1)
+
+    cp_available = cp.length
+    ap_available = ap.length
+    pad_file_to_4k(ap_path, ap_available)
+    length_cp = os.path.getsize(cp_path)
+    length_ap = os.path.getsize(ap_path)
+    padding_cp_length = cp_available - length_cp
+    if padding_cp_length < 0:
+        print(
+            f"错误: CP 文件大小 ({length_cp}) 超过可用空间 ({cp_available})",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    print_info(
+        f"cp-ap-only UA: cp size {length_cp}, limit {cp_available}, padding {padding_cp_length}"
+    )
+    print_info(f"ap size {length_ap}, limit {ap_available}\n")
+
+    with open(output_path, 'wb') as output_file:
+        with open(cp_path, 'rb') as cp_file:
+            output_file.write(cp_file.read(length_cp))
+        output_file.write(bytes([0xFF] * padding_cp_length))
+        with open(ap_path, 'rb') as ap_file:
+            output_file.write(ap_file.read(length_ap))
+
+    with open(f'{output_path}_raw', 'wb') as raw_output_file:
+        with open(cp_path, 'rb') as cp_file:
+            raw_output_file.write(cp_file.read(length_cp))
+        raw_output_file.write(bytes([0xFF] * padding_cp_length))
+        with open(ap_path, 'rb') as ap_file:
+            raw_output_file.write(ap_file.read(length_ap))
+
+
 def create_padded_file(bl2_path, cp_path, ap_path, output_path, total_length=7836 * 1024):
     """创建填充后的 UA 文件（BL2 + CP + AP）"""
 
@@ -124,8 +169,8 @@ def create_padded_file(bl2_path, cp_path, ap_path, output_path, total_length=783
 
     # 检查分区是否找到
     if not bl2:
-        print("错误: 未找到 'primary_tuyaboot' 分区", file=sys.stderr)
-        sys.exit(1)
+        create_padded_file_cp_ap_only(cp_path, ap_path, output_path)
+        return
     if not cp:
         print("错误: 未找到 'primary_cp_app' 分区", file=sys.stderr)
         sys.exit(1)
@@ -133,11 +178,10 @@ def create_padded_file(bl2_path, cp_path, ap_path, output_path, total_length=783
         print("错误: 未找到 'primary_ap_app' 分区", file=sys.stderr)
         sys.exit(1)
 
-    # bl2.length 是 Flash 占用空间，计算固件可用空间
-    # 固件可用空间 = Flash 占用 × 32/34
-    bl2_available = int((bl2.length * 32) / 34)
-    cp_available = int((cp.length * 32) / 34)
-    ap_available = int((ap.length * 32) / 34)
+    # 与 auto_partitions.csv 一致：code 分区 Size 列为逻辑/bin 最大长度
+    bl2_available = bl2.length
+    cp_available = cp.length
+    ap_available = ap.length
 
     # 拼接前仅将 AP bin 填充到 4K 整数倍（不超过分区大小）
     pad_file_to_4k(ap_path, ap_available)

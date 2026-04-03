@@ -3,6 +3,9 @@ from __future__ import annotations
 import logging
 import os
 import shutil
+# Modified by Tuya Start
+import sys
+# Modified by Tuya End
 from pathlib import Path
 
 from bk_build_summary import bk_build_summary
@@ -88,6 +91,37 @@ def main():
     all_app_bin = firmware_package()
     curr_project.build_summary = f"firmware: {all_app_bin}\n"
     curr_project.post_package()
+
+    # Modified by Tuya Start
+    project_path = os.environ.get("TUYA_PROJECT_DIR", "").strip()
+    if project_path:
+        tuya_package_path = os.path.join(
+            project_path, "vendor/T9/t9_os/projects/tuya_app/tuya_scripts"
+        )
+        if os.path.isdir(tuya_package_path):
+            sys.path.insert(0, tuya_package_path)
+            try:
+                from tuya_package import firmware_info
+                from tuya_package import tuya_package_process
+
+                curr_project.build_summary += firmware_info()
+                ret = tuya_package_process()
+                if ret != 0:
+                    logger.error("TUYA package failed, exit code: %s", ret)
+                    sys.exit(ret)
+            except Exception as e:
+                logger.error("TUYA package error: %s", e)
+                import traceback
+
+                traceback.print_exc()
+                sys.exit(1)
+        else:
+            logger.warning(
+                "Tuya scripts dir missing, skip UA/UG package: %s", tuya_package_path
+            )
+    else:
+        logger.warning("TUYA_PROJECT_DIR unset, skip Tuya UA/UG package")
+    # Modified by Tuya End
     try:
         gen_build_summary(curr_project.build_summary)
     except Exception:

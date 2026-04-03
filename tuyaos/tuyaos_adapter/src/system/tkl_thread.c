@@ -1,245 +1,129 @@
 /**
  * @file tkl_thread.c
- * @brief the default weak implements of tuya os thread
+ * @brief Auto-generated TKL adapter stub. Candidate Thread adapter for T9.
  * @version 0.1
- * @date 2019-08-15
- *
- * @copyright Copyright 2020-2021 Tuya Inc. All Rights Reserved.
- *
+ * @date 2026-04-02
+ * @copyright Copyright (c) Tuya Inc.
  */
 
-#include "sdkconfig.h"
 #include "tuya_cloud_types.h"
 #include "tkl_thread.h"
-#include "FreeRTOS.h"
-#include "task.h"
-#include "mpu_wrappers.h"
-#include "portmacro.h"
-#include "projdefs.h"
 
-/**
-* @brief Create thread
-*
-* @param[out] thread: thread handle
-* @param[in] name: thread name
-* @param[in] stack_size: stack size of thread
-* @param[in] priority: priority of thread
-* @param[in] func: the main thread process function
-* @param[in] arg: the args of the func, can be null
-*
-* @note This API is used for creating thread.
-*
-* @return OPRT_OK on success. Others on error, please refer to tuya_error_code.h
-*/
-OPERATE_RET tkl_thread_create(TKL_THREAD_HANDLE* thread,
-                           CONST CHAR_T* name,
-                           UINT_T stack_size,
-                           UINT_T priority,
-                           THREAD_FUNC_T func,
-                           VOID_T* CONST arg)
+OPERATE_RET tkl_thread_create(TKL_THREAD_HANDLE* thread, CONST CHAR_T* name, UINT_T stack_size, UINT_T priority, CONST THREAD_FUNC_T func, VOID_T* CONST arg)
 {
-    if (!thread) {
-        return OPRT_INVALID_PARM;
-    }
+    (void)thread;
+    (void)name;
+    (void)stack_size;
+    (void)priority;
+    (void)func;
+    (void)arg;
 
-    BaseType_t ret = 0;
-#if (CONFIG_FREERTOS_SMP)
-    // ret = xTaskCreatePinnedToCore(func, name, stack_size / sizeof(portSTACK_TYPE), (void *const)arg, priority, (TaskHandle_t * const )thread, tskNO_AFFINITY);
-    ret = xTaskCreateInPsram(func, name, stack_size / sizeof(portSTACK_TYPE), (void *const)arg, priority, (TaskHandle_t * const )thread, tskNO_AFFINITY);
-#else
-    ret = xTaskCreate(func, name, stack_size / sizeof(portSTACK_TYPE), (void *const)arg, priority, (TaskHandle_t * const )thread);
-#endif
-    if (ret != pdPASS) {
-        return OPRT_OS_ADAPTER_THRD_CREAT_FAILED;
-    }
-
-    return OPRT_OK;
+    /* TODO: map `tkl_thread_create` to the vendor SDK implementation. */
+    /* TODO: confirm pinmux, clock, interrupt, DMA, and error-code mapping. */
+    return OPRT_NOT_SUPPORTED;
 }
 
-#if (CONFIG_FREERTOS_SMP)
-/**
-* @brief Create thread
-*
-* @param[out] thread: thread handle
-* @param[in] affinity: thread bind cpu id
-* @param[in] name: thread name
-* @param[in] stack_size: stack size of thread
-* @param[in] priority: priority of thread
-* @param[in] func: the main thread process function
-* @param[in] arg: the args of the func, can be null
-*
-* @note This API is used for creating thread.
-*
-* @return OPRT_OK on success. Others on error, please refer to tuya_error_code.h
-*/
-OPERATE_RET tkl_thread_smp_create(TKL_THREAD_HANDLE* thread,
-                           UINT_T coreID,
-                           CONST CHAR_T* name,
-                           UINT_T stack_size,
-                           UINT_T priority,
-                           THREAD_FUNC_T func,
-                           VOID_T* CONST arg)
+OPERATE_RET tkl_thread_smp_create(TKL_THREAD_HANDLE* thread, UINT_T affinity, CONST CHAR_T* name, UINT_T stack_size, UINT_T priority, THREAD_FUNC_T func, VOID_T* CONST arg)
 {
-    //smp仅支持核1、2
-    if (!thread || (coreID > (CONFIG_CPU_CNT - 1))) {
-        return OPRT_INVALID_PARM;
-    }
+    (void)thread;
+    (void)affinity;
+    (void)name;
+    (void)stack_size;
+    (void)priority;
+    (void)func;
+    (void)arg;
 
-    BaseType_t ret = 0;
-    ret = xTaskCreatePinnedToCore(func, name, stack_size / sizeof(portSTACK_TYPE), (void *const)arg, priority, (TaskHandle_t * const )thread, coreID);
-    if (ret != pdPASS) {
-        return OPRT_OS_ADAPTER_THRD_CREAT_FAILED;
-    }
-
-    return OPRT_OK;
-}
-#endif
-
-/**
-* @brief Terminal thread and release thread resources
-*
-* @param[in] thread: thread handle
-*
-* @note This API is used to terminal thread and release thread resources.
-*
-* @return OPRT_OK on success. Others on error, please refer to tuya_error_code.h
-*/
-OPERATE_RET tkl_thread_release(TKL_THREAD_HANDLE thread)
-{
-    if (!thread) {
-        return OPRT_INVALID_PARM;
-    }
-
-    vTaskDelete(thread);
-
-    return OPRT_OK;
+    /* TODO: map `tkl_thread_smp_create` to the vendor SDK implementation. */
+    /* TODO: confirm pinmux, clock, interrupt, DMA, and error-code mapping. */
+    return OPRT_NOT_SUPPORTED;
 }
 
-/**
-* @brief Get the thread stack's watermark
-*
-* @param[in] thread: thread handle
-* @param[out] watermark: watermark in Bytes
-*
-* @note This API is used to get the thread stack's watermark.
-*
-* @return OPRT_OK on success. Others on error, please refer to tuya_error_code.h
-*/
-OPERATE_RET tkl_thread_get_watermark(TKL_THREAD_HANDLE thread, UINT_T* watermark)
+OPERATE_RET tkl_thread_release(CONST TKL_THREAD_HANDLE thread)
 {
-    // TODO
-    *watermark = uxTaskGetStackHighWaterMark(thread) * sizeof( StackType_t );
-    return OPRT_OK;
+    (void)thread;
+
+    /* TODO: map `tkl_thread_release` to the vendor SDK implementation. */
+    /* TODO: confirm pinmux, clock, interrupt, DMA, and error-code mapping. */
+    return OPRT_NOT_SUPPORTED;
 }
 
-/**
-* @brief Get the thread thread handle
-*
-* @param[out] thread: thread handle
-*
-* @note This API is used to get the thread handle.
-*
-* @return OPRT_OK on success. Others on error, please refer to tuya_error_code.h
-*/
+OPERATE_RET tkl_thread_get_watermark(CONST TKL_THREAD_HANDLE thread, UINT_T* watermark)
+{
+    (void)thread;
+    (void)watermark;
+
+    /* TODO: map `tkl_thread_get_watermark` to the vendor SDK implementation. */
+    /* TODO: confirm pinmux, clock, interrupt, DMA, and error-code mapping. */
+    return OPRT_NOT_SUPPORTED;
+}
+
 OPERATE_RET tkl_thread_get_id(TKL_THREAD_HANDLE *thread)
 {
-    *thread = xTaskGetCurrentTaskHandle();
-    return OPRT_OK;
+    (void)thread;
+
+    /* TODO: map `tkl_thread_get_id` to the vendor SDK implementation. */
+    /* TODO: confirm pinmux, clock, interrupt, DMA, and error-code mapping. */
+    return OPRT_NOT_SUPPORTED;
 }
 
-/**
-* @brief Set name of self thread
-*
-* @param[in] name: thread name
-*
-* @note This API is used to set name of self thread.
-*
-* @return OPRT_OK on success. Others on error, please refer to tuya_error_code.h
-*/
 OPERATE_RET tkl_thread_set_self_name(CONST CHAR_T* name)
 {
-    if (!name) {
-        return OPRT_INVALID_PARM;
-    }
+    (void)name;
 
-    return OPRT_OK;
+    /* TODO: map `tkl_thread_set_self_name` to the vendor SDK implementation. */
+    /* TODO: confirm pinmux, clock, interrupt, DMA, and error-code mapping. */
+    return OPRT_NOT_SUPPORTED;
 }
-
-
 
 OPERATE_RET tkl_thread_is_self(TKL_THREAD_HANDLE thread, BOOL_T* is_self)
 {
-    if (NULL == thread || NULL == is_self) {
-        return OPRT_INVALID_PARM;
-    }
+    (void)thread;
+    (void)is_self;
 
-    TKL_THREAD_HANDLE self_handle = xTaskGetCurrentTaskHandle();
-    if (NULL == self_handle) {
-        return OPRT_OS_ADAPTER_THRD_JUDGE_SELF_FAILED;
-    }
-
-    *is_self = (thread == self_handle);
-
-    return OPRT_OK;
+    /* TODO: map `tkl_thread_is_self` to the vendor SDK implementation. */
+    /* TODO: confirm pinmux, clock, interrupt, DMA, and error-code mapping. */
+    return OPRT_NOT_SUPPORTED;
 }
 
-/**
-* @brief Diagnose the thread(dump task stack, etc.)
-*
-* @param[in] thread: thread handle
-*
-* @return OPRT_OK on success. Others on error, please refer to tuya_error_code.h
-*/
+OPERATE_RET tkl_thread_get_priority(TKL_THREAD_HANDLE thread, INT_T *priority)
+{
+    (void)thread;
+    (void)priority;
+
+    /* TODO: map `tkl_thread_get_priority` to the vendor SDK implementation. */
+    /* TODO: confirm pinmux, clock, interrupt, DMA, and error-code mapping. */
+    return OPRT_NOT_SUPPORTED;
+}
+
+OPERATE_RET tkl_thread_set_priority(TKL_THREAD_HANDLE thread, INT_T priority)
+{
+    (void)thread;
+    (void)priority;
+
+    /* TODO: map `tkl_thread_set_priority` to the vendor SDK implementation. */
+    /* TODO: confirm pinmux, clock, interrupt, DMA, and error-code mapping. */
+    return OPRT_NOT_SUPPORTED;
+}
+
 OPERATE_RET tkl_thread_diagnose(TKL_THREAD_HANDLE thread)
 {
-    extern void tkl_system_task_info_dump(void);
-    tkl_system_task_info_dump();
+    (void)thread;
 
-    return OPRT_OK;
-}
-
-#if defined(ENABLE_EXT_RAM) && (ENABLE_EXT_RAM==1)
-#if  (CONFIG_CPU_INDEX != 0)
-/**
-* @brief Create thread in PSRAM
-*
-* @param[out] thread: thread handle
-* @param[in] name: thread name
-* @param[in] stack_size: stack size of thread
-* @param[in] priority: priority of thread
-* @param[in] func: the main thread process function
-* @param[in] arg: the args of the func, can be null
-*
-* @note This API is used for creating thread.
-*
-* @return OPRT_OK on success. Others on error, please refer to tuya_error_code.h
-*/
-OPERATE_RET tkl_thread_create_in_psram(TKL_THREAD_HANDLE* thread,
-                           CONST CHAR_T* name,
-                           UINT_T stack_size,
-                           UINT_T priority,
-                           THREAD_FUNC_T func,
-                           VOID_T* CONST arg)
-{
-    if (!thread) {
-        return OPRT_INVALID_PARM;
-    }
-
-#if (CONFIG_FREERTOS_SMP == 1)
-    BaseType_t ret = 0;
-    // TODO Create thread in psram
-    ret = xTaskCreateInPsram(func, name, stack_size / sizeof(portSTACK_TYPE), (void *const)arg, priority, (TaskHandle_t * const )thread, tskNO_AFFINITY);
-    if (ret != pdPASS) {
-        return OPRT_OS_ADAPTER_THRD_CREAT_FAILED;
-    }
-#else
-    #error tkl_thread_create_in_psram 111111111111111111111111111
+    /* TODO: map `tkl_thread_diagnose` to the vendor SDK implementation. */
+    /* TODO: confirm pinmux, clock, interrupt, DMA, and error-code mapping. */
     return OPRT_NOT_SUPPORTED;
-#endif // CONFIG_FREERTOS_SMP
-
-    return OPRT_OK;
 }
-#endif  // CONFIG_CPU_INDEX != 0
 
-#endif // defined(ENABLE_EXT_RAM) && (ENABLE_EXT_RAM==1)
+OPERATE_RET tkl_thread_create_in_psram(TKL_THREAD_HANDLE* thread, CONST CHAR_T* name, UINT_T stack_size, UINT_T priority, CONST THREAD_FUNC_T func, VOID_T* CONST arg)
+{
+    (void)thread;
+    (void)name;
+    (void)stack_size;
+    (void)priority;
+    (void)func;
+    (void)arg;
 
+    /* TODO: map `tkl_thread_create_in_psram` to the vendor SDK implementation. */
+    /* TODO: confirm pinmux, clock, interrupt, DMA, and error-code mapping. */
+    return OPRT_NOT_SUPPORTED;
+}

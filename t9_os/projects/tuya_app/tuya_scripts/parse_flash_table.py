@@ -115,9 +115,10 @@ def main():
         print(f"错误: 未知操作 '{action}'，请使用 'start' 或 'size'")
         sys.exit(1)
     
-    # 获取CSV文件路径
+    # 分区表路径：与当前 SoC 一致（由 build.sh 导出 TUYA_APP_PLATFORM，如 bk7259）
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    csv_file = os.path.join(script_dir, '../partitions/bk7258/auto_partitions.csv')
+    platform = os.environ.get("TUYA_APP_PLATFORM", "bk7259").strip() or "bk7259"
+    csv_file = os.path.join(script_dir, "..", "partitions", platform, "auto_partitions.csv")
     
     if not os.path.exists(csv_file):
         print(f"错误: 找不到分区表文件: {csv_file}")
