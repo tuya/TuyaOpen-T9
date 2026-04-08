@@ -20,6 +20,7 @@ void user_app_main(void)
         bk_printf_raw(BK_LOG_INFO, NULL, "-------- co-procresser startup, left heap: %d, reset reason: %x\r\n",
                 xPortGetFreeHeapSize(), bk_misc_get_reset_reason() & 0xFF);
 
+        bk_start_ap_system();
         cifd_cust_msg_init();
         // doorbell_core_init();
         bk_printf_raw(BK_LOG_INFO, NULL, "start cp1\r\n");

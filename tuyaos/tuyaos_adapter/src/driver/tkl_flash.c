@@ -41,9 +41,9 @@ typedef struct
 
 
 #define APPLICATION_START               0x20000
-#define APPLICATION_SIZE                ((1088 + 3808 + 2940)* 1024)
+#define APPLICATION_SIZE                ((1224 + 1700 + 1360)* 1024)
 
-#define OTA_START                       0x7c9000
+#define OTA_START                       0x440000
 #define OTA_SIZE                        (8 * 1024)
 
 #if defined(KV_PROTECTED_ENABLE) && (KV_PROTECTED_ENABLE==1)

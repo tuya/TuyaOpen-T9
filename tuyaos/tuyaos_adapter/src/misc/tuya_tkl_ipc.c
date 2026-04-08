@@ -26,7 +26,7 @@ static OPERATE_RET __tuya_ipc_cb(struct ipc_msg_s *msg )
         tkl_semaphore_post(ipc_ack_sem);
     }else {
         switch (msg->type) {
-#if 0
+#if 1
             case TKL_IPC_TYPE_HCI:
                 tkl_hci_ipc_func(msg);
                 break;

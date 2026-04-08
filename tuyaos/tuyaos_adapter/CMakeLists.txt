@@ -59,7 +59,7 @@ set(srcs
     # src/system/tkl_atomic.c
     # src/system/tkl_task_notify.c
     src/driver/tkl_watchdog.c
-    src/driver/tkl_hci.c
+    # src/driver/tkl_hci.c
     src/driver/tkl_ipc.c
     src/misc/tuya_tkl_ipc.c
     src/misc/tkl_mftest.c
@@ -78,7 +78,7 @@ else()
     list(APPEND srcs
         src/driver/tkl_wifi.c
         src/driver/tkl_wired.c
-        # src/driver/tkl_hci_1.c
+        src/driver/tkl_hci_1.c
         # src/driver/tkl_video_enc.c
         # src/driver/tkl_video_in.c
         # src/driver/tkl_mic.c
