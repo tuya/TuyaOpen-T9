@@ -1471,6 +1471,7 @@ typedef enum {
 	TY_PIXEL_FMT_RGB565,
     TY_PIXEL_FMT_RGB666,
 	TY_PIXEL_FMT_RGB888,
+    TY_PIXEL_FMT_ARGB8888,
 } DISPLAY_PIXEL_FORMAT_E;
 
 typedef enum {
@@ -1791,4 +1792,3 @@ typedef INT_T TUYA_ERRNO;
 #endif
 
 #endif // TUYA_CLOUD_TYPES_H
-

@@ -583,7 +583,12 @@ bk_err_t dpu_core_deinit(dpu_handle_t *handle)
             if (context->update_frame[layer])
             {
                 LOGV("%s free update frame %p\n", __func__, context->update_frame[layer]);
-                context->update_cb[layer](context->update_frame[layer]);
+                // Modified by TUYA Start
+                if (context->update_cb[layer])
+                {
+                    context->update_cb[layer](context->update_frame[layer]);
+                }
+                // Modified by TUYA End
             }
         }
     }
@@ -594,7 +599,12 @@ bk_err_t dpu_core_deinit(dpu_handle_t *handle)
             if (context->display_frame[layer])
             {
                 LOGV("%s free display frame %p\n", __func__, context->display_frame[layer]);
-                context->display_cb[layer](context->display_frame[layer]);
+                // Modified by TUYA Start
+                if (context->display_cb[layer])
+                {
+                    context->display_cb[layer](context->display_frame[layer]);
+                }
+                // Modified by TUYA End
             }
         }
     }
@@ -695,7 +705,6 @@ uint32_t dpu_core_get_flush_addr(dpu_handle_t *handle)
     AVDK_RETURN_ON_FALSE(handle, BK_ERR_NULL_PARAM, TAG, "invalid argument");
     return dpu_frame_get_layer_address(0);
 }
-
 
 
 

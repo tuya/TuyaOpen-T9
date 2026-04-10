@@ -18,6 +18,7 @@ set(incs
     $ENV{ARMINO_PATH}/../../tuyaos/tuyaos_adapter/include/i2s
     $ENV{ARMINO_PATH}/../../tuyaos/tuyaos_adapter/include/init/include
     $ENV{ARMINO_PATH}/../../tuyaos/tuyaos_adapter/include/media
+    $ENV{ARMINO_PATH}/../../tuyaos/tuyaos_adapter/include/mipi
     $ENV{ARMINO_PATH}/../../tuyaos/tuyaos_adapter/include/network
     $ENV{ARMINO_PATH}/../../tuyaos/tuyaos_adapter/include/pinmux
     $ENV{ARMINO_PATH}/../../tuyaos/tuyaos_adapter/include/pwm
@@ -62,8 +63,7 @@ set(srcs
     # src/driver/tkl_hci.c
     src/driver/tkl_ipc.c
     src/misc/tuya_tkl_ipc.c
-    src/misc/tkl_mftest.c
-    src/misc/newlib_baremetal_stubs.c
+    # src/misc/tkl_mftest.c
     include/init/src/tkl_init_system.c
 )
 
@@ -98,6 +98,7 @@ else()
         src/driver/tkl_gpio.c
         src/driver/tkl_i2c.c
         src/driver/tkl_timer.c
+        src/driver/tkl_display_mipi.c
         # src/driver/tkl_wired.c
         # src/driver/tkl_i2s.c
         # src/driver/tkl_dma2d.c
@@ -112,7 +113,7 @@ else()
         # src/misc/sflash.c
         # src/misc/bk_adapter.c
         # src/misc/tuya_dma.c
-        # src/misc/tkl_mftest.c
+        src/misc/tkl_mftest.c
         # src/misc/mftest/mt_audio.c
 
         # src/system/tkl_fs.c
@@ -152,7 +153,8 @@ else()
             # src/test/test_timer.c
             # src/test/test_usb.c
             # src/test/test_spi.c
-            # src/test/test_ringbuffer/rb.c
+            src/test/test_ringbuffer/rb.c
+            src/test/test_media/test_mipi.c
             # src/test/test_media.c
             # src/test/test_mic.c
             # src/test/test_speaker.c
@@ -182,7 +184,7 @@ else()
             # src/test/test_gpio.c
             # src/test/test_sdcard.c
             # src/test/test_littlefs.c
-            # src/test/cli_tuya_test_1.c
+            src/test/cli_tuya_test_1.c
         )
     endif() # CONFIG_TUYA_TEST_CLI
 
@@ -283,4 +285,3 @@ file(GLOB LIB_FILES "$ENV{TUYA_PROJECT_DIR}/libs/*.a")
 target_link_libraries(${COMPONENT_LIB} INTERFACE ${LIB_FILES})
 
 endif()
-
