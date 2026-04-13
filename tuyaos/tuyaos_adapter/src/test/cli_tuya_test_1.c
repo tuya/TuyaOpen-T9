@@ -98,6 +98,7 @@ static const struct cli_command tuya_cli_commands[] = {
     // {"audio_test", "mic to speaker test", cli_audio_test_cmd},
     {"info",    "system info",      cli_system_info_cmd},
     {"xmipi",    "mipi test",        cli_tuya_mipi_cmd},
+    {"xgpu",    "gpu pipeline test", cli_tuya_gpu_cmd},
 #if 0
     {"xlp",     "lp test",          cli_lp_test_cmd},
     {"xtimer",  "timer test",       cli_tkl_timer_test},
@@ -139,5 +140,4 @@ int ap_cli_tuya_test_init(void)
 
     return 0;
 }
-
 

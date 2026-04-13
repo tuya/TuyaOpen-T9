@@ -63,6 +63,7 @@
  void cli_tuya_i2s_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv);
  void cli_xmtd_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv);
  void cli_lp_test_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv);
+ void cli_tuya_gpu_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv);
  int cli_mp3_init(void);
  int cli_dwt_init(void);
 

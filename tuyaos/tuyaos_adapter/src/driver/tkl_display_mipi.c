@@ -1,41 +1,20 @@
-#include "tkl_mipi.h"
-
 #include <stdbool.h>
-#include <avdk_error.h>
 #include <common/avdk_pixel_types.h>
 #include <common/bk_err.h>
 #include <components/bk_display.h>
 #include <components/bk_display_bus.h>
 #include <components/bk_display_dpu_ctlr.h>
 #include <components/bk_lcd_panel.h>
-#include <components/log.h>
 #include <driver/gpio.h>
 #include <driver/gpio_types.h>
 #include <os/mem.h>
 #include <os/str.h>
 #include "gpio_driver.h"
 
-#define TAG "tkl-mipi"
+#include "tkl_display_mipi.h"
+#include "tkl_output.h"
 
 static frame_buff_free_cb s_flush_free_cb = NULL;
-
-static OPERATE_RET tkl_display_mipi_err_convert(avdk_err_t ret)
-{
-    if (ret == AVDK_ERR_OK) {
-        return OPRT_OK;
-    }
-
-    switch (ret) {
-    case AVDK_ERR_INVAL:
-        return OPRT_INVALID_PARM;
-    case AVDK_ERR_NOMEM:
-        return OPRT_MALLOC_FAILED;
-    case AVDK_ERR_UNSUPPORTED:
-        return OPRT_NOT_SUPPORTED;
-    default:
-        return OPRT_COM_ERROR;
-    }
-}
 
 static bk_pixel_format_t tkl_display_default_video_format(const ty_display_mipi_device_t *device)
 {
@@ -48,13 +27,13 @@ static bk_pixel_format_t tkl_display_default_video_format(const ty_display_mipi_
     return BK_PIXEL_FORMAT_ARGB8888;
 }
 
-static avdk_err_t tkl_display_flush_done(void *args)
+static OPERATE_RET tkl_display_flush_done(void *args)
 {
     if (s_flush_free_cb != NULL) {
         s_flush_free_cb((uint8_t *)args);
     }
 
-    return AVDK_ERR_OK;
+    return OPRT_OK;
 }
 
 static void tkl_display_runtime_reset(ty_display_mipi_device_t *device)
@@ -137,7 +116,7 @@ static const bk_display_dsi_panel_t *tkl_display_panel_resolve(ty_display_mipi_d
 
 OPERATE_RET tkl_display_mipi_open(ty_display_mipi_device_t *device)
 {
-    avdk_err_t ret = AVDK_ERR_OK;
+    OPERATE_RET ret = OPRT_OK;
     const bk_display_dsi_panel_t *panel = NULL;
     bk_display_dpu_config_t lcd_cfg;
     bk_lcd_panel_dev_config_t panel_dev_config;
@@ -152,7 +131,7 @@ OPERATE_RET tkl_display_mipi_open(ty_display_mipi_device_t *device)
 
     panel = tkl_display_panel_resolve(device);
     if (panel == NULL) {
-        BK_LOGE(TAG, "mipi panel is not configured\r\n");
+        tkl_log_output( "mipi panel is not configured\r\n");
         return OPRT_NOT_SUPPORTED;
     }
 
@@ -163,12 +142,12 @@ OPERATE_RET tkl_display_mipi_open(ty_display_mipi_device_t *device)
     lcd_cfg.graphic.enable = false;
 
     ret = bk_display_dsi_bus_new(&device->dis_bus_handle, NULL);
-    if (ret != AVDK_ERR_OK) {
+    if (ret != OPRT_OK) {
         goto err;
     }
 
     ret = bk_display_bus_enable(device->dis_bus_handle);
-    if (ret != AVDK_ERR_OK) {
+    if (ret != OPRT_OK) {
         goto err;
     }
 
@@ -179,7 +158,7 @@ OPERATE_RET tkl_display_mipi_open(ty_display_mipi_device_t *device)
         };
 
         ret = bk_display_i2c_bus_new(&device->cfg_bus_handle, &i2c_cfg);
-        if (ret != AVDK_ERR_OK) {
+        if (ret != OPRT_OK) {
             goto err;
         }
     }
@@ -192,37 +171,37 @@ OPERATE_RET tkl_display_mipi_open(ty_display_mipi_device_t *device)
     panel_dev_config.vendor_config = (device->cfg_bus_handle != NULL) ? &device->cfg_bus_handle : NULL;
 
     ret = bk_lcd_mipi_panel_new(device->dis_bus_handle, &panel_dev_config, panel, &device->panel_handle);
-    if (ret != AVDK_ERR_OK) {
+    if (ret != OPRT_OK) {
         goto err;
     }
 
     ret = bk_lcd_panel_reset(device->panel_handle);
-    if (ret != AVDK_ERR_OK) {
+    if (ret != OPRT_OK) {
         goto err;
     }
 
     ret = bk_lcd_panel_init(device->panel_handle);
-    if (ret != AVDK_ERR_OK) {
+    if (ret != OPRT_OK) {
         goto err;
     }
 
     ret = bk_lcd_panel_get_disp_timing(device->panel_handle, &lcd_cfg.timing);
-    if (ret != AVDK_ERR_OK) {
+    if (ret != OPRT_OK) {
         goto err;
     }
 
     ret = bk_display_dpu_ctlr_new(&device->dpu_ctlr_handle, &lcd_cfg);
-    if (ret != AVDK_ERR_OK) {
+    if (ret != OPRT_OK) {
         goto err;
     }
 
     ret = bk_display_init(device->dpu_ctlr_handle);
-    if (ret != AVDK_ERR_OK) {
+    if (ret != OPRT_OK) {
         goto err;
     }
 
     ret = bk_display_open(device->dpu_ctlr_handle);
-    if (ret != AVDK_ERR_OK) {
+    if (ret != OPRT_OK) {
         goto err;
     }
 
@@ -238,9 +217,9 @@ OPERATE_RET tkl_display_mipi_open(ty_display_mipi_device_t *device)
     return OPRT_OK;
 
 err:
-    BK_LOGE(TAG, "open mipi display failed: %d\r\n", ret);
+    tkl_log_output( "open mipi display failed: %d\r\n", ret);
     tkl_display_cleanup(device);
-    return tkl_display_mipi_err_convert(ret);
+    return ret;
 }
 
 OPERATE_RET tkl_display_mipi_close(ty_display_mipi_device_t *device)
@@ -264,7 +243,7 @@ OPERATE_RET tkl_display_mipi_close(ty_display_mipi_device_t *device)
 
 OPERATE_RET tkl_display_mipi_flush(ty_display_mipi_device_t *device, ty_frame_buffer_t *frame_buff)
 {
-    avdk_err_t ret;
+    OPERATE_RET ret;
     uint8_t *flush_frame = NULL;
 
     if (device == NULL || frame_buff == NULL) {
@@ -288,9 +267,9 @@ OPERATE_RET tkl_display_mipi_flush(ty_display_mipi_device_t *device, ty_frame_bu
 
     s_flush_free_cb = frame_buff->free_cb;
     ret = bk_display_flush(device->dpu_ctlr_handle, flush_frame, frame_buff->free_cb ? tkl_display_flush_done : NULL);
-    if (ret != AVDK_ERR_OK) {
+    if (ret != OPRT_OK) {
         s_flush_free_cb = NULL;
-        return tkl_display_mipi_err_convert(ret);
+        return ret;
     }
 
     return OPRT_OK;
