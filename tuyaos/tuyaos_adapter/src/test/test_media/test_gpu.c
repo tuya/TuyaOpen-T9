@@ -35,6 +35,16 @@ static test_gpu_ctx_t s_gpu_ctx = {
     .lcd_height = 0U,
 };
 
+static void test_gpu_runtime_reset(void)
+{
+    s_gpu_ctx.initialized = false;
+    s_gpu_ctx.started = false;
+    s_gpu_ctx.rotate_degree = GPU_TEST_DEFAULT_ROTATE;
+    s_gpu_ctx.compress = (GPU_TEST_DEFAULT_COMPRESS != 0U);
+    s_gpu_ctx.lcd_width = 0U;
+    s_gpu_ctx.lcd_height = 0U;
+}
+
 static void test_gpu_dst_geometry_get(uint16_t rotate_degree, uint16_t *dst_width, uint16_t *dst_height)
 {
     if (dst_width == NULL || dst_height == NULL) {
@@ -153,23 +163,13 @@ static void test_gpu_frame_done(void *frame, uint32_t frame_size, void *arg)
     }
 }
 
-static OPERATE_RET test_gpu_prepare(uint16_t rotate_degree, bool compress)
+static OPERATE_RET test_gpu_prepare_display(uint16_t rotate_degree, bool compress)
 {
     OPERATE_RET ret;
     ty_display_mipi_device_t *lcd_dev;
 
     if (test_mipi_lcd_is_open() != TRUE) {
         tkl_log_output( "mipi lcd is not open, use: xmipi lcd open_gpu [panel] [%u]\r\n", (unsigned int)compress);
-        return OPRT_RESOURCE_NOT_READY;
-    }
-
-    if (test_mipi_camera_is_inited() != TRUE || test_mipi_camera_is_started() != TRUE) {
-        tkl_log_output( "mipi camera is not started, use: xmipi camera open_gpu ... && xmipi camera start\r\n");
-        return OPRT_RESOURCE_NOT_READY;
-    }
-
-    if (test_mipi_camera_flexa_enabled() != TRUE) {
-        tkl_log_output( "mipi camera flexa is not enabled, use: xmipi camera open_gpu ...\r\n");
         return OPRT_RESOURCE_NOT_READY;
     }
 
@@ -206,22 +206,40 @@ static OPERATE_RET test_gpu_prepare(uint16_t rotate_degree, bool compress)
     return OPRT_OK;
 }
 
-static OPERATE_RET test_gpu_start(uint16_t rotate_degree, bool compress)
+static OPERATE_RET test_gpu_get_camera_source(TUYA_CAMERA_MIPI_FLEXA_SOURCE_T *camera_source)
+{
+    if (camera_source == NULL) {
+        return OPRT_INVALID_PARM;
+    }
+
+    if (test_mipi_camera_is_inited() != TRUE || test_mipi_camera_is_started() != TRUE) {
+        tkl_log_output( "mipi camera is not started, use: xmipi camera open_gpu ... && xmipi camera start\r\n");
+        return OPRT_RESOURCE_NOT_READY;
+    }
+
+    if (test_mipi_camera_flexa_enabled() != TRUE) {
+        tkl_log_output( "mipi camera flexa is not enabled, use: xmipi camera open_gpu ...\r\n");
+        return OPRT_RESOURCE_NOT_READY;
+    }
+
+    os_memset(camera_source, 0, sizeof(*camera_source));
+    return test_mipi_camera_get_flexa_source(camera_source);
+}
+
+static OPERATE_RET test_gpu_init(uint16_t rotate_degree, bool compress)
 {
     OPERATE_RET ret;
     TUYA_GPU_CFG_T gpu_cfg;
-    TUYA_CAMERA_MIPI_FLEXA_SOURCE_T camera_source;
-    TUYA_GPU_SOURCE_T gpu_source;
     ty_display_mipi_device_t *lcd_dev;
     uint16_t dst_width = 0U;
     uint16_t dst_height = 0U;
 
     if (s_gpu_ctx.started == true) {
-        tkl_log_output( "gpu pipeline already started\r\n");
-        return OPRT_OK;
+        tkl_log_output( "gpu pipeline is running, stop before reinit\r\n");
+        return OPRT_RESOURCE_NOT_READY;
     }
 
-    ret = test_gpu_prepare(rotate_degree, compress);
+    ret = test_gpu_prepare_display(rotate_degree, compress);
     if (ret != OPRT_OK) {
         return ret;
     }
@@ -232,6 +250,14 @@ static OPERATE_RET test_gpu_start(uint16_t rotate_degree, bool compress)
     }
 
     test_gpu_dst_geometry_get(rotate_degree, &dst_width, &dst_height);
+
+    if (s_gpu_ctx.initialized == true) {
+        ret = tkl_gpu_deinit();
+        if (ret != OPRT_OK) {
+            tkl_log_output( "gpu deinit before reinit failed: %d\r\n", ret);
+            return ret;
+        }
+    }
 
     os_memset(&gpu_cfg, 0, sizeof(gpu_cfg));
     gpu_cfg.rotate_degree = rotate_degree;
@@ -253,11 +279,41 @@ static OPERATE_RET test_gpu_start(uint16_t rotate_degree, bool compress)
         return ret;
     }
 
-    os_memset(&camera_source, 0, sizeof(camera_source));
-    ret = test_mipi_camera_get_flexa_source(&camera_source);
+    s_gpu_ctx.initialized = true;
+    s_gpu_ctx.started = false;
+    tkl_log_output( "gpu pipeline initialized, dst=%ux%u (lcd=%ux%u) rotate=%u compress=%u\r\n",
+            dst_width,
+            dst_height,
+            s_gpu_ctx.lcd_width,
+            s_gpu_ctx.lcd_height,
+            rotate_degree,
+            (unsigned int)compress);
+    return OPRT_OK;
+}
+
+static OPERATE_RET test_gpu_start(void)
+{
+    OPERATE_RET ret;
+    TUYA_CAMERA_MIPI_FLEXA_SOURCE_T camera_source;
+    TUYA_GPU_SOURCE_T gpu_source;
+    uint16_t dst_width = 0U;
+    uint16_t dst_height = 0U;
+
+    if (s_gpu_ctx.initialized != true) {
+        tkl_log_output( "gpu is not initialized, use: xgpu init [rotate] [compress]\r\n");
+        return OPRT_RESOURCE_NOT_READY;
+    }
+
+    if (s_gpu_ctx.started == true) {
+        tkl_log_output( "gpu pipeline already started\r\n");
+        return OPRT_OK;
+    }
+
+    test_gpu_dst_geometry_get(s_gpu_ctx.rotate_degree, &dst_width, &dst_height);
+
+    ret = test_gpu_get_camera_source(&camera_source);
     if (ret != OPRT_OK) {
         tkl_log_output( "camera get flexa source failed: %d\r\n", ret);
-        (void)tkl_gpu_deinit();
         return ret;
     }
 
@@ -279,24 +335,21 @@ static OPERATE_RET test_gpu_start(uint16_t rotate_degree, bool compress)
             dst_height,
             s_gpu_ctx.lcd_width,
             s_gpu_ctx.lcd_height,
-            rotate_degree,
-            (unsigned int)compress);
+            s_gpu_ctx.rotate_degree,
+            (unsigned int)s_gpu_ctx.compress);
 
     ret = tkl_gpu_set_source(&gpu_source);
     if (ret != OPRT_OK) {
         tkl_log_output( "gpu set source failed: %d\r\n", ret);
-        (void)tkl_gpu_deinit();
         return ret;
     }
 
     ret = tkl_gpu_start();
     if (ret != OPRT_OK) {
         tkl_log_output( "gpu start failed: %d\r\n", ret);
-        (void)tkl_gpu_deinit();
         return ret;
     }
 
-    s_gpu_ctx.initialized = true;
     s_gpu_ctx.started = true;
     tkl_log_output( "gpu pipeline started, src=%ux%u fmt=%u -> dst=%ux%u (lcd=%ux%u) rotate=%u compress=%u\r\n",
             camera_source.width,
@@ -306,29 +359,44 @@ static OPERATE_RET test_gpu_start(uint16_t rotate_degree, bool compress)
             dst_height,
             s_gpu_ctx.lcd_width,
             s_gpu_ctx.lcd_height,
-            rotate_degree,
-            (unsigned int)compress);
+            s_gpu_ctx.rotate_degree,
+            (unsigned int)s_gpu_ctx.compress);
     return OPRT_OK;
 }
 
 static OPERATE_RET test_gpu_stop(void)
 {
-    OPERATE_RET ret = OPRT_OK;
-    OPERATE_RET step_ret;
+    OPERATE_RET ret;
 
-    step_ret = tkl_gpu_stop();
-    if (step_ret != OPRT_OK) {
-        ret = step_ret;
+    if (s_gpu_ctx.initialized != true) {
+        return OPRT_OK;
     }
 
-    step_ret = tkl_gpu_deinit();
-    if (step_ret != OPRT_OK && ret == OPRT_OK) {
-        ret = step_ret;
+    ret = tkl_gpu_stop();
+    if (ret != OPRT_OK) {
+        return ret;
     }
 
-    s_gpu_ctx.initialized = false;
     s_gpu_ctx.started = false;
-    return ret;
+    return OPRT_OK;
+}
+
+static OPERATE_RET test_gpu_deinit(void)
+{
+    OPERATE_RET ret;
+
+    if (s_gpu_ctx.initialized != true) {
+        test_gpu_runtime_reset();
+        return OPRT_OK;
+    }
+
+    ret = tkl_gpu_deinit();
+    if (ret != OPRT_OK) {
+        return ret;
+    }
+
+    test_gpu_runtime_reset();
+    return OPRT_OK;
 }
 
 void cli_tuya_gpu_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv)
@@ -344,29 +412,41 @@ void cli_tuya_gpu_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char *
 
     if (argc < 2) {
         snprintf(pcWriteBuffer, xWriteBufferLen,
-                 "Usage: xgpu <start [rotate] [compress]|stop|close|status>");
+                 "Usage: xgpu <init [rotate] [compress]|start|stop|deinit|close|status>");
         return;
     }
 
     cmd = argv[1];
 
-    if (argc >= 3) {
-        rotate_degree = (uint16_t)os_strtoul(argv[2], NULL, 10);
-    }
-    if (argc >= 4) {
-        compress = (os_strtoul(argv[3], NULL, 10) != 0U);
-    }
+    if (os_strcmp(cmd, "init") == 0) {
+        if (argc >= 3) {
+            rotate_degree = (uint16_t)os_strtoul(argv[2], NULL, 10);
+        }
+        if (argc >= 4) {
+            compress = (os_strtoul(argv[3], NULL, 10) != 0U);
+        }
 
-    if (os_strcmp(cmd, "start") == 0) {
-        ret = test_gpu_start(rotate_degree, compress);
+        ret = test_gpu_init(rotate_degree, compress);
         snprintf(pcWriteBuffer, xWriteBufferLen,
-                 "xgpu start %s (%d), rotate=%u, compress=%u\r\n",
+                 "xgpu init %s (%d), rotate=%u, compress=%u\r\n",
                  (ret == OPRT_OK) ? "ok" : "failed",
                  ret,
                  rotate_degree,
                  (unsigned int)compress);
-    } else if (os_strcmp(cmd, "stop") == 0 || os_strcmp(cmd, "close") == 0) {
+    } else if (os_strcmp(cmd, "start") == 0) {
+        ret = test_gpu_start();
+        snprintf(pcWriteBuffer, xWriteBufferLen,
+                 "xgpu start %s (%d)\r\n",
+                 (ret == OPRT_OK) ? "ok" : "failed",
+                 ret);
+    } else if (os_strcmp(cmd, "stop") == 0) {
         ret = test_gpu_stop();
+        snprintf(pcWriteBuffer, xWriteBufferLen,
+                 "xgpu stop %s (%d)\r\n",
+                 (ret == OPRT_OK) ? "ok" : "failed",
+                 ret);
+    } else if (os_strcmp(cmd, "deinit") == 0 || os_strcmp(cmd, "close") == 0) {
+        ret = test_gpu_deinit();
         snprintf(pcWriteBuffer, xWriteBufferLen,
                  "xgpu %s %s (%d)\r\n",
                  cmd,
@@ -387,6 +467,6 @@ void cli_tuya_gpu_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char *
                  (unsigned int)s_gpu_ctx.compress);
     } else {
         snprintf(pcWriteBuffer, xWriteBufferLen,
-                 "Usage: xgpu <start [rotate] [compress]|stop|close|status>");
+                 "Usage: xgpu <init [rotate] [compress]|start|stop|deinit|close|status>");
     }
 }
