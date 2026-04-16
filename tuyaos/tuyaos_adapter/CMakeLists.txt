@@ -42,6 +42,7 @@ set(incs
     $ENV{ARMINO_PATH}/../../tuyaos/tuyaos_adapter/include/dvp
     $ENV{ARMINO_PATH}/../../tuyaos/tuyaos_adapter/include/dma2d
     $ENV{ARMINO_PATH}/../../tuyaos/tuyaos_adapter/include/gpu
+    $ENV{ARMINO_PATH}/../../tuyaos/tuyaos_adapter/include/vcodec
     $ENV{ARMINO_PATH}/../../tuyaos/tuyaos_adapter/include/jpeg_codec
     $ENV{ARMINO_PATH}/../../tuyaos/tuyaos_adapter/include/tal_mtd/include
     $ENV{TUYA_PROJECT_DIR}/include/base/include
@@ -102,6 +103,8 @@ else()
         src/driver/tkl_display_mipi.c
         src/driver/tkl_camera_mipi.c
         src/driver/tkl_gpu.c
+        src/driver/tkl_venc.c
+        src/driver/tkl_vdec.c
         # src/driver/tkl_wired.c
         # src/driver/tkl_i2s.c
         # src/driver/tkl_dma2d.c
@@ -159,6 +162,7 @@ else()
             src/test/test_ringbuffer/rb.c
             src/test/test_media/test_mipi.c
             src/test/test_media/test_gpu.c
+            src/test/test_media/test_venc.c
             # src/test/test_media.c
             # src/test/test_mic.c
             # src/test/test_speaker.c

@@ -232,6 +232,10 @@ void bk_flexa_mjpegd_h264e_bond_stop(void *bond)
 	}
 	bk_flexa_bond_t *out_stream = bond_p->out_stream;
 	if (out_stream != NULL && out_stream->handle != NULL) {
+// Modified by TUYA Start
+		(void)bk_h264_encode_ioctl((bk_h264_encode_ctlr_handle_t)out_stream->handle,
+					   BK_H264_ENCODE_IOCTL_STOP_ENCODE, NULL);
+// Modified by TUYA End
 		(void)bk_h264_encode_ioctl((bk_h264_encode_ctlr_handle_t)out_stream->handle,
 					   BK_H264_ENCODE_IOCTL_UNREGISTER_BOND, out_stream);
 	}

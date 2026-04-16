@@ -62,6 +62,9 @@ typedef struct
     uint32_t enc_start_first;         // 首次编码标志
     uint32_t enc_line_cnt;            // 编码行计数
     uint8_t enc_status;               // 编码状态
+    // Modified by TUYA Start
+    uint8_t stopping;                 // 停止过程中不再接收新的 frame_ready
+    // Modified by TUYA End
     beken_timer_t debug_timer;        // 调试定时器
     uint32_t debug_time_ms;           // 调试时间间隔
     enc_h264_debug_t last_debug_info; // 上次调试信息

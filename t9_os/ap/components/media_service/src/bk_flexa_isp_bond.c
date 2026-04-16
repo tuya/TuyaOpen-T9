@@ -219,19 +219,32 @@ error:
 void bk_flexa_isp_h264e_bond_stop(void *bond)
 {
 	bk_flexa_bond_config_t *bond_p = (bk_flexa_bond_config_t *)bond;
+// Modified by TUYA Start
+	bk_flexa_bond_t *out_stream;
+	bk_flexa_bond_t *in_stream;
+// Modified by TUYA End
 	if (bond_p == NULL) {
 		return;
 	}
+// Modified by TUYA Start
+	out_stream = bond_p->out_stream;
+	if (out_stream != NULL && out_stream->handle != NULL) {
+		/* Block new frame_ready before waiting for the last ISP frame-end handshake. */
+		(void)bk_h264_encode_ioctl((bk_h264_encode_ctlr_handle_t)out_stream->handle,
+					   BK_H264_ENCODE_IOCTL_STOP_ENCODE, NULL);
+	}
+// Modified by TUYA End
 	bond_p->flexa_sbi = 0;
 	bond_p->set_sbi_flag = 1;
 	rtos_get_semaphore(&bond_p->sem, BEKEN_WAIT_FOREVER);
 
-	bk_flexa_bond_t *in_stream = bond_p->in_stream;
+// Modified by TUYA Start
+	in_stream = bond_p->in_stream;
 	if (in_stream != NULL && in_stream->handle != NULL) {
 		isp_handle_t isp_h = (isp_handle_t)in_stream->handle;
 		(void)bk_isp_deregister_isr_callback(&isp_h, ISP_FRAME_END_DONE, in_stream);
 	}
-	bk_flexa_bond_t *out_stream = bond_p->out_stream;
+// Modified by TUYA End
 	if (out_stream != NULL && out_stream->handle != NULL) {
 		(void)bk_h264_encode_ioctl((bk_h264_encode_ctlr_handle_t)out_stream->handle,
 					   BK_H264_ENCODE_IOCTL_UNREGISTER_BOND, out_stream);
