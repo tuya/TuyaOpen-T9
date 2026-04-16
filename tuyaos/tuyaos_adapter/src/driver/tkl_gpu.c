@@ -12,9 +12,11 @@
 typedef struct {
     BOOL_T initialized;
     BOOL_T started;
+    BOOL_T sink_ready;
     BOOL_T source_ready;
-    BOOL_T controller_dirty;
+    BOOL_T backend_opened;
     TUYA_GPU_CFG_T cfg;
+    TUYA_GPU_SINK_T sink;
     TUYA_GPU_SOURCE_T source;
     bk_gpu_ctlr_handle_t gpu_handle;
     VOID *bond_handle;
@@ -25,16 +27,22 @@ static tkl_gpu_ctx_t s_gpu_ctx;
 static void tkl_gpu_runtime_reset(BOOL_T keep_cfg)
 {
     TUYA_GPU_CFG_T cfg_backup;
+    TUYA_GPU_SINK_T sink_backup;
+    BOOL_T sink_ready = FALSE;
 
     if (keep_cfg == TRUE) {
         os_memcpy(&cfg_backup, &s_gpu_ctx.cfg, sizeof(cfg_backup));
+        os_memcpy(&sink_backup, &s_gpu_ctx.sink, sizeof(sink_backup));
+        sink_ready = s_gpu_ctx.sink_ready;
     }
 
     os_memset(&s_gpu_ctx, 0, sizeof(s_gpu_ctx));
 
     if (keep_cfg == TRUE) {
         os_memcpy(&s_gpu_ctx.cfg, &cfg_backup, sizeof(cfg_backup));
+        os_memcpy(&s_gpu_ctx.sink, &sink_backup, sizeof(sink_backup));
         s_gpu_ctx.initialized = TRUE;
+        s_gpu_ctx.sink_ready = sink_ready;
     }
 }
 
@@ -52,6 +60,8 @@ static void tkl_gpu_cfg_normalize(TUYA_GPU_CFG_T *cfg)
 
 static OPERATE_RET tkl_gpu_cfg_validate(const TUYA_GPU_CFG_T *cfg)
 {
+    BOOL_T has_legacy_sink;
+
     if (cfg == NULL) {
         return OPRT_INVALID_PARM;
     }
@@ -63,11 +73,28 @@ static OPERATE_RET tkl_gpu_cfg_validate(const TUYA_GPU_CFG_T *cfg)
         return OPRT_INVALID_PARM;
     }
 
-    if (cfg->alloc_cb == NULL || cfg->free_cb == NULL || cfg->frame_done_cb == NULL) {
+    if (cfg->dst_width == 0U || cfg->dst_height == 0U) {
         return OPRT_INVALID_PARM;
     }
 
-    if (cfg->dst_width == 0U || cfg->dst_height == 0U) {
+    has_legacy_sink = (cfg->alloc_cb != NULL ||
+                       cfg->free_cb != NULL ||
+                       cfg->frame_done_cb != NULL);
+    if (has_legacy_sink == TRUE &&
+        (cfg->alloc_cb == NULL || cfg->free_cb == NULL || cfg->frame_done_cb == NULL)) {
+        return OPRT_INVALID_PARM;
+    }
+
+    return OPRT_OK;
+}
+
+static OPERATE_RET tkl_gpu_sink_validate(const TUYA_GPU_SINK_T *sink)
+{
+    if (sink == NULL) {
+        return OPRT_INVALID_PARM;
+    }
+
+    if (sink->alloc_cb == NULL || sink->free_cb == NULL || sink->frame_done_cb == NULL) {
         return OPRT_INVALID_PARM;
     }
 
@@ -144,71 +171,24 @@ static const TUYA_GPU_FLEXA_BUFFER_T *tkl_gpu_source_flexa_get(const TUYA_GPU_SO
     }
 }
 
-static BOOL_T tkl_gpu_source_need_rebuild(const TUYA_GPU_SOURCE_T *curr, const TUYA_GPU_SOURCE_T *next)
-{
-    const TUYA_GPU_FLEXA_BUFFER_T *curr_flexa;
-    const TUYA_GPU_FLEXA_BUFFER_T *next_flexa;
-
-    if (curr == NULL || next == NULL) {
-        return TRUE;
-    }
-
-    if (curr->type != next->type) {
-        return TRUE;
-    }
-
-    switch (curr->type) {
-    case TUYA_GPU_SOURCE_ISP_FLEXA:
-        if (curr->isp.isp_handle != next->isp.isp_handle) {
-            return TRUE;
-        }
-        break;
-
-    case TUYA_GPU_SOURCE_MJPEG_FLEXA:
-        if (curr->mjpeg.jpeg_handle != next->mjpeg.jpeg_handle) {
-            return TRUE;
-        }
-        break;
-
-    default:
-        return TRUE;
-    }
-
-    curr_flexa = tkl_gpu_source_flexa_get(curr);
-    next_flexa = tkl_gpu_source_flexa_get(next);
-    if (curr_flexa == NULL || next_flexa == NULL) {
-        return TRUE;
-    }
-
-    if (curr_flexa->src_buffer != next_flexa->src_buffer ||
-        curr_flexa->buf_cnt != next_flexa->buf_cnt ||
-        curr_flexa->width != next_flexa->width ||
-        curr_flexa->height != next_flexa->height ||
-        curr_flexa->format != next_flexa->format) {
-        return TRUE;
-    }
-
-    return FALSE;
-}
-
 static VOID *tkl_gpu_frame_malloc(UINT32_T size)
 {
-    if (s_gpu_ctx.cfg.alloc_cb == NULL) {
+    if (s_gpu_ctx.sink.alloc_cb == NULL) {
         return NULL;
     }
 
-    return s_gpu_ctx.cfg.alloc_cb(size, s_gpu_ctx.cfg.cb_arg);
+    return s_gpu_ctx.sink.alloc_cb(size, s_gpu_ctx.sink.cb_arg);
 }
 
 static OPERATE_RET tkl_gpu_frame_free(VOID *ptr)
 {
     OPERATE_RET ret;
 
-    if (s_gpu_ctx.cfg.free_cb == NULL) {
+    if (s_gpu_ctx.sink.free_cb == NULL) {
         return OPRT_INVALID_PARM;
     }
 
-    ret = s_gpu_ctx.cfg.free_cb(ptr, s_gpu_ctx.cfg.cb_arg);
+    ret = s_gpu_ctx.sink.free_cb(ptr, s_gpu_ctx.sink.cb_arg);
     return ret;
 }
 
@@ -216,8 +196,8 @@ static void tkl_gpu_frame_done(void *frame, uint32_t frame_size, void *args)
 {
     (void)args;
 
-    if (s_gpu_ctx.cfg.frame_done_cb != NULL) {
-        s_gpu_ctx.cfg.frame_done_cb(frame, frame_size, s_gpu_ctx.cfg.cb_arg);
+    if (s_gpu_ctx.sink.frame_done_cb != NULL) {
+        s_gpu_ctx.sink.frame_done_cb(frame, frame_size, s_gpu_ctx.sink.cb_arg);
     }
 }
 
@@ -243,12 +223,16 @@ static void tkl_gpu_release_bond(void)
     s_gpu_ctx.bond_handle = NULL;
 }
 
-static OPERATE_RET tkl_gpu_close_controller(void)
+static OPERATE_RET tkl_gpu_backend_close(void)
 {
     OPERATE_RET ret = OPRT_OK;
     OPERATE_RET step_ret;
 
     if (s_gpu_ctx.gpu_handle == NULL) {
+        return OPRT_OK;
+    }
+
+    if (s_gpu_ctx.backend_opened != TRUE) {
         return OPRT_OK;
     }
 
@@ -260,6 +244,19 @@ static OPERATE_RET tkl_gpu_close_controller(void)
     if (step_ret != OPRT_OK && ret == OPRT_OK) {
         tkl_log_output( "bk_gpu_close failed: %d\r\n", step_ret);
         ret = step_ret;
+    }
+
+    s_gpu_ctx.backend_opened = FALSE;
+    return ret;
+}
+
+static OPERATE_RET tkl_gpu_backend_destroy(void)
+{
+    OPERATE_RET ret = OPRT_OK;
+    OPERATE_RET step_ret;
+
+    if (s_gpu_ctx.gpu_handle == NULL) {
+        return OPRT_OK;
     }
 
     step_ret = bk_gpu_deinit(s_gpu_ctx.gpu_handle);
@@ -275,10 +272,11 @@ static OPERATE_RET tkl_gpu_close_controller(void)
     }
 
     s_gpu_ctx.gpu_handle = NULL;
+    s_gpu_ctx.backend_opened = FALSE;
     return ret;
 }
 
-static OPERATE_RET tkl_gpu_open_controller(void)
+static OPERATE_RET tkl_gpu_backend_create(void)
 {
     OPERATE_RET ret;
     bk_gpu_ctlr_config_t gpu_cfg;
@@ -341,7 +339,21 @@ static OPERATE_RET tkl_gpu_open_controller(void)
     ret = bk_gpu_init(s_gpu_ctx.gpu_handle);
     if (ret != OPRT_OK) {
         tkl_log_output( "bk_gpu_init failed: %d\r\n", ret);
+        (void)bk_gpu_delete(s_gpu_ctx.gpu_handle);
+        s_gpu_ctx.gpu_handle = NULL;
         return ret;
+    }
+
+    s_gpu_ctx.backend_opened = FALSE;
+    return OPRT_OK;
+}
+
+static OPERATE_RET tkl_gpu_backend_open(void)
+{
+    OPERATE_RET ret;
+
+    if (s_gpu_ctx.gpu_handle == NULL) {
+        return OPRT_RESOURCE_NOT_READY;
     }
 
     ret = bk_gpu_open(s_gpu_ctx.gpu_handle);
@@ -350,6 +362,7 @@ static OPERATE_RET tkl_gpu_open_controller(void)
         return ret;
     }
 
+    s_gpu_ctx.backend_opened = TRUE;
     return OPRT_OK;
 }
 
@@ -387,6 +400,8 @@ OPERATE_RET tkl_gpu_init(TUYA_GPU_CFG_T *config)
 {
     OPERATE_RET ret;
     TUYA_GPU_CFG_T cfg_local;
+    TUYA_GPU_SINK_T sink_local;
+    BOOL_T has_legacy_sink;
 
     if (config == NULL) {
         return OPRT_INVALID_PARM;
@@ -404,7 +419,11 @@ OPERATE_RET tkl_gpu_init(TUYA_GPU_CFG_T *config)
     }
 
     tkl_gpu_release_bond();
-    ret = tkl_gpu_close_controller();
+    ret = tkl_gpu_backend_close();
+    if (ret != OPRT_OK) {
+        return ret;
+    }
+    ret = tkl_gpu_backend_destroy();
     if (ret != OPRT_OK) {
         return ret;
     }
@@ -412,7 +431,20 @@ OPERATE_RET tkl_gpu_init(TUYA_GPU_CFG_T *config)
     tkl_gpu_runtime_reset(FALSE);
     os_memcpy(&s_gpu_ctx.cfg, &cfg_local, sizeof(cfg_local));
     s_gpu_ctx.initialized = TRUE;
-    s_gpu_ctx.controller_dirty = TRUE;
+
+    has_legacy_sink = (cfg_local.alloc_cb != NULL ||
+                       cfg_local.free_cb != NULL ||
+                       cfg_local.frame_done_cb != NULL);
+    if (has_legacy_sink == TRUE) {
+        os_memset(&sink_local, 0, sizeof(sink_local));
+        sink_local.alloc_cb = cfg_local.alloc_cb;
+        sink_local.free_cb = cfg_local.free_cb;
+        sink_local.frame_done_cb = cfg_local.frame_done_cb;
+        sink_local.cb_arg = cfg_local.cb_arg;
+        os_memcpy(&s_gpu_ctx.sink, &sink_local, sizeof(sink_local));
+        s_gpu_ctx.sink_ready = TRUE;
+    }
+
     return OPRT_OK;
 }
 
@@ -426,12 +458,34 @@ OPERATE_RET tkl_gpu_deinit(VOID)
         return ret;
     }
 
-    close_ret = tkl_gpu_close_controller();
+    close_ret = tkl_gpu_backend_destroy();
     if (close_ret != OPRT_OK) {
         return close_ret;
     }
 
     tkl_gpu_runtime_reset(FALSE);
+    return OPRT_OK;
+}
+
+OPERATE_RET tkl_gpu_set_sink(const TUYA_GPU_SINK_T *sink)
+{
+    OPERATE_RET ret;
+
+    if (s_gpu_ctx.initialized != TRUE) {
+        return OPRT_RESOURCE_NOT_READY;
+    }
+
+    if (s_gpu_ctx.started == TRUE) {
+        return OPRT_RESOURCE_NOT_READY;
+    }
+
+    ret = tkl_gpu_sink_validate(sink);
+    if (ret != OPRT_OK) {
+        return ret;
+    }
+
+    os_memcpy(&s_gpu_ctx.sink, sink, sizeof(*sink));
+    s_gpu_ctx.sink_ready = TRUE;
     return OPRT_OK;
 }
 
@@ -452,13 +506,24 @@ OPERATE_RET tkl_gpu_set_source(TUYA_GPU_SOURCE_T *source)
         return OPRT_RESOURCE_NOT_READY;
     }
 
-    if (s_gpu_ctx.source_ready == TRUE &&
-        tkl_gpu_source_need_rebuild(&s_gpu_ctx.source, source) == TRUE) {
-        s_gpu_ctx.controller_dirty = TRUE;
+    tkl_gpu_release_bond();
+    ret = tkl_gpu_backend_close();
+    if (ret != OPRT_OK) {
+        return ret;
+    }
+    ret = tkl_gpu_backend_destroy();
+    if (ret != OPRT_OK) {
+        return ret;
     }
 
     os_memcpy(&s_gpu_ctx.source, source, sizeof(*source));
     s_gpu_ctx.source_ready = TRUE;
+    ret = tkl_gpu_backend_create();
+    if (ret != OPRT_OK) {
+        s_gpu_ctx.source_ready = FALSE;
+        return ret;
+    }
+
     return OPRT_OK;
 }
 
@@ -466,7 +531,9 @@ OPERATE_RET tkl_gpu_start(VOID)
 {
     OPERATE_RET ret;
 
-    if (s_gpu_ctx.initialized != TRUE || s_gpu_ctx.source_ready != TRUE) {
+    if (s_gpu_ctx.initialized != TRUE ||
+        s_gpu_ctx.sink_ready != TRUE ||
+        s_gpu_ctx.source_ready != TRUE) {
         return OPRT_RESOURCE_NOT_READY;
     }
 
@@ -474,23 +541,19 @@ OPERATE_RET tkl_gpu_start(VOID)
         return OPRT_OK;
     }
 
-    if (s_gpu_ctx.gpu_handle == NULL || s_gpu_ctx.controller_dirty == TRUE) {
-        ret = tkl_gpu_close_controller();
-        if (ret != OPRT_OK) {
-            return ret;
-        }
+    if (s_gpu_ctx.gpu_handle == NULL) {
+        return OPRT_RESOURCE_NOT_READY;
+    }
 
-        ret = tkl_gpu_open_controller();
-        if (ret != OPRT_OK) {
-            (void)tkl_gpu_close_controller();
-            return ret;
-        }
-        s_gpu_ctx.controller_dirty = FALSE;
+    ret = tkl_gpu_backend_open();
+    if (ret != OPRT_OK) {
+        return ret;
     }
 
     ret = tkl_gpu_bind_source();
     if (ret != OPRT_OK) {
         (void)tkl_gpu_release_bond();
+        (void)tkl_gpu_backend_close();
         return ret;
     }
 
@@ -500,10 +563,19 @@ OPERATE_RET tkl_gpu_start(VOID)
 
 OPERATE_RET tkl_gpu_stop(VOID)
 {
+    OPERATE_RET ret;
+
+    if (s_gpu_ctx.started == FALSE &&
+        s_gpu_ctx.gpu_handle == NULL &&
+        s_gpu_ctx.bond_handle == NULL) {
+        return OPRT_OK;
+    }
+
     tkl_gpu_release_bond();
-    if (s_gpu_ctx.gpu_handle != NULL &&
-        s_gpu_ctx.source.type == TUYA_GPU_SOURCE_ISP_FLEXA) {
-        (void)bk_gpu_ioctl(s_gpu_ctx.gpu_handle, BK_GPU_IOCTL_FLEXA_ADDR_UNMAPPING, NULL);
+
+    ret = tkl_gpu_backend_close();
+    if (ret != OPRT_OK) {
+        return ret;
     }
 
     s_gpu_ctx.started = FALSE;

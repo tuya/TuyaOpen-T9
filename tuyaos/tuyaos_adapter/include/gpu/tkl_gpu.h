@@ -22,6 +22,13 @@ typedef OPERATE_RET (*TUYA_GPU_FREE_CB)(VOID *ptr, VOID *arg);
 typedef VOID (*TUYA_GPU_FRAME_DONE_CB)(VOID *frame, UINT32_T frame_size, VOID *arg);
 
 typedef struct {
+    TUYA_GPU_ALLOC_CB alloc_cb;
+    TUYA_GPU_FREE_CB free_cb;
+    TUYA_GPU_FRAME_DONE_CB frame_done_cb;
+    VOID *cb_arg;
+} TUYA_GPU_SINK_T;
+
+typedef struct {
     UINT8_T *src_buffer;
     UINT8_T buf_cnt;
     UINT16_T width;
@@ -43,6 +50,7 @@ typedef struct {
     BOOL_T scale;
     BOOL_T dst_compress;
     UINT8_T flexa_lines;            /* default 16 */
+    /* Legacy sink callbacks kept for compatibility; prefer tkl_gpu_set_sink(). */
     TUYA_GPU_ALLOC_CB alloc_cb;
     TUYA_GPU_FREE_CB free_cb;
     TUYA_GPU_FRAME_DONE_CB frame_done_cb;
@@ -66,6 +74,7 @@ typedef struct {
 
 OPERATE_RET tkl_gpu_init(TUYA_GPU_CFG_T *config);
 OPERATE_RET tkl_gpu_deinit(VOID);
+OPERATE_RET tkl_gpu_set_sink(const TUYA_GPU_SINK_T *sink);
 OPERATE_RET tkl_gpu_set_source(TUYA_GPU_SOURCE_T *source);
 OPERATE_RET tkl_gpu_start(VOID);
 OPERATE_RET tkl_gpu_stop(VOID);

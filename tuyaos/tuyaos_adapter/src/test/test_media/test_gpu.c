@@ -24,6 +24,9 @@ typedef struct {
     bool compress;
     uint16_t lcd_width;
     uint16_t lcd_height;
+    uint16_t src_width;
+    uint16_t src_height;
+    uint32_t src_format;
 } test_gpu_ctx_t;
 
 static test_gpu_ctx_t s_gpu_ctx = {
@@ -33,6 +36,9 @@ static test_gpu_ctx_t s_gpu_ctx = {
     .compress = (GPU_TEST_DEFAULT_COMPRESS != 0U),
     .lcd_width = 0U,
     .lcd_height = 0U,
+    .src_width = 0U,
+    .src_height = 0U,
+    .src_format = BK_PIXEL_FORMAT_INVALID,
 };
 
 static void test_gpu_runtime_reset(void)
@@ -43,6 +49,9 @@ static void test_gpu_runtime_reset(void)
     s_gpu_ctx.compress = (GPU_TEST_DEFAULT_COMPRESS != 0U);
     s_gpu_ctx.lcd_width = 0U;
     s_gpu_ctx.lcd_height = 0U;
+    s_gpu_ctx.src_width = 0U;
+    s_gpu_ctx.src_height = 0U;
+    s_gpu_ctx.src_format = BK_PIXEL_FORMAT_INVALID;
 }
 
 static void test_gpu_dst_geometry_get(uint16_t rotate_degree, uint16_t *dst_width, uint16_t *dst_height)
@@ -178,14 +187,14 @@ static OPERATE_RET test_gpu_prepare_display(uint16_t rotate_degree, bool compres
         return OPRT_RESOURCE_NOT_READY;
     }
 
-    if (lcd_dev->dpu_video.format != BK_PIXEL_FORMAT_ARGB8888) {
+    if (lcd_dev->dpu_video_cfg == NULL || lcd_dev->dpu_video_cfg->format != BK_PIXEL_FORMAT_ARGB8888) {
         tkl_log_output( "mipi lcd format mismatch, need ARGB8888, use: xmipi lcd open_gpu ...\r\n");
         return OPRT_INVALID_PARM;
     }
 
-    if (lcd_dev->dpu_video.decompress != (compress ? TRUE : FALSE)) {
+    if (lcd_dev->dpu_video_cfg->decompress != (compress ? TRUE : FALSE)) {
         tkl_log_output( "mipi lcd decompress mismatch, current=%u, need=%u, reopen with xmipi lcd open_gpu ... %u\r\n",
-                (unsigned int)lcd_dev->dpu_video.decompress,
+                (unsigned int)lcd_dev->dpu_video_cfg->decompress,
                 (unsigned int)(compress ? TRUE : FALSE),
                 (unsigned int)compress);
         return OPRT_INVALID_PARM;
@@ -229,7 +238,10 @@ static OPERATE_RET test_gpu_get_camera_source(TUYA_CAMERA_MIPI_FLEXA_SOURCE_T *c
 static OPERATE_RET test_gpu_init(uint16_t rotate_degree, bool compress)
 {
     OPERATE_RET ret;
+    TUYA_CAMERA_MIPI_FLEXA_SOURCE_T camera_source;
     TUYA_GPU_CFG_T gpu_cfg;
+    TUYA_GPU_SOURCE_T gpu_source;
+    TUYA_GPU_SINK_T gpu_sink;
     ty_display_mipi_device_t *lcd_dev;
     uint16_t dst_width = 0U;
     uint16_t dst_height = 0U;
@@ -251,6 +263,12 @@ static OPERATE_RET test_gpu_init(uint16_t rotate_degree, bool compress)
 
     test_gpu_dst_geometry_get(rotate_degree, &dst_width, &dst_height);
 
+    ret = test_gpu_get_camera_source(&camera_source);
+    if (ret != OPRT_OK) {
+        tkl_log_output( "camera get flexa source failed: %d\r\n", ret);
+        return ret;
+    }
+
     if (s_gpu_ctx.initialized == true) {
         ret = tkl_gpu_deinit();
         if (ret != OPRT_OK) {
@@ -265,11 +283,6 @@ static OPERATE_RET test_gpu_init(uint16_t rotate_degree, bool compress)
     gpu_cfg.scale = TRUE;
     gpu_cfg.dst_compress = compress ? TRUE : FALSE;
     gpu_cfg.flexa_lines = GPU_TEST_FLEXA_LINES;
-    gpu_cfg.alloc_cb = test_gpu_frame_alloc;
-    gpu_cfg.free_cb = test_gpu_frame_free;
-    gpu_cfg.frame_done_cb = test_gpu_frame_done;
-    gpu_cfg.cb_arg = lcd_dev;
-
     gpu_cfg.dst_width = dst_width;
     gpu_cfg.dst_height = dst_height;
 
@@ -279,9 +292,44 @@ static OPERATE_RET test_gpu_init(uint16_t rotate_degree, bool compress)
         return ret;
     }
 
+    os_memset(&gpu_sink, 0, sizeof(gpu_sink));
+    gpu_sink.alloc_cb = test_gpu_frame_alloc;
+    gpu_sink.free_cb = test_gpu_frame_free;
+    gpu_sink.frame_done_cb = test_gpu_frame_done;
+    gpu_sink.cb_arg = lcd_dev;
+
+    ret = tkl_gpu_set_sink(&gpu_sink);
+    if (ret != OPRT_OK) {
+        tkl_log_output( "gpu set sink failed: %d\r\n", ret);
+        (void)tkl_gpu_deinit();
+        return ret;
+    }
+
+    os_memset(&gpu_source, 0, sizeof(gpu_source));
+    gpu_source.type = TUYA_GPU_SOURCE_ISP_FLEXA;
+    gpu_source.isp.isp_handle = camera_source.isp_handle;
+    gpu_source.isp.flexa.src_buffer = camera_source.src_buffer;
+    gpu_source.isp.flexa.buf_cnt = camera_source.buf_cnt;
+    gpu_source.isp.flexa.width = camera_source.width;
+    gpu_source.isp.flexa.height = camera_source.height;
+    gpu_source.isp.flexa.format = camera_source.format;
+
+    ret = tkl_gpu_set_source(&gpu_source);
+    if (ret != OPRT_OK) {
+        tkl_log_output( "gpu set source failed: %d\r\n", ret);
+        (void)tkl_gpu_deinit();
+        return ret;
+    }
+
     s_gpu_ctx.initialized = true;
     s_gpu_ctx.started = false;
-    tkl_log_output( "gpu pipeline initialized, dst=%ux%u (lcd=%ux%u) rotate=%u compress=%u\r\n",
+    s_gpu_ctx.src_width = camera_source.width;
+    s_gpu_ctx.src_height = camera_source.height;
+    s_gpu_ctx.src_format = camera_source.format;
+    tkl_log_output( "gpu pipeline initialized, src=%ux%u fmt=%u -> dst=%ux%u (lcd=%ux%u) rotate=%u compress=%u\r\n",
+            s_gpu_ctx.src_width,
+            s_gpu_ctx.src_height,
+            (unsigned int)s_gpu_ctx.src_format,
             dst_width,
             dst_height,
             s_gpu_ctx.lcd_width,
@@ -294,8 +342,6 @@ static OPERATE_RET test_gpu_init(uint16_t rotate_degree, bool compress)
 static OPERATE_RET test_gpu_start(void)
 {
     OPERATE_RET ret;
-    TUYA_CAMERA_MIPI_FLEXA_SOURCE_T camera_source;
-    TUYA_GPU_SOURCE_T gpu_source;
     uint16_t dst_width = 0U;
     uint16_t dst_height = 0U;
 
@@ -311,38 +357,17 @@ static OPERATE_RET test_gpu_start(void)
 
     test_gpu_dst_geometry_get(s_gpu_ctx.rotate_degree, &dst_width, &dst_height);
 
-    ret = test_gpu_get_camera_source(&camera_source);
-    if (ret != OPRT_OK) {
-        tkl_log_output( "camera get flexa source failed: %d\r\n", ret);
-        return ret;
-    }
-
-    os_memset(&gpu_source, 0, sizeof(gpu_source));
-    gpu_source.type = TUYA_GPU_SOURCE_ISP_FLEXA;
-    gpu_source.isp.isp_handle = camera_source.isp_handle;
-    gpu_source.isp.flexa.src_buffer = camera_source.src_buffer;
-    gpu_source.isp.flexa.buf_cnt = camera_source.buf_cnt;
-    gpu_source.isp.flexa.width = camera_source.width;
-    gpu_source.isp.flexa.height = camera_source.height;
-    gpu_source.isp.flexa.format = camera_source.format;
-
     tkl_log_output(
             "gpu start request: src=%ux%u fmt=%u -> dst=%ux%u (lcd=%ux%u) rotate=%u compress=%u\r\n",
-            camera_source.width,
-            camera_source.height,
-            (unsigned int)camera_source.format,
+            s_gpu_ctx.src_width,
+            s_gpu_ctx.src_height,
+            (unsigned int)s_gpu_ctx.src_format,
             dst_width,
             dst_height,
             s_gpu_ctx.lcd_width,
             s_gpu_ctx.lcd_height,
             s_gpu_ctx.rotate_degree,
             (unsigned int)s_gpu_ctx.compress);
-
-    ret = tkl_gpu_set_source(&gpu_source);
-    if (ret != OPRT_OK) {
-        tkl_log_output( "gpu set source failed: %d\r\n", ret);
-        return ret;
-    }
 
     ret = tkl_gpu_start();
     if (ret != OPRT_OK) {
@@ -352,9 +377,9 @@ static OPERATE_RET test_gpu_start(void)
 
     s_gpu_ctx.started = true;
     tkl_log_output( "gpu pipeline started, src=%ux%u fmt=%u -> dst=%ux%u (lcd=%ux%u) rotate=%u compress=%u\r\n",
-            camera_source.width,
-            camera_source.height,
-            (unsigned int)camera_source.format,
+            s_gpu_ctx.src_width,
+            s_gpu_ctx.src_height,
+            (unsigned int)s_gpu_ctx.src_format,
             dst_width,
             dst_height,
             s_gpu_ctx.lcd_width,
