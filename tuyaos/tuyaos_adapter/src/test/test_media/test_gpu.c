@@ -9,7 +9,7 @@
 
 #include "cli_tuya_test.h"
 #include "tkl_camera_mipi.h"
-#include "tkl_display_mipi.h"
+#include "tkl_mipi_dsi.h"
 #include "tkl_gpu.h"
 #include "tkl_output.h"
 
@@ -40,6 +40,14 @@ static test_gpu_ctx_t s_gpu_ctx = {
     .src_height = 0U,
     .src_format = BK_PIXEL_FORMAT_INVALID,
 };
+
+extern BOOL_T test_mipi_lcd_is_open(void);
+extern OPERATE_RET test_mipi_lcd_video_cfg_get(tkl_mipi_dsi_video_cfg_t *video_cfg);
+extern void test_mipi_lcd_get_geometry(UINT16_T *width, UINT16_T *height);
+extern BOOL_T test_mipi_camera_is_inited(void);
+extern BOOL_T test_mipi_camera_is_started(void);
+extern BOOL_T test_mipi_camera_flexa_enabled(void);
+extern OPERATE_RET test_mipi_camera_get_flexa_source(TUYA_CAMERA_MIPI_FLEXA_SOURCE_T *camera_source);
 
 static void test_gpu_runtime_reset(void)
 {
@@ -140,32 +148,25 @@ static uint32_t test_gpu_frame_len_get(uint16_t width, uint16_t height, bool com
 static void test_gpu_frame_done(void *frame, uint32_t frame_size, void *arg)
 {
     OPERATE_RET ret;
-    ty_frame_buffer_t frame_buff;
-    ty_display_mipi_device_t *lcd_dev = (ty_display_mipi_device_t *)arg;
+    tkl_mipi_dsi_flush_frame_t flush_frame;
 
     if (frame == NULL) {
         return;
     }
 
-    if (lcd_dev == NULL || lcd_dev->opened != TRUE) {
+    if (test_mipi_lcd_is_open() != TRUE) {
         test_gpu_display_frame_free((UINT8_T *)frame);
         return;
     }
 
-    os_memset(&frame_buff, 0, sizeof(frame_buff));
-    frame_buff.type = TYPE_PSRAM;
-    frame_buff.fmt = TY_PIXEL_FMT_ARGB8888;
-    frame_buff.x_start = 0U;
-    frame_buff.y_start = 0U;
-    frame_buff.width = s_gpu_ctx.lcd_width;
-    frame_buff.height = s_gpu_ctx.lcd_height;
-    frame_buff.len = (frame_size != 0U) ? frame_size :
-                     test_gpu_frame_len_get(s_gpu_ctx.lcd_width, s_gpu_ctx.lcd_height, s_gpu_ctx.compress);
-    frame_buff.frame = (uint8_t *)frame;
-    frame_buff.pdata = (uint8_t *)frame;
-    frame_buff.free_cb = test_gpu_display_frame_free;
+    (void)arg;
+    (void)frame_size;
 
-    ret = tkl_display_mipi_flush(lcd_dev, &frame_buff);
+    os_memset(&flush_frame, 0, sizeof(flush_frame));
+    flush_frame.buffer = (UINT8_T *)frame;
+    flush_frame.free_cb = test_gpu_display_frame_free;
+
+    ret = tkl_mipi_dsi_flush(&flush_frame);
     if (ret != OPRT_OK) {
         tkl_log_output( "gpu display flush failed: %d\r\n", ret);
         test_gpu_display_frame_free((UINT8_T *)frame);
@@ -175,26 +176,26 @@ static void test_gpu_frame_done(void *frame, uint32_t frame_size, void *arg)
 static OPERATE_RET test_gpu_prepare_display(uint16_t rotate_degree, bool compress)
 {
     OPERATE_RET ret;
-    ty_display_mipi_device_t *lcd_dev;
+    tkl_mipi_dsi_video_cfg_t video_cfg;
 
     if (test_mipi_lcd_is_open() != TRUE) {
         tkl_log_output( "mipi lcd is not open, use: xmipi lcd open_gpu [panel] [%u]\r\n", (unsigned int)compress);
         return OPRT_RESOURCE_NOT_READY;
     }
 
-    lcd_dev = test_mipi_lcd_device_get();
-    if (lcd_dev == NULL) {
+    ret = test_mipi_lcd_video_cfg_get(&video_cfg);
+    if (ret != OPRT_OK) {
         return OPRT_RESOURCE_NOT_READY;
     }
 
-    if (lcd_dev->dpu_video_cfg == NULL || lcd_dev->dpu_video_cfg->format != BK_PIXEL_FORMAT_ARGB8888) {
+    if (video_cfg.format != TY_PIXEL_FMT_ARGB8888) {
         tkl_log_output( "mipi lcd format mismatch, need ARGB8888, use: xmipi lcd open_gpu ...\r\n");
         return OPRT_INVALID_PARM;
     }
 
-    if (lcd_dev->dpu_video_cfg->decompress != (compress ? TRUE : FALSE)) {
+    if (video_cfg.decompress != (compress ? TRUE : FALSE)) {
         tkl_log_output( "mipi lcd decompress mismatch, current=%u, need=%u, reopen with xmipi lcd open_gpu ... %u\r\n",
-                (unsigned int)lcd_dev->dpu_video_cfg->decompress,
+                (unsigned int)video_cfg.decompress,
                 (unsigned int)(compress ? TRUE : FALSE),
                 (unsigned int)compress);
         return OPRT_INVALID_PARM;
@@ -242,7 +243,6 @@ static OPERATE_RET test_gpu_init(uint16_t rotate_degree, bool compress)
     TUYA_GPU_CFG_T gpu_cfg;
     TUYA_GPU_SOURCE_T gpu_source;
     TUYA_GPU_SINK_T gpu_sink;
-    ty_display_mipi_device_t *lcd_dev;
     uint16_t dst_width = 0U;
     uint16_t dst_height = 0U;
 
@@ -254,11 +254,6 @@ static OPERATE_RET test_gpu_init(uint16_t rotate_degree, bool compress)
     ret = test_gpu_prepare_display(rotate_degree, compress);
     if (ret != OPRT_OK) {
         return ret;
-    }
-
-    lcd_dev = test_mipi_lcd_device_get();
-    if (lcd_dev == NULL) {
-        return OPRT_RESOURCE_NOT_READY;
     }
 
     test_gpu_dst_geometry_get(rotate_degree, &dst_width, &dst_height);
@@ -296,7 +291,7 @@ static OPERATE_RET test_gpu_init(uint16_t rotate_degree, bool compress)
     gpu_sink.alloc_cb = test_gpu_frame_alloc;
     gpu_sink.free_cb = test_gpu_frame_free;
     gpu_sink.frame_done_cb = test_gpu_frame_done;
-    gpu_sink.cb_arg = lcd_dev;
+    gpu_sink.cb_arg = NULL;
 
     ret = tkl_gpu_set_sink(&gpu_sink);
     if (ret != OPRT_OK) {

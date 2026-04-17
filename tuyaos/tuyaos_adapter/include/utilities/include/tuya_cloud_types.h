@@ -708,7 +708,15 @@ typedef enum {
     TUYA_GPIO_NUM_61,
     TUYA_GPIO_NUM_62,
     TUYA_GPIO_NUM_63,
-    TUYA_GPIO_NUM_MAX,
+    TUYA_GPIO_NUM_64,
+    TUYA_GPIO_NUM_65,
+    TUYA_GPIO_NUM_66,
+    TUYA_GPIO_NUM_67,
+    TUYA_GPIO_NUM_68,
+    TUYA_GPIO_NUM_69,
+    TUYA_GPIO_NUM_70,
+    TUYA_GPIO_NUM_71,
+    TUYA_GPIO_NUM_MAX = 0xFFU,
 } TUYA_GPIO_NUM_E;
 
 /**
@@ -1454,6 +1462,7 @@ typedef enum  {
     DISPLAY_8080,
     DISPLAY_QSPI,
     DISPLAY_SPI,
+    DISPLAY_MIPI,
 } TUYA_DISPLAY_TYPE_E;
 
 typedef struct {
@@ -1492,6 +1501,20 @@ typedef struct {
 	UINT8_T hsync_pulse_width;            /**< rang 0~0x3F (0~7), should refer rgbdevice spec*/
 	UINT8_T vsync_pulse_width;            /**< rang 0~0x3F (0~7), should refer rgb device spec*/
 } TUYA_RGB_BASE_CFG_T;
+
+typedef struct {
+    UINT32_T clk;
+    UINT8_T n_lanes;
+    UINT16_T width;
+    UINT16_T height;
+	DISPLAY_PIXEL_FORMAT_E pixel_fmt;
+    UINT16_T hsync_back_porch;
+	UINT16_T hsync_front_porch;
+	UINT16_T vsync_back_porch;
+	UINT16_T vsync_front_porch;
+	UINT8_T hsync_pulse_width;
+	UINT8_T vsync_pulse_width;
+} TUYA_MIPI_BASE_CFG_T;
 
 typedef struct {
     UINT32_T clk;

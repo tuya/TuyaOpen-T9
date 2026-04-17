@@ -100,7 +100,7 @@ else()
         src/driver/tkl_gpio.c
         src/driver/tkl_i2c.c
         src/driver/tkl_timer.c
-        src/driver/tkl_display_mipi.c
+        src/driver/tkl_mipi_dsi.c
         src/driver/tkl_camera_mipi.c
         src/driver/tkl_gpu.c
         src/driver/tkl_venc.c
