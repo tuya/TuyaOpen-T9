@@ -22,8 +22,8 @@ typedef struct {
     bool started;
     uint16_t rotate_degree;
     bool compress;
-    uint16_t lcd_width;
-    uint16_t lcd_height;
+    uint16_t target_width;
+    uint16_t target_height;
     uint16_t src_width;
     uint16_t src_height;
     uint32_t src_format;
@@ -34,16 +34,14 @@ static test_gpu_ctx_t s_gpu_ctx = {
     .started = false,
     .rotate_degree = GPU_TEST_DEFAULT_ROTATE,
     .compress = (GPU_TEST_DEFAULT_COMPRESS != 0U),
-    .lcd_width = 0U,
-    .lcd_height = 0U,
+    .target_width = 0U,
+    .target_height = 0U,
     .src_width = 0U,
     .src_height = 0U,
     .src_format = BK_PIXEL_FORMAT_INVALID,
 };
 
 extern BOOL_T test_mipi_lcd_is_open(void);
-extern OPERATE_RET test_mipi_lcd_video_cfg_get(tkl_mipi_dsi_video_cfg_t *video_cfg);
-extern void test_mipi_lcd_get_geometry(UINT16_T *width, UINT16_T *height);
 extern BOOL_T test_mipi_camera_is_inited(void);
 extern BOOL_T test_mipi_camera_is_started(void);
 extern BOOL_T test_mipi_camera_flexa_enabled(void);
@@ -55,8 +53,8 @@ static void test_gpu_runtime_reset(void)
     s_gpu_ctx.started = false;
     s_gpu_ctx.rotate_degree = GPU_TEST_DEFAULT_ROTATE;
     s_gpu_ctx.compress = (GPU_TEST_DEFAULT_COMPRESS != 0U);
-    s_gpu_ctx.lcd_width = 0U;
-    s_gpu_ctx.lcd_height = 0U;
+    s_gpu_ctx.target_width = 0U;
+    s_gpu_ctx.target_height = 0U;
     s_gpu_ctx.src_width = 0U;
     s_gpu_ctx.src_height = 0U;
     s_gpu_ctx.src_format = BK_PIXEL_FORMAT_INVALID;
@@ -64,17 +62,14 @@ static void test_gpu_runtime_reset(void)
 
 static void test_gpu_dst_geometry_get(uint16_t rotate_degree, uint16_t *dst_width, uint16_t *dst_height)
 {
+    (void)rotate_degree;
+
     if (dst_width == NULL || dst_height == NULL) {
         return;
     }
 
-    if (rotate_degree == 90U || rotate_degree == 270U) {
-        *dst_width = s_gpu_ctx.lcd_height;
-        *dst_height = s_gpu_ctx.lcd_width;
-    } else {
-        *dst_width = s_gpu_ctx.lcd_width;
-        *dst_height = s_gpu_ctx.lcd_height;
-    }
+    *dst_width = s_gpu_ctx.target_width;
+    *dst_height = s_gpu_ctx.target_height;
 }
 
 static OPERATE_RET test_gpu_dst_validate(uint16_t rotate_degree, bool compress)
@@ -89,19 +84,19 @@ static OPERATE_RET test_gpu_dst_validate(uint16_t rotate_degree, bool compress)
 
     if (compress && ((dst_width % 4U) != 0U)) {
         tkl_log_output(
-                "gpu compress invalid dst=%ux%u from lcd=%ux%u rotate=%u, dst_width must align to 4, check xmipi lcd open_gpu panel\r\n",
+                "gpu compress invalid dst=%ux%u from target=%ux%u rotate=%u, dst_width must align to 4\r\n",
                 dst_width,
                 dst_height,
-                s_gpu_ctx.lcd_width,
-                s_gpu_ctx.lcd_height,
+                s_gpu_ctx.target_width,
+                s_gpu_ctx.target_height,
                 rotate_degree);
         return OPRT_INVALID_PARM;
     }
 
     tkl_log_output(
-            "gpu prepare: lcd=%ux%u rotate=%u -> dst=%ux%u compress=%u\r\n",
-            s_gpu_ctx.lcd_width,
-            s_gpu_ctx.lcd_height,
+            "gpu prepare: target=%ux%u rotate=%u -> dst=%ux%u compress=%u\r\n",
+            s_gpu_ctx.target_width,
+            s_gpu_ctx.target_height,
             rotate_degree,
             dst_width,
             dst_height,
@@ -173,47 +168,18 @@ static void test_gpu_frame_done(void *frame, uint32_t frame_size, void *arg)
     }
 }
 
-static OPERATE_RET test_gpu_prepare_display(uint16_t rotate_degree, bool compress)
+static OPERATE_RET test_gpu_prepare_target(uint16_t src_width, uint16_t src_height, uint16_t rotate_degree, bool compress)
 {
-    OPERATE_RET ret;
-    tkl_mipi_dsi_video_cfg_t video_cfg;
-
-    if (test_mipi_lcd_is_open() != TRUE) {
-        tkl_log_output( "mipi lcd is not open, use: xmipi lcd open_gpu [panel] [%u]\r\n", (unsigned int)compress);
-        return OPRT_RESOURCE_NOT_READY;
-    }
-
-    ret = test_mipi_lcd_video_cfg_get(&video_cfg);
-    if (ret != OPRT_OK) {
-        return OPRT_RESOURCE_NOT_READY;
-    }
-
-    if (video_cfg.format != TY_PIXEL_FMT_ARGB8888) {
-        tkl_log_output( "mipi lcd format mismatch, need ARGB8888, use: xmipi lcd open_gpu ...\r\n");
+    if (src_width == 0U || src_height == 0U) {
         return OPRT_INVALID_PARM;
     }
 
-    if (video_cfg.decompress != (compress ? TRUE : FALSE)) {
-        tkl_log_output( "mipi lcd decompress mismatch, current=%u, need=%u, reopen with xmipi lcd open_gpu ... %u\r\n",
-                (unsigned int)video_cfg.decompress,
-                (unsigned int)(compress ? TRUE : FALSE),
-                (unsigned int)compress);
-        return OPRT_INVALID_PARM;
-    }
-
-    test_mipi_lcd_get_geometry(&s_gpu_ctx.lcd_width, &s_gpu_ctx.lcd_height);
-    if (s_gpu_ctx.lcd_width == 0U || s_gpu_ctx.lcd_height == 0U) {
-        return OPRT_INVALID_PARM;
-    }
+    s_gpu_ctx.target_width = src_width;
+    s_gpu_ctx.target_height = src_height;
 
     s_gpu_ctx.rotate_degree = rotate_degree;
     s_gpu_ctx.compress = compress;
-    ret = test_gpu_dst_validate(rotate_degree, compress);
-    if (ret != OPRT_OK) {
-        return ret;
-    }
-
-    return OPRT_OK;
+    return test_gpu_dst_validate(rotate_degree, compress);
 }
 
 static OPERATE_RET test_gpu_get_camera_source(TUYA_CAMERA_MIPI_FLEXA_SOURCE_T *camera_source)
@@ -251,18 +217,18 @@ static OPERATE_RET test_gpu_init(uint16_t rotate_degree, bool compress)
         return OPRT_RESOURCE_NOT_READY;
     }
 
-    ret = test_gpu_prepare_display(rotate_degree, compress);
-    if (ret != OPRT_OK) {
-        return ret;
-    }
-
-    test_gpu_dst_geometry_get(rotate_degree, &dst_width, &dst_height);
-
     ret = test_gpu_get_camera_source(&camera_source);
     if (ret != OPRT_OK) {
         tkl_log_output( "camera get flexa source failed: %d\r\n", ret);
         return ret;
     }
+
+    ret = test_gpu_prepare_target(camera_source.width, camera_source.height, rotate_degree, compress);
+    if (ret != OPRT_OK) {
+        return ret;
+    }
+
+    test_gpu_dst_geometry_get(rotate_degree, &dst_width, &dst_height);
 
     if (s_gpu_ctx.initialized == true) {
         ret = tkl_gpu_deinit();
@@ -321,14 +287,15 @@ static OPERATE_RET test_gpu_init(uint16_t rotate_degree, bool compress)
     s_gpu_ctx.src_width = camera_source.width;
     s_gpu_ctx.src_height = camera_source.height;
     s_gpu_ctx.src_format = camera_source.format;
-    tkl_log_output( "gpu pipeline initialized, src=%ux%u fmt=%u -> dst=%ux%u (lcd=%ux%u) rotate=%u compress=%u\r\n",
+    tkl_log_output( "gpu pipeline initialized, src=%ux%u fmt=%u -> dst=%ux%u (target=%ux%u, lcd_open=%u) rotate=%u compress=%u\r\n",
             s_gpu_ctx.src_width,
             s_gpu_ctx.src_height,
             (unsigned int)s_gpu_ctx.src_format,
             dst_width,
             dst_height,
-            s_gpu_ctx.lcd_width,
-            s_gpu_ctx.lcd_height,
+            s_gpu_ctx.target_width,
+            s_gpu_ctx.target_height,
+            (unsigned int)test_mipi_lcd_is_open(),
             rotate_degree,
             (unsigned int)compress);
     return OPRT_OK;
@@ -353,14 +320,15 @@ static OPERATE_RET test_gpu_start(void)
     test_gpu_dst_geometry_get(s_gpu_ctx.rotate_degree, &dst_width, &dst_height);
 
     tkl_log_output(
-            "gpu start request: src=%ux%u fmt=%u -> dst=%ux%u (lcd=%ux%u) rotate=%u compress=%u\r\n",
+            "gpu start request: src=%ux%u fmt=%u -> dst=%ux%u (target=%ux%u, lcd_open=%u) rotate=%u compress=%u\r\n",
             s_gpu_ctx.src_width,
             s_gpu_ctx.src_height,
             (unsigned int)s_gpu_ctx.src_format,
             dst_width,
             dst_height,
-            s_gpu_ctx.lcd_width,
-            s_gpu_ctx.lcd_height,
+            s_gpu_ctx.target_width,
+            s_gpu_ctx.target_height,
+            (unsigned int)test_mipi_lcd_is_open(),
             s_gpu_ctx.rotate_degree,
             (unsigned int)s_gpu_ctx.compress);
 
@@ -371,14 +339,15 @@ static OPERATE_RET test_gpu_start(void)
     }
 
     s_gpu_ctx.started = true;
-    tkl_log_output( "gpu pipeline started, src=%ux%u fmt=%u -> dst=%ux%u (lcd=%ux%u) rotate=%u compress=%u\r\n",
+    tkl_log_output( "gpu pipeline started, src=%ux%u fmt=%u -> dst=%ux%u (target=%ux%u, lcd_open=%u) rotate=%u compress=%u\r\n",
             s_gpu_ctx.src_width,
             s_gpu_ctx.src_height,
             (unsigned int)s_gpu_ctx.src_format,
             dst_width,
             dst_height,
-            s_gpu_ctx.lcd_width,
-            s_gpu_ctx.lcd_height,
+            s_gpu_ctx.target_width,
+            s_gpu_ctx.target_height,
+            (unsigned int)test_mipi_lcd_is_open(),
             s_gpu_ctx.rotate_degree,
             (unsigned int)s_gpu_ctx.compress);
     return OPRT_OK;
@@ -474,15 +443,15 @@ void cli_tuya_gpu_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char *
                  ret);
     } else if (os_strcmp(cmd, "status") == 0) {
         snprintf(pcWriteBuffer, xWriteBufferLen,
-                 "xgpu status gpu_init=%u gpu_start=%u lcd_open=%u camera_init=%u camera_start=%u camera_flexa=%u lcd=%ux%u rotate=%u compress=%u\r\n",
+                 "xgpu status gpu_init=%u gpu_start=%u lcd_open=%u camera_init=%u camera_start=%u camera_flexa=%u target=%ux%u rotate=%u compress=%u\r\n",
                  (unsigned int)s_gpu_ctx.initialized,
                  (unsigned int)s_gpu_ctx.started,
                  (unsigned int)test_mipi_lcd_is_open(),
                  (unsigned int)test_mipi_camera_is_inited(),
                  (unsigned int)test_mipi_camera_is_started(),
                  (unsigned int)test_mipi_camera_flexa_enabled(),
-                 s_gpu_ctx.lcd_width,
-                 s_gpu_ctx.lcd_height,
+                 s_gpu_ctx.target_width,
+                 s_gpu_ctx.target_height,
                  s_gpu_ctx.rotate_degree,
                  (unsigned int)s_gpu_ctx.compress);
     } else {

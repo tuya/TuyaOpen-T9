@@ -49,12 +49,8 @@ typedef struct {
     TUYA_GPIO_CTRL_T reset;
     TUYA_GPIO_CTRL_T bl;
     TUYA_GPIO_CTRL_T power_ctrl;
-    INT_T pin_scl;
-    INT_T pin_sda;
 } test_mipi_display_cfg_t;
 
-static tkl_mipi_dsi_io_cfg_t s_mipi_dsi_io_cfg;
-static tkl_mipi_dsi_video_cfg_t s_mipi_video_cfg;
 static test_mipi_display_cfg_t s_mipi_display_cfg;
 static TUYA_MIPI_BASE_CFG_T s_mipi_base_cfg;
 static tkl_mipi_dsi_flush_frame_t s_mipi_flush_frame;
@@ -78,6 +74,7 @@ static uint16_t s_mipi_camera_last_frame_width = 0;
 static uint16_t s_mipi_camera_last_frame_height = 0;
 static uint32_t s_mipi_camera_last_frame_format = BK_PIXEL_FORMAT_INVALID;
 static bool s_mipi_lcd_opened = false;
+static BOOL_T s_mipi_input_decompress = FALSE;
 
 static OPERATE_RET test_mipi_lcd_close(void);
 static OPERATE_RET test_mipi_panel_resolve(const char *panel_name, const bk_display_dsi_panel_t **panel);
@@ -179,8 +176,6 @@ static void test_mipi_auxldo_enable(void)
 
 static void test_mipi_runtime_reset(void)
 {
-    os_memset(&s_mipi_dsi_io_cfg, 0, sizeof(s_mipi_dsi_io_cfg));
-    os_memset(&s_mipi_video_cfg, 0, sizeof(s_mipi_video_cfg));
     os_memset(&s_mipi_flush_frame, 0, sizeof(s_mipi_flush_frame));
     os_memset(s_mipi_frames, 0, sizeof(s_mipi_frames));
 
@@ -203,16 +198,8 @@ static void test_mipi_runtime_reset(void)
     s_mipi_display_cfg.bl.active_level = TUYA_GPIO_LEVEL_HIGH;
     s_mipi_display_cfg.power_ctrl.pin = TUYA_GPIO_NUM_MAX;
     s_mipi_display_cfg.power_ctrl.active_level = TUYA_GPIO_LEVEL_HIGH;
-    s_mipi_display_cfg.pin_scl = MIPI_TEST_INVALID_PIN;
-    s_mipi_display_cfg.pin_sda = MIPI_TEST_INVALID_PIN;
 
-    s_mipi_dsi_io_cfg.pin_scl = s_mipi_display_cfg.pin_scl;
-    s_mipi_dsi_io_cfg.pin_sda = s_mipi_display_cfg.pin_sda;
-
-    s_mipi_video_cfg.enable = TRUE;
-    s_mipi_video_cfg.decompress = FALSE;
-    s_mipi_video_cfg.format = TY_PIXEL_FMT_RGB565;
-
+    s_mipi_input_decompress = FALSE;
     s_mipi_base_cfg.pixel_fmt = TY_PIXEL_FMT_RGB565;
 }
 
@@ -606,7 +593,14 @@ static OPERATE_RET test_mipi_lcd_ensure_open(const char *panel_name)
         return ret;
     }
 
-    ret = tkl_mipi_dsi_init(&s_mipi_dsi_io_cfg, &s_mipi_base_cfg);
+    ret = tkl_mipi_dsi_set_input_mode(s_mipi_input_decompress);
+    if (ret != OPRT_OK) {
+        tkl_log_output("set input mode failed: %d\r\n", ret);
+        test_mipi_runtime_reset();
+        return ret;
+    }
+
+    ret = tkl_mipi_dsi_init(&s_mipi_base_cfg);
     if (ret != OPRT_OK) {
         tkl_log_output("panel io open failed: %d\r\n", ret);
         test_mipi_runtime_reset();
@@ -621,18 +615,9 @@ static OPERATE_RET test_mipi_lcd_ensure_open(const char *panel_name)
         return ret;
     }
 
-    ret = tkl_mipi_dpu_init(&s_mipi_base_cfg, &s_mipi_video_cfg);
-    if (ret != OPRT_OK) {
-        tkl_log_output( "open failed: %d\r\n", ret);
-        tkl_mipi_dsi_deinit();
-        test_mipi_runtime_reset();
-        return ret;
-    }
-
     ret = test_mipi_update_geometry();
     if (ret != OPRT_OK) {
         tkl_log_output( "update geometry failed: %d\r\n", ret);
-        tkl_mipi_dpu_deinit();
         tkl_mipi_dsi_deinit();
         test_mipi_runtime_reset();
         return ret;
@@ -654,8 +639,8 @@ static OPERATE_RET test_mipi_lcd_ensure_open_with_config(const char *panel_name,
                                                          BOOL_T decompress)
 {
     test_mipi_runtime_reset();
-    s_mipi_video_cfg.format = display_format;
-    s_mipi_video_cfg.decompress = decompress;
+    s_mipi_base_cfg.pixel_fmt = display_format;
+    s_mipi_input_decompress = decompress;
     return test_mipi_lcd_ensure_open(panel_name);
 }
 
@@ -683,8 +668,8 @@ static OPERATE_RET test_mipi_lcd_open_gpu(const char *panel_name, BOOL_T decompr
     OPERATE_RET ret;
 
     if (s_mipi_lcd_opened == true &&
-        s_mipi_video_cfg.format == TY_PIXEL_FMT_ARGB8888 &&
-        s_mipi_video_cfg.decompress == decompress) {
+        s_mipi_base_cfg.pixel_fmt == TY_PIXEL_FMT_ARGB8888 &&
+        s_mipi_input_decompress == decompress) {
         tkl_log_output( "mipi lcd already open in gpu mode\r\n");
         return OPRT_OK;
     }
@@ -706,7 +691,7 @@ static OPERATE_RET test_mipi_lcd_open_gpu(const char *panel_name, BOOL_T decompr
             (s_mipi_panel_name[0] != '\0') ? s_mipi_panel_name : "auto",
             s_mipi_width,
             s_mipi_height,
-            (unsigned int)s_mipi_video_cfg.format,
+            (unsigned int)s_mipi_base_cfg.pixel_fmt,
             (unsigned int)decompress);
     return OPRT_OK;
 }
@@ -795,9 +780,8 @@ static OPERATE_RET test_mipi_lcd_close(void)
         }
     }
 
-    ret = tkl_mipi_dpu_deinit();
     test_mipi_backlight_set(false);
-    tkl_mipi_dsi_deinit();
+    ret = tkl_mipi_dsi_deinit();
     test_mipi_frame_buffers_release();
     test_mipi_runtime_reset();
     s_mipi_panel_name[0] = '\0';
@@ -893,20 +877,6 @@ static OPERATE_RET test_mipi_camera_mipi_open_gpu(uint16_t sensor_width,
 BOOL_T test_mipi_lcd_is_open(void)
 {
     return (s_mipi_lcd_opened == true) ? TRUE : FALSE;
-}
-
-OPERATE_RET test_mipi_lcd_video_cfg_get(tkl_mipi_dsi_video_cfg_t *video_cfg)
-{
-    if (video_cfg == NULL) {
-        return OPRT_INVALID_PARM;
-    }
-
-    if (s_mipi_lcd_opened != true) {
-        return OPRT_RESOURCE_NOT_READY;
-    }
-
-    *video_cfg = s_mipi_video_cfg;
-    return OPRT_OK;
 }
 
 void test_mipi_lcd_get_geometry(UINT16_T *width, UINT16_T *height)

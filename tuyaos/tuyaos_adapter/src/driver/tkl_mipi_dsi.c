@@ -10,21 +10,22 @@
 
 typedef struct {
     BOOL_T inited;
-    tkl_mipi_dsi_io_cfg_t io_cfg;
     bk_display_bus_handle_t dis_bus_handle;
-    bk_display_bus_handle_t cfg_bus_handle;
 } tkl_mipi_dsi_runtime_t;
 
 typedef struct {
     BOOL_T inited;
+    BOOL_T input_decompress;
     TUYA_MIPI_BASE_CFG_T base_cfg;
-    tkl_mipi_dsi_video_cfg_t video_cfg;
     bk_display_ctlr_handle_t dpu_ctlr_handle;
 } tkl_mipi_dpu_runtime_t;
 
 static tkl_mipi_dsi_runtime_t s_dsi_runtime;
 static tkl_mipi_dpu_runtime_t s_dpu_runtime;
 static void (*s_flush_free_cb)(UINT8_T *frame_buff) = NULL;
+
+static OPERATE_RET tkl_mipi_dpu_init(const TUYA_MIPI_BASE_CFG_T *base_cfg);
+static OPERATE_RET tkl_mipi_dpu_deinit(VOID_T);
 
 static BOOL_T tkl_mipi_dsi_lane_count_valid(UINT8_T n_lanes)
 {
@@ -71,28 +72,6 @@ static bk_pixel_format_t tkl_mipi_dpu_pixel_format_convert(DISPLAY_PIXEL_FORMAT_
     }
 }
 
-static bk_pixel_format_t tkl_mipi_dpu_format_get(const tkl_mipi_dsi_video_cfg_t *video_cfg,
-                                                 const TUYA_MIPI_BASE_CFG_T *base_cfg)
-{
-    bk_pixel_format_t format;
-
-    if (video_cfg != NULL) {
-        format = tkl_mipi_dpu_pixel_format_convert(video_cfg->format);
-        if (format != BK_PIXEL_FORMAT_INVALID) {
-            return format;
-        }
-    }
-
-    if (base_cfg != NULL) {
-        format = tkl_mipi_dpu_pixel_format_convert(base_cfg->pixel_fmt);
-        if (format != BK_PIXEL_FORMAT_INVALID) {
-            return format;
-        }
-    }
-
-    return BK_PIXEL_FORMAT_ARGB8888;
-}
-
 static OPERATE_RET tkl_mipi_dsi_flush_done(void *args)
 {
     if (s_flush_free_cb != NULL) {
@@ -110,6 +89,17 @@ static VOID_T tkl_mipi_dsi_runtime_reset(VOID_T)
 static VOID_T tkl_mipi_dpu_runtime_reset(VOID_T)
 {
     os_memset(&s_dpu_runtime, 0, sizeof(s_dpu_runtime));
+    s_dpu_runtime.input_decompress = TRUE;
+}
+
+OPERATE_RET tkl_mipi_dsi_set_input_mode(BOOL_T decompress)
+{
+    if (s_dsi_runtime.inited == TRUE || s_dpu_runtime.inited == TRUE) {
+        return OPRT_COM_ERROR;
+    }
+
+    s_dpu_runtime.input_decompress = (decompress != FALSE) ? TRUE : FALSE;
+    return OPRT_OK;
 }
 
 static OPERATE_RET tkl_mipi_dsi_clock_set(const TUYA_MIPI_BASE_CFG_T *base_cfg)
@@ -150,11 +140,11 @@ static OPERATE_RET tkl_mipi_dsi_clock_set(const TUYA_MIPI_BASE_CFG_T *base_cfg)
     return bk_display_bus_set_clock(s_dsi_runtime.dis_bus_handle, &clock_cfg);
 }
 
-OPERATE_RET tkl_mipi_dsi_init(const tkl_mipi_dsi_io_cfg_t *io_cfg, const TUYA_MIPI_BASE_CFG_T *base_cfg)
+OPERATE_RET tkl_mipi_dsi_init(const TUYA_MIPI_BASE_CFG_T *base_cfg)
 {
     OPERATE_RET ret;
 
-    if (io_cfg == NULL || base_cfg == NULL) {
+    if (base_cfg == NULL) {
         return OPRT_INVALID_PARM;
     }
 
@@ -172,25 +162,16 @@ OPERATE_RET tkl_mipi_dsi_init(const tkl_mipi_dsi_io_cfg_t *io_cfg, const TUYA_MI
         goto err;
     }
 
-    if (io_cfg->pin_scl >= 0 && io_cfg->pin_scl < TUYA_GPIO_NUM_MAX &&
-        io_cfg->pin_sda >= 0 && io_cfg->pin_sda < TUYA_GPIO_NUM_MAX) {
-        bk_display_i2c_bus_config_t i2c_cfg = {
-            .scl_pin = (uint8_t)io_cfg->pin_scl,
-            .sda_pin = (uint8_t)io_cfg->pin_sda,
-        };
-
-        ret = bk_display_i2c_bus_new(&s_dsi_runtime.cfg_bus_handle, &i2c_cfg);
-        if (ret != OPRT_OK) {
-            goto err;
-        }
-    }
-
     ret = tkl_mipi_dsi_clock_set(base_cfg);
     if (ret != OPRT_OK) {
         goto err;
     }
 
-    s_dsi_runtime.io_cfg = *io_cfg;
+    ret = tkl_mipi_dpu_init(base_cfg);
+    if (ret != OPRT_OK) {
+        goto err;
+    }
+
     s_dsi_runtime.inited = TRUE;
     return OPRT_OK;
 
@@ -201,14 +182,11 @@ err:
 
 OPERATE_RET tkl_mipi_dsi_deinit(VOID_T)
 {
+    tkl_mipi_dpu_deinit();
+
     if (s_dsi_runtime.dis_bus_handle != NULL) {
         bk_display_bus_delete(s_dsi_runtime.dis_bus_handle);
         s_dsi_runtime.dis_bus_handle = NULL;
-    }
-
-    if (s_dsi_runtime.cfg_bus_handle != NULL) {
-        bk_display_bus_delete(s_dsi_runtime.cfg_bus_handle);
-        s_dsi_runtime.cfg_bus_handle = NULL;
     }
 
     tkl_mipi_dsi_runtime_reset();
@@ -224,13 +202,14 @@ OPERATE_RET tkl_mipi_dsi_tx_cmd(UINT8_T cmd, const VOID_T *param, UINT32_T size)
     return bk_display_bus_write(s_dsi_runtime.dis_bus_handle, BK_DISPLAY_BUS_RW_DSI_CMD, cmd, param, size);
 }
 
-OPERATE_RET tkl_mipi_dpu_init(const TUYA_MIPI_BASE_CFG_T *base_cfg, const tkl_mipi_dsi_video_cfg_t *video_cfg)
+static OPERATE_RET tkl_mipi_dpu_init(const TUYA_MIPI_BASE_CFG_T *base_cfg)
 {
     OPERATE_RET ret;
     bk_display_dpu_config_t lcd_cfg;
+    bk_pixel_format_t pixel_format;
     UINT32_T dpu_clk_mhz;
 
-    if (base_cfg == NULL || video_cfg == NULL) {
+    if (base_cfg == NULL) {
         return OPRT_INVALID_PARM;
     }
 
@@ -246,10 +225,15 @@ OPERATE_RET tkl_mipi_dpu_init(const TUYA_MIPI_BASE_CFG_T *base_cfg, const tkl_mi
         return OPRT_INVALID_PARM;
     }
 
+    pixel_format = tkl_mipi_dpu_pixel_format_convert(base_cfg->pixel_fmt);
+    if (pixel_format == BK_PIXEL_FORMAT_INVALID) {
+        return OPRT_INVALID_PARM;
+    }
+
     os_memset(&lcd_cfg, 0, sizeof(lcd_cfg));
-    lcd_cfg.video.enable = (video_cfg->enable != FALSE) ? true : false;
-    lcd_cfg.video.decompress = (video_cfg->decompress != FALSE) ? true : false;
-    lcd_cfg.video.format = tkl_mipi_dpu_format_get(video_cfg, base_cfg);
+    lcd_cfg.video.enable = true;
+    lcd_cfg.video.decompress = (s_dpu_runtime.input_decompress != FALSE) ? true : false;
+    lcd_cfg.video.format = pixel_format;
     lcd_cfg.graphic.enable = false;
 
     lcd_cfg.timing.clk = dpu_clk_mhz;
@@ -278,7 +262,6 @@ OPERATE_RET tkl_mipi_dpu_init(const TUYA_MIPI_BASE_CFG_T *base_cfg, const tkl_mi
     }
 
     s_dpu_runtime.base_cfg = *base_cfg;
-    s_dpu_runtime.video_cfg = *video_cfg;
     s_dpu_runtime.inited = TRUE;
     return OPRT_OK;
 
@@ -288,7 +271,7 @@ err:
     return ret;
 }
 
-OPERATE_RET tkl_mipi_dpu_deinit(VOID_T)
+static OPERATE_RET tkl_mipi_dpu_deinit(VOID_T)
 {
     if (s_dpu_runtime.dpu_ctlr_handle != NULL) {
         bk_display_deinit(s_dpu_runtime.dpu_ctlr_handle);

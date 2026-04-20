@@ -21,23 +21,10 @@ typedef struct {
     void (*free_cb)(UINT8_T *frame_buff);
 } tkl_mipi_dsi_flush_frame_t;
 
-typedef struct {
-    INT_T pin_scl;
-    INT_T pin_sda;
-} tkl_mipi_dsi_io_cfg_t;
-
-typedef struct {
-    BOOL_T enable;
-    BOOL_T decompress;
-    DISPLAY_PIXEL_FORMAT_E format;
-} tkl_mipi_dsi_video_cfg_t;
-
-OPERATE_RET tkl_mipi_dsi_init(const tkl_mipi_dsi_io_cfg_t *io_cfg, const TUYA_MIPI_BASE_CFG_T *base_cfg);
+OPERATE_RET tkl_mipi_dsi_set_input_mode(BOOL_T decompress);
+OPERATE_RET tkl_mipi_dsi_init(const TUYA_MIPI_BASE_CFG_T *base_cfg);
 OPERATE_RET tkl_mipi_dsi_deinit(VOID_T);
 OPERATE_RET tkl_mipi_dsi_tx_cmd(UINT8_T cmd, const VOID_T *param, UINT32_T size);
-
-OPERATE_RET tkl_mipi_dpu_init(const TUYA_MIPI_BASE_CFG_T *base_cfg, const tkl_mipi_dsi_video_cfg_t *video_cfg);
-OPERATE_RET tkl_mipi_dpu_deinit(VOID_T);
 OPERATE_RET tkl_mipi_dsi_flush(tkl_mipi_dsi_flush_frame_t *frame);
 
 #ifdef __cplusplus
