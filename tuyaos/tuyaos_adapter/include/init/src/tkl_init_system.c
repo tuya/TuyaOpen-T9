@@ -42,10 +42,21 @@ CONST TKL_OS_T TKL_OS  = {
     .psram_realloc          = tkl_system_psram_realloc,
     .psarm_get_free_heap_size = tkl_system_psram_get_free_heap_size,
 #endif
+#if defined(ENABLE_HIGH_SPEED_RAM) && (ENABLE_HIGH_SPEED_RAM==1)
+    .hsram_malloc           = tkl_system_hsram_malloc,
+    .hsram_free             = tkl_system_hsram_free,
+    .hsram_calloc           = tkl_system_hsram_calloc,
+    .hsram_realloc          = tkl_system_hsram_realloc,
+    .hsram_get_free_heap_size = tkl_system_hsram_get_free_heap_size,
+#endif
+
     //! thread
     .thread_create          = tkl_thread_create,
 #if defined(ENABLE_EXT_RAM) && (ENABLE_EXT_RAM==1)
     .thread_create_in_psram = tkl_thread_create_in_psram,
+#endif
+#if defined(ENABLE_HIGH_SPEED_RAM) && (ENABLE_HIGH_SPEED_RAM==1)
+    .thread_create_in_hsram = tkl_thread_create_in_hsram,
 #endif
     .thread_release         = tkl_thread_release,
     .thread_set_name        = tkl_thread_set_self_name,
@@ -123,4 +134,3 @@ TUYA_WEAK_ATTRIBUTE TKL_FS_T* tkl_fs_desc_get()
     return (TKL_FS_T *)&TKL_FS;
 }
 #endif
-
