@@ -124,8 +124,27 @@ static bool s_sd_card_is_init = false;
 
 static sd_card_obj_t s_sd_card_obj = {0};
 
-
 static sdcard_rw_state_t sd_card_check_continious_rw(sdcard_rw_ops_t ops, uint32_t addr, uint32_t blk_cnt);
+
+// Modified by TUYA Start
+extern void user_sdio_gpio_init(void) __attribute__((weak));
+static void sdio_gpio_init(uint8_t io_pos, sdio_wire_width_sel_t width_sel);
+
+static void sdio_board_gpio_init(sdio_wire_width_sel_t width_sel)
+{
+	if (user_sdio_gpio_init) {
+		/*
+		 * Tuya adapter owns the board-level SDIO pin selection. Keep the
+		 * current v3p0 driver width argument for fallback only.
+		 */
+		(void)width_sel;
+		user_sdio_gpio_init();
+		return;
+	}
+
+	sdio_gpio_init(0, width_sel);
+}
+// Modified by TUYA End
 
 
 void host_ctrl_set(uintptr_t addr,uint8 SD_BUS_VOL_VDD1,uint8 TOUT_CNT,uint8 CARD_IS_EMMC,uint8 DAT_XFER_WIDTH)
@@ -801,7 +820,9 @@ bk_err_t sdio_host_init()
 //	sys_ana_ll_set_reg0_spitrig(0);
 //	sys_ana_ll_set_reg5_en_vout(1);
 
-	sdio_gpio_init(0, SDIO_WIRE_WIDTH_SEL_1);
+// Modified by TUYA Start
+	sdio_board_gpio_init(SDIO_WIRE_WIDTH_SEL_1);
+// Modified by TUYA End
 	PWR_CTRL_R(sdio_mshc_1_base) = 0x01;
 
 	//tuning_cfg(sdio_mshc_1_base,0x0,0x0,0,0,0x0,0x0,0,0,1);
@@ -830,7 +851,9 @@ bk_err_t sdio_host_init()
 
 void sdio_switch_wire_width(sdio_wire_width_sel_t width_sel)
 {
-	sdio_gpio_init(0, width_sel);
+// Modified by TUYA Start
+	sdio_board_gpio_init(width_sel);
+// Modified by TUYA End
 }
 
 void sdio_dwc_isr0(void)

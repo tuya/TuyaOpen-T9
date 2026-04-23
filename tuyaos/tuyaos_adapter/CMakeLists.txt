@@ -88,7 +88,7 @@ else()
         # src/driver/tkl_speaker.c
         # src/driver/tkl_audio.c
         # src/driver/tkl_cellular.c
-        # src/driver/tkl_pinmux.c
+        src/driver/tkl_pinmux.c
         # src/driver/tkl_rgb.c
         # src/driver/tkl_8080.c
         src/driver/tkl_adc.c
@@ -118,7 +118,8 @@ else()
         # src/driver/tkl_sdio.c
 
         src/misc/encrypt.c
-        # src/misc/fs_init.c
+        src/misc/fs_init.c
+        src/misc/usr_sdio.c
         # src/misc/dhcpserver.c
         # src/misc/qflash.c
         # src/misc/sflash.c
@@ -127,7 +128,7 @@ else()
         src/misc/tkl_mftest.c
         # src/misc/mftest/mt_audio.c
 
-        # src/system/tkl_fs.c
+        src/system/tkl_fs.c
         src/system/tkl_ota.c
         src/system/tkl_sleep.c
         src/driver/tkl_wakeup.c
@@ -196,10 +197,10 @@ else()
             # src/test/coremark/core_state.c
             # src/test/coremark/core_util.c
             # src/test/coremark/posix/core_portme.c
-            # src/test/test_common.c
+            src/test/test_common.c
             # src/test/test_lp.c
             # src/test/test_gpio.c
-            # src/test/test_sdcard.c
+            src/test/test_sdcard.c
             # src/test/test_littlefs.c
             src/test/cli_tuya_test_1.c
         )
