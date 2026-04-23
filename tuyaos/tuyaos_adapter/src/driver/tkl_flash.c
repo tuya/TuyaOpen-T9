@@ -21,29 +21,27 @@ typedef struct
 // total: 800000
 // Name     Begin       End         Length
 // boot     0x0         0x11000     68k
-// cpu0     0x11000     0x20f000    2040k
-// cpu1     0x20f000    0x473000    2448k
-// cpu2     0x473000    0x4cb000    352k   // resverd
-// ota      0x4cb000    0x6c9000    2040k
-// otam     0x6c9000    0x6cb000    8k
-// fs       0x6cb000    0x7cb000    1024k
-// ef       0x7cb000    0x7cd000    8k
-// kvp      0x7cd000    0x7ce000    4k
-// res      0x7ce000    0x7dd000    60k
-// kv       0x7dd000    0x7ed000    64k
-// uf       0x7ed000    0x7fd000    64k
-// key      0x7fd000    0x7fe000    4k
-// rf       0x7fe000    0x7ff000    4k
-// net      0x7ff000    0x800000    4k
+// cp       0x11000     0x143000    1224k
+// ap       0x143000    0x4EA000    3740k
+// ota      0x4EA000    0x7C9000    2940k
+// otam     0x7C9000    0x7CB000    8k
+// usr      0x7CB000    0x7CD000    8k
+// kvp      0x7CD000    0x7CE000    4k
+// res      0x7CE000    0x7DD000    60k
+// kv       0x7DD000    0x7ED000    64k
+// uf       0x7ED000    0x7FD000    64k
+// key      0x7FD000    0x7FE000    4k
+// rf       0x7FE000    0x7FF000    4k
+// net      0x7FF000    0x800000    4k
 
 #define PARTITION_SIZE         (1 << 12) /* 4KB */
 #define FLH_BLOCK_SZ            PARTITION_SIZE
 
 
-#define APPLICATION_START               0x20000
-#define APPLICATION_SIZE                ((1224 + 1700 + 1360)* 1024)
+#define APPLICATION_START               0x10000
+#define APPLICATION_SIZE                ((1224 + 3740 + 2940)* 1024)
 
-#define OTA_START                       0x440000
+#define OTA_START                       0x7C9000
 #define OTA_SIZE                        (8 * 1024)
 
 #if defined(KV_PROTECTED_ENABLE) && (KV_PROTECTED_ENABLE==1)
