@@ -117,6 +117,7 @@ static const struct cli_command tuya_cli_commands[] = {
     {"xdmic",   "audio dmic test",   cli_tuya_dmic_cmd},
     {"xadc",    "audio adc test",    cli_adc_cmd},
     {"xpwm",    "pwm test",          cli_pwm_cmd},
+    {"xgpio",   "gpio test",        cli_gpio_cmd},
     {"xsd",     "sd card test",     cli_sdcard_test_cmd},
 #if 0
     {"xlp",     "lp test",          cli_lp_test_cmd},
@@ -124,7 +125,6 @@ static const struct cli_command tuya_cli_commands[] = {
     {"xt",      "test",             cli_test_cmd},
     {"lfs",     "little fs test",   cli_littlefs_cmd},
     {"xsd",     "sd card test",     cli_sdcard_test_cmd},
-    {"xgpio",   "gpio test",        cli_gpio_cmd},
     {"xid",     "set mac",          cli_tmp_cmd},
     {"xwifi",   "wifi test",        cli_wifi_cmd},
     {"xlcd",    "lcd test",         cli_xlcd_cmd},

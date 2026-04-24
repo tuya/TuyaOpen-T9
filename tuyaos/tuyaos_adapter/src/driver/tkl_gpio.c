@@ -12,30 +12,50 @@ typedef struct {
     void                *args;
 } pin_dev_map_t;
 
+#define PINMAP_ENTRY(id) {GPIO_##id, NULL, NULL}
+
 static pin_dev_map_t pinmap[] = {
-    {GPIO_0,  NULL, NULL}, {GPIO_1,  NULL, NULL}, {GPIO_2,  NULL, NULL}, {GPIO_3,  NULL, NULL},
-    {GPIO_4,  NULL, NULL}, {GPIO_5,  NULL, NULL}, {GPIO_6,  NULL, NULL}, {GPIO_7,  NULL, NULL},
-    {GPIO_8,  NULL, NULL}, {GPIO_9,  NULL, NULL}, {GPIO_10, NULL, NULL}, {GPIO_11, NULL, NULL},
-    {GPIO_12, NULL, NULL}, {GPIO_13, NULL, NULL}, {GPIO_14, NULL, NULL}, {GPIO_15, NULL, NULL},
-    {GPIO_16, NULL, NULL}, {GPIO_17, NULL, NULL}, {GPIO_18, NULL, NULL}, {GPIO_19, NULL, NULL},
-    {GPIO_20, NULL, NULL}, {GPIO_21, NULL, NULL}, {GPIO_22, NULL, NULL}, {GPIO_23, NULL, NULL},
-    {GPIO_24, NULL, NULL}, {GPIO_25, NULL, NULL}, {GPIO_26, NULL, NULL}, {GPIO_27, NULL, NULL},
-    {GPIO_28, NULL, NULL}, {GPIO_29, NULL, NULL}, {GPIO_30, NULL, NULL}, {GPIO_31, NULL, NULL},
-    {GPIO_32, NULL, NULL}, {GPIO_33, NULL, NULL}, {GPIO_34, NULL, NULL}, {GPIO_35, NULL, NULL},
-    {GPIO_36, NULL, NULL}, {GPIO_37, NULL, NULL}, {GPIO_38, NULL, NULL}, {GPIO_39, NULL, NULL},
-    {GPIO_40, NULL, NULL}, {GPIO_41, NULL, NULL}, {GPIO_42, NULL, NULL}, {GPIO_43, NULL, NULL},
-    {GPIO_44, NULL, NULL}, {GPIO_45, NULL, NULL}, {GPIO_46, NULL, NULL}, {GPIO_47, NULL, NULL},
-    {GPIO_48, NULL, NULL},
-#if CONFIG_SOC_BK7258
-    {GPIO_49, NULL, NULL}, {GPIO_50, NULL, NULL}, {GPIO_51, NULL, NULL}, {GPIO_52, NULL, NULL},
-    {GPIO_53, NULL, NULL}, {GPIO_54, NULL, NULL}, {GPIO_55, NULL, NULL}, {GPIO_NUM, NULL, NULL}
-#endif // CONFIG_SOC_BK7258
+    PINMAP_ENTRY(0),  PINMAP_ENTRY(1),  PINMAP_ENTRY(2),  PINMAP_ENTRY(3),
+    PINMAP_ENTRY(4),  PINMAP_ENTRY(5),  PINMAP_ENTRY(6),  PINMAP_ENTRY(7),
+    PINMAP_ENTRY(8),  PINMAP_ENTRY(9),  PINMAP_ENTRY(10), PINMAP_ENTRY(11),
+    PINMAP_ENTRY(12), PINMAP_ENTRY(13), PINMAP_ENTRY(14), PINMAP_ENTRY(15),
+    PINMAP_ENTRY(16), PINMAP_ENTRY(17), PINMAP_ENTRY(18), PINMAP_ENTRY(19),
+    PINMAP_ENTRY(20), PINMAP_ENTRY(21), PINMAP_ENTRY(22), PINMAP_ENTRY(23),
+    PINMAP_ENTRY(24), PINMAP_ENTRY(25), PINMAP_ENTRY(26), PINMAP_ENTRY(27),
+    PINMAP_ENTRY(28), PINMAP_ENTRY(29), PINMAP_ENTRY(30), PINMAP_ENTRY(31),
+    PINMAP_ENTRY(32), PINMAP_ENTRY(33), PINMAP_ENTRY(34), PINMAP_ENTRY(35),
+    PINMAP_ENTRY(36), PINMAP_ENTRY(37), PINMAP_ENTRY(38), PINMAP_ENTRY(39),
+    PINMAP_ENTRY(40), PINMAP_ENTRY(41), PINMAP_ENTRY(42), PINMAP_ENTRY(43),
+    PINMAP_ENTRY(44), PINMAP_ENTRY(45), PINMAP_ENTRY(46), PINMAP_ENTRY(47),
+    PINMAP_ENTRY(48), PINMAP_ENTRY(49), PINMAP_ENTRY(50), PINMAP_ENTRY(51),
+    PINMAP_ENTRY(52), PINMAP_ENTRY(53), PINMAP_ENTRY(54), PINMAP_ENTRY(55),
+    PINMAP_ENTRY(56), PINMAP_ENTRY(57), PINMAP_ENTRY(58), PINMAP_ENTRY(59),
+    PINMAP_ENTRY(60), PINMAP_ENTRY(61), PINMAP_ENTRY(62), PINMAP_ENTRY(63),
+    PINMAP_ENTRY(64), PINMAP_ENTRY(65), PINMAP_ENTRY(66), PINMAP_ENTRY(67),
+    PINMAP_ENTRY(68), PINMAP_ENTRY(69), PINMAP_ENTRY(70), PINMAP_ENTRY(71),
 };
 
-#define PIN_DEV_CHECK_ERROR_RETURN(__PIN, __ERROR)                          \
-    if (__PIN >= sizeof(pinmap)/sizeof(pinmap[0]) || (__PIN == TUYA_GPIO_NUM_10) || (__PIN == TUYA_GPIO_NUM_11)) {                        \
-        return __ERROR;                                                     \
+#define PINMAP_COUNT (sizeof(pinmap) / sizeof(pinmap[0]))
+
+static bool tkl_gpio_is_valid_pin(TUYA_GPIO_NUM_E pin_id)
+{
+    if ((uint32_t)pin_id >= PINMAP_COUNT) {
+        return false;
     }
+
+    if ((pin_id == TUYA_GPIO_NUM_10) || (pin_id == TUYA_GPIO_NUM_11)) {
+        return false;
+    }
+
+    return true;
+}
+
+#define PIN_DEV_CHECK_ERROR_RETURN(__PIN, __ERROR) \
+    do { \
+        if (!tkl_gpio_is_valid_pin(__PIN)) { \
+            return __ERROR; \
+        } \
+    } while (0)
 
 extern void bk_printf(const char *fmt, ...);
 
@@ -50,8 +70,13 @@ extern void bk_printf(const char *fmt, ...);
 OPERATE_RET tkl_gpio_init(TUYA_GPIO_NUM_E pin_id, CONST TUYA_GPIO_BASE_CFG_T *cfg)
 {
     OPERATE_RET ret = OPRT_OK;
-    // TODO
-    // PIN_DEV_CHECK_ERROR_RETURN(pin_id, OPRT_INVALID_PARM);
+
+    if (cfg == NULL) {
+        return OPRT_INVALID_PARM;
+    }
+
+    PIN_DEV_CHECK_ERROR_RETURN(pin_id, OPRT_INVALID_PARM);
+
     if (pin_id == TUYA_GPIO_NUM_0) {
         bk_printf("WARNING: Init gpio0, LOG will be disabled\r\n");
     }
@@ -164,6 +189,10 @@ OPERATE_RET tkl_gpio_read(TUYA_GPIO_NUM_E pin_id, TUYA_GPIO_LEVEL_E *level)
  */
 static void __tkl_gpio_irq_cb(gpio_id_t gpio_id)
 {
+    if ((uint32_t)gpio_id >= PINMAP_COUNT) {
+        return;
+    }
+
     if(pinmap[gpio_id].cb){
         pinmap[gpio_id].cb(pinmap[gpio_id].args);
     }
@@ -183,6 +212,10 @@ static void __tkl_gpio_irq_cb(gpio_id_t gpio_id)
 OPERATE_RET tkl_gpio_irq_init(TUYA_GPIO_NUM_E pin_id, CONST TUYA_GPIO_IRQ_T *cfg)
 {
     PIN_DEV_CHECK_ERROR_RETURN(pin_id, OPRT_INVALID_PARM);
+
+    if (cfg == NULL) {
+        return OPRT_INVALID_PARM;
+    }
 
     if (pin_id == TUYA_GPIO_NUM_0) {
         bk_printf("WARNING: Init gpio0 irq, LOG will be disabled\r\n");

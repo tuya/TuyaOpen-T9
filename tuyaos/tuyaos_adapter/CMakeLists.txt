@@ -199,7 +199,7 @@ else()
             # src/test/coremark/posix/core_portme.c
             src/test/test_common.c
             # src/test/test_lp.c
-            # src/test/test_gpio.c
+            src/test/test_gpio.c
             src/test/test_sdcard.c
             # src/test/test_littlefs.c
             src/test/cli_tuya_test_1.c
