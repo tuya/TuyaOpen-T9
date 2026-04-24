@@ -44,6 +44,7 @@ set(incs
     $ENV{ARMINO_PATH}/../../tuyaos/tuyaos_adapter/include/gpu
     $ENV{ARMINO_PATH}/../../tuyaos/tuyaos_adapter/include/vcodec
     $ENV{ARMINO_PATH}/../../tuyaos/tuyaos_adapter/include/jpeg_codec
+    $ENV{ARMINO_PATH}/../../tuyaos/tuyaos_adapter/include/audio
     $ENV{ARMINO_PATH}/../../tuyaos/tuyaos_adapter/include/tal_mtd/include
     $ENV{TUYA_PROJECT_DIR}/include/base/include
     # $ENV{ARMINO_PATH}/../../tuyaos/tuyaos_adapter/include/asr
@@ -91,7 +92,7 @@ else()
         # src/driver/tkl_rgb.c
         # src/driver/tkl_8080.c
         src/driver/tkl_adc.c
-        src/driver/tkl_pwm.c
+        # src/driver/tkl_pwm.c
         src/driver/tkl_uart.c
         src/driver/tkl_flash.c
         # src/driver/tkl_rtc.c
@@ -105,6 +106,10 @@ else()
         src/driver/tkl_gpu.c
         src/driver/tkl_venc.c
         src/driver/tkl_vdec.c
+        # src/driver/tkl_i2s_v2.c
+        src/driver/tkl_aud_dmic.c
+        src/driver/tkl_aud_dac.c
+        src/driver/tkl_aud_adc.c
         # src/driver/tkl_wired.c
         # src/driver/tkl_i2s.c
         # src/driver/tkl_dma2d.c
@@ -163,6 +168,10 @@ else()
             src/test/test_media/test_mipi.c
             src/test/test_media/test_gpu.c
             src/test/test_media/test_venc.c
+            src/test/test_media/test_adc.c
+            src/test/test_media/test_dac.c
+            src/test/test_media/test_dmic.c
+            # src/test/test_media/test_pwm.c
             # src/test/test_media.c
             # src/test/test_mic.c
             # src/test/test_speaker.c
