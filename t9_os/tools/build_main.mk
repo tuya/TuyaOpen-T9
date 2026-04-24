@@ -216,27 +216,23 @@ $(ARMINO_SOC)_cp_menuconfig: common
 # Modified by TUYA Start
 clean:
 	@echo "save sdkconfig.h"
-	@cd ../
 	@mkdir -p .tmp_build/bk7259/tuya_app/bk7259/armino_as_lib/bk7259/config/
 	@mkdir -p .tmp_build/bk7259/tuya_app/bk7259/config/
 	@mkdir -p .tmp_build/bk7259/tuya_app/bk7259_ap/armino_as_lib/bk7259_ap/config/
 	@mkdir -p .tmp_build/bk7259/tuya_app/bk7259_ap/config/
-	@cp build/bk7259/tuya_app/bk7259/armino_as_lib/bk7259/config/sdkconfig.h         .tmp_build/bk7259/tuya_app/bk7259/armino_as_lib/bk7259/config/
-	@cp build/bk7259/tuya_app/bk7259/config/sdkconfig.h                              .tmp_build/bk7259/tuya_app/bk7259/config/
-	@cp build/bk7259/tuya_app/bk7259_ap/armino_as_lib/bk7259_ap/config/sdkconfig.h   .tmp_build/bk7259/tuya_app/bk7259_ap/armino_as_lib/bk7259_ap/config/
-	@cp build/bk7259/tuya_app/bk7259_ap/config/sdkconfig.h                           .tmp_build/bk7259/tuya_app/bk7259_ap/config/
+	@test ! -f build/bk7259/tuya_app/bk7259/armino_as_lib/bk7259/config/sdkconfig.h || cp build/bk7259/tuya_app/bk7259/armino_as_lib/bk7259/config/sdkconfig.h       .tmp_build/bk7259/tuya_app/bk7259/armino_as_lib/bk7259/config/
+	@test ! -f build/bk7259/tuya_app/bk7259/config/sdkconfig.h || cp build/bk7259/tuya_app/bk7259/config/sdkconfig.h                                                    .tmp_build/bk7259/tuya_app/bk7259/config/
+	@test ! -f build/bk7259/tuya_app/bk7259_ap/armino_as_lib/bk7259_ap/config/sdkconfig.h || cp build/bk7259/tuya_app/bk7259_ap/armino_as_lib/bk7259_ap/config/sdkconfig.h .tmp_build/bk7259/tuya_app/bk7259_ap/armino_as_lib/bk7259_ap/config/
+	@test ! -f build/bk7259/tuya_app/bk7259_ap/config/sdkconfig.h || cp build/bk7259/tuya_app/bk7259_ap/config/sdkconfig.h                                              .tmp_build/bk7259/tuya_app/bk7259_ap/config/
 	@echo "rm -rf ./build"
 	@python3 ./tools/armino_doc.py --clean True
 	@rm -rf ./build
 	@rm -rf $(ARMINO_AP_DIR)/build
 	@rm -rf $(ARMINO_CP_DIR)/build
 	@mv .tmp_build build
-	@cd -
 
 distclean: clean
-	@cd ../
 	@echo "delete python env & __pycache__"
 	@rm -rf projects/tuya_app/tuya_build_env
 	@find . -type d -name "__pycache__" -print0 | xargs -0 rm -rf 2>/dev/null
 # Modified by TUYA End
-

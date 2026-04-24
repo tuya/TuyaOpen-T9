@@ -18,6 +18,19 @@ extern void port_check_isr_stack(void);
 
 #include "sdkconfig.h"
 
+/*
+ * Keep CLI linkable even when test_media/test_pwm.c is not compiled in this build.
+ * When the real implementation is present, it overrides this weak stub.
+ */
+__attribute__((weak)) void cli_pwm_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv)
+{
+    (void)pcWriteBuffer;
+    (void)xWriteBufferLen;
+    (void)argc;
+    (void)argv;
+    bk_printf("xpwm not enabled in current build\r\n");
+}
+
 static void cli_system_info_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv)
 {
     if (argc > 1) {
@@ -100,6 +113,10 @@ static const struct cli_command tuya_cli_commands[] = {
     {"xmipi",    "mipi test",        cli_tuya_mipi_cmd},
     {"xgpu",    "gpu pipeline test", cli_tuya_gpu_cmd},
     {"xvenc",   "video encode test", cli_tuya_venc_cmd},
+    {"xdac",    "audio dac test",    cli_tuya_dac_cmd},
+    {"xdmic",   "audio dmic test",   cli_tuya_dmic_cmd},
+    {"xadc",    "audio adc test",    cli_adc_cmd},
+    {"xpwm",    "pwm test",          cli_pwm_cmd},
 #if 0
     {"xlp",     "lp test",          cli_lp_test_cmd},
     {"xtimer",  "timer test",       cli_tkl_timer_test},
@@ -108,10 +125,8 @@ static const struct cli_command tuya_cli_commands[] = {
     {"xsd",     "sd card test",     cli_sdcard_test_cmd},
     {"xgpio",   "gpio test",        cli_gpio_cmd},
     {"xid",     "set mac",          cli_tmp_cmd},
-    {"xadc",    "adc test",         cli_adc_cmd},
     {"xwifi",   "wifi test",        cli_wifi_cmd},
     {"xlcd",    "lcd test",         cli_xlcd_cmd},
-    {"xpwm",    "pwm test",         cli_pwm_cmd},
     {"xmt",     "media test",       cli_tuya_media_cmd},
     {"xqspi",   "qspi test",        cli_xqspi_cmd},
     {"xqspilcd",   "qspi test",        cli_xqspi_lcd_cmd},

@@ -1211,6 +1211,10 @@ typedef struct {
     TUYA_I2S_CHANNEL_FMT_E      channel_format;             /*!< I2S channel format.*/
     TUYA_I2S_COMM_FORMAT_E      communication_format;       /*!< I2S communication format */
     UINT32_T                    i2s_dma_flags;              /*!< I2S dma format , 1 use dma */
+    VOID_T                     *upper_rx_cb;                 /*!< RX data callback (TKL_AUD_INPUT_CB), NULL if unused */
+    VOID_T                     *rx_args;                    /*!< RX callback user data */
+    VOID_T                     *upper_tx_cb;                /*!< TX frame-done callback (TKL_AUD_DAC_FRAME_CB), NULL if unused */
+    VOID_T                     *tx_args;                    /*!< TX frame-done callback user data */
 }TUYA_I2S_BASE_CFG_T;
 
 /**
@@ -1610,6 +1614,88 @@ typedef struct {
     TUYA_DVP_ENCODED_QUALITY encoded_quality;
     TUYA_DVP_TKL_CFG_T inter_cfg;
 } TUYA_DVP_CFG_T;
+
+typedef VOID_T *TKL_AUDIO_INPUT_HANDLE;
+typedef VOID_T *TKL_AUDIO_OUTPUT_HANDLE;
+
+/**
+ * @brief audio adc channel
+ *
+ */
+typedef enum {
+    TUYA_AUDIO_ADC_CHANNEL_L,
+    TUYA_AUDIO_ADC_CHANNEL_R,
+    TUYA_AUDIO_ADC_CHANNEL_LR,
+    TUYA_AUDIO_ADC_CHANNEL_MAX
+} TUYA_AUDIO_ADC_CHAN_E;
+
+typedef enum {
+    TUYA_AUDIO_ADC_PORT_0,
+    TUYA_AUDIO_ADC_PORT_1,
+    TUYA_AUDIO_ADC_PORT_2,
+    TUYA_AUDIO_ADC_PORT_MAX
+} TUYA_AUDIO_ADC_PORT_E;
+
+typedef enum {
+    TUYA_AUDIO_FRAME_EVENT_ADC_RX = 0,
+    TUYA_AUDIO_FRAME_EVENT_ADC_MAX,
+
+    TUYA_AUDIO_FRAME_EVENT_DMIC_RX = 0x100,
+    TUYA_AUDIO_FRAME_EVENT_DMIC_MAX,
+
+    TUYA_AUDIO_FRAME_EVENT_I2S_RX = 0x200,
+    TUYA_AUDIO_FRAME_EVENT_I2S_MAX
+} TUYA_AUDIO_FRAME_EVT_E;
+
+typedef VOID_T (*TKL_AUD_INPUT_CB)(TUYA_AUDIO_FRAME_EVT_E event, uint8_t *buf, uint32_t buf_len, VOID_T *args);
+
+/**
+ * @brief audio digital
+ *
+ */
+typedef enum {
+    TUYA_AUDIO_DMIC_PORT_0,
+    TUYA_AUDIO_DMIC_PORT_1,
+    TUYA_AUDIO_DMIC_PORT_2,
+    TUYA_AUDIO_DMIC_PORT_MAX
+} TUYA_AUDIO_DMIC_PORT_E;
+
+typedef enum {
+    TUYA_AUDIO_DMIC_CHANNEL_L,
+    TUYA_AUDIO_DMIC_CHANNEL_R,
+    TUYA_AUDIO_DMIC_CHANNEL_LR,
+    TUYA_AUDIO_DMIC_CHANNEL_MAX
+} TUYA_AUDIO_DMIC_CHAN_E;
+
+
+/**
+ * @brief audio dac
+ *
+ */
+typedef enum {
+    TUYA_AUDIO_DAC_PORT_0,
+    TUYA_AUDIO_DAC_PORT_1,
+    TUYA_AUDIO_DAC_PORT_2,
+    TUYA_AUDIO_DAC_PORT_MAX
+} TUYA_AUDIO_DAC_PORT_E;
+
+typedef enum {
+    TUYA_AUDIO_DAC_FRAME_EVENT_TX_COMPLETE = 0,
+    TUYA_AUDIO_DAC_FRAME_EVENT_MAX
+}TUYA_AUDIO_DAC_FRAME_EVT_E;
+
+
+
+/**
+ * @brief audio sample
+ *
+ */
+typedef enum {
+    TUYA_AUDIO_SAMPLE_BITS_8 = 8,
+    TUYA_AUDIO_SAMPLE_BITS_16 = 16,
+    TUYA_AUDIO_SAMPLE_BITS_24 = 24,
+    TUYA_AUDIO_SAMPLE_BITS_32 = 32,
+} TUYA_AUDIO_SAMPLE_BITS_E;
 
 /**
  * @brief timer num
