@@ -93,6 +93,54 @@ INT_T tkl_system_get_minimum_heap_size(VOID_T);
 
 INT_T tkl_system_memcmp(CONST VOID_T *str1, CONST VOID_T *str2, SIZE_T n);
 
+#if defined(ENABLE_HIGH_SPEED_RAM) && (ENABLE_HIGH_SPEED_RAM==1)
+/**
+* @brief Alloc hsram memory of system in hsram
+*
+* @param[in] size: memory size
+*
+* @return the memory address malloced
+*/
+VOID_T *tkl_system_hsram_malloc(SIZE_T size);
+
+/**
+* @brief Free hsram memory of system in hsram
+*
+* @param[in] ptr: memory point
+*
+* @return VOID_T
+*/
+VOID_T tkl_system_hsram_free(VOID_T* ptr);
+
+/**
+ * @brief Allocate and clear the memory in hsram
+ *
+ * @param[in]       nitems      the numbers of memory block
+ * @param[in]       size        the size of the memory block
+ *
+ * @return the memory address calloced
+ */
+VOID_T *tkl_system_hsram_calloc(size_t nitems, size_t size);
+
+/**
+ * @brief Re-allocate the memory in hsram
+ *
+ * @param[in]       ptr         source memory address
+ * @param[in]       size        the size after re-allocate
+ *
+ * @return VOID_T
+ */
+VOID_T *tkl_system_hsram_realloc(VOID_T* ptr, size_t size);
+
+/**
+* @brief Get free heap size in hsram
+*
+* @param VOID
+*
+* @return size of free heap
+*/
+INT_T tkl_system_hsram_get_free_heap_size(VOID_T);
+#endif
 
 #if defined(ENABLE_EXT_RAM) && (ENABLE_EXT_RAM==1)
 /**
@@ -163,4 +211,3 @@ INT_T tkl_system_psram_get_free_heap_size(VOID_T);
 #endif /* __cplusplus */
 
 #endif
-

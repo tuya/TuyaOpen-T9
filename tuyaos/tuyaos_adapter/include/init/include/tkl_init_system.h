@@ -68,11 +68,21 @@ typedef struct {
     VOID_T*             (*psram_realloc)            (VOID_T* ptr, size_t size);
     INT_T               (*psarm_get_free_heap_size) (VOID_T);
 #endif
+#if defined(ENABLE_HIGH_SPEED_RAM) && (ENABLE_HIGH_SPEED_RAM==1)
+    VOID_T*             (*hsram_malloc)             (CONST size_t size);
+    VOID_T              (*hsram_free)               (VOID_T* ptr);
+    VOID_T*             (*hsram_calloc)             (size_t nitems, size_t size);
+    VOID_T*             (*hsram_realloc)            (VOID_T* ptr, size_t size);
+    INT_T               (*hsram_get_free_heap_size) (VOID_T);
+#endif
 
     //! thread
     OPERATE_RET         (*thread_create)            (TKL_THREAD_HANDLE* thread, CONST CHAR_T* name, CONST UINT_T stack_size, CONST UINT_T priority, CONST THREAD_FUNC_T func, VOID_T* CONST arg);
 #if defined(ENABLE_EXT_RAM) && (ENABLE_EXT_RAM==1)
     OPERATE_RET         (*thread_create_in_psram)   (TKL_THREAD_HANDLE* thread, CONST CHAR_T* name, CONST UINT_T stack_size, CONST UINT_T priority, CONST THREAD_FUNC_T func, VOID_T* CONST arg);
+#endif
+#if defined(ENABLE_HIGH_SPEED_RAM) && (ENABLE_HIGH_SPEED_RAM==1)
+    OPERATE_RET         (*thread_create_in_hsram)   (TKL_THREAD_HANDLE* thread, CONST CHAR_T* name, CONST UINT_T stack_size, CONST UINT_T priority, CONST THREAD_FUNC_T func, VOID_T* CONST arg);
 #endif
     OPERATE_RET         (*thread_release)           (CONST TKL_THREAD_HANDLE thread);
     OPERATE_RET         (*thread_set_name)          (CONST CHAR_T* name);
@@ -163,5 +173,4 @@ TKL_FS_T* tkl_fs_desc_get(VOID_T);
 #endif
 
 #endif // __TKL_INIT_SYSTEM_H__
-
 

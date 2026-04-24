@@ -180,5 +180,26 @@ OPERATE_RET tkl_thread_create_in_psram(TKL_THREAD_HANDLE* thread,
                               CONST THREAD_FUNC_T func,
                               VOID_T* CONST arg);
 
+/**
+* @brief Create thread in hsram
+*
+* @param[out] thread: thread handle
+* @param[in] name: thread name
+* @param[in] stack_size: stack size of thread
+* @param[in] priority: priority of thread,please ref to tkl thread priority define in tuya_cloud_types.h
+* @param[in] func: the main thread process function
+* @param[in] arg: the args of the func, can be null
+*
+* @note This API is used for creating thread.
+*
+* @return OPRT_OK on success. Others on error, please refer to tuya_error_code.h
+*/
+OPERATE_RET tkl_thread_create_in_hsram(TKL_THREAD_HANDLE* thread,
+                              CONST CHAR_T* name,
+                              UINT_T stack_size,
+                              UINT_T priority,
+                              CONST THREAD_FUNC_T func,
+                              VOID_T* CONST arg);
+
 
 #endif
