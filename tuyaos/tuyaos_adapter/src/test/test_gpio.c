@@ -8,6 +8,7 @@
 #include "cli.h"
 #include "cli_tuya_test.h"
 #include "tkl_gpio.h"
+#include "tkl_thread.h"
 #include "tkl_system.h"
 #include "sys_driver.h"
 #include <stdint.h>
@@ -17,6 +18,9 @@
 #define GPIO_TEST_LEVEL_WAIT_MS      5
 #define GPIO_TEST_IRQ_TIMEOUT_MS     100
 #define GPIO_TEST_RELAY_PERIOD_MS    (10 * 1000)
+#define GPIO_TEST_CONCURRENT_LOOPS   100
+#define GPIO_TEST_CONCURRENT_WORKERS 3
+#define GPIO_TEST_CONCURRENT_TIMEOUT_MS 2000
 
 #define SYS_ANA_REG_BASE            (0x44010000)
 #define LDO_ANA_REG                 (0x69)
@@ -28,6 +32,28 @@ static volatile TUYA_GPIO_NUM_E s_gpio_irq_last_pin = TUYA_GPIO_NUM_MAX;
 
 static TaskHandle_t s_relay_test_thread = NULL;
 static TUYA_GPIO_NUM_E s_relay_pin = TUYA_GPIO_NUM_MAX;
+
+typedef struct {
+    volatile uint32_t start;
+    volatile uint32_t done;
+    volatile uint32_t init_ok;
+    volatile uint32_t init_busy;
+    volatile uint32_t init_fail;
+    TUYA_GPIO_NUM_E pin;
+} gpio_test_init_race_ctx_t;
+
+typedef struct {
+    volatile uint32_t start;
+    volatile uint32_t done;
+    volatile uint32_t write_ok;
+    volatile uint32_t write_fail;
+    volatile uint32_t read_ok;
+    volatile uint32_t read_fail;
+    TUYA_GPIO_NUM_E pin;
+} gpio_test_rw_race_ctx_t;
+
+static gpio_test_init_race_ctx_t s_gpio_init_race_ctx;
+static gpio_test_rw_race_ctx_t s_gpio_rw_race_ctx;
 
 static void test_gpio_auxldo_enable(void)
 {
@@ -89,6 +115,18 @@ static void gpio_test_dump_pin_state(const char *tag, TUYA_GPIO_NUM_E pin, OPERA
     bk_printf("[%s] pin=%d ret=%d\r\n", tag, pin, ret);
 }
 
+static void gpio_test_api_expect(const char *name, OPERATE_RET ret, OPERATE_RET expect,
+                                 uint32_t *pass, uint32_t *fail)
+{
+    if (ret == expect) {
+        (*pass)++;
+        bk_printf("[api] PASS %-24s ret=%d\r\n", name, ret);
+    } else {
+        (*fail)++;
+        bk_printf("[api] FAIL %-24s ret=%d expect=%d\r\n", name, ret, expect);
+    }
+}
+
 static const char *gpio_test_irq_mode_name(TUYA_GPIO_IRQ_E mode)
 {
     switch (mode) {
@@ -111,6 +149,7 @@ static void gpio_test_usage(void)
 {
     bk_printf("xgpio list\r\n");
     bk_printf("xgpio api\r\n");
+    bk_printf("xgpio concurrent <pin>\r\n");
     bk_printf("xgpio smoke <pin>\r\n");
     bk_printf("xgpio smoke all [start] [end]\r\n");
     bk_printf("xgpio pair <out_pin> <in_pin>\r\n");
@@ -126,7 +165,10 @@ static void gpio_test_list(void)
     bk_printf("gpio test range: P%d ~ P%d\r\n", GPIO_TEST_PIN_MIN, GPIO_TEST_PIN_MAX);
     bk_printf("driver blocked pins: P10 P11\r\n");
     bk_printf("auto skip pins in xgpio all: P0 P10 P11\r\n");
+    bk_printf("re-init on same pin is not allowed before deinit\r\n");
+    bk_printf("write/read/irq require pin init first\r\n");
     bk_printf("pair/all/irq electrical tests require external wiring\r\n");
+    bk_printf("concurrent tests verify same-pin reentry and multi-thread access\r\n");
     bk_printf("recommended adjacent shorting: P1<->P2, P3<->P4, ...\r\n");
 }
 
@@ -171,10 +213,39 @@ static int gpio_test_wait_irq(uint32_t timeout_ms)
     return -1;
 }
 
+static void gpio_test_atomic_inc(volatile uint32_t *value)
+{
+    UINT_T irq_mask = tkl_system_enter_critical();
+    (*value)++;
+    tkl_system_exit_critical(irq_mask);
+}
+
+static int gpio_test_wait_counter(volatile uint32_t *value, uint32_t target, uint32_t timeout_ms)
+{
+    uint32_t waited = 0;
+
+    while (waited < timeout_ms) {
+        if (*value >= target) {
+            return 0;
+        }
+        tkl_system_sleep(5);
+        waited += 5;
+    }
+
+    return -1;
+}
+
+static void gpio_test_cleanup_pin(TUYA_GPIO_NUM_E pin)
+{
+    OPERATE_RET ret = tkl_gpio_deinit(pin);
+    (void)ret;
+}
+
 static int gpio_test_smoke_one(TUYA_GPIO_NUM_E pin)
 {
     OPERATE_RET ret;
     TUYA_GPIO_BASE_CFG_T cfg;
+    int rc = -1;
 
     if (gpio_test_is_driver_blocked(pin)) {
         bk_printf("[smoke] skip blocked pin P%d\r\n", pin);
@@ -187,6 +258,7 @@ static int gpio_test_smoke_one(TUYA_GPIO_NUM_E pin)
         gpio_test_dump_pin_state("smoke-input-up-fail", pin, ret);
         return -1;
     }
+    gpio_test_cleanup_pin(pin);
 
     gpio_test_input_cfg(&cfg, TUYA_GPIO_PULLDOWN);
     ret = tkl_gpio_init(pin, &cfg);
@@ -194,6 +266,7 @@ static int gpio_test_smoke_one(TUYA_GPIO_NUM_E pin)
         gpio_test_dump_pin_state("smoke-input-down-fail", pin, ret);
         return -1;
     }
+    gpio_test_cleanup_pin(pin);
 
     gpio_test_input_cfg(&cfg, TUYA_GPIO_FLOATING);
     ret = tkl_gpio_init(pin, &cfg);
@@ -201,34 +274,41 @@ static int gpio_test_smoke_one(TUYA_GPIO_NUM_E pin)
         gpio_test_dump_pin_state("smoke-input-float-fail", pin, ret);
         return -1;
     }
+    gpio_test_cleanup_pin(pin);
 
     gpio_test_output_cfg(&cfg, TUYA_GPIO_LEVEL_LOW);
     ret = tkl_gpio_init(pin, &cfg);
     if (ret != OPRT_OK) {
         gpio_test_dump_pin_state("smoke-output-low-fail", pin, ret);
-        return -1;
+        goto cleanup;
     }
 
     ret = tkl_gpio_write(pin, TUYA_GPIO_LEVEL_HIGH);
     if (ret != OPRT_OK) {
         gpio_test_dump_pin_state("smoke-write-high-fail", pin, ret);
-        return -1;
+        goto cleanup;
     }
 
     ret = tkl_gpio_write(pin, TUYA_GPIO_LEVEL_LOW);
     if (ret != OPRT_OK) {
         gpio_test_dump_pin_state("smoke-write-low-fail", pin, ret);
-        return -1;
+        goto cleanup;
     }
 
     ret = tkl_gpio_deinit(pin);
     if (ret != OPRT_OK) {
         gpio_test_dump_pin_state("smoke-deinit-fail", pin, ret);
-        return -1;
+        goto cleanup;
     }
 
     bk_printf("[smoke] PASS P%d\r\n", pin);
-    return 0;
+    rc = 0;
+
+cleanup:
+    if (rc != 0) {
+        gpio_test_cleanup_pin(pin);
+    }
+    return rc;
 }
 
 static void gpio_test_smoke_range(TUYA_GPIO_NUM_E start, TUYA_GPIO_NUM_E end)
@@ -262,57 +342,61 @@ static int gpio_test_pair_direction(TUYA_GPIO_NUM_E out_pin, TUYA_GPIO_NUM_E in_
     TUYA_GPIO_LEVEL_E level = TUYA_GPIO_LEVEL_NONE;
     OPERATE_RET ret;
     TUYA_GPIO_BASE_CFG_T cfg;
+    int rc = -1;
 
     gpio_test_input_cfg(&cfg, TUYA_GPIO_FLOATING);
     ret = tkl_gpio_init(in_pin, &cfg);
     if (ret != OPRT_OK) {
         bk_printf("[pair] init input fail P%d ret=%d\r\n", in_pin, ret);
-        return -1;
+        goto cleanup;
     }
 
     gpio_test_output_cfg(&cfg, TUYA_GPIO_LEVEL_LOW);
     ret = tkl_gpio_init(out_pin, &cfg);
     if (ret != OPRT_OK) {
         bk_printf("[pair] init output fail P%d ret=%d\r\n", out_pin, ret);
-        return -1;
+        goto cleanup;
     }
 
     tkl_system_sleep(GPIO_TEST_LEVEL_WAIT_MS);
     ret = tkl_gpio_read(in_pin, &level);
     if ((ret != OPRT_OK) || (level != TUYA_GPIO_LEVEL_LOW)) {
         bk_printf("[pair] low verify fail out=P%d in=P%d ret=%d level=%d\r\n", out_pin, in_pin, ret, level);
-        return -1;
+        goto cleanup;
     }
 
     ret = tkl_gpio_write(out_pin, TUYA_GPIO_LEVEL_HIGH);
     if (ret != OPRT_OK) {
         bk_printf("[pair] write high fail out=P%d ret=%d\r\n", out_pin, ret);
-        return -1;
+        goto cleanup;
     }
 
     tkl_system_sleep(GPIO_TEST_LEVEL_WAIT_MS);
     ret = tkl_gpio_read(in_pin, &level);
     if ((ret != OPRT_OK) || (level != TUYA_GPIO_LEVEL_HIGH)) {
         bk_printf("[pair] high verify fail out=P%d in=P%d ret=%d level=%d\r\n", out_pin, in_pin, ret, level);
-        return -1;
+        goto cleanup;
     }
 
     ret = tkl_gpio_write(out_pin, TUYA_GPIO_LEVEL_LOW);
     if (ret != OPRT_OK) {
         bk_printf("[pair] write low fail out=P%d ret=%d\r\n", out_pin, ret);
-        return -1;
+        goto cleanup;
     }
 
     tkl_system_sleep(GPIO_TEST_LEVEL_WAIT_MS);
     ret = tkl_gpio_read(in_pin, &level);
     if ((ret != OPRT_OK) || (level != TUYA_GPIO_LEVEL_LOW)) {
         bk_printf("[pair] low verify 2 fail out=P%d in=P%d ret=%d level=%d\r\n", out_pin, in_pin, ret, level);
-        return -1;
+        goto cleanup;
     }
 
-    tkl_gpio_deinit(out_pin);
-    tkl_gpio_deinit(in_pin);
-    return 0;
+    rc = 0;
+
+cleanup:
+    gpio_test_cleanup_pin(out_pin);
+    gpio_test_cleanup_pin(in_pin);
+    return rc;
 }
 
 static int gpio_test_pair(TUYA_GPIO_NUM_E pin_a, TUYA_GPIO_NUM_E pin_b)
@@ -434,6 +518,8 @@ cleanup:
 static void gpio_test_api(void)
 {
     TUYA_GPIO_BASE_CFG_T base_cfg;
+    TUYA_GPIO_BASE_CFG_T input_cfg;
+    TUYA_GPIO_BASE_CFG_T output_cfg;
     TUYA_GPIO_LEVEL_E level = TUYA_GPIO_LEVEL_NONE;
     TUYA_GPIO_IRQ_T irq_cfg;
     OPERATE_RET ret;
@@ -441,30 +527,318 @@ static void gpio_test_api(void)
     uint32_t fail = 0;
 
     gpio_test_output_cfg(&base_cfg, TUYA_GPIO_LEVEL_LOW);
+    gpio_test_output_cfg(&output_cfg, TUYA_GPIO_LEVEL_LOW);
+    gpio_test_input_cfg(&input_cfg, TUYA_GPIO_FLOATING);
 
     irq_cfg.mode = TUYA_GPIO_IRQ_RISE_FALL;
     irq_cfg.cb = gpio_test_irq_cb;
     irq_cfg.arg = NULL;
 
+    gpio_test_cleanup_pin(TUYA_GPIO_NUM_1);
+    gpio_test_cleanup_pin(TUYA_GPIO_NUM_2);
+
     ret = tkl_gpio_init(TUYA_GPIO_NUM_1, NULL);
-    (ret == OPRT_INVALID_PARM) ? pass++ : fail++;
+    gpio_test_api_expect("init null cfg", ret, OPRT_INVALID_PARM, &pass, &fail);
 
     ret = tkl_gpio_irq_init(TUYA_GPIO_NUM_1, NULL);
-    (ret == OPRT_INVALID_PARM) ? pass++ : fail++;
+    gpio_test_api_expect("irq init null cfg", ret, OPRT_INVALID_PARM, &pass, &fail);
 
     ret = tkl_gpio_init(TUYA_GPIO_NUM_10, &base_cfg);
-    (ret == OPRT_INVALID_PARM) ? pass++ : fail++;
+    gpio_test_api_expect("init blocked P10", ret, OPRT_INVALID_PARM, &pass, &fail);
 
     ret = tkl_gpio_deinit(TUYA_GPIO_NUM_MAX);
-    (ret == OPRT_INVALID_PARM) ? pass++ : fail++;
+    gpio_test_api_expect("deinit invalid pin", ret, OPRT_INVALID_PARM, &pass, &fail);
+
+    ret = tkl_gpio_deinit(TUYA_GPIO_NUM_1);
+    gpio_test_api_expect("deinit before init", ret, OPRT_RESOURCE_NOT_READY, &pass, &fail);
 
     ret = tkl_gpio_read(TUYA_GPIO_NUM_MAX, &level);
-    (ret == OPRT_INVALID_PARM) ? pass++ : fail++;
+    gpio_test_api_expect("read invalid pin", ret, OPRT_INVALID_PARM, &pass, &fail);
+
+    ret = tkl_gpio_read(TUYA_GPIO_NUM_1, NULL);
+    gpio_test_api_expect("read null level", ret, OPRT_INVALID_PARM, &pass, &fail);
+
+    ret = tkl_gpio_write(TUYA_GPIO_NUM_MAX, TUYA_GPIO_LEVEL_HIGH);
+    gpio_test_api_expect("write invalid pin", ret, OPRT_INVALID_PARM, &pass, &fail);
+
+    ret = tkl_gpio_write(TUYA_GPIO_NUM_11, TUYA_GPIO_LEVEL_LOW);
+    gpio_test_api_expect("write blocked P11", ret, OPRT_INVALID_PARM, &pass, &fail);
+
+    ret = tkl_gpio_write(TUYA_GPIO_NUM_1, TUYA_GPIO_LEVEL_HIGH);
+    gpio_test_api_expect("write before init", ret, OPRT_RESOURCE_NOT_READY, &pass, &fail);
+
+    ret = tkl_gpio_read(TUYA_GPIO_NUM_1, &level);
+    gpio_test_api_expect("read before init", ret, OPRT_RESOURCE_NOT_READY, &pass, &fail);
+
+    ret = tkl_gpio_irq_enable(TUYA_GPIO_NUM_MAX);
+    gpio_test_api_expect("irq enable invalid", ret, OPRT_INVALID_PARM, &pass, &fail);
+
+    ret = tkl_gpio_irq_disable(TUYA_GPIO_NUM_MAX);
+    gpio_test_api_expect("irq disable invalid", ret, OPRT_INVALID_PARM, &pass, &fail);
 
     ret = tkl_gpio_irq_init(TUYA_GPIO_NUM_1, &irq_cfg);
-    (ret == OPRT_NOT_SUPPORTED) ? pass++ : fail++;
+    gpio_test_api_expect("irq init before init", ret, OPRT_RESOURCE_NOT_READY, &pass, &fail);
+
+    ret = tkl_gpio_irq_enable(TUYA_GPIO_NUM_1);
+    gpio_test_api_expect("irq enable before init", ret, OPRT_RESOURCE_NOT_READY, &pass, &fail);
+
+    ret = tkl_gpio_irq_disable(TUYA_GPIO_NUM_1);
+    gpio_test_api_expect("irq disable before init", ret, OPRT_RESOURCE_NOT_READY, &pass, &fail);
+
+    input_cfg.mode = TUYA_GPIO_HIGH_IMPEDANCE;
+    ret = tkl_gpio_init(TUYA_GPIO_NUM_1, &input_cfg);
+    gpio_test_api_expect("input high impedance", ret, OPRT_NOT_SUPPORTED, &pass, &fail);
+    gpio_test_cleanup_pin(TUYA_GPIO_NUM_1);
+
+    gpio_test_input_cfg(&input_cfg, TUYA_GPIO_FLOATING);
+    ret = tkl_gpio_init(TUYA_GPIO_NUM_1, &input_cfg);
+    gpio_test_api_expect("irq test input init", ret, OPRT_OK, &pass, &fail);
+
+    ret = tkl_gpio_irq_init(TUYA_GPIO_NUM_1, &irq_cfg);
+    gpio_test_api_expect("irq rise_fall", ret, OPRT_NOT_SUPPORTED, &pass, &fail);
+    gpio_test_cleanup_pin(TUYA_GPIO_NUM_1);
+
+    gpio_test_output_cfg(&output_cfg, TUYA_GPIO_LEVEL_LOW);
+    ret = tkl_gpio_init(TUYA_GPIO_NUM_1, &output_cfg);
+    gpio_test_api_expect("output init low", ret, OPRT_OK, &pass, &fail);
+
+    ret = tkl_gpio_init(TUYA_GPIO_NUM_1, &output_cfg);
+    gpio_test_api_expect("output init twice", ret, OPRT_INIT_MORE_THAN_ONCE, &pass, &fail);
+
+    ret = tkl_gpio_write(TUYA_GPIO_NUM_1, TUYA_GPIO_LEVEL_HIGH);
+    gpio_test_api_expect("output write high", ret, OPRT_OK, &pass, &fail);
+
+    ret = tkl_gpio_write(TUYA_GPIO_NUM_1, TUYA_GPIO_LEVEL_LOW);
+    gpio_test_api_expect("output write low", ret, OPRT_OK, &pass, &fail);
+
+    ret = tkl_gpio_deinit(TUYA_GPIO_NUM_1);
+    gpio_test_api_expect("output deinit", ret, OPRT_OK, &pass, &fail);
+
+    gpio_test_output_cfg(&output_cfg, TUYA_GPIO_LEVEL_HIGH);
+    ret = tkl_gpio_init(TUYA_GPIO_NUM_1, &output_cfg);
+    gpio_test_api_expect("output init high", ret, OPRT_OK, &pass, &fail);
+
+    ret = tkl_gpio_deinit(TUYA_GPIO_NUM_1);
+    gpio_test_api_expect("output deinit 2", ret, OPRT_OK, &pass, &fail);
+
+    gpio_test_input_cfg(&input_cfg, TUYA_GPIO_FLOATING);
+    ret = tkl_gpio_init(TUYA_GPIO_NUM_2, &input_cfg);
+    gpio_test_api_expect("input init float", ret, OPRT_OK, &pass, &fail);
+
+    ret = tkl_gpio_write(TUYA_GPIO_NUM_2, TUYA_GPIO_LEVEL_HIGH);
+    gpio_test_api_expect("write on input pin", ret, OPRT_COM_ERROR, &pass, &fail);
+
+    ret = tkl_gpio_read(TUYA_GPIO_NUM_2, &level);
+    gpio_test_api_expect("read valid pin", ret, OPRT_OK, &pass, &fail);
+
+    irq_cfg.mode = TUYA_GPIO_IRQ_RISE;
+    irq_cfg.arg = (void *)(uintptr_t)TUYA_GPIO_NUM_2;
+    ret = tkl_gpio_irq_init(TUYA_GPIO_NUM_2, &irq_cfg);
+    gpio_test_api_expect("irq init rise", ret, OPRT_OK, &pass, &fail);
+
+    ret = tkl_gpio_irq_enable(TUYA_GPIO_NUM_2);
+    gpio_test_api_expect("irq enable", ret, OPRT_OK, &pass, &fail);
+
+    ret = tkl_gpio_irq_disable(TUYA_GPIO_NUM_2);
+    gpio_test_api_expect("irq disable", ret, OPRT_OK, &pass, &fail);
+
+    ret = tkl_gpio_deinit(TUYA_GPIO_NUM_2);
+    gpio_test_api_expect("input deinit", ret, OPRT_OK, &pass, &fail);
+
+    ret = tkl_gpio_deinit(TUYA_GPIO_NUM_2);
+    gpio_test_api_expect("input deinit twice", ret, OPRT_RESOURCE_NOT_READY, &pass, &fail);
 
     bk_printf("[api] summary pass=%u fail=%u\r\n", pass, fail);
+}
+
+static void gpio_test_init_race_task(void *arg)
+{
+    TUYA_GPIO_BASE_CFG_T cfg;
+    OPERATE_RET ret;
+
+    (void)arg;
+
+    while (!s_gpio_init_race_ctx.start) {
+        tkl_system_sleep(1);
+    }
+
+    gpio_test_output_cfg(&cfg, TUYA_GPIO_LEVEL_LOW);
+    ret = tkl_gpio_init(s_gpio_init_race_ctx.pin, &cfg);
+    if (ret == OPRT_OK) {
+        gpio_test_atomic_inc(&s_gpio_init_race_ctx.init_ok);
+    } else if (ret == OPRT_INIT_MORE_THAN_ONCE) {
+        gpio_test_atomic_inc(&s_gpio_init_race_ctx.init_busy);
+    } else {
+        gpio_test_atomic_inc(&s_gpio_init_race_ctx.init_fail);
+    }
+
+    gpio_test_atomic_inc(&s_gpio_init_race_ctx.done);
+    vTaskDelete(NULL);
+}
+
+static void gpio_test_rw_write_task(void *arg)
+{
+    TUYA_GPIO_LEVEL_E level = (TUYA_GPIO_LEVEL_E)(uintptr_t)arg;
+
+    while (!s_gpio_rw_race_ctx.start) {
+        tkl_system_sleep(1);
+    }
+
+    for (uint32_t i = 0; i < GPIO_TEST_CONCURRENT_LOOPS; i++) {
+        if (tkl_gpio_write(s_gpio_rw_race_ctx.pin, level) == OPRT_OK) {
+            gpio_test_atomic_inc(&s_gpio_rw_race_ctx.write_ok);
+        } else {
+            gpio_test_atomic_inc(&s_gpio_rw_race_ctx.write_fail);
+        }
+        level = (level == TUYA_GPIO_LEVEL_HIGH) ? TUYA_GPIO_LEVEL_LOW : TUYA_GPIO_LEVEL_HIGH;
+    }
+
+    gpio_test_atomic_inc(&s_gpio_rw_race_ctx.done);
+    vTaskDelete(NULL);
+}
+
+static void gpio_test_rw_read_task(void *arg)
+{
+    TUYA_GPIO_LEVEL_E level = TUYA_GPIO_LEVEL_NONE;
+
+    (void)arg;
+
+    while (!s_gpio_rw_race_ctx.start) {
+        tkl_system_sleep(1);
+    }
+
+    for (uint32_t i = 0; i < GPIO_TEST_CONCURRENT_LOOPS; i++) {
+        if (tkl_gpio_read(s_gpio_rw_race_ctx.pin, &level) == OPRT_OK) {
+            gpio_test_atomic_inc(&s_gpio_rw_race_ctx.read_ok);
+        } else {
+            gpio_test_atomic_inc(&s_gpio_rw_race_ctx.read_fail);
+        }
+    }
+
+    gpio_test_atomic_inc(&s_gpio_rw_race_ctx.done);
+    vTaskDelete(NULL);
+}
+
+static void gpio_test_concurrent(TUYA_GPIO_NUM_E pin)
+{
+    TUYA_GPIO_BASE_CFG_T cfg;
+    OPERATE_RET ret;
+    uint32_t created = 0;
+
+    if (gpio_test_is_auto_skip(pin)) {
+        bk_printf("[concurrent] skip P%d\r\n", pin);
+        return;
+    }
+
+    gpio_test_cleanup_pin(pin);
+    os_memset((void *)&s_gpio_init_race_ctx, 0, sizeof(s_gpio_init_race_ctx));
+    s_gpio_init_race_ctx.pin = pin;
+
+    for (uint32_t i = 0; i < GPIO_TEST_CONCURRENT_WORKERS; i++) {
+        if (xTaskCreate(gpio_test_init_race_task, "gpio_i", 2048, NULL, 5, NULL) != pdPASS) {
+            bk_printf("[concurrent] init race task create fail idx=%u\r\n", (unsigned int)i);
+            s_gpio_init_race_ctx.start = 1;
+            gpio_test_wait_counter(&s_gpio_init_race_ctx.done, created, GPIO_TEST_CONCURRENT_TIMEOUT_MS);
+            return;
+        }
+        created++;
+    }
+
+    tkl_system_sleep(10);
+    s_gpio_init_race_ctx.start = 1;
+
+    if (gpio_test_wait_counter(&s_gpio_init_race_ctx.done, GPIO_TEST_CONCURRENT_WORKERS,
+                               GPIO_TEST_CONCURRENT_TIMEOUT_MS) != 0) {
+        bk_printf("[concurrent] init race timeout pin=P%d done=%u\r\n",
+                  pin, (unsigned int)s_gpio_init_race_ctx.done);
+        gpio_test_cleanup_pin(pin);
+        return;
+    }
+
+    if ((s_gpio_init_race_ctx.init_ok != 1) ||
+        (s_gpio_init_race_ctx.init_busy != (GPIO_TEST_CONCURRENT_WORKERS - 1)) ||
+        (s_gpio_init_race_ctx.init_fail != 0)) {
+        bk_printf("[concurrent] init race fail pin=P%d ok=%u busy=%u fail=%u\r\n",
+                  pin,
+                  (unsigned int)s_gpio_init_race_ctx.init_ok,
+                  (unsigned int)s_gpio_init_race_ctx.init_busy,
+                  (unsigned int)s_gpio_init_race_ctx.init_fail);
+        gpio_test_cleanup_pin(pin);
+        return;
+    }
+
+    bk_printf("[concurrent] init race PASS pin=P%d ok=%u busy=%u\r\n",
+              pin,
+              (unsigned int)s_gpio_init_race_ctx.init_ok,
+              (unsigned int)s_gpio_init_race_ctx.init_busy);
+
+    gpio_test_cleanup_pin(pin);
+
+    gpio_test_output_cfg(&cfg, TUYA_GPIO_LEVEL_LOW);
+    ret = tkl_gpio_init(pin, &cfg);
+    if (ret != OPRT_OK) {
+        bk_printf("[concurrent] base init fail pin=P%d ret=%d\r\n", pin, ret);
+        return;
+    }
+
+    os_memset((void *)&s_gpio_rw_race_ctx, 0, sizeof(s_gpio_rw_race_ctx));
+    s_gpio_rw_race_ctx.pin = pin;
+    created = 0;
+
+    if (xTaskCreate(gpio_test_rw_write_task, "gpio_wh", 2048,
+                    (void *)(uintptr_t)TUYA_GPIO_LEVEL_HIGH, 5, NULL) != pdPASS) {
+        bk_printf("[concurrent] write task high create fail\r\n");
+        gpio_test_cleanup_pin(pin);
+        return;
+    }
+    created++;
+
+    if (xTaskCreate(gpio_test_rw_write_task, "gpio_wl", 2048,
+                    (void *)(uintptr_t)TUYA_GPIO_LEVEL_LOW, 5, NULL) != pdPASS) {
+        bk_printf("[concurrent] write task low create fail\r\n");
+        s_gpio_rw_race_ctx.start = 1;
+        gpio_test_wait_counter(&s_gpio_rw_race_ctx.done, created, GPIO_TEST_CONCURRENT_TIMEOUT_MS);
+        gpio_test_cleanup_pin(pin);
+        return;
+    }
+    created++;
+
+    if (xTaskCreate(gpio_test_rw_read_task, "gpio_r", 2048, NULL, 5, NULL) != pdPASS) {
+        bk_printf("[concurrent] read task create fail\r\n");
+        s_gpio_rw_race_ctx.start = 1;
+        gpio_test_wait_counter(&s_gpio_rw_race_ctx.done, created, GPIO_TEST_CONCURRENT_TIMEOUT_MS);
+        gpio_test_cleanup_pin(pin);
+        return;
+    }
+    created++;
+
+    tkl_system_sleep(10);
+    s_gpio_rw_race_ctx.start = 1;
+
+    if (gpio_test_wait_counter(&s_gpio_rw_race_ctx.done, 3, GPIO_TEST_CONCURRENT_TIMEOUT_MS) != 0) {
+        bk_printf("[concurrent] rw race timeout pin=P%d done=%u\r\n",
+                  pin, (unsigned int)s_gpio_rw_race_ctx.done);
+        gpio_test_cleanup_pin(pin);
+        return;
+    }
+
+    if ((s_gpio_rw_race_ctx.write_fail != 0) || (s_gpio_rw_race_ctx.read_fail != 0)) {
+        bk_printf("[concurrent] rw race fail pin=P%d w_ok=%u w_fail=%u r_ok=%u r_fail=%u\r\n",
+                  pin,
+                  (unsigned int)s_gpio_rw_race_ctx.write_ok,
+                  (unsigned int)s_gpio_rw_race_ctx.write_fail,
+                  (unsigned int)s_gpio_rw_race_ctx.read_ok,
+                  (unsigned int)s_gpio_rw_race_ctx.read_fail);
+        gpio_test_cleanup_pin(pin);
+        return;
+    }
+
+    bk_printf("[concurrent] rw race PASS pin=P%d w_ok=%u r_ok=%u\r\n",
+              pin,
+              (unsigned int)s_gpio_rw_race_ctx.write_ok,
+              (unsigned int)s_gpio_rw_race_ctx.read_ok);
+
+    gpio_test_cleanup_pin(pin);
 }
 
 static void gpio_test_pair_range(TUYA_GPIO_NUM_E start, TUYA_GPIO_NUM_E end, int with_irq)
@@ -674,6 +1048,12 @@ void cli_gpio_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **arg
         gpio_test_list();
     } else if (!os_strcmp(argv[1], "api")) {
         gpio_test_api();
+    } else if (!os_strcmp(argv[1], "concurrent")) {
+        if ((argc < 3) || (gpio_test_parse_pin(argv[2], &pin_a) != 0)) {
+            gpio_test_usage();
+            return;
+        }
+        gpio_test_concurrent(pin_a);
     } else if (!os_strcmp(argv[1], "smoke")) {
         if (argc < 3) {
             gpio_test_usage();
