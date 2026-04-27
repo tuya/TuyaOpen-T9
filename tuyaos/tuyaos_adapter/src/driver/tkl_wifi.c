@@ -69,10 +69,43 @@ STATIC TKL_WIFI_CTX_T s_wifi = {
 STATIC bk_err_t __wifi_event_cb(VOID_T *arg, event_module_t event_module, INT_T event_id, VOID_T *event_data);
 STATIC bk_err_t __wifi_monitor_cb(CONST UINT8_T *frame, UINT32_T len, CONST wifi_frame_info_t *frame_info);
 STATIC bk_err_t __wifi_filter_cb(CONST UINT8_T *frame, UINT32_T len, CONST wifi_frame_info_t *frame_info);
+extern void bk_printf(const char *fmt, ...);
 
 /* ---------------------------------------------------------------------------
  * Internal helper functions
  * --------------------------------------------------------------------------- */
+STATIC CONST CHAR_T *__wifi_work_mode_name(WF_WK_MD_E mode)
+{
+    switch (mode) {
+    case WWM_POWERDOWN:
+        return "powerdown";
+    case WWM_SNIFFER:
+        return "sniffer";
+    case WWM_STATION:
+        return "station";
+    case WWM_SOFTAP:
+        return "softap";
+    case WWM_STATIONAP:
+        return "stationap";
+    default:
+        return "unknown";
+    }
+}
+
+STATIC CONST CHAR_T *__wifi_tuya_event_name(WF_EVENT_E event)
+{
+    switch (event) {
+    case WFE_CONNECTED:
+        return "connected";
+    case WFE_CONNECT_FAILED:
+        return "connect_failed";
+    case WFE_DISCONNECTED:
+        return "disconnected";
+    default:
+        return "unknown";
+    }
+}
+
 /**
  * @brief Get the bounded length of a C string.
  * @param[in] str input string
@@ -117,6 +150,30 @@ STATIC VOID_T __wifi_copy_str(CHAR_T *dst, UINT_T dst_size, CONST CHAR_T *src)
     copy_len = __wifi_strnlen(src, dst_size - 1);
     memcpy(dst, src, copy_len);
     dst[copy_len] = '\0';
+}
+
+STATIC VOID_T __fast_connect_ap_info_dump(CONST CHAR_T *tag, CONST wifi_sta_config_t *sta_cfg)
+{
+    if (sta_cfg == NULL) {
+        return;
+    }
+
+    bk_printf("----------------------------------------------------------------------------------------\r\n");
+    if (tag != NULL) {
+        bk_printf("%s\r\n", tag);
+    }
+    bk_printf("ssid: %s\r\n", sta_cfg->ssid);
+    bk_printf("bssid: %02x:%02x:%02x:%02x:%02x:%02x\r\n",
+              sta_cfg->bssid[0], sta_cfg->bssid[1], sta_cfg->bssid[2],
+              sta_cfg->bssid[3], sta_cfg->bssid[4], sta_cfg->bssid[5]);
+    bk_printf("security: %d, chan: %d\r\n", sta_cfg->security, sta_cfg->channel);
+    bk_printf("psk: ********************************, pmf: %d\r\n", sta_cfg->pmf);
+    bk_printf("pwd: ****************\r\n");
+    bk_printf("ip: %d.%d.%d.%d\r\n", sta_cfg->ip_addr[0], sta_cfg->ip_addr[1], sta_cfg->ip_addr[2], sta_cfg->ip_addr[3]);
+    bk_printf("netmask: %d.%d.%d.%d\r\n", sta_cfg->netmask[0], sta_cfg->netmask[1], sta_cfg->netmask[2], sta_cfg->netmask[3]);
+    bk_printf("gw: %d.%d.%d.%d\r\n", sta_cfg->gw[0], sta_cfg->gw[1], sta_cfg->gw[2], sta_cfg->gw[3]);
+    bk_printf("dns1: %d.%d.%d.%d\r\n", sta_cfg->dns1[0], sta_cfg->dns1[1], sta_cfg->dns1[2], sta_cfg->dns1[3]);
+    bk_printf("----------------------------------------------------------------------------------------\r\n");
 }
 
 /**
@@ -525,6 +582,10 @@ STATIC BOOL_T __wifi_is_connect_fail(WF_STATION_STAT_E status, INT_T reason, BOO
  */
 STATIC VOID_T __wifi_report_event(WF_EVENT_E event, VOID_T *arg)
 {
+    bk_printf("report event=%s(%d) reason=%d\r\n",
+              __wifi_tuya_event_name(event), event,
+              (arg != NULL) ? *(WF_DISCONN_REASON_E *)arg : TUYA_WLAN_REASON_NONE);
+
     if (s_wifi.event_cb != NULL) {
         s_wifi.event_cb(event, arg);
     }
@@ -539,17 +600,24 @@ STATIC OPERATE_RET __wifi_apply_work_mode(WF_WK_MD_E mode)
 {
     bk_err_t bk_ret = BK_OK;
 
+    bk_printf("apply work mode current=%s(%d) target=%s(%d) sta_started=%d ap_started=%d sniffer=%d\r\n",
+              __wifi_work_mode_name(s_wifi.work_mode), s_wifi.work_mode,
+              __wifi_work_mode_name(mode), mode,
+              s_wifi.sta_started, s_wifi.ap_started, s_wifi.sniffer_enabled);
+
     if ((mode != WWM_POWERDOWN) &&
         (mode != WWM_SNIFFER) &&
         (mode != WWM_STATION) &&
         (mode != WWM_SOFTAP) &&
         (mode != WWM_STATIONAP)) {
+        bk_printf("apply work mode invalid target=%d\r\n", mode);
         return OPRT_INVALID_PARM;
     }
 
     if ((mode != WWM_SNIFFER) && (s_wifi.sniffer_enabled == TRUE)) {
         bk_ret = bk_wifi_monitor_stop();
         if (bk_ret != BK_OK) {
+            bk_printf("monitor stop fail bk_ret=%d while switching mode\r\n", bk_ret);
             return __wifi_map_ret(bk_ret, OPRT_OS_ADAPTER_WORKMODE_SET_FAILED);
         }
 
@@ -562,6 +630,7 @@ STATIC OPERATE_RET __wifi_apply_work_mode(WF_WK_MD_E mode)
         if (s_wifi.sta_started == TRUE) {
             bk_ret = bk_wifi_sta_stop();
             if (bk_ret != BK_OK) {
+                bk_printf("sta stop fail bk_ret=%d while switching mode\r\n", bk_ret);
                 return __wifi_map_ret(bk_ret, OPRT_OS_ADAPTER_WORKMODE_SET_FAILED);
             }
 
@@ -574,6 +643,7 @@ STATIC OPERATE_RET __wifi_apply_work_mode(WF_WK_MD_E mode)
         if (s_wifi.ap_started == TRUE) {
             bk_ret = bk_wifi_ap_stop();
             if (bk_ret != BK_OK) {
+                bk_printf("ap stop fail bk_ret=%d while switching mode\r\n", bk_ret);
                 return __wifi_map_ret(bk_ret, OPRT_OS_ADAPTER_WORKMODE_SET_FAILED);
             }
 
@@ -582,6 +652,8 @@ STATIC OPERATE_RET __wifi_apply_work_mode(WF_WK_MD_E mode)
     }
 
     s_wifi.work_mode = mode;
+    bk_printf("apply work mode done new_mode=%s(%d)\r\n",
+              __wifi_work_mode_name(s_wifi.work_mode), s_wifi.work_mode);
     return OPRT_OK;
 }
 
@@ -647,6 +719,7 @@ STATIC bk_err_t __wifi_event_cb(VOID_T *arg, event_module_t event_module, INT_T 
 
     if ((event_module == EVENT_MOD_WIFI) && (event_id == EVENT_WIFI_SCAN_DONE)) {
         s_wifi.scan_done = TRUE;
+        bk_printf("scan done\r\n");
         return BK_OK;
     }
 
@@ -658,6 +731,11 @@ STATIC bk_err_t __wifi_event_cb(VOID_T *arg, event_module_t event_module, INT_T 
     }
 
     if ((event_module == EVENT_MOD_WIFI) && (event_id == EVENT_WIFI_STA_CONNECTED)) {
+        wifi_event_sta_connected_t *conn = (wifi_event_sta_connected_t *)event_data;
+
+        if (conn != NULL) {
+            bk_printf("sta connected ssid=%s\r\n", conn->ssid);
+        }
         if (s_wifi.sta_status == WSS_CONNECTING) {
             s_wifi.sta_status = WSS_CONN_SUCCESS;
         }
@@ -668,6 +746,7 @@ STATIC bk_err_t __wifi_event_cb(VOID_T *arg, event_module_t event_module, INT_T 
         netif_event_got_ip4_t *got_ip = (netif_event_got_ip4_t *)event_data;
 
         if ((got_ip != NULL) && (got_ip->netif_if == NETIF_IF_STA)) {
+            bk_printf("sta got ip ip=%s\r\n", got_ip->ip);
             s_wifi.sta_status = WSS_GOT_IP;
             __wifi_report_event(WFE_CONNECTED, NULL);
         }
@@ -675,6 +754,7 @@ STATIC bk_err_t __wifi_event_cb(VOID_T *arg, event_module_t event_module, INT_T 
     }
 
     if ((event_module == EVENT_MOD_NETIF) && (event_id == EVENT_NETIF_DHCP_TIMEOUT)) {
+        bk_printf("sta dhcp timeout\r\n");
         s_wifi.sta_status = WSS_DHCP_FAIL;
         s_wifi.last_disc_reason = TUYA_WLAN_REASON_UNSPECIFIED;
         __wifi_report_event(WFE_CONNECT_FAILED, &s_wifi.last_disc_reason);
@@ -693,6 +773,8 @@ STATIC bk_err_t __wifi_event_cb(VOID_T *arg, event_module_t event_module, INT_T 
 
         tuya_reason = __wifi_reason_bk_to_tuya(bk_reason);
         s_wifi.last_disc_reason = tuya_reason;
+        bk_printf("sta disconnected bk_reason=%d tuya_reason=%d local_generated=%d prev_status=%d\r\n",
+                  bk_reason, tuya_reason, local_generated, s_wifi.sta_status);
 
         if (__wifi_is_connect_fail(s_wifi.sta_status, bk_reason, local_generated) == TRUE) {
             if (bk_reason == WIFI_REASON_NO_AP_FOUND) {
@@ -760,11 +842,14 @@ STATIC bk_err_t __wifi_filter_cb(CONST UINT8_T *frame, UINT32_T len, CONST wifi_
  */
 OPERATE_RET tkl_wifi_init(WIFI_EVENT_CB cb)
 {
-    bk_err_t bk_ret = BK_OK;
     OPERATE_RET op_ret = OPRT_OK;
+
+    bk_printf("init enter inited=%d events_registered=%d cb=%s\r\n",
+              s_wifi.inited, s_wifi.events_registered, (cb != NULL) ? "set" : "null");
 
     s_wifi.event_cb = cb;
     if (s_wifi.inited == TRUE) {
+        bk_printf("init reuse existing context\r\n");
         return __wifi_register_events();
     }
 
@@ -785,10 +870,12 @@ OPERATE_RET tkl_wifi_init(WIFI_EVENT_CB cb)
 
     op_ret = __wifi_register_events();
     if (op_ret != OPRT_OK) {
+        bk_printf("init register events fail ret=%d\r\n", op_ret);
         return op_ret;
     }
 
     s_wifi.inited = TRUE;
+    bk_printf("init done\r\n");
     return OPRT_OK;
 }
 
@@ -809,10 +896,12 @@ OPERATE_RET tkl_wifi_scan_ap(CONST SCHAR_T *ssid, AP_IF_S **ap_ary, UINT_T *num)
     INT_T index = 0;
 
     if ((ap_ary == NULL) || (num == NULL)) {
+        bk_printf("scan invalid param ap_ary=%d num=%d\r\n", ap_ary != NULL, num != NULL);
         return OPRT_INVALID_PARM;
     }
 
     if (s_wifi.inited == FALSE) {
+        bk_printf("scan rejected: wifi not init\r\n");
         return OPRT_RESOURCE_NOT_READY;
     }
 
@@ -823,14 +912,18 @@ OPERATE_RET tkl_wifi_scan_ap(CONST SCHAR_T *ssid, AP_IF_S **ap_ary, UINT_T *num)
 
     if (ssid != NULL) {
         if (__wifi_strnlen(ssid, WIFI_SSID_LEN + 1) > WIFI_SSID_LEN) {
+            bk_printf("scan invalid ssid length ssid=%s\r\n", ssid);
             return OPRT_INVALID_PARM;
         }
         __wifi_copy_str(scan_cfg.ssid, sizeof(scan_cfg.ssid), ssid);
     }
 
+    bk_printf("scan start ssid=%s\r\n", (ssid != NULL) ? ssid : "<all>");
+
     s_wifi.scan_done = FALSE;
     bk_ret = bk_wifi_scan_start((ssid != NULL) ? &scan_cfg : NULL);
     if (bk_ret != BK_OK) {
+        bk_printf("scan start fail bk_ret=%d\r\n", bk_ret);
         return __wifi_map_ret(bk_ret, OPRT_OS_ADAPTER_AP_SCAN_FAILED);
     }
 
@@ -841,21 +934,27 @@ OPERATE_RET tkl_wifi_scan_ap(CONST SCHAR_T *ssid, AP_IF_S **ap_ary, UINT_T *num)
 
     if (s_wifi.scan_done == FALSE) {
         (VOID_T)bk_wifi_scan_stop();
+        bk_printf("scan timeout after %u ms\r\n", (unsigned int)wait_ms);
         return OPRT_OS_ADAPTER_AP_SCAN_FAILED;
     }
 
     bk_ret = bk_wifi_scan_get_result(&scan_result);
     if (bk_ret != BK_OK) {
+        bk_printf("scan get result fail bk_ret=%d\r\n", bk_ret);
         return __wifi_map_ret(bk_ret, OPRT_OS_ADAPTER_AP_SCAN_FAILED);
     }
 
     if ((scan_result.ap_num <= 0) || (scan_result.aps == NULL)) {
+        bk_printf("scan result empty ap_num=%d\r\n", scan_result.ap_num);
         bk_wifi_scan_free_result(&scan_result);
         return OPRT_OS_ADAPTER_AP_NOT_FOUND;
     }
 
+    bk_printf("scan result ap_num=%d\r\n", scan_result.ap_num);
+
     ap_list = os_malloc((UINT_T)scan_result.ap_num * TKL_WIFI_AP_ENTRY_SIZE);
     if (ap_list == NULL) {
+        bk_printf("scan malloc fail ap_num=%d\r\n", scan_result.ap_num);
         bk_wifi_scan_free_result(&scan_result);
         return OPRT_MALLOC_FAILED;
     }
@@ -877,6 +976,7 @@ OPERATE_RET tkl_wifi_scan_ap(CONST SCHAR_T *ssid, AP_IF_S **ap_ary, UINT_T *num)
     bk_wifi_scan_free_result(&scan_result);
     *ap_ary = ap_list;
     *num = (UINT_T)scan_result.ap_num;
+    bk_printf("scan done copied_num=%u\r\n", (unsigned int)*num);
     return OPRT_OK;
 }
 
@@ -904,31 +1004,46 @@ OPERATE_RET tkl_wifi_start_ap(CONST WF_AP_CFG_IF_S *cfg)
 {
     wifi_ap_config_t ap_cfg;
     netif_ip4_config_t ip4_cfg;
+    CHAR_T ssid_buf[WIFI_SSID_LEN + 1] = {0};
+    CHAR_T passwd_buf[WIFI_PASSWD_LEN + 1] = {0};
     bk_err_t bk_ret = BK_OK;
     OPERATE_RET op_ret = OPRT_OK;
 
     if (cfg == NULL) {
+        bk_printf("start_ap invalid param: cfg is null\r\n");
         return OPRT_INVALID_PARM;
     }
 
     if (s_wifi.inited == FALSE) {
+        bk_printf("start_ap rejected: wifi not init\r\n");
         return OPRT_RESOURCE_NOT_READY;
     }
 
+    memcpy(ssid_buf, cfg->ssid, (cfg->s_len <= WIFI_SSID_LEN) ? cfg->s_len : WIFI_SSID_LEN);
+    memcpy(passwd_buf, cfg->passwd, (cfg->p_len <= WIFI_PASSWD_LEN) ? cfg->p_len : WIFI_PASSWD_LEN);
+
+    bk_printf("start_ap enter ssid=%s key=%s chan=%u hidden=%u max_conn=%u dhcp=%d ip=%s mask=%s gw=%s dns=%s\r\n",
+              ssid_buf, passwd_buf, cfg->chan, cfg->ssid_hidden, cfg->max_conn, cfg->ip.dhcpen,
+              cfg->ip.ip, cfg->ip.mask, cfg->ip.gw, cfg->ip.dns);
+
     if ((cfg->s_len == 0) || (cfg->s_len > WIFI_SSID_LEN)) {
+        bk_printf("start_ap invalid ssid len=%u\r\n", cfg->s_len);
         return OPRT_INVALID_PARM;
     }
 
     if (cfg->chan > WIFI_MAX_CHAN_NUM) {
+        bk_printf("start_ap invalid channel=%u\r\n", cfg->chan);
         return OPRT_INVALID_PARM;
     }
 
     if ((cfg->md != WAAM_OPEN) && ((cfg->p_len < 8) || (cfg->p_len > WIFI_PASSWD_LEN))) {
+        bk_printf("start_ap invalid passwd len=%u auth=%d\r\n", cfg->p_len, cfg->md);
         return OPRT_INVALID_PARM;
     }
 
     op_ret = __wifi_apply_work_mode((s_wifi.sta_started == TRUE) ? WWM_STATIONAP : WWM_SOFTAP);
     if (op_ret != OPRT_OK) {
+        bk_printf("start_ap apply work mode fail ret=%d\r\n", op_ret);
         return op_ret;
     }
 
@@ -946,21 +1061,25 @@ OPERATE_RET tkl_wifi_start_ap(CONST WF_AP_CFG_IF_S *cfg)
 
     op_ret = __wifi_fill_bk_ip4(&ip4_cfg, &cfg->ip);
     if (op_ret != OPRT_OK) {
+        bk_printf("start_ap invalid ip config ret=%d\r\n", op_ret);
         return op_ret;
     }
 
     bk_ret = bk_netif_set_ip4_config(NETIF_IF_AP, &ip4_cfg);
     if (bk_ret != BK_OK) {
+        bk_printf("start_ap set ap ip fail bk_ret=%d\r\n", bk_ret);
         return __wifi_map_ret(bk_ret, OPRT_OS_ADAPTER_IP_GET_FAILED);
     }
 
     bk_ret = bk_wifi_ap_set_config(&ap_cfg);
     if (bk_ret != BK_OK) {
+        bk_printf("start_ap set config fail bk_ret=%d\r\n", bk_ret);
         return __wifi_map_ret(bk_ret, OPRT_OS_ADAPTER_AP_START_FAILED);
     }
 
     bk_ret = bk_wifi_ap_start();
     if (bk_ret != BK_OK) {
+        bk_printf("start_ap start fail bk_ret=%d\r\n", bk_ret);
         return __wifi_map_ret(bk_ret, OPRT_OS_ADAPTER_AP_START_FAILED);
     }
 
@@ -968,6 +1087,8 @@ OPERATE_RET tkl_wifi_start_ap(CONST WF_AP_CFG_IF_S *cfg)
     if (s_wifi.work_mode != WWM_STATIONAP) {
         s_wifi.work_mode = WWM_SOFTAP;
     }
+    bk_printf("start_ap done mode=%s(%d)\r\n",
+              __wifi_work_mode_name(s_wifi.work_mode), s_wifi.work_mode);
     return OPRT_OK;
 }
 
@@ -979,16 +1100,22 @@ OPERATE_RET tkl_wifi_stop_ap(VOID_T)
 {
     bk_err_t bk_ret = BK_OK;
 
+    bk_printf("stop_ap enter ap_started=%d mode=%s(%d)\r\n",
+              s_wifi.ap_started, __wifi_work_mode_name(s_wifi.work_mode), s_wifi.work_mode);
+
     if (s_wifi.inited == FALSE) {
+        bk_printf("stop_ap rejected: wifi not init\r\n");
         return OPRT_RESOURCE_NOT_READY;
     }
 
     if (s_wifi.ap_started == FALSE) {
+        bk_printf("stop_ap skip: ap not started\r\n");
         return OPRT_OK;
     }
 
     bk_ret = bk_wifi_ap_stop();
     if (bk_ret != BK_OK) {
+        bk_printf("stop_ap fail bk_ret=%d\r\n", bk_ret);
         return __wifi_map_ret(bk_ret, OPRT_OS_ADAPTER_AP_STOP_FAILED);
     }
 
@@ -998,6 +1125,8 @@ OPERATE_RET tkl_wifi_stop_ap(VOID_T)
     } else if (s_wifi.work_mode == WWM_STATIONAP) {
         s_wifi.work_mode = s_wifi.sta_started ? WWM_STATION : WWM_POWERDOWN;
     }
+    bk_printf("stop_ap done new_mode=%s(%d)\r\n",
+              __wifi_work_mode_name(s_wifi.work_mode), s_wifi.work_mode);
     return OPRT_OK;
 }
 
@@ -1069,21 +1198,28 @@ OPERATE_RET tkl_wifi_set_sniffer(CONST BOOL_T en, CONST SNIFFER_CALLBACK cb)
     bk_err_t bk_ret = BK_OK;
     OPERATE_RET op_ret = OPRT_OK;
 
+    bk_printf("set_sniffer enter en=%d current=%d mode=%s(%d)\r\n",
+              en, s_wifi.sniffer_enabled, __wifi_work_mode_name(s_wifi.work_mode), s_wifi.work_mode);
+
     if ((en == TRUE) && (cb == NULL)) {
+        bk_printf("set_sniffer invalid param: enable with null cb\r\n");
         return OPRT_INVALID_PARM;
     }
 
     if (s_wifi.inited == FALSE) {
+        bk_printf("set_sniffer rejected: wifi not init\r\n");
         return OPRT_RESOURCE_NOT_READY;
     }
 
     if (en == FALSE) {
         if (s_wifi.sniffer_enabled == FALSE) {
+            bk_printf("set_sniffer disable skip: already disabled\r\n");
             return OPRT_OK;
         }
 
         bk_ret = bk_wifi_monitor_stop();
         if (bk_ret != BK_OK) {
+            bk_printf("set_sniffer disable fail bk_ret=%d\r\n", bk_ret);
             return __wifi_map_ret(bk_ret, OPRT_OS_ADAPTER_SNIFFER_SET_FAILED);
         }
 
@@ -1093,11 +1229,14 @@ OPERATE_RET tkl_wifi_set_sniffer(CONST BOOL_T en, CONST SNIFFER_CALLBACK cb)
         if (s_wifi.work_mode == WWM_SNIFFER) {
             s_wifi.work_mode = WWM_POWERDOWN;
         }
+        bk_printf("set_sniffer disable done new_mode=%s(%d)\r\n",
+                  __wifi_work_mode_name(s_wifi.work_mode), s_wifi.work_mode);
         return OPRT_OK;
     }
 
     op_ret = __wifi_apply_work_mode(WWM_SNIFFER);
     if (op_ret != OPRT_OK) {
+        bk_printf("set_sniffer apply work mode fail ret=%d\r\n", op_ret);
         return op_ret;
     }
 
@@ -1112,18 +1251,21 @@ OPERATE_RET tkl_wifi_set_sniffer(CONST BOOL_T en, CONST SNIFFER_CALLBACK cb)
 
     bk_ret = bk_wifi_monitor_register_cb(__wifi_monitor_cb);
     if (bk_ret != BK_OK) {
+        bk_printf("set_sniffer register cb fail bk_ret=%d\r\n", bk_ret);
         return __wifi_map_ret(bk_ret, OPRT_OS_ADAPTER_SNIFFER_SET_FAILED);
     }
 
     bk_ret = bk_wifi_monitor_start();
     if (bk_ret != BK_OK) {
         (VOID_T)bk_wifi_monitor_register_cb(NULL);
+        bk_printf("set_sniffer start fail bk_ret=%d\r\n", bk_ret);
         return __wifi_map_ret(bk_ret, OPRT_OS_ADAPTER_SNIFFER_SET_FAILED);
     }
 
     s_wifi.sniffer_enabled = TRUE;
     s_wifi.sniffer_cb = cb;
     s_wifi.work_mode = WWM_SNIFFER;
+    bk_printf("set_sniffer enable done\r\n");
     return OPRT_OK;
 }
 
@@ -1358,10 +1500,12 @@ OPERATE_RET tkl_wifi_get_connected_ap_info(FAST_WF_CONNECTED_AP_INFO_T **fast_ap
     bk_err_t bk_ret = BK_OK;
 
     if (fast_ap_info == NULL) {
+        bk_printf("get_connected_ap_info invalid param: out is null\r\n");
         return OPRT_INVALID_PARM;
     }
 
     if (s_wifi.inited == FALSE) {
+        bk_printf("get_connected_ap_info rejected: wifi not init\r\n");
         return OPRT_RESOURCE_NOT_READY;
     }
 
@@ -1371,19 +1515,26 @@ OPERATE_RET tkl_wifi_get_connected_ap_info(FAST_WF_CONNECTED_AP_INFO_T **fast_ap
 
     bk_ret = bk_wifi_sta_get_link_status(&link_status);
     if (bk_ret != BK_OK) {
+        bk_printf("get_connected_ap_info get link status fail bk_ret=%d\r\n", bk_ret);
         return __wifi_map_ret(bk_ret, OPRT_OS_ADAPTER_APINFO_GET_FAILED);
     }
 
     if ((link_status.state != WIFI_LINKSTATE_STA_CONNECTED) &&
         (link_status.state != WIFI_LINKSTATE_STA_GOT_IP)) {
+        bk_printf("get_connected_ap_info not connected state=%d\r\n", link_status.state);
         return OPRT_RESOURCE_NOT_READY;
+    }
+
+    bk_ret = bk_wifi_sta_get_config(&sta_cfg);
+    if (bk_ret != BK_OK) {
+        bk_printf("get_connected_ap_info get config fail bk_ret=%d\r\n", bk_ret);
+        return __wifi_map_ret(bk_ret, OPRT_OS_ADAPTER_APINFO_GET_FAILED);
     }
 
     __wifi_copy_str(sta_cfg.ssid, sizeof(sta_cfg.ssid), link_status.ssid);
     memcpy(sta_cfg.bssid, link_status.bssid, sizeof(sta_cfg.bssid));
     sta_cfg.channel = link_status.channel;
     sta_cfg.security = link_status.security;
-    __wifi_copy_str(sta_cfg.password, sizeof(sta_cfg.password), link_status.password);
     sta_cfg.is_user_fast_connect = 1;
 
     if ((tkl_wifi_get_ip(WF_STATION, &ip) == OPRT_OK) &&
@@ -1399,12 +1550,15 @@ OPERATE_RET tkl_wifi_get_connected_ap_info(FAST_WF_CONNECTED_AP_INFO_T **fast_ap
 
     info = os_malloc(sizeof(FAST_WF_CONNECTED_AP_INFO_T) + sizeof(wifi_sta_config_t));
     if (info == NULL) {
+        bk_printf("get_connected_ap_info malloc fail\r\n");
         return OPRT_MALLOC_FAILED;
     }
 
     info->len = sizeof(wifi_sta_config_t);
     memcpy(info->data, &sta_cfg, sizeof(wifi_sta_config_t));
+
     *fast_ap_info = info;
+    __fast_connect_ap_info_dump("get connected ap info", &sta_cfg);
     return OPRT_OK;
 }
 
@@ -1537,34 +1691,48 @@ OPERATE_RET tkl_wifi_station_fast_connect(CONST FAST_WF_CONNECTED_AP_INFO_T *fas
     OPERATE_RET op_ret = OPRT_OK;
 
     if (fast_ap_info == NULL) {
+        bk_printf("fast_connect invalid param: info is null\r\n");
         return OPRT_INVALID_PARM;
     }
 
     if (fast_ap_info->len != sizeof(wifi_sta_config_t)) {
+        bk_printf("fast_connect invalid blob len=%u expect=%u\r\n",
+                  (unsigned int)fast_ap_info->len, (unsigned int)sizeof(wifi_sta_config_t));
         return OPRT_INVALID_PARM;
     }
 
     if (s_wifi.inited == FALSE) {
+        bk_printf("fast_connect rejected: wifi not init\r\n");
         return OPRT_RESOURCE_NOT_READY;
     }
 
     sta_cfg = (CONST wifi_sta_config_t *)fast_ap_info->data;
+    bk_printf("fast_connect enter ssid=%s chan=%d security=%d bssid=%02x:%02x:%02x:%02x:%02x:%02x\r\n",
+              sta_cfg->ssid, sta_cfg->channel, sta_cfg->security,
+              sta_cfg->bssid[0], sta_cfg->bssid[1], sta_cfg->bssid[2],
+              sta_cfg->bssid[3], sta_cfg->bssid[4], sta_cfg->bssid[5]);
+    __fast_connect_ap_info_dump("station fast connect", sta_cfg);
+
     if (sta_cfg->ssid[0] == '\0') {
+        bk_printf("fast_connect invalid ssid empty\r\n");
         return OPRT_INVALID_PARM;
     }
 
     op_ret = __wifi_apply_work_mode(s_wifi.ap_started ? WWM_STATIONAP : WWM_STATION);
     if (op_ret != OPRT_OK) {
+        bk_printf("fast_connect apply work mode fail ret=%d\r\n", op_ret);
         return op_ret;
     }
 
     bk_ret = bk_wifi_sta_set_config(sta_cfg);
     if (bk_ret != BK_OK) {
+        bk_printf("fast_connect set config fail bk_ret=%d\r\n", bk_ret);
         return __wifi_map_ret(bk_ret, OPRT_OS_ADAPTER_FAST_CONN_FAILED);
     }
 
     bk_ret = bk_wifi_sta_start();
     if (bk_ret != BK_OK) {
+        bk_printf("fast_connect sta start fail bk_ret=%d\r\n", bk_ret);
         return __wifi_map_ret(bk_ret, OPRT_OS_ADAPTER_FAST_CONN_FAILED);
     }
 
@@ -1573,6 +1741,7 @@ OPERATE_RET tkl_wifi_station_fast_connect(CONST FAST_WF_CONNECTED_AP_INFO_T *fas
     if (s_wifi.work_mode != WWM_STATIONAP) {
         s_wifi.work_mode = WWM_STATION;
     }
+    bk_printf("fast_connect started\r\n");
     return OPRT_OK;
 }
 
@@ -1589,24 +1758,35 @@ OPERATE_RET tkl_wifi_station_connect(CONST SCHAR_T *ssid, CONST SCHAR_T *passwd)
     OPERATE_RET op_ret = OPRT_OK;
 
     if (ssid == NULL) {
+        bk_printf("connect invalid param: ssid is null\r\n");
         return OPRT_INVALID_PARM;
     }
 
     if ((__wifi_strnlen(ssid, WIFI_SSID_LEN + 1) == 0) ||
         (__wifi_strnlen(ssid, WIFI_SSID_LEN + 1) > WIFI_SSID_LEN)) {
+        bk_printf("connect invalid ssid len=%u ssid=%s\r\n",
+                  (unsigned int)__wifi_strnlen(ssid, WIFI_SSID_LEN + 1), ssid);
         return OPRT_INVALID_PARM;
     }
 
     if ((passwd != NULL) && (__wifi_strnlen(passwd, WIFI_PASSWD_LEN + 1) > WIFI_PASSWD_LEN)) {
+        bk_printf("connect invalid passwd len=%u\r\n",
+                  (unsigned int)__wifi_strnlen(passwd, WIFI_PASSWD_LEN + 1));
         return OPRT_INVALID_PARM;
     }
 
     if (s_wifi.inited == FALSE) {
+        bk_printf("connect rejected: wifi not init\r\n");
         return OPRT_RESOURCE_NOT_READY;
     }
 
+    bk_printf("connect enter ssid=%s passwd=%s current_mode=%s(%d)\r\n",
+              ssid, (passwd != NULL) ? "<set>" : "<open>",
+              __wifi_work_mode_name(s_wifi.work_mode), s_wifi.work_mode);
+
     op_ret = __wifi_apply_work_mode(s_wifi.ap_started ? WWM_STATIONAP : WWM_STATION);
     if (op_ret != OPRT_OK) {
+        bk_printf("connect apply work mode fail ret=%d\r\n", op_ret);
         return op_ret;
     }
 
@@ -1619,11 +1799,13 @@ OPERATE_RET tkl_wifi_station_connect(CONST SCHAR_T *ssid, CONST SCHAR_T *passwd)
 
     bk_ret = bk_wifi_sta_set_config(&sta_cfg);
     if (bk_ret != BK_OK) {
+        bk_printf("connect set config fail bk_ret=%d ssid=%s\r\n", bk_ret, ssid);
         return __wifi_map_ret(bk_ret, OPRT_OS_ADAPTER_CONN_FAILED);
     }
 
     bk_ret = bk_wifi_sta_start();
     if (bk_ret != BK_OK) {
+        bk_printf("connect sta start fail bk_ret=%d ssid=%s\r\n", bk_ret, ssid);
         return __wifi_map_ret(bk_ret, OPRT_OS_ADAPTER_CONN_FAILED);
     }
 
@@ -1633,6 +1815,7 @@ OPERATE_RET tkl_wifi_station_connect(CONST SCHAR_T *ssid, CONST SCHAR_T *passwd)
     if (s_wifi.work_mode != WWM_STATIONAP) {
         s_wifi.work_mode = WWM_STATION;
     }
+    bk_printf("connect started ssid=%s\r\n", ssid);
     return OPRT_OK;
 }
 
@@ -1644,16 +1827,21 @@ OPERATE_RET tkl_wifi_station_disconnect(VOID_T)
 {
     bk_err_t bk_ret = BK_OK;
 
+    bk_printf("disconnect enter sta_started=%d status=%d\r\n", s_wifi.sta_started, s_wifi.sta_status);
+
     if (s_wifi.inited == FALSE) {
+        bk_printf("disconnect rejected: wifi not init\r\n");
         return OPRT_RESOURCE_NOT_READY;
     }
 
     bk_ret = bk_wifi_sta_disconnect();
     if (bk_ret != BK_OK) {
+        bk_printf("disconnect fail bk_ret=%d\r\n", bk_ret);
         return __wifi_map_ret(bk_ret, OPRT_OS_ADAPTER_DISCONN_FAILED);
     }
 
     s_wifi.sta_status = WSS_IDLE;
+    bk_printf("disconnect issued\r\n");
     return OPRT_OK;
 }
 
@@ -1712,6 +1900,7 @@ OPERATE_RET tkl_wifi_station_get_status(WF_STATION_STAT_E *stat)
     bk_ret = bk_wifi_sta_get_linkstate_with_reason(&link_info);
     if (bk_ret != BK_OK) {
         *stat = s_wifi.sta_status;
+        bk_printf("get_status get linkstate fail bk_ret=%d cached_status=%d\r\n", bk_ret, s_wifi.sta_status);
         return __wifi_map_ret(bk_ret, OPRT_OS_ADAPTER_STAT_GET_FAILED);
     }
 
