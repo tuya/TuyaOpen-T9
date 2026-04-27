@@ -188,7 +188,7 @@ else()
             # src/test/test_iperf.c
             # src/test/test_mem.c
             # src/test/test_dwt.c
-            # src/test/test_wifi.c
+            src/test/test_wifi.c
             # src/test/test_dvp/dvp_gc2145.c
             # src/test/test_dvp/test_dvp.c
             # src/test/coremark/core_list_join.c
