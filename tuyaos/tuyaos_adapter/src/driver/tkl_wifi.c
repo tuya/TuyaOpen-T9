@@ -788,7 +788,7 @@ STATIC bk_err_t __wifi_event_cb(VOID_T *arg, event_module_t event_module, INT_T 
             }
             __wifi_report_event(WFE_CONNECT_FAILED, &s_wifi.last_disc_reason);
         } else {
-            s_wifi.sta_status = WSS_IDLE;
+            s_wifi.sta_status = WSS_CONN_FAIL;
             __wifi_report_event(WFE_DISCONNECTED, &s_wifi.last_disc_reason);
         }
 
@@ -1004,6 +1004,7 @@ OPERATE_RET tkl_wifi_start_ap(CONST WF_AP_CFG_IF_S *cfg)
 {
     wifi_ap_config_t ap_cfg;
     netif_ip4_config_t ip4_cfg;
+    NW_IP_S ap_ip_cfg;
     CHAR_T ssid_buf[WIFI_SSID_LEN + 1] = {0};
     CHAR_T passwd_buf[WIFI_PASSWD_LEN + 1] = {0};
     bk_err_t bk_ret = BK_OK;
@@ -1049,6 +1050,8 @@ OPERATE_RET tkl_wifi_start_ap(CONST WF_AP_CFG_IF_S *cfg)
 
     memset(&ap_cfg, 0, sizeof(ap_cfg));
     memset(&ip4_cfg, 0, sizeof(ip4_cfg));
+    memset(&ap_ip_cfg, 0, sizeof(ap_ip_cfg));
+    memcpy(&ap_ip_cfg, &cfg->ip, sizeof(ap_ip_cfg));
 
     memcpy(ap_cfg.ssid, cfg->ssid, cfg->s_len);
     ap_cfg.ssid[cfg->s_len] = '\0';
@@ -1059,7 +1062,13 @@ OPERATE_RET tkl_wifi_start_ap(CONST WF_AP_CFG_IF_S *cfg)
     ap_cfg.hidden = cfg->ssid_hidden ? 1 : 0;
     ap_cfg.max_con = cfg->max_conn;
 
-    op_ret = __wifi_fill_bk_ip4(&ip4_cfg, &cfg->ip);
+    if ((ap_ip_cfg.dhcpen == FALSE) && (ap_ip_cfg.dns[0] == '\0')) {
+        __wifi_copy_str(ap_ip_cfg.dns, sizeof(ap_ip_cfg.dns),
+                        (ap_ip_cfg.gw[0] != '\0') ? ap_ip_cfg.gw : ap_ip_cfg.ip);
+        bk_printf("start_ap fill empty dns=%s\r\n", ap_ip_cfg.dns);
+    }
+
+    op_ret = __wifi_fill_bk_ip4(&ip4_cfg, &ap_ip_cfg);
     if (op_ret != OPRT_OK) {
         bk_printf("start_ap invalid ip config ret=%d\r\n", op_ret);
         return op_ret;
@@ -1834,14 +1843,17 @@ OPERATE_RET tkl_wifi_station_disconnect(VOID_T)
         return OPRT_RESOURCE_NOT_READY;
     }
 
-    bk_ret = bk_wifi_sta_disconnect();
+    bk_ret = bk_wifi_sta_stop();
     if (bk_ret != BK_OK) {
         bk_printf("disconnect fail bk_ret=%d\r\n", bk_ret);
         return __wifi_map_ret(bk_ret, OPRT_OS_ADAPTER_DISCONN_FAILED);
     }
 
-    s_wifi.sta_status = WSS_IDLE;
-    bk_printf("disconnect issued\r\n");
+    s_wifi.sta_started = FALSE;
+    s_wifi.work_mode = s_wifi.ap_started ? WWM_SOFTAP : WWM_POWERDOWN;
+
+    bk_printf("disconnect issued new_mode=%s(%d)\r\n",
+              __wifi_work_mode_name(s_wifi.work_mode), s_wifi.work_mode);
     return OPRT_OK;
 }
 

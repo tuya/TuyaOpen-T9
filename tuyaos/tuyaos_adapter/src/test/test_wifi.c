@@ -791,7 +791,7 @@ static void wifi_test_disconnect_wait(uint32_t timeout_ms)
         uint32_t waited = (uint32_t)(now_ms - start_ms);
 
         ret = tkl_wifi_station_get_status(&status);
-        if ((ret == OPRT_OK) && (status == WSS_IDLE)) {
+        if ((ret == OPRT_OK) && ((status == WSS_CONN_FAIL) || (status == WSS_IDLE))) {
             bk_printf("[xwifi] disconnect done status=%s time=%u\r\n",
                       wifi_test_status_name(status), (unsigned int)waited);
             return;
