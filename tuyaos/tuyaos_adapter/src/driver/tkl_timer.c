@@ -1,78 +1,342 @@
 /**
  * @file tkl_timer.c
- * @brief Auto-generated TKL adapter stub. Candidate Timer adapter for T9.
+ * @brief TKL timer adapter for T9 (Beken AP timer driver)
  * @version 0.1
- * @date 2026-04-02
+ * @date 2026-04-28
  * @copyright Copyright (c) Tuya Inc.
  */
 
 #include "tuya_cloud_types.h"
 #include "tkl_timer.h"
 
-OPERATE_RET tkl_timer_init(TUYA_TIMER_NUM_E timer_id, TUYA_TIMER_BASE_CFG_T *cfg)
+#include <common/bk_err.h>
+#include <driver/timer.h>
+#include <string.h>
+
+#define TKL_TIMER_BK_BASE_ID      TIMER_ID12
+#define TKL_TIMER_BK_MAX_ID       TIMER_ID17
+/* bk_timer_start() uses ms and converts to 26M ticks internally. */
+#define TKL_TIMER_MAX_PERIOD_MS   ((UINT32_T)(0xFFFFFFFFu / 26000u))
+
+typedef struct {
+    UINT8_T inited;
+    UINT8_T running;
+    TUYA_TIMER_MODE_E mode;
+    TUYA_TIMER_ISR_CB cb;
+    VOID *args;
+    UINT_T period_us;
+} tkl_timer_ctx_t;
+
+STATIC tkl_timer_ctx_t s_timer_ctx[TUYA_TIMER_NUM_MAX];
+STATIC UINT8_T s_timer_driver_inited = 0;
+STATIC UINT8_T s_timer_init_count = 0;
+
+STATIC OPERATE_RET __tkl_timer_map_bk_err(bk_err_t bk_ret)
 {
-    /* 功能描述: */
+    if (bk_ret == BK_OK) {
+        return OPRT_OK;
+    }
+    if ((bk_ret == BK_ERR_NULL_PARAM) || (bk_ret == BK_ERR_PARAM) ||
+        (bk_ret == BK_ERR_TIMER_ID) || (bk_ret == BK_ERR_TIMER_ID_ON_DEFCONFIG)) {
+        return OPRT_INVALID_PARM;
+    }
+    if (bk_ret == BK_ERR_NOT_SUPPORT) {
+        return OPRT_NOT_SUPPORTED;
+    }
+    return OPRT_COM_ERROR;
+}
+
+STATIC OPERATE_RET __tkl_timer_id_check(TUYA_TIMER_NUM_E timer_id)
+{
+    if (timer_id >= TUYA_TIMER_NUM_MAX) {
+        return OPRT_INVALID_PARM;
+    }
+    return OPRT_OK;
+}
+
+STATIC OPERATE_RET __tkl_timer_cfg_check(CONST TUYA_TIMER_BASE_CFG_T *cfg)
+{
     if (cfg == NULL) {
         return OPRT_INVALID_PARM;
     }
+    if ((cfg->mode != TUYA_TIMER_MODE_ONCE) && (cfg->mode != TUYA_TIMER_MODE_PERIOD)) {
+        return OPRT_INVALID_PARM;
+    }
+    return OPRT_OK;
+}
 
-    (void)timer_id;
-    (void)cfg;
+STATIC timer_id_t __tkl_timer_to_bk_id(TUYA_TIMER_NUM_E timer_id)
+{
+    return (timer_id_t)((INT_T)TKL_TIMER_BK_BASE_ID + (INT_T)timer_id);
+}
 
-    /* TODO: map `tkl_timer_init` to the vendor SDK implementation. */
-    /* TODO: confirm pinmux, clock, interrupt, DMA, and error-code mapping. */
-    return OPRT_NOT_SUPPORTED;
+STATIC BOOL_T __tkl_timer_hw_chan_valid(timer_id_t hw_chan)
+{
+    if ((hw_chan < 0) || ((UINT_T)hw_chan >= TUYA_TIMER_NUM_MAX)) {
+        return FALSE;
+    }
+    return TRUE;
+}
+
+STATIC BOOL_T __tkl_timer_bk_id_valid(timer_id_t bk_timer_id)
+{
+    if ((bk_timer_id < TKL_TIMER_BK_BASE_ID) || (bk_timer_id > TKL_TIMER_BK_MAX_ID)) {
+        return FALSE;
+    }
+    return TRUE;
+}
+
+STATIC VOID __tkl_timer_isr(timer_id_t bk_timer_id)
+{
+    TUYA_TIMER_NUM_E timer_id;
+    timer_id_t real_bk_timer_id;
+    tkl_timer_ctx_t *ctx;
+    TUYA_TIMER_ISR_CB user_cb;
+    VOID *user_arg;
+
+    /*
+     * bk_timer_start(TIMER_ID12..17, cb) stores cb in s_timer_isr[hw_chan],
+     * and timer_driver ISR calls cb(hw_chan). So callback input is hw_chan 0..5.
+     */
+    if (__tkl_timer_hw_chan_valid(bk_timer_id) == FALSE) {
+        return;
+    }
+
+    timer_id = (TUYA_TIMER_NUM_E)bk_timer_id;
+    real_bk_timer_id = __tkl_timer_to_bk_id(timer_id);
+
+    ctx = &s_timer_ctx[timer_id];
+    if (ctx->inited == 0) {
+        return;
+    }
+
+    if (ctx->mode == TUYA_TIMER_MODE_ONCE) {
+        (void)bk_timer_stop(real_bk_timer_id);
+        (void)bk_timer_cancel(real_bk_timer_id);
+        ctx->running = 0;
+    }
+
+    user_cb = ctx->cb;
+    user_arg = ctx->args;
+    if (user_cb != NULL) {
+        user_cb(user_arg);
+    }
+}
+
+OPERATE_RET tkl_timer_init(TUYA_TIMER_NUM_E timer_id, TUYA_TIMER_BASE_CFG_T *cfg)
+{
+    OPERATE_RET op_ret;
+    bk_err_t bk_ret;
+    tkl_timer_ctx_t *ctx;
+
+    op_ret = __tkl_timer_id_check(timer_id);
+    if (op_ret != OPRT_OK) {
+        return op_ret;
+    }
+
+    op_ret = __tkl_timer_cfg_check(cfg);
+    if (op_ret != OPRT_OK) {
+        return op_ret;
+    }
+
+    if (s_timer_driver_inited == 0) {
+        bk_ret = bk_timer_driver_init();
+        if (bk_ret != BK_OK) {
+            return __tkl_timer_map_bk_err(bk_ret);
+        }
+        s_timer_driver_inited = 1;
+    }
+
+    ctx = &s_timer_ctx[timer_id];
+    if (ctx->inited == 0) {
+        s_timer_init_count++;
+    }
+
+    ctx->inited = 1;
+    ctx->mode = cfg->mode;
+    ctx->cb = cfg->cb;
+    ctx->args = cfg->args;
+    if (ctx->running == 0) {
+        ctx->period_us = 0;
+    }
+
+    return OPRT_OK;
 }
 
 OPERATE_RET tkl_timer_start(TUYA_TIMER_NUM_E timer_id, UINT_T us)
 {
-    /* 功能描述: */
-    (void)timer_id;
-    (void)us;
+    OPERATE_RET op_ret;
+    timer_id_t bk_timer_id;
+    tkl_timer_ctx_t *ctx;
+    uint64_t period_ms_u64;
+    uint32_t period_ms;
+    timer_isr_t bk_cb = NULL;
+    bk_err_t bk_ret;
 
-    /* TODO: map `tkl_timer_start` to the vendor SDK implementation. */
-    /* TODO: confirm pinmux, clock, interrupt, DMA, and error-code mapping. */
-    return OPRT_NOT_SUPPORTED;
+    op_ret = __tkl_timer_id_check(timer_id);
+    if (op_ret != OPRT_OK) {
+        return op_ret;
+    }
+    if (us == 0u) {
+        return OPRT_INVALID_PARM;
+    }
+
+    ctx = &s_timer_ctx[timer_id];
+    if ((ctx->inited == 0) || (s_timer_driver_inited == 0)) {
+        return OPRT_COM_ERROR;
+    }
+
+    /* Vendor API is ms based: round up to avoid shorter-than-requested timeout. */
+    period_ms_u64 = ((uint64_t)us + 999ull) / 1000ull;
+    if ((period_ms_u64 == 0ull) || (period_ms_u64 > (uint64_t)TKL_TIMER_MAX_PERIOD_MS)) {
+        return OPRT_INVALID_PARM;
+    }
+    period_ms = (uint32_t)period_ms_u64;
+
+    bk_timer_id = __tkl_timer_to_bk_id(timer_id);
+    if (__tkl_timer_bk_id_valid(bk_timer_id) == FALSE) {
+        return OPRT_NOT_SUPPORTED;
+    }
+
+    if ((ctx->mode == TUYA_TIMER_MODE_ONCE) || (ctx->cb != NULL)) {
+        bk_cb = __tkl_timer_isr;
+    }
+
+    bk_ret = bk_timer_start(bk_timer_id, period_ms, bk_cb);
+    if (bk_ret != BK_OK) {
+        return __tkl_timer_map_bk_err(bk_ret);
+    }
+
+    ctx->running = 1;
+    ctx->period_us = (UINT_T)((uint64_t)period_ms * 1000ull);
+    return OPRT_OK;
 }
 
 OPERATE_RET tkl_timer_stop(TUYA_TIMER_NUM_E timer_id)
 {
-    /* 功能描述: */
-    (void)timer_id;
+    OPERATE_RET op_ret;
+    timer_id_t bk_timer_id;
+    tkl_timer_ctx_t *ctx;
+    bk_err_t bk_ret;
 
-    /* TODO: map `tkl_timer_stop` to the vendor SDK implementation. */
-    /* TODO: confirm pinmux, clock, interrupt, DMA, and error-code mapping. */
-    return OPRT_NOT_SUPPORTED;
+    op_ret = __tkl_timer_id_check(timer_id);
+    if (op_ret != OPRT_OK) {
+        return op_ret;
+    }
+
+    ctx = &s_timer_ctx[timer_id];
+    if ((ctx->inited == 0) || (s_timer_driver_inited == 0)) {
+        return OPRT_COM_ERROR;
+    }
+
+    if (ctx->running == 0) {
+        return OPRT_OK;
+    }
+
+    bk_timer_id = __tkl_timer_to_bk_id(timer_id);
+    bk_ret = bk_timer_stop(bk_timer_id);
+    if (bk_ret != BK_OK) {
+        return __tkl_timer_map_bk_err(bk_ret);
+    }
+
+    (void)bk_timer_cancel(bk_timer_id);
+    ctx->running = 0;
+    return OPRT_OK;
 }
 
 OPERATE_RET tkl_timer_deinit(TUYA_TIMER_NUM_E timer_id)
 {
-    /* 功能描述: */
-    (void)timer_id;
+    OPERATE_RET op_ret;
+    timer_id_t bk_timer_id;
+    tkl_timer_ctx_t *ctx;
+    bk_err_t bk_ret;
+    OPERATE_RET final_ret = OPRT_OK;
 
-    /* TODO: map `tkl_timer_deinit` to the vendor SDK implementation. */
-    /* TODO: confirm pinmux, clock, interrupt, DMA, and error-code mapping. */
-    return OPRT_NOT_SUPPORTED;
+    op_ret = __tkl_timer_id_check(timer_id);
+    if (op_ret != OPRT_OK) {
+        return op_ret;
+    }
+
+    ctx = &s_timer_ctx[timer_id];
+    if ((ctx->inited == 0) || (s_timer_driver_inited == 0)) {
+        return OPRT_OK;
+    }
+
+    bk_timer_id = __tkl_timer_to_bk_id(timer_id);
+    if (ctx->running) {
+        bk_ret = bk_timer_stop(bk_timer_id);
+        if ((bk_ret != BK_OK) && (final_ret == OPRT_OK)) {
+            final_ret = __tkl_timer_map_bk_err(bk_ret);
+        }
+        ctx->running = 0;
+    }
+
+    bk_ret = bk_timer_cancel(bk_timer_id);
+    if ((bk_ret != BK_OK) && (final_ret == OPRT_OK)) {
+        final_ret = __tkl_timer_map_bk_err(bk_ret);
+    }
+
+    (void)memset(ctx, 0, sizeof(*ctx));
+    if (s_timer_init_count > 0) {
+        s_timer_init_count--;
+    }
+
+    if ((s_timer_init_count == 0) && (s_timer_driver_inited != 0)) {
+        bk_ret = bk_timer_driver_deinit();
+        if ((bk_ret != BK_OK) && (final_ret == OPRT_OK)) {
+            final_ret = __tkl_timer_map_bk_err(bk_ret);
+        }
+        if (bk_ret == BK_OK) {
+            s_timer_driver_inited = 0;
+        }
+    }
+
+    return final_ret;
 }
 
 OPERATE_RET tkl_timer_get_current_value(TUYA_TIMER_NUM_E timer_id, UINT_T *us)
 {
-    /* 功能描述: */
-    (void)timer_id;
-    (void)us;
+    OPERATE_RET op_ret;
+    timer_id_t bk_timer_id;
+    uint64_t cur_us;
 
-    /* TODO: map `tkl_timer_get_current_value` to the vendor SDK implementation. */
-    /* TODO: confirm pinmux, clock, interrupt, DMA, and error-code mapping. */
-    return OPRT_NOT_SUPPORTED;
+    op_ret = __tkl_timer_id_check(timer_id);
+    if (op_ret != OPRT_OK) {
+        return op_ret;
+    }
+    if (us == NULL) {
+        return OPRT_INVALID_PARM;
+    }
+    if ((s_timer_ctx[timer_id].inited == 0) || (s_timer_driver_inited == 0)) {
+        return OPRT_COM_ERROR;
+    }
+
+    bk_timer_id = __tkl_timer_to_bk_id(timer_id);
+    cur_us = bk_timer_get_time(bk_timer_id, 1, 0, TIMER_UNIT_US);
+    if (cur_us > 0xFFFFFFFFull) {
+        *us = 0xFFFFFFFFu;
+    } else {
+        *us = (UINT_T)cur_us;
+    }
+
+    return OPRT_OK;
 }
 
 OPERATE_RET tkl_timer_get(TUYA_TIMER_NUM_E timer_id, UINT_T *us)
 {
-    /* 功能描述: */
-    (void)timer_id;
-    (void)us;
+    OPERATE_RET op_ret;
 
-    /* TODO: map `tkl_timer_get` to the vendor SDK implementation. */
-    /* TODO: confirm pinmux, clock, interrupt, DMA, and error-code mapping. */
-    return OPRT_NOT_SUPPORTED;
+    op_ret = __tkl_timer_id_check(timer_id);
+    if (op_ret != OPRT_OK) {
+        return op_ret;
+    }
+    if (us == NULL) {
+        return OPRT_INVALID_PARM;
+    }
+    if ((s_timer_ctx[timer_id].inited == 0) || (s_timer_driver_inited == 0)) {
+        return OPRT_COM_ERROR;
+    }
+
+    *us = s_timer_ctx[timer_id].period_us;
+    return OPRT_OK;
 }
