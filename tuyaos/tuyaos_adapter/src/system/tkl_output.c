@@ -9,11 +9,10 @@
  */
 
  #include "tkl_output.h"
+ #include <stdarg.h>
  #include <components/log.h>
  
  #define MODE_NAME  "tkl"
- 
- extern void bk_printf_port(int level, char *tag, const char *fmt, va_list args);
  
  /**
  * @brief Output log information
@@ -24,21 +23,17 @@
  *
  * @return OPRT_OK on success. Others on error, please refer to tuya_error_code.h
  */
- extern void bk_printf(const char *fmt, ...);
  VOID_T tkl_log_output(IN CONST CHAR_T *str, ...)
  {
+     va_list args;
+
      if (str == NULL) {
          return;
      }
-     extern void bk_printf(const char *fmt, ...);
-     bk_printf(str);
- 
- //    shell_log_raw_data((const uint8_t *)str, strlen(str));
- 
- //    va_list args;
- //    va_start(args, str);
- //    shell_log_raw_data(str, strlen(str));
- //    va_end(args);
+
+     va_start(args, str);
+     bk_vprintf_ext(BK_LOG_WARN, (char *)MODE_NAME, str, args);
+     va_end(args);
  }
  
  /**
