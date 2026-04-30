@@ -19,7 +19,13 @@
 /* ---------------------------------------------------------------------------
  * Macros
  * --------------------------------------------------------------------------- */
-#define TKL_PWM_XTAL_HZ        26000000u
+/*
+ * BK7259 AP PWM v2p2 effective source clock is 320MHz in current clock tree setup.
+ * Keep it configurable for projects that switch PWM clock source.
+ */
+#ifndef TKL_PWM_SRC_CLK_HZ
+#define TKL_PWM_SRC_CLK_HZ     320000000u
+#endif
 #define TKL_PWM_PSC_MAX        255u
 #define TKL_PWM_PERIOD_MAX     65535u
 
@@ -112,7 +118,7 @@ STATIC OPERATE_RET __tkl_pwm_calc_psc_period(UINT32_T frequency_hz, UINT32_T *ps
     }
 
     for (psc = 0; psc <= TKL_PWM_PSC_MAX; psc++) {
-        UINT64_T tick_hz = (UINT64_T)TKL_PWM_XTAL_HZ / ((UINT64_T)psc + 1u);
+        UINT64_T tick_hz = (UINT64_T)TKL_PWM_SRC_CLK_HZ / ((UINT64_T)psc + 1u);
         UINT64_T per = tick_hz / (UINT64_T)frequency_hz;
 
         if (per == 0u) {
@@ -241,6 +247,10 @@ STATIC OPERATE_RET __tkl_pwm_cap_edge_from_trigger(TUYA_PWM_POLARITY_E level, pw
     }
     if (level == TUYA_PWM_NEGATIVE) {
         *edge_out = PWM_CAPTURE_NEG;
+        return OPRT_OK;
+    }
+    if ((UINT32_T)level == 2U) {
+        *edge_out = PWM_CAPTURE_EDGE;
         return OPRT_OK;
     }
     return OPRT_INVALID_PARM;
