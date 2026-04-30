@@ -43,6 +43,9 @@
 #define MIPI_TEST_CAMERA_SENSOR_FPS 15U
 #define MIPI_TEST_CAMERA_OUT_BUF_CNT 3U
 #define MIPI_TEST_CAMERA_HEAD_BYTES 8U
+#define MIPI_TEST_FACE_SP_WIDTH     56U
+#define MIPI_TEST_FACE_SP_HEIGHT    56U
+#define MIPI_TEST_FACE_SP_FORMAT    BK_PIXEL_FORMAT_RGB888
 
 typedef struct {
     BOOL_T enable;
@@ -874,6 +877,61 @@ static OPERATE_RET test_mipi_camera_mipi_open_gpu(uint16_t sensor_width,
     return OPRT_OK;
 }
 
+static OPERATE_RET test_mipi_camera_mipi_open_gpu_sp(uint16_t sensor_width,
+                                                     uint16_t sensor_height,
+                                                     uint8_t sensor_fps,
+                                                     uint16_t output_width,
+                                                     uint16_t output_height,
+                                                     uint16_t sp_width,
+                                                     uint16_t sp_height)
+{
+    OPERATE_RET ret;
+
+    if (s_mipi_camera_inited == true) {
+        tkl_log_output( "mipi camera already open\r\n");
+        return OPRT_OK;
+    }
+
+    test_mipi_camera_runtime_reset();
+    s_mipi_camera_cfg.sensor_width = sensor_width;
+    s_mipi_camera_cfg.sensor_height = sensor_height;
+    s_mipi_camera_cfg.sensor_fps = sensor_fps;
+    s_mipi_camera_cfg.output_width = output_width;
+    s_mipi_camera_cfg.output_height = output_height;
+    s_mipi_camera_cfg.enable_flexa = TRUE;
+    s_mipi_camera_cfg.work_mode = 1U;
+    s_mipi_camera_cfg.sp_enable = TRUE;
+    s_mipi_camera_cfg.sp_width = sp_width;
+    s_mipi_camera_cfg.sp_height = sp_height;
+    s_mipi_camera_cfg.sp_format = MIPI_TEST_FACE_SP_FORMAT;
+    s_mipi_camera_cfg.sp_buf_cnt = 2U;
+    s_mipi_camera_cfg.sp_work_mode = 0U;
+
+    test_mipi_auxldo_enable();
+    test_mipi_frame_buffer_init_once();
+
+    ret = tkl_camera_mipi_init(&s_mipi_camera_cfg);
+    if (ret != OPRT_OK) {
+        tkl_log_output( "camera open failed: %d\r\n", ret);
+        test_mipi_camera_runtime_reset();
+        return ret;
+    }
+
+    s_mipi_camera_inited = true;
+    tkl_log_output(
+            "camera open_gpu_sp ok, sensor=%ux%u@%u, mp=%ux%u fmt=%u, sp=%ux%u fmt=%u\r\n",
+            s_mipi_camera_cfg.sensor_width,
+            s_mipi_camera_cfg.sensor_height,
+            s_mipi_camera_cfg.sensor_fps,
+            s_mipi_camera_cfg.output_width,
+            s_mipi_camera_cfg.output_height,
+            (unsigned int)s_mipi_camera_cfg.output_format,
+            s_mipi_camera_cfg.sp_width,
+            s_mipi_camera_cfg.sp_height,
+            (unsigned int)s_mipi_camera_cfg.sp_format);
+    return OPRT_OK;
+}
+
 BOOL_T test_mipi_lcd_is_open(void)
 {
     return (s_mipi_lcd_opened == true) ? TRUE : FALSE;
@@ -1049,6 +1107,8 @@ void cli_tuya_mipi_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char 
     uint8_t sensor_fps = MIPI_TEST_CAMERA_SENSOR_FPS;
     uint16_t output_width = MIPI_TEST_CAMERA_SENSOR_W;
     uint16_t output_height = MIPI_TEST_CAMERA_SENSOR_H;
+    uint16_t sp_width = MIPI_TEST_FACE_SP_WIDTH;
+    uint16_t sp_height = MIPI_TEST_FACE_SP_HEIGHT;
 
     if (pcWriteBuffer == NULL || xWriteBufferLen <= 0) {
         return;
@@ -1056,7 +1116,7 @@ void cli_tuya_mipi_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char 
 
     if (argc < 3) {
         snprintf(pcWriteBuffer, xWriteBufferLen,
-                 "Usage: xmipi lcd <open [panel]|open_gpu [panel] [compress]|flush|stop_flush|close>; xmipi camera <open [sw sh fps ow oh]|open_gpu [sw sh fps ow oh]|start|get_frame|stop|close>");
+                 "Usage: xmipi lcd <open [panel]|open_gpu [panel] [compress]|flush|stop_flush|close>; xmipi camera <open [sw sh fps ow oh]|open_gpu [sw sh fps ow oh]|open_gpu_sp [sw sh fps ow oh spw sph]|start|get_frame|stop|close>");
         return;
     }
 
@@ -1129,6 +1189,12 @@ void cli_tuya_mipi_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char 
         if (argc >= 8) {
             output_height = (uint16_t)os_strtoul(argv[7], NULL, 10);
         }
+        if (argc >= 9) {
+            sp_width = (uint16_t)os_strtoul(argv[8], NULL, 10);
+        }
+        if (argc >= 10) {
+            sp_height = (uint16_t)os_strtoul(argv[9], NULL, 10);
+        }
 
         if (os_strcmp(cmd, "open") == 0) {
             ret = test_mipi_camera_mipi_open(sensor_width, sensor_height, sensor_fps, output_width, output_height);
@@ -1138,6 +1204,21 @@ void cli_tuya_mipi_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char 
             ret = test_mipi_camera_mipi_open_gpu(sensor_width, sensor_height, sensor_fps, output_width, output_height);
             snprintf(pcWriteBuffer, xWriteBufferLen,
                      "xmipi camera open_gpu %s (%d)\r\n", (ret == OPRT_OK) ? "ok" : "failed", ret);
+        } else if (os_strcmp(cmd, "open_gpu_sp") == 0) {
+            ret = test_mipi_camera_mipi_open_gpu_sp(sensor_width,
+                                                   sensor_height,
+                                                   sensor_fps,
+                                                   output_width,
+                                                   output_height,
+                                                   sp_width,
+                                                   sp_height);
+            snprintf(pcWriteBuffer, xWriteBufferLen,
+                     "xmipi camera open_gpu_sp %s (%d), sp=%ux%u fmt=%u\r\n",
+                     (ret == OPRT_OK) ? "ok" : "failed",
+                     ret,
+                     sp_width,
+                     sp_height,
+                     (unsigned int)MIPI_TEST_FACE_SP_FORMAT);
         } else if (os_strcmp(cmd, "start") == 0) {
             ret = test_mipi_camera_mipi_start();
             snprintf(pcWriteBuffer, xWriteBufferLen,
@@ -1166,10 +1247,10 @@ void cli_tuya_mipi_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char 
                      "xmipi camera close %s (%d)\r\n", (ret == OPRT_OK) ? "ok" : "failed", ret);
         } else {
             snprintf(pcWriteBuffer, xWriteBufferLen,
-                     "Usage: xmipi camera <open [sw sh fps ow oh]|open_gpu [sw sh fps ow oh]|start|get_frame|stop|close>");
+                     "Usage: xmipi camera <open [sw sh fps ow oh]|open_gpu [sw sh fps ow oh]|open_gpu_sp [sw sh fps ow oh spw sph]|start|get_frame|stop|close>");
         }
     } else {
         snprintf(pcWriteBuffer, xWriteBufferLen,
-                 "Usage: xmipi lcd <open [panel]|open_gpu [panel] [compress]|flush|stop_flush|close>; xmipi camera <open [sw sh fps ow oh]|open_gpu [sw sh fps ow oh]|start|get_frame|stop|close>");
+                 "Usage: xmipi lcd <open [panel]|open_gpu [panel] [compress]|flush|stop_flush|close>; xmipi camera <open [sw sh fps ow oh]|open_gpu [sw sh fps ow oh]|open_gpu_sp [sw sh fps ow oh spw sph]|start|get_frame|stop|close>");
     }
 }

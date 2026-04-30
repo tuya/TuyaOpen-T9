@@ -17,6 +17,9 @@
 extern "C" {
 #endif
 
+#define TUYA_CAMERA_MIPI_CHANNEL_MP 0U
+#define TUYA_CAMERA_MIPI_CHANNEL_SP 1U
+
 typedef struct {
     INT_T pin_scl;
     INT_T pin_sda;
@@ -37,6 +40,14 @@ typedef struct {
     BOOL_T enable_flexa;
     UINT8_T work_mode;              /* 0: frame mode, 1: flexa mode */
     UINT32_T read_timeout_ms;
+
+    BOOL_T sp_enable;
+    UINT16_T sp_width;
+    UINT16_T sp_height;
+    UINT32_T sp_format;             /* bk_pixel_format_t, default output_format */
+    UINT8_T sp_buf_cnt;
+    BOOL_T sp_enable_flexa;
+    UINT8_T sp_work_mode;           /* 0: frame mode, 1: flexa mode */
 } TUYA_CAMERA_MIPI_CFG_T;
 
 typedef struct {
@@ -47,6 +58,7 @@ typedef struct {
     UINT16_T width;
     UINT16_T height;
     UINT32_T format;                /* bk_pixel_format_t */
+    UINT8_T channel_id;             /* TUYA_CAMERA_MIPI_CHANNEL_*, default MP */
 } TUYA_CAMERA_MIPI_FRAME_T;
 
 typedef struct {

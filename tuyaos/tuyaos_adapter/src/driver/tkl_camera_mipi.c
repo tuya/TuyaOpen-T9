@@ -89,6 +89,32 @@ static void tkl_camera_mipi_cfg_normalize(TUYA_CAMERA_MIPI_CFG_T *cfg)
         cfg->enable_flexa = TRUE;
         cfg->work_mode = 1U;
     }
+
+    if (cfg->sp_enable != FALSE) {
+        cfg->sp_enable = TRUE;
+
+        if (cfg->sp_width == 0U) {
+            cfg->sp_width = cfg->output_width;
+        }
+
+        if (cfg->sp_height == 0U) {
+            cfg->sp_height = cfg->output_height;
+        }
+
+        if (cfg->sp_format == BK_PIXEL_FORMAT_INVALID ||
+            cfg->sp_format == BK_PIXEL_FORMAT_UNKNOW) {
+            cfg->sp_format = cfg->output_format;
+        }
+
+        if (cfg->sp_buf_cnt == 0U) {
+            cfg->sp_buf_cnt = 2U;
+        }
+
+        if (cfg->sp_enable_flexa != FALSE) {
+            cfg->sp_enable_flexa = TRUE;
+            cfg->sp_work_mode = 1U;
+        }
+    }
 }
 
 static OPERATE_RET tkl_camera_mipi_cfg_validate(const TUYA_CAMERA_MIPI_CFG_T *cfg)
@@ -105,6 +131,58 @@ static OPERATE_RET tkl_camera_mipi_cfg_validate(const TUYA_CAMERA_MIPI_CFG_T *cf
         return OPRT_INVALID_PARM;
     }
 
+    return OPRT_OK;
+}
+
+static uint32_t tkl_camera_mipi_sp_frame_size_get(void)
+{
+    uint32_t frame_size;
+
+    if (s_cam_ctx.cfg.sp_format == BK_PIXEL_FORMAT_RGB888 ||
+        s_cam_ctx.cfg.sp_format == BK_PIXEL_FORMAT_BGR888) {
+        return (uint32_t)s_cam_ctx.cfg.sp_width * s_cam_ctx.cfg.sp_height * 4U;
+    }
+
+    frame_size = bk_image_size_get(s_cam_ctx.cfg.sp_width,
+                                   s_cam_ctx.cfg.sp_height,
+                                   (bk_pixel_format_t)s_cam_ctx.cfg.sp_format);
+    return frame_size;
+}
+
+static OPERATE_RET tkl_camera_mipi_open_sp_channel(void)
+{
+    OPERATE_RET ret;
+    bk_isp_camera_channel_config_t sp_cfg;
+
+    if (s_cam_ctx.cfg.sp_enable != TRUE) {
+        return OPRT_OK;
+    }
+
+    sp_cfg = (bk_isp_camera_channel_config_t)CAM_MP_NV12_RB_INSTANCE_CONFIG(
+        s_cam_ctx.cfg.sp_width,
+        s_cam_ctx.cfg.sp_height
+    );
+    sp_cfg.port_id = ISP_MP_CHN_ID;
+    sp_cfg.buf_cnt = s_cam_ctx.cfg.sp_buf_cnt;
+    sp_cfg.enable_flexa = s_cam_ctx.cfg.sp_enable_flexa ? 1U : 0U;
+    sp_cfg.work_mode = s_cam_ctx.cfg.sp_work_mode;
+    sp_cfg.format = (uint16_t)s_cam_ctx.cfg.sp_format;
+    sp_cfg.width = s_cam_ctx.cfg.sp_width;
+    sp_cfg.height = s_cam_ctx.cfg.sp_height;
+
+    ret = bk_isp_camera_channel_open(s_cam_ctx.camera_ctlr_handle, ISP_SP_CHN_ID, &sp_cfg);
+    if (ret != OPRT_OK) {
+        tkl_log_output( "bk_isp_camera_channel_open SP failed: %d\r\n", ret);
+        return ret;
+    }
+
+    tkl_log_output( "camera SP open ok, output=%ux%u fmt=%u buf_cnt=%u flexa=%u work_mode=%u\r\n",
+            s_cam_ctx.cfg.sp_width,
+            s_cam_ctx.cfg.sp_height,
+            (unsigned int)s_cam_ctx.cfg.sp_format,
+            (unsigned int)s_cam_ctx.cfg.sp_buf_cnt,
+            (unsigned int)s_cam_ctx.cfg.sp_enable_flexa,
+            (unsigned int)s_cam_ctx.cfg.sp_work_mode);
     return OPRT_OK;
 }
 
@@ -401,6 +479,11 @@ OPERATE_RET tkl_camera_mipi_start(void)
         goto err_start;
     }
 
+    ret = tkl_camera_mipi_open_sp_channel();
+    if (ret != OPRT_OK) {
+        goto err_start;
+    }
+
     s_cam_ctx.started = TRUE;
     return OPRT_OK;
 
@@ -429,6 +512,11 @@ OPERATE_RET tkl_camera_mipi_get_frame(void *frame)
 {
     OPERATE_RET ret;
     uint32_t expect_size;
+    uint8_t channel_id;
+    uint8_t isp_channel_id;
+    uint16_t width;
+    uint16_t height;
+    uint32_t format;
     TUYA_CAMERA_MIPI_FRAME_T *req = (TUYA_CAMERA_MIPI_FRAME_T *)frame;
 
     if (req == NULL || req->buffer == NULL) {
@@ -439,23 +527,49 @@ OPERATE_RET tkl_camera_mipi_get_frame(void *frame)
         return OPRT_RESOURCE_NOT_READY;
     }
 
-    if (s_cam_ctx.cfg.enable_flexa != FALSE || s_cam_ctx.cfg.work_mode != 0U) {
-        tkl_log_output(
-                "get_frame is not supported in flexa mode, current enable_flexa=%u work_mode=%u, use gpu/flexa path or reopen camera in frame mode\r\n",
-                (unsigned int)s_cam_ctx.cfg.enable_flexa,
-                (unsigned int)s_cam_ctx.cfg.work_mode);
-        return OPRT_NOT_SUPPORTED;
+    channel_id = req->channel_id;
+    if (channel_id == TUYA_CAMERA_MIPI_CHANNEL_SP) {
+        if (s_cam_ctx.cfg.sp_enable != TRUE) {
+            return OPRT_RESOURCE_NOT_READY;
+        }
+
+        if (s_cam_ctx.cfg.sp_enable_flexa != FALSE || s_cam_ctx.cfg.sp_work_mode != 0U) {
+            tkl_log_output(
+                    "get_frame is not supported in SP flexa mode, current enable_flexa=%u work_mode=%u\r\n",
+                    (unsigned int)s_cam_ctx.cfg.sp_enable_flexa,
+                    (unsigned int)s_cam_ctx.cfg.sp_work_mode);
+            return OPRT_NOT_SUPPORTED;
+        }
+
+        isp_channel_id = ISP_SP_CHN_ID;
+        width = s_cam_ctx.cfg.sp_width;
+        height = s_cam_ctx.cfg.sp_height;
+        format = s_cam_ctx.cfg.sp_format;
+        expect_size = tkl_camera_mipi_sp_frame_size_get();
+    } else if (channel_id == TUYA_CAMERA_MIPI_CHANNEL_MP) {
+        if (s_cam_ctx.cfg.enable_flexa != FALSE || s_cam_ctx.cfg.work_mode != 0U) {
+            tkl_log_output(
+                    "get_frame is not supported in MP flexa mode, current enable_flexa=%u work_mode=%u, use gpu/flexa path or reopen camera in frame mode\r\n",
+                    (unsigned int)s_cam_ctx.cfg.enable_flexa,
+                    (unsigned int)s_cam_ctx.cfg.work_mode);
+            return OPRT_NOT_SUPPORTED;
+        }
+
+        isp_channel_id = ISP_MP_CHN_ID;
+        width = s_cam_ctx.cfg.output_width;
+        height = s_cam_ctx.cfg.output_height;
+        format = s_cam_ctx.cfg.output_format;
+        expect_size = bk_image_size_get(width, height, (bk_pixel_format_t)format);
+    } else {
+        return OPRT_INVALID_PARM;
     }
 
-    expect_size = bk_image_size_get(s_cam_ctx.cfg.output_width,
-                                    s_cam_ctx.cfg.output_height,
-                                    (bk_pixel_format_t)s_cam_ctx.cfg.output_format);
     if (expect_size == 0U || req->size < expect_size) {
         return OPRT_INVALID_PARM;
     }
 
     ret = bk_isp_camera_read(s_cam_ctx.camera_ctlr_handle,
-                             ISP_MP_CHN_ID,
+                             isp_channel_id,
                              req->buffer,
                              expect_size,
                              (req->timeout_ms != 0U) ? req->timeout_ms : s_cam_ctx.cfg.read_timeout_ms);
@@ -464,9 +578,9 @@ OPERATE_RET tkl_camera_mipi_get_frame(void *frame)
     }
 
     req->out_len = expect_size;
-    req->width = s_cam_ctx.cfg.output_width;
-    req->height = s_cam_ctx.cfg.output_height;
-    req->format = s_cam_ctx.cfg.output_format;
+    req->width = width;
+    req->height = height;
+    req->format = format;
 
     return OPRT_OK;
 }
