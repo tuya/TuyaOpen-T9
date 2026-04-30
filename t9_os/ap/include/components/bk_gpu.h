@@ -29,9 +29,14 @@ avdk_err_t bk_gpu_ioctl(bk_gpu_ctlr_handle_t handle, uint32_t cmd, void *arg);
 avdk_err_t bk_gpu_delete(bk_gpu_ctlr_handle_t handle);
 avdk_err_t bk_gpu_draw_path_clear(bk_gpu_ctlr_handle_t handle);
 avdk_err_t bk_gpu_draw_path_build(bk_gpu_ctlr_handle_t handle, bk_gpu_draw_path_set_t *path_set);
+
+// Modified by TUYA Start
+avdk_err_t bk_gpu_flex_overlay_path_build(bk_gpu_ctlr_handle_t handle, bk_gpu_draw_path_set_t *path_set);
+avdk_err_t bk_gpu_flex_overlay_path_clear(bk_gpu_ctlr_handle_t handle);
+// Modified by TUYA End
+
 avdk_err_t bk_gpu_blit_set(bk_gpu_ctlr_handle_t handle, void *src_buffer, bk_gpu_blit_config_t *blit_config);
 avdk_err_t bk_gpu_blit_clear(bk_gpu_ctlr_handle_t handle);
-avdk_err_t bk_gpu_ioctl(bk_gpu_ctlr_handle_t handle, uint32_t cmd, void *args);
 
 #ifdef __cplusplus
 }

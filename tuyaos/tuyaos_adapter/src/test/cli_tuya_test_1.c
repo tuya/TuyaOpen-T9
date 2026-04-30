@@ -120,6 +120,7 @@ static const struct cli_command tuya_cli_commands[] = {
     {"xgpio",   "gpio test",        cli_gpio_cmd},
     {"xwifi",   "wifi test",        cli_wifi_cmd},
     {"xsd",     "sd card test",     cli_sdcard_test_cmd},
+    // {"xface",   "face tflm test",   cli_tuya_face_cmd},
 #if 0
     {"xlp",     "lp test",          cli_lp_test_cmd},
     {"xtimer",  "timer test",       cli_tkl_timer_test},

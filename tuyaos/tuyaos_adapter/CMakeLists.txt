@@ -4,6 +4,7 @@ set(incs
     src/misc
     src/test/test_lvgl
     src/test/test_ringbuffer
+    # src/test/test_face_recognize
     $ENV{ARMINO_PATH}/../../../../apps/$ENV{APP_NAME}/include
     $ENV{ARMINO_PATH}/../../tuyaos/tuyaos_adapter/include
     $ENV{ARMINO_PATH}/../../tuyaos/tuyaos_adapter/include/adc
@@ -201,6 +202,11 @@ else()
             # src/test/test_lp.c
             src/test/test_gpio.c
             src/test/test_sdcard.c
+            # src/test/test_face_recognize/AvdkDetectionModel.cc
+            # src/test/test_face_recognize/box.c
+            # src/test/test_face_recognize/YolofaceDetectionModel.cc
+            # src/test/test_face_recognize/yoloface_detect_model_data.cc
+            # src/test/test_face_recognize/test_face_recognize.cc
             # src/test/test_littlefs.c
             src/test/cli_tuya_test_1.c
         )
@@ -276,7 +282,7 @@ endif()
 if ("$ENV{ARMINO_SOC}" STREQUAL "bk7259")
     set(priv_requires_list bk_common bk_log bk_cli lwip_intf_v2_1 os_source)
 elseif ("$ENV{ARMINO_SOC}" STREQUAL "bk7259_ap")
-    set(priv_requires_list bk_common bk_modem bk_log bk_cli lwip_intf_v2_1 os_source lvgl bk_vfs multimedia media_service bk_draw_osd bk_usb audio_record audio_play)
+    set(priv_requires_list bk_common bk_modem bk_log bk_cli lwip_intf_v2_1 os_source lvgl bk_vfs multimedia media_service bk_draw_osd bk_usb audio_record audio_play bk_tflite_micro avdk_utils bk_peripheral)
 else()
     message(FATAL_ERROR soc:"$ENV{ARMINO_SOC}" is not valid!)
 endif() # CONFIG_CPU_INDEX
