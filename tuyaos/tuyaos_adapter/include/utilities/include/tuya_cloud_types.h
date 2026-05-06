@@ -979,8 +979,6 @@ typedef enum {
     TUYA_SPI_NUM_1,		    // SPI 1
     TUYA_SPI_NUM_2,	        // SPI 2
     TUYA_SPI_NUM_3,	        // SPI 3
-    TUYA_SPI_NUM_4,	        // SPI 4
-    TUYA_SPI_NUM_5,	        // SPI 5
     TUYA_SPI_NUM_MAX,
 } TUYA_SPI_NUM_E;
 
