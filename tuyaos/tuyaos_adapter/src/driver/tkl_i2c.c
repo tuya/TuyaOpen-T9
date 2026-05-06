@@ -40,29 +40,81 @@ typedef struct {
     UINT8_T             last_direction; /* 0: write, 1: read */
 } TKL_I2C_PORT_CTX_T;
 
-STATIC TKL_MUTEX_HANDLE s_i2c_mutex = NULL;
+STATIC TKL_MUTEX_HANDLE s_i2c_global_mutex = NULL;
+STATIC TKL_MUTEX_HANDLE s_i2c_port_mutex[TUYA_I2C_NUM_MAX] = {0};
+STATIC BOOL_T s_i2c_lock_inited = FALSE;
 STATIC BOOL_T s_i2c_driver_inited = FALSE;
 STATIC UINT32_T s_i2c_init_port_count = 0;
 STATIC TKL_I2C_PORT_CTX_T s_i2c_ctx[TUYA_I2C_NUM_MAX];
 
-STATIC OPERATE_RET __tkl_i2c_lock(void)
+STATIC OPERATE_RET __tkl_i2c_global_lock(void)
 {
     OPERATE_RET ret;
 
-    if (s_i2c_mutex == NULL) {
-        ret = tkl_mutex_create_init(&s_i2c_mutex);
+    if (s_i2c_global_mutex == NULL) {
+        ret = tkl_mutex_create_init(&s_i2c_global_mutex);
         if (ret != OPRT_OK) {
             return ret;
         }
     }
 
-    return tkl_mutex_lock(s_i2c_mutex);
+    return tkl_mutex_lock(s_i2c_global_mutex);
 }
 
-STATIC VOID_T __tkl_i2c_unlock(void)
+STATIC VOID_T __tkl_i2c_global_unlock(void)
 {
-    if (s_i2c_mutex != NULL) {
-        (VOID_T)tkl_mutex_unlock(s_i2c_mutex);
+    if (s_i2c_global_mutex != NULL) {
+        (VOID_T)tkl_mutex_unlock(s_i2c_global_mutex);
+    }
+}
+
+STATIC OPERATE_RET __tkl_i2c_lock_init(void)
+{
+    OPERATE_RET ret;
+    UINT32_T i;
+
+    ret = __tkl_i2c_global_lock();
+    if (ret != OPRT_OK) {
+        return ret;
+    }
+
+    if (s_i2c_lock_inited == FALSE) {
+        for (i = 0; i < (UINT32_T)TUYA_I2C_NUM_MAX; i++) {
+            if (s_i2c_port_mutex[i] == NULL) {
+                ret = tkl_mutex_create_init(&s_i2c_port_mutex[i]);
+                if (ret != OPRT_OK) {
+                    __tkl_i2c_global_unlock();
+                    return ret;
+                }
+            }
+        }
+        s_i2c_lock_inited = TRUE;
+    }
+
+    __tkl_i2c_global_unlock();
+    return OPRT_OK;
+}
+
+STATIC OPERATE_RET __tkl_i2c_port_lock(TUYA_I2C_NUM_E port)
+{
+    OPERATE_RET ret;
+
+    if ((UINT32_T)port >= (UINT32_T)TUYA_I2C_NUM_MAX) {
+        return OPRT_INVALID_PARM;
+    }
+
+    ret = __tkl_i2c_lock_init();
+    if (ret != OPRT_OK) {
+        return ret;
+    }
+
+    return tkl_mutex_lock(s_i2c_port_mutex[port]);
+}
+
+STATIC VOID_T __tkl_i2c_port_unlock(TUYA_I2C_NUM_E port)
+{
+    if (((UINT32_T)port < (UINT32_T)TUYA_I2C_NUM_MAX) && (s_i2c_port_mutex[port] != NULL)) {
+        (VOID_T)tkl_mutex_unlock(s_i2c_port_mutex[port]);
     }
 }
 
@@ -237,16 +289,12 @@ OPERATE_RET tkl_i2c_init(TUYA_I2C_NUM_E port, CONST TUYA_IIC_BASE_CFG_T *cfg)
     i2c_id_t id;
     i2c_config_t bk_cfg;
     bk_err_t bk_ret;
+    BOOL_T reinit_from_inited = FALSE;
     TKL_I2C_PORT_CTX_T *ctx;
 
     if (cfg == NULL) {
         bk_printf("[tkl_i2c] init failed: cfg null\r\n");
         return OPRT_INVALID_PARM;
-    }
-
-    ret = __tkl_i2c_lock();
-    if (ret != OPRT_OK) {
-        return ret;
     }
 
     ret = __tkl_i2c_port_to_id(port, &id);
@@ -258,7 +306,12 @@ OPERATE_RET tkl_i2c_init(TUYA_I2C_NUM_E port, CONST TUYA_IIC_BASE_CFG_T *cfg)
         bk_printf("[tkl_i2c] init failed: invalid port=%u i2c_id_max=%u ret=%d\r\n",
                   (unsigned int)port, (unsigned int)I2C_ID_MAX, ret);
 #endif
-        goto __EXIT;
+        return ret;
+    }
+
+    ret = __tkl_i2c_port_lock(port);
+    if (ret != OPRT_OK) {
+        return ret;
     }
 
     ctx = &s_i2c_ctx[port];
@@ -285,20 +338,7 @@ OPERATE_RET tkl_i2c_init(TUYA_I2C_NUM_E port, CONST TUYA_IIC_BASE_CFG_T *cfg)
         }
 
         ctx->inited = FALSE;
-        if (s_i2c_init_port_count > 0) {
-            s_i2c_init_port_count--;
-        }
-    }
-
-    if (!s_i2c_driver_inited) {
-        bk_ret = bk_i2c_driver_init();
-        ret = __tkl_i2c_map_bk_err(bk_ret, OPRT_OS_ADAPTER_I2C_OPEN_FAILED);
-        if (ret != OPRT_OK) {
-            bk_printf("[tkl_i2c] init failed: driver_init port=%u id=%u bk_ret=%d ret=%d\r\n",
-                      (unsigned int)port, (unsigned int)id, (int)bk_ret, ret);
-            goto __EXIT;
-        }
-        s_i2c_driver_inited = TRUE;
+        reinit_from_inited = TRUE;
     }
 
     ret = __tkl_i2c_build_bk_cfg(cfg, ctx->slave_addr, &bk_cfg);
@@ -310,11 +350,44 @@ OPERATE_RET tkl_i2c_init(TUYA_I2C_NUM_E port, CONST TUYA_IIC_BASE_CFG_T *cfg)
                   (int)cfg->speed,
                   (int)cfg->addr_width,
                   ret);
-        if ((s_i2c_init_port_count == 0) && s_i2c_driver_inited) {
-            (VOID_T)bk_i2c_driver_deinit();
-            s_i2c_driver_inited = FALSE;
+        if (reinit_from_inited) {
+            OPERATE_RET lock_ret = __tkl_i2c_global_lock();
+            if (lock_ret == OPRT_OK) {
+                if (s_i2c_init_port_count > 0) {
+                    s_i2c_init_port_count--;
+                }
+                if ((s_i2c_init_port_count == 0) && s_i2c_driver_inited) {
+                    (VOID_T)bk_i2c_driver_deinit();
+                    s_i2c_driver_inited = FALSE;
+                }
+                __tkl_i2c_global_unlock();
+            }
         }
         goto __EXIT;
+    }
+
+    ret = __tkl_i2c_global_lock();
+    if (ret != OPRT_OK) {
+        ctx->inited = FALSE;
+        __tkl_i2c_clear_pending(ctx);
+        ctx->busy = FALSE;
+        goto __EXIT;
+    }
+
+    if (reinit_from_inited && (s_i2c_init_port_count > 0)) {
+        s_i2c_init_port_count--;
+    }
+
+    if (!s_i2c_driver_inited) {
+        bk_ret = bk_i2c_driver_init();
+        ret = __tkl_i2c_map_bk_err(bk_ret, OPRT_OS_ADAPTER_I2C_OPEN_FAILED);
+        if (ret != OPRT_OK) {
+            bk_printf("[tkl_i2c] init failed: driver_init port=%u id=%u bk_ret=%d ret=%d\r\n",
+                      (unsigned int)port, (unsigned int)id, (int)bk_ret, ret);
+            __tkl_i2c_global_unlock();
+            goto __EXIT;
+        }
+        s_i2c_driver_inited = TRUE;
     }
 
     bk_ret = bk_i2c_init(id, &bk_cfg);
@@ -332,6 +405,7 @@ OPERATE_RET tkl_i2c_init(TUYA_I2C_NUM_E port, CONST TUYA_IIC_BASE_CFG_T *cfg)
             (VOID_T)bk_i2c_driver_deinit();
             s_i2c_driver_inited = FALSE;
         }
+        __tkl_i2c_global_unlock();
         goto __EXIT;
     }
 
@@ -345,9 +419,10 @@ OPERATE_RET tkl_i2c_init(TUYA_I2C_NUM_E port, CONST TUYA_IIC_BASE_CFG_T *cfg)
     __tkl_i2c_clear_pending(ctx);
     s_i2c_init_port_count++;
     ret = OPRT_OK;
+    __tkl_i2c_global_unlock();
 
 __EXIT:
-    __tkl_i2c_unlock();
+    __tkl_i2c_port_unlock(port);
     return ret;
 }
 
@@ -358,7 +433,7 @@ OPERATE_RET tkl_i2c_deinit(TUYA_I2C_NUM_E port)
     bk_err_t bk_ret;
     TKL_I2C_PORT_CTX_T *ctx;
 
-    ret = __tkl_i2c_lock();
+    ret = __tkl_i2c_port_lock(port);
     if (ret != OPRT_OK) {
         return ret;
     }
@@ -392,6 +467,11 @@ OPERATE_RET tkl_i2c_deinit(TUYA_I2C_NUM_E port)
     ctx->last_bk_ret = BK_OK;
     ctx->last_count = 0;
     __tkl_i2c_clear_pending(ctx);
+    ret = __tkl_i2c_global_lock();
+    if (ret != OPRT_OK) {
+        goto __EXIT;
+    }
+
     if (s_i2c_init_port_count > 0) {
         s_i2c_init_port_count--;
     }
@@ -400,15 +480,17 @@ OPERATE_RET tkl_i2c_deinit(TUYA_I2C_NUM_E port)
         bk_ret = bk_i2c_driver_deinit();
         ret = __tkl_i2c_map_bk_err(bk_ret, OPRT_OS_ADAPTER_I2C_CLOSE_FAILED);
         if (ret != OPRT_OK) {
+            __tkl_i2c_global_unlock();
             goto __EXIT;
         }
         s_i2c_driver_inited = FALSE;
     }
 
+    __tkl_i2c_global_unlock();
     ret = OPRT_OK;
 
 __EXIT:
-    __tkl_i2c_unlock();
+    __tkl_i2c_port_unlock(port);
     return ret;
 }
 
@@ -421,7 +503,7 @@ OPERATE_RET tkl_i2c_irq_init(TUYA_I2C_NUM_E port, TUYA_I2C_IRQ_CB cb)
         return OPRT_INVALID_PARM;
     }
 
-    ret = __tkl_i2c_lock();
+    ret = __tkl_i2c_port_lock(port);
     if (ret != OPRT_OK) {
         return ret;
     }
@@ -432,7 +514,7 @@ OPERATE_RET tkl_i2c_irq_init(TUYA_I2C_NUM_E port, TUYA_I2C_IRQ_CB cb)
         ret = OPRT_NOT_SUPPORTED;
     }
 
-    __tkl_i2c_unlock();
+    __tkl_i2c_port_unlock(port);
     return ret;
 }
 
@@ -442,7 +524,7 @@ OPERATE_RET tkl_i2c_irq_enable(TUYA_I2C_NUM_E port)
     i2c_id_t id;
     bk_err_t bk_ret;
 
-    ret = __tkl_i2c_lock();
+    ret = __tkl_i2c_port_lock(port);
     if (ret != OPRT_OK) {
         return ret;
     }
@@ -461,7 +543,7 @@ OPERATE_RET tkl_i2c_irq_enable(TUYA_I2C_NUM_E port)
     ret = __tkl_i2c_map_bk_err(bk_ret, OPRT_COM_ERROR);
 
 __EXIT:
-    __tkl_i2c_unlock();
+    __tkl_i2c_port_unlock(port);
     return ret;
 }
 
@@ -471,7 +553,7 @@ OPERATE_RET tkl_i2c_irq_disable(TUYA_I2C_NUM_E port)
     i2c_id_t id;
     bk_err_t bk_ret;
 
-    ret = __tkl_i2c_lock();
+    ret = __tkl_i2c_port_lock(port);
     if (ret != OPRT_OK) {
         return ret;
     }
@@ -490,7 +572,7 @@ OPERATE_RET tkl_i2c_irq_disable(TUYA_I2C_NUM_E port)
     ret = __tkl_i2c_map_bk_err(bk_ret, OPRT_COM_ERROR);
 
 __EXIT:
-    __tkl_i2c_unlock();
+    __tkl_i2c_port_unlock(port);
     return ret;
 }
 
@@ -507,7 +589,7 @@ OPERATE_RET tkl_i2c_master_send(TUYA_I2C_NUM_E port, UINT16_T dev_addr, CONST VO
         return OPRT_INVALID_PARM;
     }
 
-    ret = __tkl_i2c_lock();
+    ret = __tkl_i2c_port_lock(port);
     if (ret != OPRT_OK) {
         return ret;
     }
@@ -567,7 +649,7 @@ OPERATE_RET tkl_i2c_master_send(TUYA_I2C_NUM_E port, UINT16_T dev_addr, CONST VO
     ret = OPRT_OK;
 
 __EXIT:
-    __tkl_i2c_unlock();
+    __tkl_i2c_port_unlock(port);
 
     if (!do_vendor_xfer) {
         return ret;
@@ -576,10 +658,10 @@ __EXIT:
     bk_ret = bk_i2c_master_write(id, (uint32_t)dev_addr, (const uint8_t *)data, size, TKL_I2C_XFER_TIMEOUT_MS);
     ret = __tkl_i2c_map_bk_err(bk_ret, OPRT_OS_ADAPTER_I2C_WRITE_FAILED);
 
-    lock_ret = __tkl_i2c_lock();
+    lock_ret = __tkl_i2c_port_lock(port);
     if (lock_ret == OPRT_OK) {
         __tkl_i2c_update_result(&s_i2c_ctx[port], bk_ret, (INT32_T)size, 0, TUYA_IIC_MODE_MASTER);
-        __tkl_i2c_unlock();
+        __tkl_i2c_port_unlock(port);
     }
 
     return ret;
@@ -601,7 +683,7 @@ OPERATE_RET tkl_i2c_master_receive(TUYA_I2C_NUM_E port, UINT16_T dev_addr, VOID 
         return OPRT_INVALID_PARM;
     }
 
-    ret = __tkl_i2c_lock();
+    ret = __tkl_i2c_port_lock(port);
     if (ret != OPRT_OK) {
         return ret;
     }
@@ -644,7 +726,7 @@ OPERATE_RET tkl_i2c_master_receive(TUYA_I2C_NUM_E port, UINT16_T dev_addr, VOID 
     ret = OPRT_OK;
 
 __EXIT:
-    __tkl_i2c_unlock();
+    __tkl_i2c_port_unlock(port);
 
     if (ret != OPRT_OK) {
         return ret;
@@ -668,10 +750,10 @@ __EXIT:
 
     ret = __tkl_i2c_map_bk_err(bk_ret, OPRT_OS_ADAPTER_I2C_READ_FAILED);
 
-    lock_ret = __tkl_i2c_lock();
+    lock_ret = __tkl_i2c_port_lock(port);
     if (lock_ret == OPRT_OK) {
         __tkl_i2c_update_result(&s_i2c_ctx[port], bk_ret, (INT32_T)size, 1, TUYA_IIC_MODE_MASTER);
-        __tkl_i2c_unlock();
+        __tkl_i2c_port_unlock(port);
     }
 
     return ret;
@@ -688,7 +770,7 @@ OPERATE_RET tkl_i2c_set_slave_addr(TUYA_I2C_NUM_E port, UINT16_T dev_addr)
         return OPRT_INVALID_PARM;
     }
 
-    ret = __tkl_i2c_lock();
+    ret = __tkl_i2c_port_lock(port);
     if (ret != OPRT_OK) {
         return ret;
     }
@@ -711,7 +793,7 @@ OPERATE_RET tkl_i2c_set_slave_addr(TUYA_I2C_NUM_E port, UINT16_T dev_addr)
     ret = __tkl_i2c_map_bk_err(bk_ret, OPRT_COM_ERROR);
 
 __EXIT:
-    __tkl_i2c_unlock();
+    __tkl_i2c_port_unlock(port);
     return ret;
 }
 
@@ -728,7 +810,7 @@ OPERATE_RET tkl_i2c_slave_send(TUYA_I2C_NUM_E port, CONST VOID *data, UINT32_T s
         return OPRT_INVALID_PARM;
     }
 
-    ret = __tkl_i2c_lock();
+    ret = __tkl_i2c_port_lock(port);
     if (ret != OPRT_OK) {
         return ret;
     }
@@ -749,7 +831,7 @@ OPERATE_RET tkl_i2c_slave_send(TUYA_I2C_NUM_E port, CONST VOID *data, UINT32_T s
     ret = OPRT_OK;
 
 __EXIT:
-    __tkl_i2c_unlock();
+    __tkl_i2c_port_unlock(port);
 
     if (!do_vendor_xfer) {
         return ret;
@@ -758,10 +840,10 @@ __EXIT:
     bk_ret = bk_i2c_slave_write(id, (const uint8_t *)data, size, TKL_I2C_XFER_TIMEOUT_MS);
     ret = __tkl_i2c_map_bk_err(bk_ret, OPRT_OS_ADAPTER_I2C_WRITE_FAILED);
 
-    lock_ret = __tkl_i2c_lock();
+    lock_ret = __tkl_i2c_port_lock(port);
     if (lock_ret == OPRT_OK) {
         __tkl_i2c_update_result(&s_i2c_ctx[port], bk_ret, (INT32_T)size, 0, TUYA_IIC_MODE_SLAVE);
-        __tkl_i2c_unlock();
+        __tkl_i2c_port_unlock(port);
     }
 
     return ret;
@@ -780,7 +862,7 @@ OPERATE_RET tkl_i2c_slave_receive(TUYA_I2C_NUM_E port, VOID *data, UINT32_T size
         return OPRT_INVALID_PARM;
     }
 
-    ret = __tkl_i2c_lock();
+    ret = __tkl_i2c_port_lock(port);
     if (ret != OPRT_OK) {
         return ret;
     }
@@ -801,7 +883,7 @@ OPERATE_RET tkl_i2c_slave_receive(TUYA_I2C_NUM_E port, VOID *data, UINT32_T size
     ret = OPRT_OK;
 
 __EXIT:
-    __tkl_i2c_unlock();
+    __tkl_i2c_port_unlock(port);
 
     if (!do_vendor_xfer) {
         return ret;
@@ -810,10 +892,10 @@ __EXIT:
     bk_ret = bk_i2c_slave_read(id, (uint8_t *)data, size, TKL_I2C_XFER_TIMEOUT_MS);
     ret = __tkl_i2c_map_bk_err(bk_ret, OPRT_OS_ADAPTER_I2C_READ_FAILED);
 
-    lock_ret = __tkl_i2c_lock();
+    lock_ret = __tkl_i2c_port_lock(port);
     if (lock_ret == OPRT_OK) {
         __tkl_i2c_update_result(&s_i2c_ctx[port], bk_ret, (INT32_T)size, 1, TUYA_IIC_MODE_SLAVE);
-        __tkl_i2c_unlock();
+        __tkl_i2c_port_unlock(port);
     }
 
     return ret;
@@ -832,7 +914,7 @@ OPERATE_RET tkl_i2c_get_status(TUYA_I2C_NUM_E port, TUYA_IIC_STATUS_T *status)
 
     (VOID_T)memset(status, 0, sizeof(TUYA_IIC_STATUS_T));
 
-    ret = __tkl_i2c_lock();
+    ret = __tkl_i2c_port_lock(port);
     if (ret != OPRT_OK) {
         return ret;
     }
@@ -860,7 +942,7 @@ OPERATE_RET tkl_i2c_get_status(TUYA_I2C_NUM_E port, TUYA_IIC_STATUS_T *status)
     ret = OPRT_OK;
 
 __EXIT:
-    __tkl_i2c_unlock();
+    __tkl_i2c_port_unlock(port);
     return ret;
 }
 
@@ -872,7 +954,7 @@ OPERATE_RET tkl_i2c_reset(TUYA_I2C_NUM_E port)
     bk_err_t bk_ret;
     TKL_I2C_PORT_CTX_T *ctx;
 
-    ret = __tkl_i2c_lock();
+    ret = __tkl_i2c_port_lock(port);
     if (ret != OPRT_OK) {
         return ret;
     }
@@ -901,6 +983,30 @@ OPERATE_RET tkl_i2c_reset(TUYA_I2C_NUM_E port)
         goto __EXIT;
     }
 
+    ret = __tkl_i2c_global_lock();
+    if (ret != OPRT_OK) {
+        ctx->inited = FALSE;
+        __tkl_i2c_clear_pending(ctx);
+        __tkl_i2c_update_result(ctx, BK_ERR_BUSY, 0, ctx->last_direction, ctx->last_mode);
+        goto __EXIT;
+    }
+
+    if (!s_i2c_driver_inited) {
+        bk_ret = bk_i2c_driver_init();
+        ret = __tkl_i2c_map_bk_err(bk_ret, OPRT_OS_ADAPTER_I2C_OPEN_FAILED);
+        if (ret != OPRT_OK) {
+            ctx->inited = FALSE;
+            if (s_i2c_init_port_count > 0) {
+                s_i2c_init_port_count--;
+            }
+            __tkl_i2c_clear_pending(ctx);
+            __tkl_i2c_update_result(ctx, bk_ret, 0, ctx->last_direction, ctx->last_mode);
+            __tkl_i2c_global_unlock();
+            goto __EXIT;
+        }
+        s_i2c_driver_inited = TRUE;
+    }
+
     bk_ret = bk_i2c_init(id, &bk_cfg);
     if (bk_ret != BK_OK) {
         ctx->inited = FALSE;
@@ -914,16 +1020,18 @@ OPERATE_RET tkl_i2c_reset(TUYA_I2C_NUM_E port)
                 s_i2c_driver_inited = FALSE;
             }
         }
+        __tkl_i2c_global_unlock();
         ret = __tkl_i2c_map_bk_err(bk_ret, OPRT_OS_ADAPTER_I2C_OPEN_FAILED);
         goto __EXIT;
     }
 
+    __tkl_i2c_global_unlock();
     __tkl_i2c_clear_pending(ctx);
     __tkl_i2c_update_result(ctx, BK_OK, 0, 0, ctx->cfg.role);
     ret = OPRT_OK;
 
 __EXIT:
-    __tkl_i2c_unlock();
+    __tkl_i2c_port_unlock(port);
     return ret;
 }
 
@@ -933,25 +1041,25 @@ INT32_T tkl_i2c_get_data_count(TUYA_I2C_NUM_E port)
     i2c_id_t id;
     INT32_T ret;
 
-    op_ret = __tkl_i2c_lock();
+    op_ret = __tkl_i2c_port_lock(port);
     if (op_ret != OPRT_OK) {
         return op_ret;
     }
 
     op_ret = __tkl_i2c_port_to_id(port, &id);
     if (op_ret != OPRT_OK) {
-        __tkl_i2c_unlock();
+        __tkl_i2c_port_unlock(port);
         return op_ret;
     }
 
     (void)id;
     if (!s_i2c_ctx[port].inited) {
-        __tkl_i2c_unlock();
+        __tkl_i2c_port_unlock(port);
         return OPRT_RESOURCE_NOT_READY;
     }
 
     ret = s_i2c_ctx[port].last_count;
-    __tkl_i2c_unlock();
+    __tkl_i2c_port_unlock(port);
     return ret;
 }
 
@@ -961,7 +1069,7 @@ OPERATE_RET tkl_i2c_ioctl(TUYA_I2C_NUM_E port, UINT32_T cmd, VOID *args)
     i2c_id_t id;
     TKL_I2C_PORT_CTX_T *ctx;
 
-    ret = __tkl_i2c_lock();
+    ret = __tkl_i2c_port_lock(port);
     if (ret != OPRT_OK) {
         return ret;
     }
@@ -999,6 +1107,6 @@ OPERATE_RET tkl_i2c_ioctl(TUYA_I2C_NUM_E port, UINT32_T cmd, VOID *args)
     }
 
 __EXIT:
-    __tkl_i2c_unlock();
+    __tkl_i2c_port_unlock(port);
     return ret;
 }

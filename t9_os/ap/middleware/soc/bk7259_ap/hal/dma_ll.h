@@ -425,7 +425,27 @@ static inline void dma_ll_set_privileged_attr(dma_hw_t *hw, dma_id_t id, dma_sec
 	}
 }
 #endif
+// Modified by TUYA Start
+static inline uint32_t dma_ll_get_src_pause_addr(dma_hw_t *hw, dma_id_t id)
+{
+	return hw->config_group[id].src_pause_addr;
+}
 
+static inline uint32_t dma_ll_get_dest_pause_addr(dma_hw_t *hw, dma_id_t id)
+{
+	return hw->config_group[id].dest_pause_addr;
+}
+
+static inline uint32_t dma_ll_get_dest_end_addr(dma_hw_t *hw, dma_id_t id)
+{
+	return hw->config_group[id].dest_loop_end_addr;
+}
+
+static inline uint32_t dma_ll_get_src_end_addr(dma_hw_t *hw, dma_id_t id)
+{
+	return hw->config_group[id].src_loop_end_addr;
+}
+// Modified by TUYA End
 /**
  * @brief Set interrupt allocation for a specific DMA channel
  * @param hw Pointer to HPDMA hardware registers
