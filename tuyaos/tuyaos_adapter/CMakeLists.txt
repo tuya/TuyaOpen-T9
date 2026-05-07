@@ -77,6 +77,7 @@ if ("${CONFIG_CPU_INDEX}" STREQUAL "0")
     list(APPEND srcs src/driver/tkl_hci_0.c)
     if (CONFIG_TUYA_TEST_CLI)
         list(APPEND srcs src/test/cli_tuya_test_0.c)
+        list(APPEND srcs src/test/test_memory.c)
     endif() # CONFIG_TUYA_TEST_CLI
 else()
     list(APPEND srcs
@@ -125,7 +126,7 @@ else()
         # src/misc/qflash.c
         # src/misc/sflash.c
         # src/misc/bk_adapter.c
-        # src/misc/tuya_dma.c
+        src/misc/tuya_dma.c
         src/misc/tkl_mftest.c
         # src/misc/mftest/mt_audio.c
 
@@ -202,6 +203,7 @@ else()
             # src/test/test_lp.c
             src/test/test_gpio.c
             src/test/test_sdcard.c
+            src/test/test_memory.c
             # src/test/test_face_recognize/AvdkDetectionModel.cc
             # src/test/test_face_recognize/box.c
             # src/test/test_face_recognize/YolofaceDetectionModel.cc

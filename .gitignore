@@ -27,6 +27,7 @@ qt_proj/
 *.pyc
 
 /t9_os/build
+/t9_os/ap/components/bk_tflite_micro/tflite-micro/gen
 xx*.sh
 /t9_os/bk_idk/tools/build_tools/part_table_tools/config/gen_files_list.txt
 /t9_os/bk_idk/tools/build_tools/part_table_tools/config/inseqs.json
