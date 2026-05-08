@@ -8,24 +8,24 @@
  *
  */
 
- #include "tkl_semaphore.h"
- #include "tkl_system.h"
- 
- // #include "portmacro.h"
- #include "projdefs.h"
- #include "FreeRTOS.h"
- #include "task.h"
- #include "semphr.h"
- 
- // #include <semaphore.h>
- #include <time.h>
- 
- typedef struct
- {
-     xSemaphoreHandle sem;
- }TKL_SEM_MANAGE,*P_TKL_SEM_MANAGE;
- 
- /**
+#include "tkl_semaphore.h"
+#include "tkl_system.h"
+
+// #include "portmacro.h"
+#include "projdefs.h"
+#include "FreeRTOS.h"
+#include "task.h"
+#include "semphr.h"
+
+// #include <semaphore.h>
+#include <time.h>
+
+typedef struct
+{
+    xSemaphoreHandle sem;
+}TKL_SEM_MANAGE,*P_TKL_SEM_MANAGE;
+
+/**
  * @brief Create semaphore
  *
  * @param[out] handle: semaphore handle
@@ -36,21 +36,21 @@
  *
  * @return OPRT_OK on success. Others on error, please refer to tuya_error_code.h
  */
- OPERATE_RET tkl_semaphore_create_init(TKL_SEM_HANDLE *handle, CONST UINT_T sem_cnt, CONST UINT_T sem_max)
- {
-     if(!handle) {
-         return OPRT_INVALID_PARM;
-     }
- 
-     *handle = (TKL_SEM_HANDLE)xSemaphoreCreateCounting(sem_max, sem_cnt);
-     if (NULL == *handle) {
-         return OPRT_OS_ADAPTER_SEM_CREAT_FAILED;
-     }
- 
-     return OPRT_OK;
- }
- 
- /**
+OPERATE_RET tkl_semaphore_create_init(TKL_SEM_HANDLE *handle, CONST UINT_T sem_cnt, CONST UINT_T sem_max)
+{
+    if(!handle) {
+        return OPRT_INVALID_PARM;
+    }
+
+    *handle = (TKL_SEM_HANDLE)xSemaphoreCreateCounting(sem_max, sem_cnt);
+    if (NULL == *handle) {
+        return OPRT_OS_ADAPTER_SEM_CREAT_FAILED;
+    }
+
+    return OPRT_OK;
+}
+
+/**
  * @brief Wait semaphore
  *
  * @param[in] handle: semaphore handle
@@ -60,31 +60,31 @@
  *
  * @return OPRT_OK on success. Others on error, please refer to tuya_error_code.h
  */
- OPERATE_RET tkl_semaphore_wait(CONST TKL_SEM_HANDLE handle, CONST UINT_T timeout)
- {
-     if(!handle) {
-         return OPRT_INVALID_PARM;
-     }
- 
-     BaseType_t ret;
-     if (timeout == TKL_SEM_WAIT_FOREVER) {
-         ret = xSemaphoreTake(handle, portMAX_DELAY);
-     } else {
-         UINT_T ticks = timeout / portTICK_RATE_MS;
- 
-         if (ticks == 0) {
-             ticks = 1;
-         }
-         ret = xSemaphoreTake(handle, ticks);
-     }
-     if (pdTRUE != ret) {
-         return OPRT_OS_ADAPTER_SEM_WAIT_FAILED;
-     }
- 
-     return OPRT_OK;
- }
- extern uint32_t platform_is_in_interrupt_context( void );
- /**
+OPERATE_RET tkl_semaphore_wait(CONST TKL_SEM_HANDLE handle, CONST UINT_T timeout)
+{
+    if(!handle) {
+        return OPRT_INVALID_PARM;
+    }
+
+    BaseType_t ret;
+    if (timeout == TKL_SEM_WAIT_FOREVER) {
+        ret = xSemaphoreTake(handle, portMAX_DELAY);
+    } else {
+        UINT_T ticks = timeout / portTICK_RATE_MS;
+
+        if (ticks == 0) {
+            ticks = 1;
+        }
+        ret = xSemaphoreTake(handle, ticks);
+    }
+    if (pdTRUE != ret) {
+        return OPRT_OS_ADAPTER_SEM_WAIT_FAILED;
+    }
+
+    return OPRT_OK;
+}
+extern uint32_t platform_is_in_interrupt_context( void );
+/**
  * @brief Post semaphore
  *
  * @param[in] handle: semaphore handle
@@ -93,33 +93,33 @@
  *
  * @return OPRT_OK on success. Others on error, please refer to tuya_error_code.h
  */
- OPERATE_RET tkl_semaphore_post(CONST TKL_SEM_HANDLE handle)
- {
-     if(!handle) {
-         return OPRT_INVALID_PARM;
-     }
- 
-     P_TKL_SEM_MANAGE sem_manage;
-     sem_manage = (P_TKL_SEM_MANAGE)handle;
- 
-     BaseType_t ret;
-     if (0 == platform_is_in_interrupt_context()) {
-         ret = xSemaphoreGive(sem_manage->sem);
-     } else {
-         signed portBASE_TYPE xHigherPriorityTaskWoken = pdFALSE;
-         ret = xSemaphoreGiveFromISR(sem_manage->sem,
-                                     &xHigherPriorityTaskWoken);
-         portEND_SWITCHING_ISR(xHigherPriorityTaskWoken);
-     }
- 
-     if (pdTRUE != ret) {
-         return OPRT_OS_ADAPTER_SEM_POST_FAILED;
-     }
- 
-     return OPRT_OK;
- }
- 
- /**
+OPERATE_RET tkl_semaphore_post(CONST TKL_SEM_HANDLE handle)
+{
+    if(!handle) {
+        return OPRT_INVALID_PARM;
+    }
+
+    P_TKL_SEM_MANAGE sem_manage;
+    sem_manage = (P_TKL_SEM_MANAGE)handle;
+
+    BaseType_t ret;
+    if (0 == platform_is_in_interrupt_context()) {
+        ret = xSemaphoreGive(sem_manage->sem);
+    } else {
+        signed portBASE_TYPE xHigherPriorityTaskWoken = pdFALSE;
+        ret = xSemaphoreGiveFromISR(sem_manage->sem,
+                                    &xHigherPriorityTaskWoken);
+        portEND_SWITCHING_ISR(xHigherPriorityTaskWoken);
+    }
+
+    if (pdTRUE != ret) {
+        return OPRT_OS_ADAPTER_SEM_POST_FAILED;
+    }
+
+    return OPRT_OK;
+}
+
+/**
  * @brief Release semaphore
  *
  * @param[in] handle: semaphore handle
@@ -128,16 +128,13 @@
  *
  * @return OPRT_OK on success. Others on error, please refer to tuya_error_code.h
  */
- OPERATE_RET tkl_semaphore_release(CONST TKL_SEM_HANDLE handle)
- {
-     if(!handle) {
-         return OPRT_INVALID_PARM;
-     }
- 
-     vSemaphoreDelete(handle);
- 
-     return OPRT_OK;
- }
- 
- 
- 
+OPERATE_RET tkl_semaphore_release(CONST TKL_SEM_HANDLE handle)
+{
+    if(!handle) {
+        return OPRT_INVALID_PARM;
+    }
+
+    vSemaphoreDelete(handle);
+
+    return OPRT_OK;
+}

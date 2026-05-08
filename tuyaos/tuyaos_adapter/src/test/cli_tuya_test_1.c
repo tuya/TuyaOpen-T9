@@ -110,6 +110,7 @@ static void cli_test_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, cha
 static const struct cli_command tuya_cli_commands[] = {
     // {"audio_test", "mic to speaker test", cli_audio_test_cmd},
     {"info",    "system info",      cli_system_info_cmd},
+    {"xmem",    "memory debug commands", cli_memory_test_cmd},
     {"xmipi",    "mipi test",        cli_tuya_mipi_cmd},
     {"xgpu",    "gpu pipeline test", cli_tuya_gpu_cmd},
     {"xvenc",   "video encode test", cli_tuya_venc_cmd},
@@ -120,6 +121,7 @@ static const struct cli_command tuya_cli_commands[] = {
     {"xgpio",   "gpio test",        cli_gpio_cmd},
     {"xwifi",   "wifi test",        cli_wifi_cmd},
     {"xsd",     "sd card test",     cli_sdcard_test_cmd},
+    // {"xface",   "face tflm test",   cli_tuya_face_cmd},
 #if 0
     {"xlp",     "lp test",          cli_lp_test_cmd},
     {"xtimer",  "timer test",       cli_tkl_timer_test},

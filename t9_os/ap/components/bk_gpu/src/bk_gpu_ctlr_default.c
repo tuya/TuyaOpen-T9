@@ -30,6 +30,92 @@
 
 #define HDMA_OPEN_ISR_ENABLE 1
 
+// Modified by TUYA Start
+
+#define GPU_DRAW_RECT_LINE_WIDTH  4
+
+static void gpu_draw_path_calc_bounds(const bk_gpu_draw_path_set_t *path_set,
+                                      int16_t *xmin, int16_t *ymin,
+                                      int16_t *xmax, int16_t *ymax)
+{
+    const uint8_t *cmd = path_set->cmd;
+    const int16_t *data = (const int16_t *)path_set->data;
+    bool has_point = false;
+
+    *xmin = INT16_MAX;
+    *ymin = INT16_MAX;
+    *xmax = INT16_MIN;
+    *ymax = INT16_MIN;
+
+    for (uint32_t i = 0; i < path_set->size; i++)
+    {
+        uint8_t op = cmd[i];
+        uint32_t point_count = 0;
+
+        if (op == VLC_OP_END)
+        {
+            break;
+        }
+
+        switch (op)
+        {
+            case VLC_OP_MOVE:
+            case VLC_OP_MOVE_REL:
+            case VLC_OP_LINE:
+            case VLC_OP_LINE_REL:
+                point_count = 1;
+                break;
+            case VLC_OP_QUAD:
+            case VLC_OP_QUAD_REL:
+                point_count = 2;
+                break;
+            case VLC_OP_CUBIC:
+            case VLC_OP_CUBIC_REL:
+                point_count = 3;
+                break;
+            default:
+                point_count = 0;
+                break;
+        }
+
+        for (uint32_t p = 0; p < point_count; p++)
+        {
+            int16_t x = *data++;
+            int16_t y = *data++;
+
+            if (x < *xmin) *xmin = x;
+            if (y < *ymin) *ymin = y;
+            if (x > *xmax) *xmax = x;
+            if (y > *ymax) *ymax = y;
+            has_point = true;
+        }
+    }
+
+    if (!has_point)
+    {
+        *xmin = *ymin = *xmax = *ymax = 0;
+    }
+}
+
+static bool gpu_draw_path_intersects_line_block(gpu_flex_data_t *data,
+                                                const bk_gpu_ctlr_config_t *config)
+{
+    int32_t block_start;
+    int32_t block_end;
+
+    if (config->rotate_degree == 90)
+    {
+        block_start = ((int32_t)data->flexa_index - 1) * config->flexa_lines;
+        block_end = (int32_t)data->flexa_index * config->flexa_lines;
+        return data->draw_ymax >= block_start && data->draw_ymin <= block_end;
+    }
+
+    block_start = ((int32_t)data->flexa_index - 1) * config->flexa_lines;
+    block_end = block_start + config->flexa_lines;
+    return data->draw_ymax >= block_start && data->draw_ymin <= block_end;
+}
+// Modified by TUYA End
+
 static void gpu_driver_init(void)
 {
     bk_pm_module_vote_power_ctrl(PM_POWER_SUB_DOMAIN_GPU, PM_POWER_MODULE_STATE_ON);
@@ -182,6 +268,9 @@ static avdk_err_t gpu_draw_path_build(bk_gpu_ctlr_handle_t handle, bk_gpu_draw_p
 
     rtos_lock_mutex(&flex->draw_mutex);
 
+// Modified by TUYA Start
+    controller->flex.draw_flexa_overlay = 0;
+// Modified by TUYA End
     CHECK_ERROR(vg_lite_clear_path(&flex->draw_path));
 
     memset(&flex->draw_path, 0, sizeof(vg_lite_path_t));
@@ -206,6 +295,9 @@ static avdk_err_t gpu_draw_path_clear(bk_gpu_ctlr_handle_t handle)
     gpu_flex_data_t *flex = &controller->flex;
 
     rtos_lock_mutex(&flex->draw_mutex);
+// Modified by TUYA Start
+    controller->flex.draw_flexa_overlay = 0;
+// Modified by TUYA End
     controller->flex.draw_enable = 0;
     CHECK_ERROR(vg_lite_clear_path(&flex->draw_path));
     rtos_unlock_mutex(&flex->draw_mutex);
@@ -218,6 +310,116 @@ static int gpu_draw_path_process(vg_lite_matrix_t *matrix, vg_lite_path_t *path,
     CHECK_ERROR(vg_lite_finish());
     return 0;
 }
+
+// Modified by TUYA Start
+static bool gpu_clip_rect_to_buffer(vg_lite_buffer_t *buffer,
+    int32_t x,
+    int32_t y,
+    int32_t width,
+    int32_t height,
+    vg_lite_rectangle_t *rect)
+{
+    int32_t x2 = x + width;
+    int32_t y2 = y + height;
+
+    if (width <= 0 || height <= 0)
+    {
+        return false;
+    }
+
+    if (x < 0)
+    {
+        x = 0;
+    }
+    if (y < 0)
+    {
+        y = 0;
+    }
+    if (x2 > buffer->width)
+    {
+        x2 = buffer->width;
+    }
+    if (y2 > buffer->height)
+    {
+        y2 = buffer->height;
+    }
+
+    if (x >= x2 || y >= y2)
+    {
+        return false;
+    }
+
+    rect->x = x;
+    rect->y = y;
+    rect->width = x2 - x;
+    rect->height = y2 - y;
+
+    return true;
+}
+
+static int gpu_draw_rect_line(vg_lite_buffer_t *buffer,
+    int32_t x,
+    int32_t y,
+    int32_t width,
+    int32_t height,
+    bool *drawn)
+{
+    vg_lite_rectangle_t rect;
+
+    if (!gpu_clip_rect_to_buffer(buffer, x, y, width, height, &rect))
+    {
+        return 0;
+    }
+
+    CHECK_ERROR(vg_lite_clear(buffer, &rect, 0xFF00FF00));
+    *drawn = true;
+
+    return 0;
+}
+
+static int gpu_flex_overlay_draw_line_block(gpu_flex_data_t *data,
+                                            const bk_gpu_ctlr_config_t *config,
+                                            vg_lite_buffer_t *buffer)
+{
+    int32_t x1;
+    int32_t y1;
+    int32_t x2;
+    int32_t y2;
+    int32_t line_width = GPU_DRAW_RECT_LINE_WIDTH;
+    bool drawn = false;
+
+    if (config->rotate_degree == 90)
+    {
+        int32_t block_end = (int32_t)data->flexa_index * config->flexa_lines;
+
+        x1 = block_end - data->draw_ymax;
+        x2 = block_end - data->draw_ymin;
+        y1 = data->draw_xmin;
+        y2 = data->draw_xmax;
+    }
+    else
+    {
+        int32_t block_start = ((int32_t)data->flexa_index - 1) * config->flexa_lines;
+
+        x1 = data->draw_xmin;
+        x2 = data->draw_xmax;
+        y1 = data->draw_ymin - block_start;
+        y2 = data->draw_ymax - block_start;
+    }
+
+    gpu_draw_rect_line(buffer, x1 - line_width / 2, y1, line_width, y2 - y1, &drawn);
+    gpu_draw_rect_line(buffer, x2 - line_width / 2, y1, line_width, y2 - y1, &drawn);
+    gpu_draw_rect_line(buffer, x1, y1 - line_width / 2, x2 - x1, line_width, &drawn);
+    gpu_draw_rect_line(buffer, x1, y2 - line_width / 2, x2 - x1, line_width, &drawn);
+
+    if (drawn)
+    {
+        CHECK_ERROR(vg_lite_finish());
+    }
+
+    return 0;
+}
+// Modified by TUYA End
 
 static void gpu_isp_line_done_handle(uint32_t line, void *arg)
 {
@@ -789,10 +991,23 @@ static void gpu_flex_process_line_block(gpu_flex_data_t *data,
     /* Draw face detection rectangles if enabled */
     rtos_lock_mutex(&data->draw_mutex);
 
+// Modified by TUYA Start
     if (data->draw_enable)
     {
-        gpu_draw_path_process(&data->draw_matrix, &data->draw_path, &data->dst_buf);
+        if (data->draw_flexa_overlay)
+        {
+            if (gpu_draw_path_intersects_line_block(data, config))
+            {
+                gpu_flex_overlay_draw_line_block(data, config, &data->dst_buf);
+            }
+        }
+        else
+        {
+            gpu_draw_path_process(&data->draw_matrix, &data->draw_path, &data->dst_buf);
+        }
     }
+// Modified by TUYA End
+
     GPU_LINE_END();
     rtos_unlock_mutex(&data->draw_mutex);
     HPDMA_LINE_START();
@@ -1146,6 +1361,52 @@ static avdk_err_t gpu_ctlr_delete(bk_gpu_ctlr_handle_t handle)
 
     return AVDK_ERR_OK;
 }
+
+// Modified by TUYA Start
+avdk_err_t bk_gpu_flex_overlay_path_build(bk_gpu_ctlr_handle_t handle, bk_gpu_draw_path_set_t *path_set)
+{
+    gpu_vn_ctlr_t *controller = __containerof(handle, gpu_vn_ctlr_t, ops);
+    gpu_flex_data_t *flex = &controller->flex;
+    int16_t xmin;
+    int16_t ymin;
+    int16_t xmax;
+    int16_t ymax;
+
+    rtos_lock_mutex(&flex->draw_mutex);
+
+    /*
+     * Flexa block blit shares the GPU with stroked paths and can hang BK7259.
+     * Store bbox from path commands and draw borders via gpu_flex_overlay_draw_line_block().
+     */
+    flex->draw_flexa_overlay = 1;
+    CHECK_ERROR(vg_lite_clear_path(&flex->draw_path));
+    os_memset(&flex->draw_path, 0, sizeof(vg_lite_path_t));
+
+    gpu_draw_path_calc_bounds(path_set, &xmin, &ymin, &xmax, &ymax);
+    flex->draw_xmin = xmin;
+    flex->draw_ymin = ymin;
+    flex->draw_xmax = xmax;
+    flex->draw_ymax = ymax;
+    flex->draw_enable = 1;
+
+    rtos_unlock_mutex(&flex->draw_mutex);
+
+    return 0;
+}
+
+avdk_err_t bk_gpu_flex_overlay_path_clear(bk_gpu_ctlr_handle_t handle)
+{
+    gpu_vn_ctlr_t *controller = __containerof(handle, gpu_vn_ctlr_t, ops);
+    gpu_flex_data_t *flex = &controller->flex;
+
+    rtos_lock_mutex(&flex->draw_mutex);
+    flex->draw_enable = 0;
+    flex->draw_flexa_overlay = 0;
+    rtos_unlock_mutex(&flex->draw_mutex);
+
+    return 0;
+}
+// Modified by TUYA End
 
 avdk_err_t bk_gpu_ctlr_new(bk_gpu_ctlr_handle_t *handle, bk_gpu_ctlr_config_t *config)
 {

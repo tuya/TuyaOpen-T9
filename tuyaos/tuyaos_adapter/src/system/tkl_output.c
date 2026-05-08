@@ -24,19 +24,19 @@
  * @return OPRT_OK on success. Others on error, please refer to tuya_error_code.h
  */
  VOID_T tkl_log_output(IN CONST CHAR_T *str, ...)
- {
-     va_list args;
+{
+    va_list args;
 
-     if (str == NULL) {
-         return;
-     }
+    if (str == NULL) {
+        return;
+    }
 
-     va_start(args, str);
-     bk_vprintf_ext(BK_LOG_WARN, (char *)MODE_NAME, str, args);
-     va_end(args);
- }
- 
- /**
+    va_start(args, str);
+    bk_vprintf_ext(BK_LOG_WARN, (char *)MODE_NAME, str, args);
+    va_end(args);
+}
+
+/**
  * @brief Close log port
  *
  * @param VOID_T
@@ -45,12 +45,12 @@
  *
  * @return OPRT_OK on success. Others on error, please refer to tuya_error_code.h
  */
- OPERATE_RET tkl_log_close(VOID_T)
- {
-     return OPRT_OK;
- }
- 
- /**
+OPERATE_RET tkl_log_close(VOID_T)
+{
+    return OPRT_OK;
+}
+
+/**
  * @brief Open log port
  *
  * @param VOID_T
@@ -59,10 +59,7 @@
  *
  * @return OPRT_OK on success. Others on error, please refer to tuya_error_code.h
  */
- OPERATE_RET tkl_log_open(VOID_T)
- {
-     return OPRT_OK;
- }
- 
- 
- 
+OPERATE_RET tkl_log_open(VOID_T)
+{
+    return OPRT_OK;
+}

@@ -175,6 +175,7 @@ static void cli_system_info_cmd(char *pcWriteBuffer, int xWriteBufferLen, int ar
 #define TUYA_TEST_CMD_CNT (sizeof(s_sinfo_commands) / sizeof(struct cli_command))
 static const struct cli_command s_sinfo_commands[] = {
     {"info", "system info", cli_system_info_cmd},
+    {"xmem", "memory debug commands", cli_memory_test_cmd},
     {"rf_cali", "set rf calibration flag, just for test", cli_rf_set_cali_cmd},
 };
 
@@ -183,4 +184,3 @@ int cp_cli_tuya_test_init(void)
     cli_register_commands(s_sinfo_commands, TUYA_TEST_CMD_CNT);
     return 0;
 }
-
