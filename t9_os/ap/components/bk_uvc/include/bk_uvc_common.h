@@ -30,6 +30,9 @@
 #define UVC_PROCESS_TASK_START_BIT   INDEX_MASK(4)
 #define UVC_STREAM_START_BIT         INDEX_MASK(5)
 #define UVC_STREAM_STOP_BIT          INDEX_MASK(6)
+#define UVC_STREAM_SUSPEND_BIT       INDEX_MASK(7)
+#define UVC_STREAM_RESUME_BIT        INDEX_MASK(8)
+#define UVC_PORT_IDLE_BIT(port)      INDEX_MASK((8 + (port)))
 
 
 
@@ -110,6 +113,8 @@ typedef enum
     UVC_DISCONNECT_IND,
     UVC_STREAM_START_IND,
     UVC_STREAM_STOP_IND,
+    UVC_STREAM_SUSPEND_IND,
+    UVC_STREAM_RESUME_IND,
     UVC_DATA_REQUEST_IND,
     UVC_EOF_IND,
     UVC_EXIT_IND,
@@ -131,6 +136,10 @@ typedef struct
 typedef struct
 {
     beken_semaphore_t sem;
+    uint8_t port;
+    volatile uint8_t stop_requested;
+    volatile uint8_t processing;
+    volatile uint32_t pending_urb_num;
     bk_cam_uvc_config_t *info;
     uvc_stream_state_t stream_state;
     struct usbh_urb *urb;

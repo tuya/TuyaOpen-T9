@@ -212,8 +212,335 @@ uint32_t hal_dsi_operation_mode_get(void)
     return reg_MODE_CFG & 0x1;
 }
 
+/*
+ * Naneng DPHY internal DPLL:
+ *   FVCO = 26 MHz * 8 * (NI + NF/1024) / NREF  (NREF=0 -> ÷1)
+ *   lane_hs_bitrate = FVCO / 2^rate
+ *   DPI pixel clock = lane_hs_bitrate / (dsi_pixelclk_div + 2),  dsi_pixelclk_div = pixdiv field [3:0]
+ */
+#define NANENG_PLL_FVCO_BASE_HZ   208000000ULL  /* 26e6 * 8 */
+#define NANENG_PLL_FVCO_MIN_HZ    1200000000ULL
+#define NANENG_PLL_FVCO_MAX_HZ    3200000000ULL
+
+static bool naneng_dsi_pll_try(uint64_t lane_hz, uint32_t pixdiv, uint32_t *r5c_out, uint64_t *lane_hz_act_out)
+{
+    const uint64_t base = NANENG_PLL_FVCO_BASE_HZ;
+
+    for (uint32_t rate = 0u; rate <= 7u; rate++) {
+        uint64_t fvco = lane_hz << rate;
+        if (fvco < NANENG_PLL_FVCO_MIN_HZ || fvco > NANENG_PLL_FVCO_MAX_HZ) {
+            continue;
+        }
+
+        uint64_t t64 = (fvco * 1024ULL + base / 2ULL) / base;
+        if (t64 < 6ULL * 1024ULL) {
+            continue;
+        }
+
+        uint32_t ni = (uint32_t)(t64 / 1024ULL);
+        uint32_t nf = (uint32_t)(t64 % 1024ULL);
+
+        if (ni < 6u || ni > 31u) {
+            continue;
+        }
+
+        uint64_t fvco_act = (base * t64) / 1024ULL;
+        uint64_t lane_act = fvco_act >> rate;
+
+        uint32_t r5c = ((rate & 7u) << 24) | (0u << 19) | ((ni & 0x1fu) << 14)
+            | ((nf & 0x3ffu) << 4) | (pixdiv & 0xfu);
+
+        *r5c_out = r5c;
+        *lane_hz_act_out = lane_act;
+        return true;
+    }
+
+    return false;
+}
+
+static void naneng_dphy_program_phy_regs(uint32_t lane_mbps, uint32_t pll_r5c)
+{
+    //clane_param0, time cunt, lptx after rset
+    if (lane_mbps < DPHY_BR_200M)      reg_NN_PHY_R00 = 0x28;
+    else if(lane_mbps < DPHY_BR_400M)  reg_NN_PHY_R00 = 0x50;
+    else if(lane_mbps < DPHY_BR_1400M) reg_NN_PHY_R00 = 0xC8;
+    else                        reg_NN_PHY_R00 = 0xFA;
+
+    //clane_param1, lp11 hold during initial.
+    if (lane_mbps < DPHY_BR_200M)      reg_NN_PHY_R04 = 0xFA0;
+    else if(lane_mbps < DPHY_BR_400M)  reg_NN_PHY_R04 = 0x1F40;
+    else if(lane_mbps < DPHY_BR_1400M) reg_NN_PHY_R04 = 0x4E20;
+    else                        reg_NN_PHY_R04 = 0x61A8;
+
+    //clane_param2
+    if (lane_mbps < DPHY_BR_200M)      reg_NN_PHY_R08 = (0x0<<16) + (0x07<<8) + 0x2;
+    else if(lane_mbps < DPHY_BR_400M)  reg_NN_PHY_R08 = (0x1<<16) + (0x0D<<8) + 0x2;
+    else if(lane_mbps < DPHY_BR_800M)  reg_NN_PHY_R08 = (0x3<<16) + (0x1A<<8) + 0x2;
+    else if(lane_mbps < DPHY_BR_1000M) reg_NN_PHY_R08 = (0x5<<16) + (0x20<<8) + 0x2;
+    else if(lane_mbps < DPHY_BR_1200M) reg_NN_PHY_R08 = (0x7<<16) + (0x28<<8) + 0x2;
+    else if(lane_mbps < DPHY_BR_1400M) reg_NN_PHY_R08 = (0x8<<16) + (0x2D<<8) + 0x2;
+    else                        reg_NN_PHY_R08 = (0x9<<16) + (0x33<<8) + 0x2;
+
+    //clane_param3
+    if (lane_mbps < DPHY_BR_200M)      reg_NN_PHY_R0c = (0x08<<16) + (0x03<<8) + 0x03;
+    else if(lane_mbps < DPHY_BR_400M)  reg_NN_PHY_R0c = (0x0A<<16) + (0x03<<8) + 0x06;
+    else if(lane_mbps < DPHY_BR_800M)  reg_NN_PHY_R0c = (0x0D<<16) + (0x07<<8) + 0x0B;
+    else if(lane_mbps < DPHY_BR_1000M) reg_NN_PHY_R0c = (0x0F<<16) + (0x08<<8) + 0x0D;
+    else if(lane_mbps < DPHY_BR_1200M) reg_NN_PHY_R0c = (0x10<<16) + (0x0A<<8) + 0x10;
+    else if(lane_mbps < DPHY_BR_1400M) reg_NN_PHY_R0c = (0x12<<16) + (0x0C<<8) + 0x12;
+    else                        reg_NN_PHY_R0c = (0x14<<16) + (0x0D<<8) + 0x15;
+
+    //dlane0_param0
+    if (lane_mbps < DPHY_BR_200M)      reg_NN_PHY_R10 = 0x28;
+    else if(lane_mbps < DPHY_BR_400M)  reg_NN_PHY_R10 = 0x50;
+    else if(lane_mbps < DPHY_BR_1400M) reg_NN_PHY_R10 = 0xc8;
+    else                        reg_NN_PHY_R10 = 0xFA;
+
+    //dlane0_param1
+    if (lane_mbps < DPHY_BR_200M)      reg_NN_PHY_R14 = 0xFA0;
+    else if(lane_mbps < DPHY_BR_400M)  reg_NN_PHY_R14 = 0x1F40;
+    else if(lane_mbps < DPHY_BR_1400M) reg_NN_PHY_R14 = 0x4E20;
+    else                        reg_NN_PHY_R14 = 0x61A8;
+
+    //dlane0_param2, hs-prepare, hs-zero, hs-trail, hs-exit hold time in byteclk.
+    if (lane_mbps < DPHY_BR_200M)      reg_NN_PHY_R18 = (0x0<<24) + (0x03<<16) + (0x3<<8) + 0x03;  // hs-zero must set 0x64 ???
+    else if(lane_mbps < DPHY_BR_400M)  reg_NN_PHY_R18 = (0x2<<24) + (0x05<<16) + (0x4<<8) + 0x06;
+    else if(lane_mbps < DPHY_BR_800M)  reg_NN_PHY_R18 = (0x4<<24) + (0x0B<<16) + (0x7<<8) + 0x0B;
+    else if(lane_mbps < DPHY_BR_1000M) reg_NN_PHY_R18 = (0x6<<24) + (0x0C<<16) + (0x8<<8) + 0x0D;
+    else if(lane_mbps < DPHY_BR_1200M) reg_NN_PHY_R18 = (0x8<<24) + (0x0E<<16) + (0xA<<8) + 0x10;
+    else if(lane_mbps < DPHY_BR_1400M) reg_NN_PHY_R18 = (0xA<<24) + (0x0F<<16) + (0xC<<8) + 0x12;
+    else                        reg_NN_PHY_R18 = (0xA<<24) + (0x14<<16) + (0xE<<8) + 0x15;
+
+    //dlane0_param3
+    if (lane_mbps < DPHY_BR_200M)      reg_NN_PHY_R1c = 0x9C40;
+    else if(lane_mbps < DPHY_BR_400M)  reg_NN_PHY_R1c = 0x13880;
+    else if(lane_mbps < DPHY_BR_1400M) reg_NN_PHY_R1c = 0x30D40;
+    else                        reg_NN_PHY_R1c = 0x3D090;
+
+    //dlane0_param4
+    if (lane_mbps < DPHY_BR_200M)      reg_NN_PHY_R20 = (0x0B<<16) + (0x04<<8) + 0x0E;
+    else if(lane_mbps < DPHY_BR_400M)  reg_NN_PHY_R20 = (0x0F<<16) + (0x04<<8) + 0x13;
+    else if(lane_mbps < DPHY_BR_800M)  reg_NN_PHY_R20 = (0x0F<<16) + (0x04<<8) + 0x13;//(0x23<<16) + (0x0A<<8) + 0x2C;
+    else if(lane_mbps < DPHY_BR_1000M) reg_NN_PHY_R20 = (0x2B<<16) + (0x0C<<8) + 0x36;
+    else if(lane_mbps < DPHY_BR_1200M) reg_NN_PHY_R20 = (0x33<<16) + (0x0E<<8) + 0x40;
+    else if(lane_mbps < DPHY_BR_1400M) reg_NN_PHY_R20 = (0x3F<<16) + (0x12<<8) + 0x4F;
+    else                        reg_NN_PHY_R20 = (0x53<<16) + (0x16<<8) + 0x68;
+
+    //dlane1_param0
+    if (lane_mbps < DPHY_BR_200M)      reg_NN_PHY_R24 = 0x28;
+    else if(lane_mbps < DPHY_BR_400M)  reg_NN_PHY_R24 = 0x50;
+    else if(lane_mbps < DPHY_BR_1400M) reg_NN_PHY_R24 = 0xC8;
+    else                        reg_NN_PHY_R24 = 0xFA;
+
+    //dlane1_param1
+    if (lane_mbps < DPHY_BR_200M)      reg_NN_PHY_R28 = 0xFA0;
+    else if(lane_mbps < DPHY_BR_400M)  reg_NN_PHY_R28 = 0x1F40;
+    else if(lane_mbps < DPHY_BR_1400M) reg_NN_PHY_R28 = 0x4E20;
+    else                        reg_NN_PHY_R28 = 0x61A8;
+
+    //dlane1_param2, hs-prepare, hs-zero, hs-rail, hs-exit hold time in byteclk.
+    if (lane_mbps < DPHY_BR_200M)      reg_NN_PHY_R2c = (0x0<<24) + (0x03<<16) + (0x3<<8) + 0x03; // hs-zero must set 0x64 ???
+    else if(lane_mbps < DPHY_BR_400M)  reg_NN_PHY_R2c = (0x2<<24) + (0x05<<16) + (0x4<<8) + 0x06;
+    else if(lane_mbps < DPHY_BR_800M)  reg_NN_PHY_R2c = (0x4<<24) + (0x0B<<16) + (0x7<<8) + 0x0B;
+    else if(lane_mbps < DPHY_BR_1000M) reg_NN_PHY_R2c = (0x6<<24) + (0x0C<<16) + (0x8<<8) + 0x0D;
+    else if(lane_mbps < DPHY_BR_1200M) reg_NN_PHY_R2c = (0x8<<24) + (0x0E<<16) + (0xA<<8) + 0x10;
+    else if(lane_mbps < DPHY_BR_1400M) reg_NN_PHY_R2c = (0xA<<24) + (0x0F<<16) + (0xC<<8) + 0x12;
+    else                        reg_NN_PHY_R2c = (0xA<<24) + (0x14<<16) + (0xE<<8) + 0x15;
+
+    //dlane1_pram3
+    if (lane_mbps < DPHY_BR_200M)      reg_NN_PHY_R30 = 0x9C40;
+    else if(lane_mbps < DPHY_BR_400M)  reg_NN_PHY_R30 = 0x13880;
+    else if(lane_mbps < DPHY_BR_1400M) reg_NN_PHY_R30 = 0x30D40;
+    else                        reg_NN_PHY_R30 = 0x3D090;
+
+    //dlane2_param0
+    if (lane_mbps < DPHY_BR_200M)      reg_NN_PHY_R34 = 0x28;
+    else if(lane_mbps < DPHY_BR_400M)  reg_NN_PHY_R34 = 0x50;
+    else if(lane_mbps < DPHY_BR_1400M) reg_NN_PHY_R34 = 0xC8;
+    else                        reg_NN_PHY_R34 = 0xFA;
+
+    //dlane2_param1
+    if (lane_mbps < DPHY_BR_200M)      reg_NN_PHY_R38 = 0xFA0;
+    else if(lane_mbps < DPHY_BR_400M)  reg_NN_PHY_R38 = 0x1F40;
+    else if(lane_mbps < DPHY_BR_1400M) reg_NN_PHY_R38 = 0x4E20;
+    else                        reg_NN_PHY_R38 = 0x61A8;
+
+    //dlane2_param2, hs-prepare, hs-zero, hs-rail, hs-exit hold time in byteclk.
+    if (lane_mbps < DPHY_BR_200M)      reg_NN_PHY_R3c = (0x0<<24) + (0x03<<16) + (0x3<<8) + 0x03; // hs-zero must set 0x64 ???
+    else if(lane_mbps < DPHY_BR_400M)  reg_NN_PHY_R3c = (0x2<<24) + (0x05<<16) + (0x4<<8) + 0x06;
+    else if(lane_mbps < DPHY_BR_800M)  reg_NN_PHY_R3c = (0x4<<24) + (0x0B<<16) + (0x7<<8) + 0x0B;
+    else if(lane_mbps < DPHY_BR_1000M) reg_NN_PHY_R3c = (0x6<<24) + (0x0C<<16) + (0x8<<8) + 0x0D;
+    else if(lane_mbps < DPHY_BR_1200M) reg_NN_PHY_R3c = (0x8<<24) + (0x0E<<16) + (0xA<<8) + 0x10;
+    else if(lane_mbps < DPHY_BR_1400M) reg_NN_PHY_R3c = (0xA<<24) + (0x0F<<16) + (0xC<<8) + 0x12;
+    else                        reg_NN_PHY_R3c = (0xA<<24) + (0x14<<16) + (0xE<<8) + 0x15;
+
+    //dlane2_param3
+    if (lane_mbps < DPHY_BR_200M)      reg_NN_PHY_R40 = 0x9C40;
+    else if(lane_mbps < DPHY_BR_400M)  reg_NN_PHY_R40 = 0x13880;
+    else if(lane_mbps < DPHY_BR_1400M) reg_NN_PHY_R40 = 0x30D40;
+    else                        reg_NN_PHY_R40 = 0x3D090;
+
+    //dlane3_param0
+    if (lane_mbps < DPHY_BR_200M)      reg_NN_PHY_R44 = 0x28;
+    else if(lane_mbps < DPHY_BR_400M)  reg_NN_PHY_R44 = 0x50;
+    else if(lane_mbps < DPHY_BR_1400M) reg_NN_PHY_R44 = 0xC8;
+    else                        reg_NN_PHY_R44 = 0xFA;
+
+    //dlane3_param1
+    if (lane_mbps < DPHY_BR_200M)      reg_NN_PHY_R48 = 0xFA0;
+    else if(lane_mbps < DPHY_BR_400M)  reg_NN_PHY_R48 = 0x1F40;
+    else if(lane_mbps < DPHY_BR_1400M) reg_NN_PHY_R48 = 0x4E20;
+    else                        reg_NN_PHY_R48 = 0x61A8;
+
+    //dlane3_param2, hs-prepare, hs-zero, hs-rail, hs-exit hold time in byteclk.
+    if (lane_mbps < DPHY_BR_200M)      reg_NN_PHY_R4c = (0x0<<24) + (0x03<<16) + (0x3<<8) + 0x03; // hs-zero must set 0x64 ???
+    else if(lane_mbps < DPHY_BR_400M)  reg_NN_PHY_R4c = (0x2<<24) + (0x05<<16) + (0x4<<8) + 0x06;
+    else if(lane_mbps < DPHY_BR_800M)  reg_NN_PHY_R4c = (0x4<<24) + (0x0B<<16) + (0x7<<8) + 0x0B;
+    else if(lane_mbps < DPHY_BR_1000M) reg_NN_PHY_R4c = (0x6<<24) + (0x0C<<16) + (0x8<<8) + 0x0D;
+    else if(lane_mbps < DPHY_BR_1200M) reg_NN_PHY_R4c = (0x8<<24) + (0x0E<<16) + (0xA<<8) + 0x10;
+    else if(lane_mbps < DPHY_BR_1400M) reg_NN_PHY_R4c = (0xA<<24) + (0x0F<<16) + (0xC<<8) + 0x12;
+    else                        reg_NN_PHY_R4c = (0xA<<24) + (0x14<<16) + (0xE<<8) + 0x15;
+
+    //dlane3_param3
+    if (lane_mbps < DPHY_BR_200M)      reg_NN_PHY_R50 = 0x9C40;
+    else if(lane_mbps < DPHY_BR_400M)  reg_NN_PHY_R50 = 0x13880;
+    else if(lane_mbps < DPHY_BR_1400M) reg_NN_PHY_R50 = 0x30D40;
+    else                        reg_NN_PHY_R50 = 0x3D090;
+
+    //com_param0, the number of byteclk cycles of transmitted length of lp state period
+    reg_NN_PHY_R54 = 0x0A; //0x15;
+
+    //ctrl_param0
+    reg_NN_PHY_R58 = 0x38;
+
+    /*[26:24]:rate [2:0], Date Rate=FVCO/(1<< rate), rate: 0:(1600Mbps, 3200Mbps];b001: (800Mbps, 1600Mbps]; b010: (400Mbsp, 800Mbps]; 011: (200Mbps, 400Mbps]; b100: (100Mbps, 200Mbps];101~111: (50Mbps, 100Mbps];
+    * [22:19]：NREF_DIV:refclk_div[3:0],  refclk_div=0x0 表示不进行分频
+    * [18:14]:NI_POST_DIV: 6~14
+    * [13:4]:NF_POST_DIV ：0：0/1024， 1：1/1024， 2：2/1024， 等， 1023：1023/1024
+    * [3:0]:dsi_pixelclk_div: 0表示2分频, 1:3分频， 2:4分频， 3:5分频， 4:6分频， 5:7分频， 6:8分频， 7:9分频， 8:10分频， dsi_pixelclk_div+2=实际分频数
+    * FREFCLK=26M；NLOOP_DIV = 8 * ( NI_POST_DIV + NF_POST_DIV ), FVCO = FREFCLK * NLOOP_DIV / NREF_DIV;
+    * Pixel Clock：Date Rate/dsi_pixelclk_div
+    * 以DPHY_BR_950M为例：
+    * 1. 计算fvco：fvco = FREFCLK * NLOOP_DIV / NREF_DIV = 26M*8*(8+0x2c3/0x400) = 1.9g
+    * 2. 计算data_rate：data_rate = fvco/2 = 0.95g
+    * 3. 计算dpi_pixelclk：dpi_pixelclk = data_rate/(dsi_pixelclk_div+2) = 95Mhz/(6+2) 
+    */
+    /* pll_ctrl_param0: 由 hal_dsi_dphy_init_for_panel() 按 FREF/NI/NF/rate/pixdiv 计算后传入 */
+    reg_NN_PHY_R5c = pll_r5c;
+    //pll_ctrl_param1 //!do not cfg temp
+    //reg_NN_PHY_R60 = 0x0;
+    //rcal_ctrl //!do not cfg temp
+    //reg_NN_PHY_R64 = 0x2e00;
+    //trim_param //!do not cfg temp
+    //reg_NN_PHY_R68 = 0x3322;
+    //test_pram0
+    reg_NN_PHY_R6c = 0x0;
+    //test_param1
+    reg_NN_PHY_R70 = 0x9c40c0;
+    //misc_param
+    reg_NN_PHY_R74 = 0x7f;
+
+    //clane_param4
+    if (lane_mbps < DPHY_BR_200M)      reg_NN_PHY_R78 = 0x9C40;
+    else if(lane_mbps < DPHY_BR_400M)  reg_NN_PHY_R78 = 0x13880;
+    else if(lane_mbps < DPHY_BR_1400M) reg_NN_PHY_R78 = 0x30D40;
+    else                        reg_NN_PHY_R78 = 0x3D090;
+
+    //interf_param
+    reg_NN_PHY_R7c = (0x10<<8) + 0x01;
+
+    //pcs_resev_pin_param
+    reg_NN_PHY_R80 = 0x0;
+    //pma_resev_pin_param0
+    reg_NN_PHY_R84 = 0x21d9b36;
+    //pam_resev_pin_param1
+    reg_NN_PHY_R88 = 0x0;
+    //clane_data_param
+    reg_NN_PHY_R8c = 0x0aa;
+    //pam_lane_sel_param
+    reg_NN_PHY_R90 = 0x0d;
+    //dphytx_pma_dbg //!do not cfg temp
+    //reg_NN_PHY_R94 = 0x0;
+    //dphytx_pcs_dbg0 //!do not cfg temp
+    //reg_NN_PHY_R98 = 0x0;
+    //dphytx_pcs_dbg1 //!do not cfg temp
+    //reg_NN_PHY_R9c = 0x0;
+    //dphytx_pcs_dbg2 //!do not cfg temp
+    //reg_NN_PHY_Ra0 = 0x0;
+    //dphytx_pcs_dbg3 //!do not cfg temp
+    //reg_NN_PHY_Ra4 = 0x0;
+    //dphytx_pcs_dbg4 //!do not cfg temp
+    //reg_NN_PHY_Ra8 = 0x0;
+    //dphytx_pcs_dbg5 //!do not cfg temp
+    //reg_NN_PHY_Rac = 0x0;
+    //dphytx_pcs_dbg6 //!do not cfg temp
+    //reg_NN_PHY_Rb0 = 0x0;
+    //dphytx_pcs_dbg7 //!do not cfg temp
+    //reg_NN_PHY_Rb4 = 0x0;
+    //dphytx_pcs_dbg8 //!do not cfg temp
+    //reg_NN_PHY_Rb8 = 0x0;
+    //dphytx_pcs_dbg9 //!do not cfg temp
+    //reg_NN_PHY_Rbc = 0x0;
+
+    // dcreg_DPU_Beken_01 = 0x00000002 + 1;
+}
+
+bk_err_t hal_dsi_dphy_init_for_panel(uint64_t pclk_hz, uint8_t n_lanes, uint16_t bpp,
+                                     uint32_t overhead_permille, uint32_t *out_lane_mbps)
+{
+    uint32_t lane_cnt = (uint32_t)n_lanes + 1u;
+
+    if (out_lane_mbps == NULL) {
+        return BK_ERR_NULL_PARAM;
+    }
+    if (pclk_hz == 0ULL || bpp == 0u || n_lanes > DSI_ACTIVE_LANES_4) {
+        LOGE("%s bad arg pclk:%llu n_lanes:%u bpp:%u\n", __func__,
+             (unsigned long long)pclk_hz, (unsigned)n_lanes, (unsigned)bpp);
+        return BK_FAIL;
+    }
+
+    /* 链路容量: sum(lane) * 1e6 * Mbps_scale >= pclk_hz * bpp * (1+overhead) */
+    uint64_t den = (uint64_t)lane_cnt * 1000000ULL * 1000ULL;
+    uint64_t min_lane_mbps = (pclk_hz * (uint64_t)bpp * (1000ULL + (uint64_t)overhead_permille) + den - 1ULL) / den;
+
+    for (uint32_t pixdiv = 0u; pixdiv <= 14u; pixdiv++) {
+        uint32_t pdiv = pixdiv + 2u;
+        uint64_t lane_hz = pclk_hz * (uint64_t)pdiv;
+        uint64_t lane_mbps_floor = lane_hz / 1000000ULL;
+
+        if (lane_mbps_floor < min_lane_mbps) {
+            continue;
+        }
+
+        uint32_t r5c;
+        uint64_t lane_hz_act;
+
+        if (!naneng_dsi_pll_try(lane_hz, pixdiv, &r5c, &lane_hz_act)) {
+            continue;
+        }
+
+        uint64_t act_mbps64 = (lane_hz_act + 500000ULL) / 1000000ULL;
+        if (act_mbps64 < min_lane_mbps) {
+            continue;
+        }
+
+        naneng_dphy_program_phy_regs((uint32_t)act_mbps64, r5c);
+        *out_lane_mbps = (uint32_t)act_mbps64;
+
+        LOGI("%s pclk:%llu Hz lanes:%u bpp:%u oh_permille:%u -> lane:%u Mbps pixdiv:%u R5c:%08x\n", __func__,
+             (unsigned long long)pclk_hz, (unsigned)lane_cnt, (unsigned)bpp,
+             (unsigned)overhead_permille, (unsigned)*out_lane_mbps, (unsigned)pixdiv, (unsigned)r5c);
+        return BK_OK;
+    }
+    LOGE("%s no PLL: pclk:%llu Hz min_lane_mbps:%llu\n", __func__,
+         (unsigned long long)pclk_hz, (unsigned long long)min_lane_mbps);
+    return BK_FAIL;
+}
+
 void hal_dsi_dphy_init(uint32_t br)
 {
+    LOGI("%s, bitrate:%dM bps\n", __func__, br);
+
     //clane_param0, time cunt, lptx after rset
     if (br < DPHY_BR_200M)      reg_NN_PHY_R00 = 0x28;
     else if(br < DPHY_BR_400M)  reg_NN_PHY_R00 = 0x50;
@@ -367,39 +694,23 @@ void hal_dsi_dphy_init(uint32_t br)
     //ctrl_param0
     reg_NN_PHY_R58 = 0x38;
 
-    /*[26:24]:rate [2:0], Date Rate=FVCO/(1<< rate), rate: 0:(1600Mbps, 3200Mbps];b001: (800Mbps, 1600Mbps]; b010: (400Mbsp, 800Mbps]; 011: (200Mbps, 400Mbps]; b100: (100Mbps, 200Mbps];101~111: (50Mbps, 100Mbps];
-    * [22:19]：NREF_DIV:refclk_div[3:0],  refclk_div=0x0 表示不进行分频
-    * [18:14]:NI_POST_DIV: 6~14
-    * [13:4]:NF_POST_DIV ：0：0/1024， 1：1/1024， 2：2/1024， 等， 1023：1023/1024
-    * [3:0]:dsi_pixelclk_div: 0表示2分频, 1:3分频， 2:4分频， 3:5分频， 4:6分频， 5:7分频， 6:8分频， 7:9分频， 8:10分频， dsi_pixelclk_div+2=实际分频数
-    * FREFCLK=26M；NLOOP_DIV = 8 * ( NI_POST_DIV + NF_POST_DIV ), FVCO = FREFCLK * NLOOP_DIV / NREF_DIV;
-    * Pixel Clock：Date Rate/dsi_pixelclk_div
-    * 以DPHY_BR_950M为例：
-    * 1. 计算fvco：fvco = FREFCLK * NLOOP_DIV / NREF_DIV = 26M*8*(8+0x2c3/0x400) = 1.9g
-    * 2. 计算data_rate：data_rate = fvco/2 = 0.95g
-    * 3. 计算byte_clk(输出)：byte_clk = data_rate/8 = 95Mhz
-    */
     //pll_ctrl_param0
-    /* 注释与上文 pll 说明一致：FREFCLK=26M；FVCO=26m*8*(NI+NF/0x400)/NREF(NREF=0 不分频)；
-     * data_rate=FVCO/(1<<[26:24])；byte_clk=data_rate/8；DPI pixel_clk=data_rate/(dsi_pixelclk_div+2)，dsi 为 [3:0]。 */
-    if(br == DPHY_BR_100M)       reg_NN_PHY_R5c = (0x4<<24) + (0x0<<19) + (0x8<<14) + (0x155<<4) + 0x6;  //fvco=26m*8*(8+0x155/0x400)≈1.733g, data_rate=fvco/(1<<4)≈0.108g, byte_clk=data_rate/8≈13.5MHz, dpi=data_rate/(6+2)≈13.5MHz
-    else if(br == DPHY_BR_200M)  reg_NN_PHY_R5c = (0x3<<24) + (0x0<<19) + (0x8<<14) + (0x155<<4) + 0x6;  //fvco=26m*8*(8+0x155/0x400)≈1.733g, data_rate=fvco/(1<<3)≈0.217g, byte_clk=data_rate/8≈27.1MHz, dpi=data_rate/(6+2)≈27.1MHz
-    else if(br == DPHY_BR_300M)  reg_NN_PHY_R5c = (0x3<<24) + (0x0<<19) + (0xC<<14) + (0x200<<4) + 0x6;  //fvco=26m*8*(0xC+0x200/0x400)≈2.600g, data_rate=fvco/(1<<3)≈0.325g, byte_clk=data_rate/8≈40.6MHz, dpi=data_rate/(6+2)≈40.6MHz
-    else if(br == DPHY_BR_400M)  reg_NN_PHY_R5c = (0x2<<24) + (0x0<<19) + (0x8<<14) + (0x155<<4) + 0x6;  //fvco=26m*8*(8+0x155/0x400)≈1.733g, data_rate=fvco/(1<<2)≈0.433g, byte_clk=data_rate/8≈54.2MHz, dpi=data_rate/(6+2)≈54.2MHz
-    else if(br == DPHY_BR_440M)  reg_NN_PHY_R5c = (0x2<<24) + (0x0<<19) + (0x9<<14) + (0x0AB<<4) + 0x9;  //fvco=26m*8*(9+0xAB/0x400)≈1.907g, data_rate=fvco/(1<<2)≈0.477g, byte_clk=data_rate/8≈59.6MHz, dpi=data_rate/(9+2)≈43.3MHz
-    else if(br == DPHY_BR_500M)  reg_NN_PHY_R5c = (0x2<<24) + (0x0<<19) + (0xA<<14) + (0x1AB<<4) + 0x6;  //fvco=26m*8*(0xA+0x1AB/0x400)≈2.167g, data_rate=fvco/(1<<2)≈0.542g, byte_clk=data_rate/8≈67.7MHz, dpi=data_rate/(6+2)≈67.7MHz
-    else if(br == DPHY_BR_600M)  reg_NN_PHY_R5c = (0x2<<24) + (0x0<<19) + (0xC<<14) + (0x200<<4) + 0x4;  //fvco=26m*8*(0xC+0x200/0x400)≈2.600g, data_rate=fvco/(1<<2)≈0.650g, byte_clk=data_rate/8≈81.2MHz, dpi=data_rate/(4+2)≈60.8MHz
-    else if(br == DPHY_BR_700M)  reg_NN_PHY_R5c = (0x2<<24) + (0x0<<19) + (0xC<<14) + (0x200<<4) + 0x4;  //fvco=26m*8*(0xC+0x200/0x400)≈2.600g, data_rate=fvco/(1<<2)≈0.650g, dpi=data_rate/(4+2)=650/6≈108.3MHz
-    else if(br == DPHY_BR_750M)  reg_NN_PHY_R5c = (0x2<<24) + (0x0<<19) + (0xA<<14) + (0x1AB<<4) + 0x4;  //fvco=26m*8*(0xA+0x1AB/0x400)≈2.167g, data_rate=fvco/(1<<2)≈0.542g, byte_clk=data_rate/8≈67.7MHz, dpi=data_rate/(4+2)≈90.3MHz
-    else if(br == DPHY_BR_800M)  reg_NN_PHY_R5c = (0x1<<24) + (0x0<<19) + (0x8<<14) + (0x100<<4) + 0x7;  //fvco=26m*8*(8+0x100/0x400)≈1.716g, data_rate=fvco/(1<<1)≈0.858g, byte_clk=data_rate/8≈107.2MHz, dpi=data_rate/(7+2)≈95.3MHz
-    else if(br == DPHY_BR_900M)  reg_NN_PHY_R5c = (0x1<<24) + (0x0<<19) + (0x8<<14) + (0x2c3<<4) + 0x7;  //fvco=26m*8*(8+0x2c3/0x400)≈1.808g, data_rate=fvco/(1<<1)≈0.904g, byte_clk=data_rate/8≈113.0MHz, dpi=data_rate/(7+2)≈100.4MHz
-    else if(br == DPHY_BR_950M)  reg_NN_PHY_R5c = (0x1<<24) + (0x0<<19) + (0x8<<14) + (0x255<<4) + 0x7;  //fvco=26m*8*(8+0x255/0x400)≈1.858g, data_rate=fvco/(1<<1)≈0.929g, byte_clk=data_rate/8≈120.0MHz, dpi=data_rate/(7+2)≈102.1MHz
-    else if(br == DPHY_BR_1000M) reg_NN_PHY_R5c = (0x1<<24) + (0x0<<19) + (0xA<<14) + (0x000<<4) + 0x8;  //fvco=26m*8*(0xA+0/0x400)≈2.080g, data_rate=fvco/(1<<1)≈1.040g, byte_clk=data_rate/8≈130.0MHz, dpi=data_rate/(8+2)≈104.0MHz
-    else if(br == DPHY_BR_1200M) reg_NN_PHY_R5c = (0x1<<24) + (0x0<<19) + (0xC<<14) + (0x200<<4) + 0x6;  //fvco=26m*8*(0xC+0x200/0x400)≈2.600g, data_rate=fvco/(1<<1)≈1.300g, byte_clk=data_rate/8≈162.5MHz, dpi=data_rate/(6+2)≈162.5MHz
-    else if(br == DPHY_BR_1400M) reg_NN_PHY_R5c = (0x1<<24) + (0x0<<19) + (0xE<<14) + (0x255<<4) + 0x6;  //fvco=26m*8*(0xE+0x255/0x400)≈3.033g, data_rate=fvco/(1<<1)≈1.517g, byte_clk=data_rate/8≈189.6MHz, dpi=data_rate/(6+2)≈189.6MHz
-    else if(br == DPHY_BR_1500M) reg_NN_PHY_R5c = (0x1<<24) + (0x0<<19) + (0xF<<14) + (0x280<<4) + 0x6;  //fvco=26m*8*(0xF+0x280/0x400)≈3.250g, data_rate=fvco/(1<<1)≈1.625g, byte_clk=data_rate/8≈203.1MHz, dpi=data_rate/(6+2)≈203.1MHz
-    else if(br == DPHY_BR_1600M) reg_NN_PHY_R5c = (0x0<<24) + (0x0<<19) + (0x8<<14) + (0x155<<4) + 0x6;  //fvco=26m*8*(8+0x155/0x400)≈1.733g, data_rate=fvco/(1<<0)≈1.733g, byte_clk=data_rate/8≈216.7MHz, dpi=data_rate/(6+2)≈216.7MHz
-    else                         reg_NN_PHY_R5c = (0x2<<24) + (0x0<<19) + (0xC<<14) + (0x200<<4) + 0x6;  //默认：同 DPHY_BR_600M，fvco=26m*8*(0xC+0x200/0x400)≈2.600g, data_rate=fvco/(1<<2)≈0.650g, byte_clk=data_rate/8≈81.2MHz, dpi=data_rate/(6+2)≈81.2MHz
+    if(br == DPHY_BR_100M)       reg_NN_PHY_R5c = (0x4<<24) + (0x0<<19) + (0x8<<14) + (0x155<<4) + 0x6;  //fvco=1.6g, data rate=fvco/16=0.1g, dpi_clk=data_rate/8=12.5m
+    else if(br == DPHY_BR_200M)  reg_NN_PHY_R5c = (0x3<<24) + (0x0<<19) + (0x8<<14) + (0x155<<4) + 0x6;  //fvco=1.6g, data rate=fvco/8=0.2g, dpi_clk=data_rate/8=25m
+    else if(br == DPHY_BR_300M)  reg_NN_PHY_R5c = (0x3<<24) + (0x0<<19) + (0xC<<14) + (0x200<<4) + 0x6;  //fvco=2.4g, data rate=fvco/8=0.3g, dpi_clk=data_rate/8=37.5m
+    else if(br == DPHY_BR_400M)  reg_NN_PHY_R5c = (0x2<<24) + (0x0<<19) + (0x8<<14) + (0x155<<4) + 0x6;  //fvco=1.6g, data rate=fvco/4=0.4g, dpi_clk=data_rate/8=50m
+    else if(br == DPHY_BR_440M)  reg_NN_PHY_R5c = (0x2<<24) + (0x0<<19) + (0x9<<14) + (0x0AB<<4) + 0x9;  //fvco=24Mhz*8*(9+0xAB/0x400)=1.76g, data rate=fvco/4=0.44g, pixel_clk=data_rate/9=48.89Mhz
+    else if(br == DPHY_BR_500M)  reg_NN_PHY_R5c = (0x2<<24) + (0x0<<19) + (0xA<<14) + (0x1AB<<4) + 0x6;  //fvco=2.0g, data rate=fvco/4=0.5g, dpi_clk=data_rate/8=62.5m
+    else if(br == DPHY_BR_600M)  reg_NN_PHY_R5c = (0x2<<24) + (0x0<<19) + (0xC<<14) + (0x200<<4) + 0x6;  //fvco=24Mhz*8*(12+0x200/0x400)=2.4g, data rate=fvco/4=0.6g, pixel_clk=data_rate/8=75Mhz
+    else if(br == DPHY_BR_700M)  reg_NN_PHY_R5c = (0x1<<24) + (0x0<<19) + (0x7<<14) + (0x12B<<4) + 0x6;  //fvco=24Mhz*8*(7+0x12B/0x400)=1.4g, data rate=fvco/2=0.7g, pixel_clk=data_rate/8=87.5Mhz
+    else if(br == DPHY_BR_800M)  reg_NN_PHY_R5c = (0x1<<24) + (0x0<<19) + (0x8<<14) + (0x155<<4) + 0x6;  //fvco=1.6g, data rate=fvco/2=0.8g, dpi_clk=data_rate/8=100m
+    else if(br == DPHY_BR_1000M) reg_NN_PHY_R5c = (0x1<<24) + (0x0<<19) + (0xA<<14) + (0x1AB<<4) + 0x6;  //fvco=2.0g, data rate=fvco/2=1.0g, dpi_clk=data_rate/8=125m
+    else if(br == DPHY_BR_1200M) reg_NN_PHY_R5c = (0x1<<24) + (0x0<<19) + (0xC<<14) + (0x200<<4) + 0x6;  //fvco=2.4g, data rate=fvco/2=1.2g, dpi_clk=data_rate/8=150m
+    else if(br == DPHY_BR_1400M) reg_NN_PHY_R5c = (0x1<<24) + (0x0<<19) + (0xE<<14) + (0x255<<4) + 0x6;  //fvco=2.8g, data rate=fvco/2=1.4g, dpi_clk=data_rate/8=175m
+    else if(br == DPHY_BR_1500M) reg_NN_PHY_R5c = (0x1<<24) + (0x0<<19) + (0xF<<14) + (0x280<<4) + 0x6;  //fvco=3.0g, data rate=fvco/2=1.5g, dpi_clk=data_rate/8=187.5m;
+    else if(br == DPHY_BR_1600M) reg_NN_PHY_R5c = (0x0<<24) + (0x0<<19) + (0x8<<14) + (0x155<<4) + 0x6;  //fvco=1.6g, data rate=fvco/1=1.6g, dpi_clk=data_rate/8=200m
+    else                         reg_NN_PHY_R5c = 0x1029ab6;                                             //fvco=2.0g, data rate=fvco/2=1.0g, dpi_clk=data_rate/8=125m;
+
     //pll_ctrl_param1 //!do not cfg temp
     //reg_NN_PHY_R60 = 0x0;
     //rcal_ctrl //!do not cfg temp
@@ -456,61 +767,126 @@ void hal_dsi_dphy_init(uint32_t br)
     //reg_NN_PHY_Rbc = 0x0;
 
     // dcreg_DPU_Beken_01 = 0x00000002 + 1;
+
+    // LOGI("%s finish\n", __func__);
 }
 
-/* PHY supported bitrate table (Mbps), ascending, used to select the minimum bitrate satisfying the bandwidth constraint */
-static const uint32_t s_dphy_supported_bitrates[] = {
-    DPHY_BR_100M, DPHY_BR_200M, DPHY_BR_300M, DPHY_BR_400M, DPHY_BR_440M,
-    DPHY_BR_500M, DPHY_BR_600M, DPHY_BR_700M,DPHY_BR_750M, DPHY_BR_800M, DPHY_BR_900M,DPHY_BR_950M,DPHY_BR_1000M,
-    DPHY_BR_1200M, DPHY_BR_1400M, DPHY_BR_1500M, DPHY_BR_1600M,
-};
-#define DPHY_BITRATE_TABLE_SIZE  (sizeof(s_dphy_supported_bitrates) / sizeof(s_dphy_supported_bitrates[0]))
-
-/**
- * according to DPU clock and lane count, calculate the minimum DPHY bitrate, with 1.3 margin.
- * constraint1: dpu_clk(MHz)*3*8 <  1.3 *bitrate*(n_lanes+1)  =>  bitrate > dpu_clk*24/lane_count  =>  min_bitrate
- * constraint2: dpu_clk(MHz)*3*8 > 1.3 * (1/3)*bitrate*(n_lanes+1)  =>  bitrate < dpu_clk*72/lane_count  =>  max_bitrate
- */
 uint32_t dsi_dphy_bitrate_calc(lcd_clk_t dpu_clk, uint8_t n_lanes)
 {
-    uint32_t dpu_clk_mhz = (uint32_t)dpu_clk;
-    uint32_t lane_count = (uint32_t)n_lanes + 1u; /* n_lanes 为 0~3 表示 1~4 lane */
+    uint32_t bitrate = 0;
 
-    if (n_lanes > DSI_ACTIVE_LANES_4) {
-        LOGE("dsi n_lanes=%d invalid\n", n_lanes);
-        return 0;
-    }
-    if(dpu_clk_mhz > 100)
+    /* calc equation: dpu_clk*3*8 < bitrate*n_lanes */
+    switch(dpu_clk)
     {
-        dpu_clk_mhz += 10;    
+        case LCD_320M:
+        case LCD_240M:                 // use for dphy test, 1.5g bps, 60fps
+            if(n_lanes == DSI_ACTIVE_LANES_4)
+                bitrate = DPHY_BR_1500M;
+            else
+                goto err;
+            break;
+
+        case LCD_160M:
+            if(n_lanes == DSI_ACTIVE_LANES_4)
+                bitrate = DPHY_BR_1000M;
+            else if(n_lanes == DSI_ACTIVE_LANES_3)
+                bitrate = DPHY_BR_1500M;
+            else
+                goto err;
+            break;
+
+        case LCD_120M:
+        case LCD_106M:
+        case LCD_80M:
+            if(n_lanes == DSI_ACTIVE_LANES_4)
+                bitrate = DPHY_BR_800M;
+            else if(n_lanes == DSI_ACTIVE_LANES_3)
+                bitrate = DPHY_BR_1000M;
+            else if(n_lanes == DSI_ACTIVE_LANES_2)
+                bitrate = DPHY_BR_1500M; 
+            else //if(n_lanes == DSI_ACTIVE_LANES_1)
+                goto err;
+            break;
+        case LCD_64M:
+        case LCD_60M:
+        case LCD_53M:
+        case LCD_48M:
+        case LCD_45M:
+            if(n_lanes == DSI_ACTIVE_LANES_4)
+                bitrate = DPHY_BR_440M;
+            else if(n_lanes == DSI_ACTIVE_LANES_3)
+                bitrate = DPHY_BR_600M;
+            else if(n_lanes == DSI_ACTIVE_LANES_2)
+                bitrate = DPHY_BR_800M; 
+            else //if(n_lanes == DSI_ACTIVE_LANES_1)
+                bitrate = DPHY_BR_1500M;
+            break;
+
+        case LCD_40M:
+        case LCD_35M:
+        case LCD_34M:
+        case LCD_32M:
+        case LCD_30M:
+        case LCD_29M:
+            if(n_lanes == DSI_ACTIVE_LANES_4)
+                bitrate = DPHY_BR_300M;
+            else if(n_lanes == DSI_ACTIVE_LANES_3)
+                bitrate = DPHY_BR_440M;
+            else if(n_lanes == DSI_ACTIVE_LANES_2)
+                bitrate = DPHY_BR_600M; 
+            else //if(n_lanes == DSI_ACTIVE_LANES_1)
+                bitrate = DPHY_BR_1200M;
+            break;
+        case LCD_26M:
+        case LCD_24M:
+        case LCD_22M:
+        case LCD_21M:
+        case LCD_20M:
+        case LCD_18M:
+        case LCD_17M:
+            if(n_lanes == DSI_ACTIVE_LANES_4)
+                bitrate = DPHY_BR_200M;
+            else if(n_lanes == DSI_ACTIVE_LANES_3)
+                bitrate = DPHY_BR_300M;
+            else if(n_lanes == DSI_ACTIVE_LANES_2)
+                bitrate = DPHY_BR_400M; 
+            else //if(n_lanes == DSI_ACTIVE_LANES_1)
+                bitrate = DPHY_BR_800M;
+            break;
+        case LCD_13M:
+            if(n_lanes == DSI_ACTIVE_LANES_1)
+                bitrate = DPHY_BR_800M;
+            break;
+        case LCD_16M:
+        case LCD_15M:
+        case LCD_14M:
+        case LCD_12M:
+        case LCD_11M:
+        case LCD_10M:
+        case LCD_9M:
+        case LCD_8M:
+        case LCD_7M:
+            if(n_lanes == DSI_ACTIVE_LANES_4)
+                bitrate = DPHY_BR_100M;
+            else if(n_lanes == DSI_ACTIVE_LANES_3)
+                bitrate = DPHY_BR_200M;
+            else if(n_lanes == DSI_ACTIVE_LANES_2)
+                bitrate = DPHY_BR_200M; 
+            else //if(n_lanes == DSI_ACTIVE_LANES_1)
+                bitrate = DPHY_BR_400M;
+            break;
+
+        default:
+            goto err;
+            break;
     }
-    /* 1: dpu_clk*24 < 1.2 * bitrate*lane_count  =>  min_bitrate = floor(dpu_clk*24/lane_count) + 1 */
-    uint32_t min_bitrate = (dpu_clk_mhz * 24u * 1.35f) / lane_count + 1u;
 
-    /* 2: 1.2 * bitrate < dpu_clk*72/lane_count  =>  max_bitrate = floor(dpu_clk*72/lane_count) */
-    uint32_t max_val = dpu_clk_mhz * 72u;
-    uint32_t max_bitrate = (uint32_t)(max_val / lane_count);
+    return bitrate;
 
-    if (min_bitrate > max_bitrate) {
-        LOGE("dsi clk:%u MHz, n_lanes=%d, no valid bitrate: min=%u max=%u\n",
-             dpu_clk_mhz, n_lanes, min_bitrate, max_bitrate);
-        return 0;
-    }
-
-    for (size_t i = 0; i < DPHY_BITRATE_TABLE_SIZE; i++) {
-        if (s_dphy_supported_bitrates[i] >= min_bitrate &&
-            s_dphy_supported_bitrates[i] <= max_bitrate) {
-            LOGI("dsi clk:%u MHz, n_lanes=%d, min_bitrate=%u,  bitrate=%u\n",
-                 dpu_clk_mhz, lane_count, min_bitrate, s_dphy_supported_bitrates[i]);
-            return s_dphy_supported_bitrates[i];
-        }
-    }
-
-    LOGE("dsi clk:%u MHz, n_lanes=%d, min_bitrate=%u, max_bitrate=%u, no supported bitrate in range\n",
-         dpu_clk_mhz, n_lanes, min_bitrate, max_bitrate);
+err:
+    LOGE("dsi clk:%d, n_lanes=%d, not support!\n", dpu_clk, n_lanes);
     return 0;
 }
-
 
 /**
  * Send READ packet to peripheral using the generic interface

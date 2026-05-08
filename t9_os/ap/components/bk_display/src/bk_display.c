@@ -64,16 +64,17 @@ avdk_err_t bk_display_flush(bk_display_ctlr_handle_t handle, void *frame, flush_
     return handle->flush(handle, (uint8_t *)frame, cb);
 }
 
-avdk_err_t bk_display_layer_flush(bk_display_ctlr_handle_t handle, dpu_layer_t layer, void *frame, flush_free_cb_t cb)
-{
-    AVDK_RETURN_ON_FALSE(handle, AVDK_ERR_INVAL, TAG, AVDK_ERR_INVAL_NULL_TEXT);
-    AVDK_RETURN_ON_FALSE(handle->layer_flush, AVDK_ERR_UNSUPPORTED, TAG, AVDK_ERR_UNSUPPORTED_FUNCTION_TEXT);
-    return handle->layer_flush(handle, layer, (uint8_t *)frame, cb);
-}
-
 avdk_err_t bk_display_ioctl(bk_display_ctlr_handle_t handle, bk_display_ioctl_cmd_t cmd, void *arg)
 {
     AVDK_RETURN_ON_FALSE(handle, AVDK_ERR_INVAL, TAG, AVDK_ERR_INVAL_NULL_TEXT);
     AVDK_RETURN_ON_FALSE(handle->ioctl, AVDK_ERR_UNSUPPORTED, TAG, "ioctl not supported");
     return handle->ioctl(handle, cmd, arg);
 }
+
+avdk_err_t bk_display_pixel_format_set(bk_display_ctlr_handle_t handle, const bk_display_pixel_format_config_t *config)
+{
+    AVDK_RETURN_ON_FALSE(handle, AVDK_ERR_INVAL, TAG, AVDK_ERR_INVAL_NULL_TEXT);
+    AVDK_RETURN_ON_FALSE(config, AVDK_ERR_INVAL, TAG, AVDK_ERR_INVAL_NULL_TEXT);    
+    bk_display_pixel_format_config_t pixel_format_config = *config;
+    return bk_display_ioctl(handle, BK_DISPLAY_IOCTL_DPU_PIXEL_FORMAT, (void *)&pixel_format_config);
+}         

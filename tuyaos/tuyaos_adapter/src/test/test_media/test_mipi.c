@@ -171,9 +171,8 @@ static void test_mipi_auxldo_enable(void)
 {
     uint32_t reg = REG_READ(SYS_ANA_REG_BASE + LDO_ANA_REG * 4);
 
-    reg |= (0xF << 28) | (0x2 << 23) | (0x7 << 19) | (0x7 << 15);
-    reg &= ~(0xF << 11);
-    reg |= (0x8 << 11);
+    reg &= ~((0x7 << 23) | (0xF << 19));
+    reg |= (0x2 << 23) | (0x7 << 19) | (0x3 << 30);
     REG_WRITE(SYS_ANA_REG_BASE + LDO_ANA_REG * 4, reg);
 }
 
@@ -522,12 +521,23 @@ static OPERATE_RET test_mipi_update_geometry(void)
 static OPERATE_RET test_mipi_panel_cfg_apply(void)
 {
     const bk_display_dsi_panel_t *panel = NULL;
+    uint32_t clk = 0;
 
     if (test_mipi_panel_resolve(s_mipi_panel_name, &panel) != OPRT_OK || panel == NULL) {
         return OPRT_NOT_FOUND;
     }
 
-    s_mipi_base_cfg.clk = panel->timing.clk;
+    clk = panel->timing.clk;
+    if (clk == 0U && panel->fps != 0U) {
+        uint32_t h_total = (uint32_t)panel->timing.h_size + panel->timing.hsync_pulse_width +
+                           panel->timing.hsync_back_porch + panel->timing.hsync_front_porch;
+        uint32_t v_total = (uint32_t)panel->timing.v_size + panel->timing.vsync_pulse_width +
+                           panel->timing.vsync_back_porch + panel->timing.vsync_front_porch;
+
+        clk = (uint32_t)((uint64_t)h_total * v_total * panel->fps);
+    }
+
+    s_mipi_base_cfg.clk = clk;
     s_mipi_base_cfg.n_lanes = (UINT8_T)(panel->n_lanes + 1U);
     s_mipi_base_cfg.width = panel->timing.h_size;
     s_mipi_base_cfg.height = panel->timing.v_size;

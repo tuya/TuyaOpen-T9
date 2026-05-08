@@ -56,6 +56,12 @@ if(CONFIG_TRNG_SUPPORT)
 	)
 endif()
 
+if(CONFIG_IPI)
+	list(APPEND srcs
+		"hal/ipi_hal.c"
+	)
+endif()
+
 if(CONFIG_MAILBOX)
 	if (NOT CONFIG_MAILBOX_V2_0)
 	list(APPEND srcs
@@ -75,12 +81,6 @@ endif()
 if(CONFIG_JPEGENC_HW)
 	list(APPEND srcs
 		"hal/jpeg_hal.c"
-	)
-endif()
-
-if(CONFIG_YUV_BUF)
-	list(APPEND srcs
-		"hal/yuv_buf_hal.c"
 	)
 endif()
 

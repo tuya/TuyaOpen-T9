@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <os/os.h>
 #include <components/bk_display_types.h>
 #include <components/bk_display_dpu_ctlr.h>
 #include <driver/dpu_types.h>
@@ -24,22 +25,19 @@ extern "C" {
 
 typedef enum
 {
-    DISP_STATE_INIT,
-    DISP_STATE_OPEN,
-    DISP_STATE_CLOSE,
     DISP_STATE_DEINIT,
+    DISP_STATE_READY,
+    DISP_STATE_CLOSED,
+    DISP_STATE_DEINITING,
 } display_state_t;
 
 typedef struct
 {
     display_state_t state;
-    uint16_t width;    //real source output width
-    uint16_t height;   //real source output height
-    int (*flush)(void ** disp_ctrl, dpu_layer_t layer, void *data, flush_free_cb_t cb);
+    beken_mutex_t lock;
+    beken_semaphore_t flush_idle_sem;
+    uint32_t inflight_flush;
     dpu_handle_t dpu_handle;
-    bk_lcd_bus_io_t *dsi_handle;
-    bk_avdk_lcd_panel_handle_t dev_handle;
-
     bk_display_dpu_config_t config;
     bk_display_ctlr_t ops;
 } dpu_vn_ctlr_t;

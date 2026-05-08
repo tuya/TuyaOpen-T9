@@ -12,6 +12,12 @@ menu "Bk Network Transfer"
 		help
 			Enable media drop strategy
 
+	config NTWK_VIDEO_FPS_CALC_ENABLE
+		bool "Enable Network Video FPS Calculation"
+		default y
+		help
+			Enable the common video transfer FPS calculation strategy.
+
 	config DATA_NODE_SIZE
 		int "Video RX Node Size"
 		default 1472
@@ -44,5 +50,14 @@ menu "Bk Network Transfer"
 		help
 			Use PSRAM for packet memory allocation in network transfer component
 
+	config KVS_NTWK_BRIDGE
+		bool "Bridge KVS WebRTC to bk_network_transfer (cmd=data channel, A/V=RTP)"
+		depends on BK_NTWK_TRANSFER
+		depends on KVS_AWS
+		depends on KVS_AWS_DATA_CHANNEL
+		default n
+		help
+			Maps SampleStreamingSession to ntwk_trans_* (passthrough payloads).
+			Enables hooks in projects/kvs_aws_sample/ap/Common.c.
 
 endmenu

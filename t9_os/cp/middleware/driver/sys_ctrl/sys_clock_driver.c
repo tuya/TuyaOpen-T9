@@ -26,6 +26,51 @@ __IRAM_SEC void sys_drv_dev_clk_pwr_up(dev_clk_pwr_id_t dev, dev_clk_pwr_ctrl_t 
 	sys_drv_exit_critical(int_level);
 }
 
+uint32_t sys_drv_dev_clk_pwr_status_get(dev_clk_pwr_id_t dev)
+{
+	uint32_t reg_val = 0;
+	uint32_t int_level = sys_drv_enter_critical();
+
+	reg_val = sys_hal_clk_pwr_status_get(dev);
+
+	sys_drv_exit_critical(int_level);
+
+	return reg_val;
+}
+
+uint32_t sys_drv_dev_clk_pwr_is_enabled(dev_clk_pwr_id_t dev)
+{
+	uint32_t clk_enabled = 0;
+	uint32_t int_level = sys_drv_enter_critical();
+
+	clk_enabled = sys_hal_clk_pwr_is_enabled(dev);
+
+	sys_drv_exit_critical(int_level);
+
+	return clk_enabled;
+}
+
+void sys_drv_set_cpu_power_sleep_wakeup_pwd_ofdm(uint32_t v)
+{
+	uint32_t int_level = sys_drv_enter_critical();
+
+	sys_hal_set_cpu_power_sleep_wakeup_pwd_ofdm(v);
+
+	sys_drv_exit_critical(int_level);
+}
+
+uint32_t sys_drv_get_cpu_power_sleep_wakeup_pwd_ofdm(void)
+{
+	uint32_t pwd_ofdm = 0;
+	uint32_t int_level = sys_drv_enter_critical();
+
+	pwd_ofdm = sys_hal_get_cpu_power_sleep_wakeup_pwd_ofdm();
+
+	sys_drv_exit_critical(int_level);
+
+	return pwd_ofdm;
+}
+
 void sys_drv_set_clk_select(dev_clk_select_id_t dev, dev_clk_select_t clk_sel)
 {
 	uint32_t int_level = sys_drv_enter_critical();
@@ -428,48 +473,6 @@ void sys_drv_trng_disckg_set(uint32_t value)
 	uint32_t int_level = sys_drv_enter_critical();
 
 	sys_hal_trng_disckg_set(value);
-	sys_drv_exit_critical(int_level);
-}
-
-void sys_drv_yuv_buf_pwr_up(void)
-{
-	uint32_t int_level = sys_drv_enter_critical();
-	sys_hal_set_yuv_buf_clock_en(1);
-	sys_drv_exit_critical(int_level);
-}
-
-void sys_drv_yuv_buf_pwr_down(void)
-{
-	uint32_t int_level = sys_drv_enter_critical();
-	sys_hal_set_yuv_buf_clock_en(0);
-	sys_drv_exit_critical(int_level);
-}
-
-void sys_drv_h264_pwr_up(void)
-{
-	uint32_t int_level = sys_drv_enter_critical();
-	sys_hal_set_h264_clock_en(1);
-	sys_drv_exit_critical(int_level);
-}
-
-void sys_drv_h264_pwr_down(void)
-{
-	uint32_t int_level = sys_drv_enter_critical();
-	sys_hal_set_h264_clock_en(0);
-	sys_drv_exit_critical(int_level);
-}
-
-void sys_drv_slcd_clock_enable(void)
-{
-	uint32_t int_level = sys_drv_enter_critical();
-	sys_hal_set_slcd_clk_en(1);
-	sys_drv_exit_critical(int_level);
-}
-
-void sys_drv_slcd_clock_disable(void)
-{
-	uint32_t int_level = sys_drv_enter_critical();
-	sys_hal_set_slcd_clk_en(0);
 	sys_drv_exit_critical(int_level);
 }
 

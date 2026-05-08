@@ -8,7 +8,6 @@ list(APPEND incs
 
 set(priv_req
     media_service
-    multimedia
     wifi_transfer
     avdk_utils
     lwip_intf_v2_1

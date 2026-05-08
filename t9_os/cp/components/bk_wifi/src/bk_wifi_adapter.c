@@ -23,7 +23,6 @@
 #include "bk_wifi.h"
 #include "bk_net.h"
 #include "bk_misc.h"
-#include <sys_ll.h>
 #include "sys_driver.h"
 #include "aon_pmu_driver.h"
 #include "gpio_driver.h"
@@ -291,43 +290,61 @@ static void bk7011_update_by_rx_wrapper(int8_t rssi, int8_t freq_offset)
 	#endif
 }
 
-static void sys_ll_set_cpu_power_sleep_wakeup_pwd_ofdm_wrapper(uint32_t v)
+static void sys_drv_set_cpu_power_sleep_wakeup_pwd_ofdm_wrapper(uint32_t v)
 {
-	#if (CONFIG_SOC_BK7236XX || CONFIG_SOC_BK7239XX)
-	sys_ll_set_cpu_power_sleep_wakeup_pwd_ofdm(v);
-	#elif CONFIG_SOC_BK7259
-	#else
-	#endif
+	sys_drv_set_cpu_power_sleep_wakeup_pwd_ofdm(v);
 }
 
-static uint32_t sys_ll_get_cpu_power_sleep_wakeup_pwd_ofdm_wrapper(void)
+static uint32_t sys_drv_get_cpu_power_sleep_wakeup_pwd_ofdm_wrapper(void)
 {
-	#if (CONFIG_SOC_BK7236XX || CONFIG_SOC_BK7239XX)
-	return sys_ll_get_cpu_power_sleep_wakeup_pwd_ofdm();
-	#elif CONFIG_SOC_BK7259
-	return 0;
-	#else
-	return 0;
-	#endif
+	return sys_drv_get_cpu_power_sleep_wakeup_pwd_ofdm();
 }
 
-static uint32_t sys_ll_get_cpu_device_clk_enable_mac_cken_wrapper(void)
+static uint32_t sys_drv_wifi_wrls_power_is_on_wrapper(void)
 {
-    #if CONFIG_SOC_BK7259
-    return sys_ll_get_reserver_reg0xd_mac_cken();
-    #else
-	return sys_ll_get_cpu_device_clk_enable_mac_cken();
-    #endif
+	return (sys_drv_module_power_state_get(PM_POWER_DOMAIN_2) == PM_POWER_MODULE_STATE_ON);
 }
 
-static uint32_t sys_ll_get_cpu_device_clk_enable_phy_cken_wrapper(void)
+static uint32_t sys_drv_get_cpu_device_clk_enable_wlss_cken_wrapper(void)
 {
-    #if CONFIG_SOC_BK7259
-    return sys_ll_get_reserver_reg0xd_phy_cken();
-    #else
-	return sys_ll_get_cpu_device_clk_enable_phy_cken();
-    #endif
+	return sys_drv_dev_clk_pwr_is_enabled(PM_CLK_ID_WLSS);
 }
+
+static uint32_t sys_drv_get_cpu_device_clk_enable_mac_cken_wrapper(void)
+{
+	return sys_drv_dev_clk_pwr_is_enabled(PM_CLK_ID_MAC);
+}
+
+static uint32_t sys_drv_get_cpu_device_clk_enable_phy_cken_wrapper(void)
+{
+	return sys_drv_dev_clk_pwr_is_enabled(PM_CLK_ID_PHY);
+}
+
+static uint32_t sys_drv_get_cpu_device_clk_enable_rf_cken_wrapper(void)
+{
+	return sys_drv_dev_clk_pwr_is_enabled(PM_CLK_ID_RF);
+}
+
+static uint32_t sys_drv_get_cpu_device_clk_enable_ofdm_cken_wrapper(void)
+{
+	return sys_drv_dev_clk_pwr_is_enabled(PM_CLK_ID_OFDM);
+}
+
+static uint32_t sys_drv_wifi_mac_reg_access_is_valid_wrapper(void)
+{
+	return sys_drv_wifi_mac_reg_access_is_valid();
+}
+
+static uint32_t sys_drv_wifi_phy_reg_access_is_valid_wrapper(void)
+{
+	return sys_drv_wifi_phy_reg_access_is_valid();
+}
+
+static void sys_drv_wifi_reg_access_status_get_wrapper(uint32_t *clk_status, uint32_t *power_status)
+{
+	sys_drv_wifi_reg_access_status_get(clk_status, power_status);
+}
+
 static void power_save_delay_sleep_check_wrapper(void)
 {
 	//power_save_delay_sleep_check();
@@ -373,6 +390,11 @@ static int32 bk_pm_module_power_state_get_wrapper(unsigned int module)
 static bk_err_t bk_pm_module_vote_power_ctrl_wrapper(unsigned int             module, uint32_t power_state)
 {
     return bk_pm_module_vote_power_ctrl((pm_power_module_name_e)module, (pm_power_module_state_e)power_state);
+}
+
+static bk_err_t bk_pm_clock_ctrl_wrapper(uint32_t module, uint32_t clock_state)
+{
+    return bk_pm_clock_ctrl((pm_dev_clk_e)module, (pm_dev_clk_pwr_e)clock_state);
 }
 
 static bk_err_t bk_pm_module_vote_cpu_freq_wrapper(uint32_t module, uint32_t cpu_freq)
@@ -1339,7 +1361,7 @@ static void sys_hal_set_low_voltage_sleep_duration_us_wrapper(uint64_t sleep_dur
 static uint64_t sys_hal_get_low_voltage_wakeup_time_us_wrapper(void)
 {
 	//TODO
-    return 0;
+    return sys_hal_get_low_voltage_wakeup_time_us();
 }
 
 static void sys_hal_set_low_voltage_wakeup_time_us_wrapper(uint64_t wakeup_time)
@@ -1479,10 +1501,17 @@ __attribute__((section(".dtcm_sec_data "))) wifi_os_funcs_t g_wifi_os_funcs = {
 	._sys_drv_int_disable = sys_drv_int_disable_wrapper,
 	._sys_drv_int_group2_enable = sys_drv_int_group2_enable_wrapper,
 	._sys_drv_int_group2_disable = sys_drv_int_group2_disable_wrapper,
-	._sys_ll_set_cpu_power_sleep_wakeup_pwd_ofdm = sys_ll_set_cpu_power_sleep_wakeup_pwd_ofdm_wrapper,
-	._sys_ll_get_cpu_power_sleep_wakeup_pwd_ofdm = sys_ll_get_cpu_power_sleep_wakeup_pwd_ofdm_wrapper,
-	._sys_ll_get_cpu_device_clk_enable_mac_cken = sys_ll_get_cpu_device_clk_enable_mac_cken_wrapper,
-	._sys_ll_get_cpu_device_clk_enable_phy_cken = sys_ll_get_cpu_device_clk_enable_phy_cken_wrapper,
+	._sys_drv_set_cpu_power_sleep_wakeup_pwd_ofdm = sys_drv_set_cpu_power_sleep_wakeup_pwd_ofdm_wrapper,
+	._sys_drv_get_cpu_power_sleep_wakeup_pwd_ofdm = sys_drv_get_cpu_power_sleep_wakeup_pwd_ofdm_wrapper,
+	._sys_drv_wifi_wrls_power_is_on = sys_drv_wifi_wrls_power_is_on_wrapper,
+	._sys_drv_get_cpu_device_clk_enable_wlss_cken = sys_drv_get_cpu_device_clk_enable_wlss_cken_wrapper,
+	._sys_drv_get_cpu_device_clk_enable_mac_cken = sys_drv_get_cpu_device_clk_enable_mac_cken_wrapper,
+	._sys_drv_get_cpu_device_clk_enable_phy_cken = sys_drv_get_cpu_device_clk_enable_phy_cken_wrapper,
+	._sys_drv_get_cpu_device_clk_enable_rf_cken = sys_drv_get_cpu_device_clk_enable_rf_cken_wrapper,
+	._sys_drv_get_cpu_device_clk_enable_ofdm_cken = sys_drv_get_cpu_device_clk_enable_ofdm_cken_wrapper,
+	._sys_drv_wifi_mac_reg_access_is_valid = sys_drv_wifi_mac_reg_access_is_valid_wrapper,
+	._sys_drv_wifi_phy_reg_access_is_valid = sys_drv_wifi_phy_reg_access_is_valid_wrapper,
+	._sys_drv_wifi_reg_access_status_get = sys_drv_wifi_reg_access_status_get_wrapper,
 	._sys_drv_module_power_state_get = sys_drv_module_power_state_get_wrapper,
 	._aon_pmu_drv_set_wlp_power_down = aon_pmu_drv_set_wlp_power_down_wrapper,
 	._power_save_delay_sleep_check = power_save_delay_sleep_check_wrapper,
@@ -1668,6 +1697,7 @@ __attribute__((section(".dtcm_sec_data "))) wifi_os_funcs_t g_wifi_os_funcs = {
 	._coex_wifi_request = coex_wifi_request_wrapper,
 	._coex_wifi_release = coex_wifi_release_wrapper,
 	._coex_wifi_event_get = coex_wifi_event_get_wrapper,
+	._bk_pm_clock_ctrl = bk_pm_clock_ctrl_wrapper,
 };
 
 __attribute__((section(".dtcm_sec_data "))) wifi_os_variable_t g_wifi_os_variable = {
@@ -1700,7 +1730,7 @@ __attribute__((section(".dtcm_sec_data "))) wifi_os_variable_t g_wifi_os_variabl
 	._low_power_delay_time_hardware = LOW_POWER_DELAY_TIME_HARDWARE,
     ._low_power_extern_32k_hardware = LOW_POWER_EXTERN_32K_HARDWARE,
 	._low_power_26m_stability_delay_time_hardware = LOW_POWER_26M_STABILITY_DELAY_TIME_HARDWARE,
-#if CONFIG_SOC_BK7239XX
+#if CONFIG_SOC_BK7239XX || CONFIG_SOC_BK7259
 	._low_power_bootup_restore_delay_time = LOW_POWER_BOOTUP_RESTORE_TIME,
 #endif
 	._pm_power_sub_module_name_phy_wifi = PM_POWER_SUB_DOMAIN_PHY,
@@ -1716,7 +1746,7 @@ __attribute__((section(".dtcm_sec_data "))) wifi_os_variable_t g_wifi_os_variabl
 	#else
 	._pm_cpu_frq_high = PM_CPU_FRQ_320M,
 	#endif
-	._pm_cpu_frq_default = PM_CPU_FRQ_60M,
+	._pm_cpu_frq_default = PM_CPU_FRQ_120M,
 	._pm_32k_step_begin = PM_32K_STEP_BEGIN,
 	._pm_32k_step_finish = PM_32K_STEP_FINISH,
 	._cmd_rf_wifipll_hold_bit_set = CMD_RF_WIFIPLL_HOLD_BIT_SET,
@@ -1747,6 +1777,11 @@ __attribute__((section(".dtcm_sec_data "))) wifi_os_variable_t g_wifi_os_variabl
 	#if (CONFIG_SOC_BK7236XX) || (CONFIG_SOC_BK7259)
 	._pm_low_voltage_delta_wakeup_delay_in_us = PM_LOW_VOLTAGE_DELTA_WAKEUP_DELAY_IN_US,
 	#endif
+	._pm_clk_module_mac = PM_CLK_ID_MAC,
+	._pm_clk_module_phy = PM_CLK_ID_PHY,
+	._pm_clk_module_ofdm = PM_CLK_ID_OFDM,
+	._pm_clk_on = PM_CLK_CTRL_PWR_UP,
+	._pm_clk_off = PM_CLK_CTRL_PWR_DOWN,
 };
 
 Countryregulations country_regulation_table[] = {

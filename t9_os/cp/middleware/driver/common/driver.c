@@ -32,11 +32,16 @@
 #include <modules/pm.h>
 #include <driver/psram.h>
 #include <driver/lin.h>
+#include <driver/ipi_driver.h>
 #include "bk_driver.h"
 #include "interrupt_base.h"
 #include <driver/otp.h>
 #include <driver/pwr_clk.h>
 #include "bk_api_ipc.h"
+
+#if CONFIG_AP_EMUBOOT
+#include "sys_sw_regs.h"
+#endif
 
 #if CONFIG_AON_PMU
 #include "aon_pmu_driver.h"
@@ -76,10 +81,6 @@
 
 #if CONFIG_CHIP_SUPPORT
 #include "modules/chip_support.h"
-#endif
-
-#if CONFIG_YUV_BUF
-#include <driver/yuv_buf.h>
 #endif
 
 #if CONFIG_H264
@@ -274,6 +275,10 @@ int driver_init(void) {
 	bk_timer_driver_init();
 #endif
 
+#if CONFIG_IPI
+	bk_ipi_driver_init();
+#endif
+
 #if CONFIG_GENERAL_DMA
 	bk_dma_driver_init();
 #endif
@@ -299,11 +304,23 @@ int driver_init(void) {
 	os_show_memory_config_info();
 
 #if CONFIG_FLASH
+#if CONFIG_AP_EMUBOOT
+	bk_sys_sw_regs_set_flash_init_done(BK_SYS_SW_REGS_FLASH_INIT_NOT_DONE);
+
+	if (bk_flash_driver_init() != BK_OK) {
+		BK_LOGE(NULL, "cp flash driver init failed\r\n");
+		return BK_FAIL;
+	}
+
+	
+	bk_sys_sw_regs_set_flash_init_done(BK_SYS_SW_REGS_FLASH_INIT_DONE);
+#else
 	bk_flash_driver_init();
 // #if CONFIG_FLASH_ORIGIN_API
 // 	extern int hal_flash_init();
 // 	hal_flash_init();
 // #endif
+#endif
 #endif
 
 #if CONFIG_EASY_FLASH
@@ -324,10 +341,6 @@ int driver_init(void) {
 
 #if CONFIG_QSPI
 	bk_qspi_driver_init();
-#endif
-
-#if CONFIG_YUV_BUF
-	bk_yuv_buf_driver_init();
 #endif
 
 #if CONFIG_JPEGENC_HW

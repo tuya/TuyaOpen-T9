@@ -59,9 +59,8 @@ static void test_gpio_auxldo_enable(void)
 {
     uint32_t reg = REG_READ(SYS_ANA_REG_BASE + LDO_ANA_REG * 4);
 
-    reg |= (0xF << 28) | (0x2 << 23) | (0x7 << 19) | (0x7 << 15);
-    reg &= ~(0xF << 11);
-    reg |= (0x8 << 11);
+    reg &= ~((0x7 << 23) | (0xF << 19));
+    reg |= (0x2 << 23) | (0x7 << 19) | (0x3 << 30);
     REG_WRITE(SYS_ANA_REG_BASE + LDO_ANA_REG * 4, reg);
 }
 

@@ -32,7 +32,7 @@
 #define LOGE(...) BK_LOGE(TAG, ##__VA_ARGS__)
 #define LOGD(...) BK_LOGD(TAG, ##__VA_ARGS__)
 
-#define HW_ENCODER_TASK_PRIO        5
+#define HW_ENCODER_TASK_PRIO        3
 #define HW_ENCODER_TASK_STACK_SIZE  (4 * 1024)
 #define HW_ENCODER_QUEUE_SIZE       16
 
@@ -155,7 +155,7 @@ static void hw_encoder_task(void *arg)
             if (msg.callback) {
                 ret = msg.callback(msg.param);
                 if (ret != AVDK_ERR_OK) {
-                    LOGE("Callback execution failed: %d\r\n", ret);
+                    LOGE("%s %d Callback execution failed: %d\r\n", __func__, __LINE__, ret);
                 }
             }
             
@@ -207,7 +207,7 @@ static avdk_err_t hw_encoder_ctlr_create(void)
     }
     
     // 创建任务
-    ret = rtos_create_thread(&g_hw_encoder_ctlr->task,
+    ret = rtos_create_hsram_thread(&g_hw_encoder_ctlr->task,
                             HW_ENCODER_TASK_PRIO,
                             "hw_encoder",
                             (beken_thread_function_t)hw_encoder_task,

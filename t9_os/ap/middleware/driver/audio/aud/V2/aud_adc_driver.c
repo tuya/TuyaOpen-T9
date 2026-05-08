@@ -158,6 +158,10 @@ bk_err_t bk_aud_adc_init(aud_adc_config_t *adc_config)
     if (adc_config->aec_en) {
         audio_reg_hal_set_adc_cfg_aec_en(0x1);
         audio_reg_hal_set_adc_cfg_aec_16b_sel(0x1);
+    } else
+    {
+        audio_reg_hal_set_adc_cfg_aec_en(0x0);
+        audio_reg_hal_set_adc_cfg_aec_16b_sel(0x0);
     }
 
     audio_reg_hal_set_adc_cfg_clk_adc_inv(adc_config->adc_samp_edge);
@@ -204,6 +208,9 @@ bk_err_t bk_aud_adc_deinit(void)
     audio_reg_hal_set_adc_gain_cfg2_adc_chn0_gain(0);
     audio_reg_hal_set_adc_gain_cfg1_adc_chn1_gain(0);
     audio_reg_hal_set_adc_gain_cfg5_adc_chn2_gain(0);
+
+    audio_reg_hal_set_adc_cfg_aec_en(0x0);
+    audio_reg_hal_set_adc_cfg_aec_16b_sel(0x0);
 
 	audio_reg_hal_set_adc_cfg_clk_adc_inv(AUD_ADC_SAMP_EDGE_RISING);
 
@@ -599,7 +606,7 @@ bk_err_t bk_aud_adc_set_bits_width(aud_adc_chl_t chl, uint8_t bits_width)
     }
     else
     {
-        LOGE("%s, bits_width: %d, not support\n", __func__, __LINE__, bits_width);
+        LOGE("%s, bits_width: %d, not support\n", __func__, bits_width);
         return BK_FAIL;
     }
 

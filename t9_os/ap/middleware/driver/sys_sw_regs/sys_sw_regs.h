@@ -47,6 +47,8 @@ extern "C" {
 #define SSPL_SIZE (CPU_CNT_MAX + 1)
 typedef uint32_t sspl_data_t[SSPL_SIZE];
 
+/** Must match sys_sw_regs_shared.h / RISC-V firmware */
+#define RISCV_USB_PROBE_PIPE_NUM 16U
 
 typedef struct {
     volatile uint32_t magic;
@@ -56,7 +58,31 @@ typedef struct {
     volatile uint32_t event_data;
     volatile uint32_t g_musb_hcd_addr;
     volatile uint32_t usb_ep0_state_addr;
+    volatile uint32_t pending_ep0;
+    volatile uint32_t pending_pipe_tx[RISCV_USB_PROBE_PIPE_NUM];
+    volatile uint32_t pending_pipe_rx[RISCV_USB_PROBE_PIPE_NUM];
 } riscv_usb_probe_t;
+
+#define BK_SYS_SW_REGS_AP_HEAP_DUMP_VALID 0x41504844U
+
+#if CONFIG_AP_EMUBOOT
+#define BK_SYS_SW_REGS_FLASH_INIT_NOT_DONE 0U
+#define BK_SYS_SW_REGS_FLASH_INIT_DONE     1U
+#endif
+
+typedef enum {
+    BK_SYS_SW_REGS_AP_HEAP_SRAM = 0,
+    BK_SYS_SW_REGS_AP_HEAP_HSRAM,
+    BK_SYS_SW_REGS_AP_HEAP_PSRAM,
+    BK_SYS_SW_REGS_AP_HEAP_MAX,
+} bk_sys_sw_regs_ap_heap_id_t;
+
+typedef struct {
+    volatile uint32_t valid;
+    volatile uint32_t pool_base;
+    volatile uint32_t max_alloc_end;
+    volatile uint32_t reserved;
+} ap_heap_dump_info_t;
 
 typedef union {
     struct {
@@ -65,6 +91,8 @@ typedef union {
         volatile uint32_t cp_reset_reason;  /**< CP reset reason code  */
         volatile uint32_t ap_reset_reason;  /**< AP reset reason code  */
         volatile riscv_usb_probe_t riscv_usb_probe; /**< AP/RISC-V USB host probe context */
+        volatile ap_heap_dump_info_t ap_heap_dump[BK_SYS_SW_REGS_AP_HEAP_MAX]; /**< AP heap dump windows */
+        volatile uint32_t flash_init_done;  /**< CP flash init completion flag */
     };
     volatile uint32_t reserved[256];        /**< Reserved for future use */
 } sys_sw_regs_t;
@@ -96,6 +124,14 @@ uint32_t bk_sys_sw_regs_get_cp_reset_reason(void);
  */
 uint32_t bk_sys_sw_regs_get_ap_reset_reason(void);
 
+/**
+ * @brief Read the AP heap dump window for the selected heap pool.
+ * @param id Heap pool identifier.
+ * @param info Output buffer for the shared register contents.
+ * @return 1 if a valid heap dump window exists, otherwise 0.
+ */
+uint32_t bk_sys_sw_regs_get_ap_heap_dump(bk_sys_sw_regs_ap_heap_id_t id, ap_heap_dump_info_t *info);
+
 /* --------------------------------------------------------------------------
 * Write API (protected by lock)
 * -------------------------------------------------------------------------- */
@@ -117,6 +153,28 @@ void bk_sys_sw_regs_set_cp_reset_reason(uint32_t value);
  * @param value Value to write.
  */
 void bk_sys_sw_regs_set_ap_reset_reason(uint32_t value);
+
+#if CONFIG_AP_EMUBOOT
+/**
+ * @brief Get the CP flash init completion flag.
+ * @return Current value of flash_init_done.
+ */
+uint32_t bk_sys_sw_regs_get_flash_init_done(void);
+
+/**
+ * @brief Set the CP flash init completion flag.
+ * @param value Value to write.
+ */
+void bk_sys_sw_regs_set_flash_init_done(uint32_t value);
+#endif
+
+/**
+ * @brief Update the AP heap dump window for the selected heap pool.
+ * @param id Heap pool identifier.
+ * @param pool_base Heap pool start address.
+ * @param max_alloc_end Monotonic allocation high-water end address.
+ */
+void bk_sys_sw_regs_update_ap_heap_dump(bk_sys_sw_regs_ap_heap_id_t id, uint32_t pool_base, uint32_t max_alloc_end);
 
 /**
  * @brief Get the SSPL list.

@@ -8,6 +8,7 @@
 #include "private_h264_encode_ctlr.h"
 #include "hw_encoder_ctlr.h"
 #include <components/bk_frame_buffer.h>
+#include "avdk_monitor.h"
 
 #define TAG "bk_h264_encode_ctlr"
 
@@ -16,8 +17,6 @@
 #define LOGE(...) BK_LOGE(TAG, ##__VA_ARGS__)
 #define LOGD(...) BK_LOGD(TAG, ##__VA_ARGS__)
 #define LOGV(...) BK_LOGV(TAG, ##__VA_ARGS__)
-
-#define ENC_BUFFER_LEN (500 * 1024)
 
 // Modified by TUYA Start
 static void h264_encode_clear_semaphore(beken_semaphore_t *sem)
@@ -54,7 +53,7 @@ static void handle_video_frame(private_h264_encode_hw_flexa_ctlr_t *ctrl, void *
     // Pre-allocate buffer for next frame
     frame_buffer_t *next_buffer = NULL;
     if (ctrl->config.outbuf_malloc) {
-        next_buffer = (frame_buffer_t *)ctrl->config.outbuf_malloc(ENC_BUFFER_LEN, ctrl->config.outbuf_malloc_args);
+        next_buffer = (frame_buffer_t *)ctrl->config.outbuf_malloc(CONFIG_BK_ENCODER_H264_MAX_OUTPUT_BUFFER, ctrl->config.outbuf_malloc_args);
         if (!next_buffer) {
             // LOGD("Failed to get next buffer, force IDR\r\n");
             handle_encode_error(ctrl, buffer, size);
@@ -77,6 +76,7 @@ static void handle_video_frame(private_h264_encode_hw_flexa_ctlr_t *ctrl, void *
 // H.264 encoding completion callback
 static void h264e_end_cb(void *buffer, uint32_t size, uint32_t type, uint32_t result, uint32_t param)
 {
+    ENCODE_FRAME_DONE;
     // Validate parameters
     if (!param || !buffer) {
         LOGE("Invalid parameters in h264e_end_cb\r\n");
@@ -111,6 +111,7 @@ static avdk_err_t h264_encode_msg_callback(void *param)
         LOGW("No encoder parameters available\r\n");
         return AVDK_ERR_INVAL;
     }
+    ENCODE_FRAME_START;
 // Modified by TUYA Start
     if (ctrl->stopping || ctrl->enc_status == 0 || ctrl->bond == NULL) {
         ctrl->encode_result = BK_OK;
@@ -127,8 +128,11 @@ static avdk_err_t h264_encode_msg_callback(void *param)
 // Modified by TUYA End
         LOGE("h264e_start_encode failed: %d\r\n", ret);
         ctrl->encode_result = ret;
+        ENCODE_FRAME_END;
+        rtos_get_semaphore(&ctrl->enc_start_sem, BEKEN_NO_WAIT);
         return AVDK_ERR_GENERIC;
     }
+    ENCODE_FRAME_END;
     ctrl->encode_result = BK_OK;
     return AVDK_ERR_OK;
 }
@@ -156,9 +160,16 @@ static void h264_encoder_entry(void *arg)
             continue;
         }
 // Modified by TUYA End
-        param.out_size = ENC_BUFFER_LEN;
         if (param.out_buf == 0 && ctrl->config.outbuf_malloc != NULL) {
-            param.out_buf = (uint32_t)ctrl->config.outbuf_malloc(ENC_BUFFER_LEN, ctrl->config.outbuf_malloc_args);
+            frame_buffer_t *temp_buffer = (frame_buffer_t *)ctrl->config.outbuf_malloc(CONFIG_BK_ENCODER_H264_MAX_OUTPUT_BUFFER, ctrl->config.outbuf_malloc_args);
+            if (temp_buffer != NULL) {
+                param.out_buf = (uint32_t)temp_buffer;
+                param.out_size = temp_buffer->size;
+            } else {
+                param.out_buf = 0;
+                param.out_size = 0;
+            }
+            param.out_size = temp_buffer->size;
         }
         if (param.out_buf == 0) {
             LOGW("Failed to get output buffer, skip this frame\r\n");
@@ -177,9 +188,6 @@ static void h264_encoder_entry(void *arg)
             .param = ctrl,
             .sem = &ctrl->enc_done_sem
         };
-        if(ctrl->bond != NULL && ctrl->bond->frame_start != NULL) {
-            ctrl->bond->frame_start(ctrl->bond);
-        }
 // Modified by TUYA Start
         h264_encode_clear_semaphore(&ctrl->enc_done_sem);
 // Modified by TUYA End
@@ -311,8 +319,8 @@ static avdk_err_t h264_encode_ctlr_open(bk_h264_encode_ctlr_handle_t handle)
     h264_encode_clear_semaphore(&control->enc_done_sem);
 // Modified by TUYA End
     // Create encoding thread
-    ret = rtos_create_thread(&control->thread,
-                           BEKEN_DEFAULT_WORKER_PRIORITY,
+    ret = rtos_create_hsram_thread(&control->thread,
+                           3,
                            "h264e_encoder",
                            (beken_thread_function_t)h264_encoder_entry,
                            CONFIG_BK_ENCODER_H264_TASK_SIZE,
@@ -357,6 +365,21 @@ static avdk_err_t h264_encode_ctlr_close(bk_h264_encode_ctlr_handle_t handle)
     h264_encode_clear_semaphore(&control->enc_start_sem);
     h264_encode_clear_semaphore(&control->enc_done_sem);
 // Modified by TUYA End
+
+    if (rtos_is_timer_init(&control->debug_timer)) {
+        bk_err_t ret = rtos_stop_timer(&control->debug_timer);
+        if (ret != BK_OK) {
+            LOGE("Stop timer failed: %d\r\n", ret);
+        }
+
+        ret = rtos_deinit_timer(&control->debug_timer);
+        if (ret != BK_OK) {
+            LOGE("Deinit timer failed: %d\r\n", ret);
+        }
+
+        control->debug_time_ms = 0;
+        LOGI("H.264 debug stopped\r\n");
+    }
 
     // Deregister encoder callbacks
     h264e_deregister_callback(&control->h264e_handler);
@@ -574,7 +597,7 @@ avdk_err_t bk_h264_encode_hw_flexa_ctlr_new(bk_h264_encode_ctlr_handle_t *handle
     controller->ops.ioctl = h264_encode_ctlr_ioctl;
     controller->ops.force_idr = h264_encode_ctlr_force_idr;
     controller->ops.deinit = h264_encode_ctlr_deinit;
-    controller->ops.delete = h264_encode_ctlr_delete;
+    controller->ops.del = h264_encode_ctlr_delete;
     *handle = &(controller->ops);
     LOGI("H.264 encoder controller created\r\n");
     return AVDK_ERR_OK;

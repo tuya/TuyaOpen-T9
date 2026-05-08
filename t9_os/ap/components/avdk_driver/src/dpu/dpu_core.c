@@ -81,162 +81,162 @@ void dpu_clk_src_set(dpu_clk_src_t clk_src)
     dcreg_DPU_Beken_01 = 0x00000002 + clk_src;  // bit:0,  0: dpu clk from 320M/480M; 1: dpu clk from naneng-DPHY internal dpll
 }
 
-void dpu_clk_set(dpu_clk_src_t (clk_src), lcd_clk_t clk)
+void dpu_clk_set(dpu_clk_src_t clk_src, lcd_clk_t clk)
 {
-    /****sel 0: 240M, 1: 320M; div 1 ~ 32*****/
-    if (clk > LCD_80M || (clk_src == DPU_CLK_SRC_NANENG_DPHY_INTERNAL_DPLL))
-    {   
-        clk_src = DPU_CLK_SRC_NANENG_DPHY_INTERNAL_DPLL;
-    }
-    else
+    //clk_src = DPU_CLK_SRC_NANENG_DPHY_INTERNAL_DPLL;
+    //clk_src = DPU_CLK_SRC_320M_480M;
+    if (clk_src == DPU_CLK_SRC_320M_480M)
     {
-        clk_src = DPU_CLK_SRC_320M_480M;
-        switch (clk)
-        {
-            // case LCD_320M:
-            //     dpu_clk_sel_div(1, 1);    // 320/1 = 320Mhz
-            //     break;
+	    switch (clk)
+	    {
+	        case LCD_320M:
+	            dpu_clk_sel_div(1, 1);    // 320/1 = 320Mhz
+	            break;
 
-            // case LCD_240M:
-            //     dpu_clk_sel_div(0, 1);    // 240/1 = 240Mhz
-            //     break;
+	        case LCD_240M:
+	            dpu_clk_sel_div(0, 1);    // 240/1 = 240Mhz
+	            break;
 
-            // case LCD_160M:
-            //     dpu_clk_sel_div(1, 2);    // 320/2 = 160Mhz
-            //     break;
+	        case LCD_160M:
+	            dpu_clk_sel_div(1, 2);    // 320/2 = 160Mhz
+	            break;
 
-            // case LCD_120M:
-            //     dpu_clk_sel_div(0, 2);    // 240/2 = 120Mhz
-            //     break;
+	        case LCD_120M:
+	            dpu_clk_sel_div(0, 2);    // 240/2 = 120Mhz
+	            break;
 
-            case LCD_106M:
-                dpu_clk_sel_div(1, 3);    // 320/3 = 106.67Mhz (106M)
-                break;
+	        case LCD_106M:
+	            dpu_clk_sel_div(1, 3);    // 320/3 = 106.67Mhz (106M)
+	            break;
 
-            case LCD_80M:
-                dpu_clk_sel_div(0, 3);    // 240/3 = 80Mhz
-                break;
+	        case LCD_80M:
+	            dpu_clk_sel_div(0, 3);    // 240/3 = 80Mhz
+	            break;
 
-            case LCD_64M:
-                dpu_clk_sel_div(1, 5);    // 320/5 = 64Mhz
-                break;
+	        case LCD_64M:
+	            dpu_clk_sel_div(1, 5);    // 320/5 = 64Mhz
+	            break;
 
-            case LCD_60M:
-                dpu_clk_sel_div(0, 4);    // 240/4 = 60Mhz
-                break;
+	        case LCD_60M:
+	            dpu_clk_sel_div(0, 4);    // 240/4 = 60Mhz
+	            break;
 
-            case LCD_53M:
-                dpu_clk_sel_div(1, 6);    // 320/6 = 53.33Mhz (53M)
-                break;
+	        case LCD_53M:
+	            dpu_clk_sel_div(1, 6);    // 320/6 = 53.33Mhz (53M)
+	            break;
 
-            case LCD_48M:
-                dpu_clk_sel_div(0, 5);    // 240/5 = 48Mhz
-                break;
+	        case LCD_48M:
+	            dpu_clk_sel_div(0, 5);    // 240/5 = 48Mhz
+	            break;
 
-            case LCD_45M:
-                dpu_clk_sel_div(1, 7);    // 320/7 = 45.71Mhz (45M)
-                break;
+	        case LCD_45M:
+	            dpu_clk_sel_div(1, 7);    // 320/7 = 45.71Mhz (45M)
+	            break;
 
-            case LCD_40M:
-                dpu_clk_sel_div(0, 6);    // 240/6 = 40Mhz
-                break;
+	        case LCD_40M:
+	            dpu_clk_sel_div(0, 6);    // 240/6 = 40Mhz
+	            break;
 
-            case LCD_35M:
-                dpu_clk_sel_div(1, 9);    // 320/9 = 35.56Mhz (35M)
-                break;
+	        case LCD_35M:
+	            dpu_clk_sel_div(1, 9);    // 320/9 = 35.56Mhz (35M)
+	            break;
 
-            case LCD_34M:
-                dpu_clk_sel_div(0, 7);    // 240/7 = 34.29Mhz (34M)
-                break;
+	        case LCD_34M:
+	            dpu_clk_sel_div(0, 7);    // 240/7 = 34.29Mhz (34M)
+	            break;
 
-            case LCD_32M:
-                dpu_clk_sel_div(1, 10);   // 320/10 = 32Mhz
-                break;
+	        case LCD_32M:
+	            dpu_clk_sel_div(1, 10);   // 320/10 = 32Mhz
+	            break;
 
-            case LCD_30M:
-                dpu_clk_sel_div(0, 8);    // 240/8 = 30Mhz
-                break;
+	        case LCD_30M:
+	            dpu_clk_sel_div(0, 8);    // 240/8 = 30Mhz
+	            break;
 
-            case LCD_29M:
-                dpu_clk_sel_div(1, 11);   // 320/11 = 29.09Mhz (29M)
-                break;
+	        case LCD_29M:
+	            dpu_clk_sel_div(1, 11);   // 320/11 = 29.09Mhz (29M)
+	            break;
 
-            case LCD_26M:
-                dpu_clk_sel_div(0, 9);    // 240/9 = 26.67Mhz (26M)
-                break;
+	        case LCD_26M:
+	            dpu_clk_sel_div(0, 9);    // 240/9 = 26.67Mhz (26M)
+	            break;
 
-            case LCD_24M:
-                dpu_clk_sel_div(0, 10);   // 240/10 = 24Mhz
-                break;
+	        case LCD_24M:
+	            dpu_clk_sel_div(0, 10);   // 240/10 = 24Mhz
+	            break;
 
-            case LCD_22M:
-                dpu_clk_sel_div(1, 14);   // 320/14 = 22.86Mhz (22M)
-                break;
+	        case LCD_22M:
+	            dpu_clk_sel_div(1, 14);   // 320/14 = 22.86Mhz (22M)
+	            break;
 
-            case LCD_21M:
-                dpu_clk_sel_div(0, 11);   // 240/11 = 21.82Mhz (21M)
-                break;
+	        case LCD_21M:
+	            dpu_clk_sel_div(0, 11);   // 240/11 = 21.82Mhz (21M)
+	            break;
 
-            case LCD_20M:
-                dpu_clk_sel_div(0, 12);   // 240/12 = 20Mhz
-                break;
+	        case LCD_20M:
+	            dpu_clk_sel_div(0, 12);   // 240/12 = 20Mhz
+	            break;
 
-            case LCD_18M:
-                dpu_clk_sel_div(0, 13);   // 240/13 = 18.46Mhz (18M)
-                break;
+	        case LCD_18M:
+	            dpu_clk_sel_div(0, 13);   // 240/13 = 18.46Mhz (18M)
+	            break;
 
-            case LCD_17M:
-                dpu_clk_sel_div(0, 14);   // 240/14 = 17.14Mhz (17M)
-                break;
+	        case LCD_17M:
+	            dpu_clk_sel_div(0, 14);   // 240/14 = 17.14Mhz (17M)
+	            break;
 
-            case LCD_16M:
-                dpu_clk_sel_div(0, 15);   // 240/15 = 16Mhz
-                break;
+	        case LCD_16M:
+	            dpu_clk_sel_div(0, 15);   // 240/15 = 16Mhz
+	            break;
 
-            case LCD_15M:
-                dpu_clk_sel_div(0, 16);   // 240/16 = 15Mhz
-                break;
+	        case LCD_15M:
+	            dpu_clk_sel_div(0, 16);   // 240/16 = 15Mhz
+	            break;
 
-            case LCD_14M:
-                dpu_clk_sel_div(0, 17);   // 240/17 = 14.12Mhz (14M)
-                break;
+	        case LCD_14M:
+	            dpu_clk_sel_div(0, 17);   // 240/17 = 14.12Mhz (14M)
+	            break;
 
-            case LCD_13M:
-                dpu_clk_sel_div(0, 18);   // 240/18 = 13.33Mhz (13M)
-                break;
+	        case LCD_13M:
+	            dpu_clk_sel_div(0, 18);   // 240/18 = 13.33Mhz (13M)
+	            break;
 
-            case LCD_12M:
-                dpu_clk_sel_div(0, 20);   // 240/20 = 12Mhz
-                break;
+	        case LCD_12M:
+	            dpu_clk_sel_div(0, 20);   // 240/20 = 12Mhz
+	            break;
 
-            case LCD_11M:
-                dpu_clk_sel_div(0, 21);   // 240/21 = 11.43Mhz (11M)
-                break;
+	        case LCD_11M:
+	            dpu_clk_sel_div(0, 21);   // 240/21 = 11.43Mhz (11M)
+	            break;
 
-            case LCD_10M:
-                dpu_clk_sel_div(0, 24);   // 240/24 = 10Mhz
-                break;
+	        case LCD_10M:
+	            dpu_clk_sel_div(0, 24);   // 240/24 = 10Mhz
+	            break;
 
-            case LCD_9M:
-                dpu_clk_sel_div(0, 26);   // 240/26 = 9.23Mhz (9M)
-                break;
+	        case LCD_9M:
+	            dpu_clk_sel_div(0, 26);   // 240/26 = 9.23Mhz (9M)
+	            break;
 
-            case LCD_8M:
-                dpu_clk_sel_div(0, 30);   // 240/30 = 8Mhz
-                break;
+	        case LCD_8M:
+	            dpu_clk_sel_div(0, 30);   // 240/30 = 8Mhz
+	            break;
 
-            case LCD_7M:
-                dpu_clk_sel_div(0, 32);   // 240/32 = 7.5Mhz (7M)
-                break;
-                
-            default:
-                dpu_clk_sel_div(0, 12);   // 240/12 = 20Mhz default
-                bk_printf("%s unknow clk: %d\n", __FUNCTION__, clk);
-                break;
-        }
+	        case LCD_7M:
+	            dpu_clk_sel_div(0, 32);   // 240/32 = 7.5Mhz (7M)
+	            break;
+            
+	        default:
+	            dpu_clk_sel_div(0, 12);   // 240/12 = 20Mhz default
+	            bk_printf("%s unknow clk: %d\n", __FUNCTION__, clk);
+	            break;
+	    }
+        dpu_clk_src_set(0);   
+    }
+    else 
+    {
+        dpu_clk_src_set(1); 
     }
     dpu_clk_en(1);
-    dpu_clk_src_set(clk_src);
 }
 
 void dpu_syc_clk_deinit(void)
@@ -336,6 +336,41 @@ static uint16_t dpu_pixel_format_set(bk_pixel_format_t bk_format)
     return viv_fomat;
 }
 
+static bool dpu_runtime_format_supported(const bk_display_pixel_format_config_t *config)
+{
+    if (config == NULL)
+        return false;
+
+    if (config->decompress)
+        return config->format == BK_PIXEL_FORMAT_ARGB8888;
+
+    return config->format == BK_PIXEL_FORMAT_RGB565 ||
+           config->format == BK_PIXEL_FORMAT_RGB888 ||
+           config->format == BK_PIXEL_FORMAT_NV12;
+}
+
+static void dpu_fill_video_layer_config(const dpu_config_t *dpu_config, layer_config *layer)
+{
+    os_memset(layer, 0, sizeof(*layer));
+
+    if (!dpu_config->video.enable)
+    {
+        return;
+    }
+
+    layer->layer_enable = true;
+    layer->format = dpu_pixel_format_set(dpu_config->video.format);
+    layer->decompress_enable = dpu_config->video.decompress;
+    layer->blend_enable = false;
+    layer->blend_mode = 0;
+    layer->width = dpu_config->video_timing.h_size;
+    layer->height = dpu_config->video_timing.v_size;
+    layer->disp_x = dpu_config->video.disp_x;
+    layer->disp_y = dpu_config->video.disp_y;
+    layer->disp_w = dpu_config->video.disp_w;
+    layer->disp_h = dpu_config->video.disp_h;
+}
+
 static int dpu_flush_complete_handle(void *param)
 {
     AVDK_RETURN_ON_FALSE(param, BK_ERR_NULL_PARAM, TAG, "invalid argument");
@@ -432,6 +467,7 @@ bk_err_t dpu_core_init(dpu_config_t * dpu_config, dpu_handle_t *handle)
         goto err;
     }
     dpu_sys_interrupt_init();
+    LOGI("%s clk_src: %d, dpi_clock_freq_mhz: %d\n", __func__, dpu_config->dpu_clk_src, dpu_config->dpi_clock_freq_mhz);
     dpu_clk_set(dpu_config->dpu_clk_src, dpu_config->dpi_clock_freq_mhz);
     uint32_t viv_dc_get_dc_core_len(void);
     uint32_t dpu_buffer_len = viv_dc_get_dc_core_len();
@@ -449,6 +485,7 @@ bk_err_t dpu_core_init(dpu_config_t * dpu_config, dpu_handle_t *handle)
     //context->pixel_format = dpu_config->video.format;
     context->h_pixels = dpu_config->video_timing.h_size;
     context->v_pixels = dpu_config->video_timing.v_size;
+    context->current_config = *dpu_config;
     //context->dpu_decompress_en = dpu_config->video.decompress;
     //context->dpu_blend_en = dpu_config->graphic.enable;
     //context->dpu_blend_mode = dpu_config->graphic.blend_mode;
@@ -489,6 +526,7 @@ bk_err_t dpu_core_init(dpu_config_t * dpu_config, dpu_handle_t *handle)
 #endif
 
     *handle = context;
+    LOGI("%s dpu_core_init success\n", __func__);
 
     return BK_OK;
 
@@ -508,20 +546,7 @@ bk_err_t dpu_core_layer_config(dpu_config_t * dpu_config, dpu_handle_t *handle)
     dpu_context_t *context = (dpu_context_t*)*handle;
     layer_config layers[2] = {0};
 
-    if (dpu_config->video.enable)
-    {
-        layers[DPU_LAYER_VIDEO].layer_enable = true;
-        layers[DPU_LAYER_VIDEO].format = dpu_pixel_format_set(dpu_config->video.format);
-        layers[DPU_LAYER_VIDEO].decompress_enable = dpu_config->video.decompress;
-        layers[DPU_LAYER_VIDEO].blend_enable = false;
-        layers[DPU_LAYER_VIDEO].blend_mode = 0;
-        layers[DPU_LAYER_VIDEO].width = dpu_config->video_timing.h_size;
-        layers[DPU_LAYER_VIDEO].height = dpu_config->video_timing.v_size;
-        layers[DPU_LAYER_VIDEO].disp_x = dpu_config->video.disp_x;
-        layers[DPU_LAYER_VIDEO].disp_y = dpu_config->video.disp_y;
-        layers[DPU_LAYER_VIDEO].disp_w = dpu_config->video.disp_w;
-        layers[DPU_LAYER_VIDEO].disp_h = dpu_config->video.disp_h;
-    }
+    dpu_fill_video_layer_config(dpu_config, &layers[DPU_LAYER_VIDEO]);
 
     if (dpu_config->graphic.enable)
     {
@@ -539,15 +564,60 @@ bk_err_t dpu_core_layer_config(dpu_config_t * dpu_config, dpu_handle_t *handle)
     }
 
     dpu_frame_layer_config(layers);
-    
+    context->current_config = *dpu_config;
     context->display_dirty = true;
 
+    return ret;
+}
+
+bk_err_t dpu_core_runtime_switch(dpu_handle_t *handle, const bk_display_pixel_format_config_t *config)
+{
+    dpu_context_t *context;
+    beken_event_flags_t wait_event = 0;
+    layer_config video_layer = {0};
+    bk_err_t ret = BK_OK;
+
+    AVDK_RETURN_ON_FALSE(handle && config, BK_ERR_NULL_PARAM, TAG, "invalid argument");
+
+    context = (dpu_context_t *)*handle;
+    AVDK_RETURN_ON_FALSE(context, BK_ERR_NULL_PARAM, TAG, "invalid handle");
+    AVDK_RETURN_ON_FALSE(dpu_runtime_format_supported(config),
+                         BK_ERR_PARAM, TAG, "runtime switch only supports RGB565, RGB888, NV12 and compressed ARGB8888");
+
+    rtos_lock_mutex(&context->flush_mutex);
+
+    if (context->update_frame[DPU_LAYER_VIDEO])
+    {
+        wait_event = rtos_wait_for_event_flags(&context->dpu_event_handle,
+                EVENT_BIT_AVAILABLE, true, WAIT_FOR_ANY_EVENT, BEKEN_WAIT_FOREVER);
+
+        if ((wait_event & EVENT_BIT_AVAILABLE) != EVENT_BIT_AVAILABLE || context->update_frame[DPU_LAYER_VIDEO])
+        {
+            LOGE("%s wait pending frame failed\n", __func__);
+            ret = BK_FAIL;
+            goto exit;
+        }
+    }
+
+    context->current_config.video.format = config->format;
+    context->current_config.video.decompress = config->decompress;
+    dpu_fill_video_layer_config(&context->current_config, &video_layer);
+
+    ret = dpu_frame_switch_video_config(&video_layer);
+    if (ret == BK_OK)
+    {
+        context->display_dirty = true;
+    }
+
+exit:
+    rtos_unlock_mutex(&context->flush_mutex);
     return ret;
 }
 
 bk_err_t dpu_core_deinit(dpu_handle_t *handle)
 {
     AVDK_RETURN_ON_FALSE(handle, BK_ERR_NULL_PARAM, TAG, "invalid argument");
+    AVDK_RETURN_ON_FALSE(*handle, BK_ERR_NULL_PARAM, TAG, "invalid handle");
     dpu_context_t *context = (dpu_context_t*)*handle;
 
     dpu_frame_deinit();
@@ -583,12 +653,10 @@ bk_err_t dpu_core_deinit(dpu_handle_t *handle)
             if (context->update_frame[layer])
             {
                 LOGV("%s free update frame %p\n", __func__, context->update_frame[layer]);
-                // Modified by TUYA Start
                 if (context->update_cb[layer])
                 {
                     context->update_cb[layer](context->update_frame[layer]);
                 }
-                // Modified by TUYA End
             }
         }
     }
@@ -599,12 +667,10 @@ bk_err_t dpu_core_deinit(dpu_handle_t *handle)
             if (context->display_frame[layer])
             {
                 LOGV("%s free display frame %p\n", __func__, context->display_frame[layer]);
-                // Modified by TUYA Start
                 if (context->display_cb[layer])
                 {
                     context->display_cb[layer](context->display_frame[layer]);
                 }
-                // Modified by TUYA End
             }
         }
     }
@@ -640,8 +706,11 @@ bk_err_t dpu_core_flush_restart(dpu_handle_t *handle)
 bk_err_t dpu_core_flush(dpu_handle_t *handle, dpu_layer_t layer, void *buff, flush_free_cb_t cb)
 {
     AVDK_RETURN_ON_FALSE(handle, BK_ERR_NULL_PARAM, TAG, "invalid argument");
+    AVDK_RETURN_ON_FALSE(*handle, BK_ERR_NULL_PARAM, TAG, "invalid handle");
     bk_err_t ret = BK_OK;
     dpu_context_t *context = (dpu_context_t*)*handle;
+    void *old_display_frame = NULL;
+    flush_free_cb_t old_display_cb = NULL;
 
     /* Validate layer index before accessing layer-specific resources */
     if (layer >= DPU_LAYER_MAX)
@@ -659,11 +728,24 @@ bk_err_t dpu_core_flush(dpu_handle_t *handle, dpu_layer_t layer, void *buff, flu
     rtos_lock_mutex(&context->flush_mutex);
     if ((!context->display_frame[layer]) || (context->display_dirty == true))
     {
-        context->display_frame[layer] = buff;
-        context->display_cb[layer] = cb;
+        old_display_frame = context->display_frame[layer];
+        old_display_cb = context->display_cb[layer];
         ret = dpu_frame_commit(layer, buff);
-        context->display_dirty = false;
-        context->frame_rate[layer]++;
+        if (ret == BK_OK)
+        {
+            context->display_frame[layer] = buff;
+            context->display_cb[layer] = cb;
+            context->display_dirty = false;
+            context->frame_rate[layer]++;
+            if (old_display_frame && old_display_cb && old_display_frame != buff)
+            {
+                old_display_cb(old_display_frame);
+            }
+        }
+        else if (cb)
+        {
+            cb(buff);
+        }
         LOGI("%s %s, cb: %p \n", __func__, (ret == BK_OK) ? "success" : "fail", cb);
     }
     else
@@ -694,6 +776,15 @@ bk_err_t dpu_core_flush(dpu_handle_t *handle, dpu_layer_t layer, void *buff, flu
         context->update_cb[layer] = cb;
         context->frame_rate[layer]++;
         ret = dpu_frame_update(layer, buff);
+        if (ret != BK_OK)
+        {
+            context->update_frame[layer] = NULL;
+            context->update_cb[layer] = NULL;
+            if (cb)
+            {
+                cb(buff);
+            }
+        }
     }
 exit:
     rtos_unlock_mutex(&context->flush_mutex);
@@ -705,6 +796,7 @@ uint32_t dpu_core_get_flush_addr(dpu_handle_t *handle)
     AVDK_RETURN_ON_FALSE(handle, BK_ERR_NULL_PARAM, TAG, "invalid argument");
     return dpu_frame_get_layer_address(0);
 }
+
 
 
 
