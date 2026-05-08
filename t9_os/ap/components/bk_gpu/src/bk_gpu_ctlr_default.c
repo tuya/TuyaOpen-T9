@@ -1,11 +1,10 @@
 #include <os/os.h>
 #include <os/mem.h>
-#include <driver/sys_pm.h>
 #include <components/bk_gpu_ctlr.h>
 #include <components/bk_hardware_ram.h>
-#include <modules/vg_lite_gpu/vg_lite_platform.h>
 #include "avdk_monitor.h"
 #include "gpu_vn_ctlr.h"
+#include "gpu_core.h"
 #include "sys_driver.h"
 #include <bk_flexa_bond_types.h>
 
@@ -115,35 +114,6 @@ static bool gpu_draw_path_intersects_line_block(gpu_flex_data_t *data,
     return data->draw_ymax >= block_start && data->draw_ymin <= block_end;
 }
 // Modified by TUYA End
-
-static void gpu_driver_init(void)
-{
-    bk_pm_module_vote_power_ctrl(PM_POWER_SUB_DOMAIN_GPU, PM_POWER_MODULE_STATE_ON);
-
-    sys_drv_gpu_cksel_clkdiv_set(CKSEL_GPU_480M, 0);
-
-    bk_pm_clock_ctrl(PM_CLK_ID_GPU, PM_CLK_CTRL_PWR_UP);
-
-    bk_int_isr_register(INT_SRC_GPU, vg_lite_IRQHandler, NULL);
-#if CONFIG_SOC_SMP
-    sys_drv_set_int_en(CPU2_CORE_ID, INT_SRC_GPU, 1);
-#else
-    sys_drv_set_int_en(rtos_get_core_id(), INT_SRC_GPU, 1);
-#endif
-}
-
-static void gpu_driver_deinit(void)
-{
-#if CONFIG_SOC_SMP
-    sys_drv_set_int_en(CPU2_CORE_ID, INT_SRC_GPU, 0);
-#else
-    sys_drv_set_int_en(rtos_get_core_id(), INT_SRC_GPU, 0);
-#endif
-    bk_int_isr_unregister(INT_SRC_GPU);
-
-    bk_pm_clock_ctrl(PM_CLK_ID_GPU, PM_CLK_CTRL_PWR_DOWN);
-    bk_pm_module_vote_power_ctrl(PM_POWER_SUB_DOMAIN_GPU, PM_POWER_MODULE_STATE_OFF);
-}
 
 static void gpu_flexa_addr_mapping(uint16_t width, uint16_t height, uint32_t base_addr, uint16_t flexa_lines, uint8_t buf_cnt)
 {
@@ -452,18 +422,6 @@ static inline uintptr_t align_buffer_address(uintptr_t addr)
 }
 
 /**
- * @brief Initialize GPU buffer allocation
- * @param data GPU flex data structure
- * @return 0 on success, -1 on failure
- */
-static int gpu_flex_init_gpu_buffer(gpu_flex_data_t *data)
-{
-
-
-    return 0;
-}
-
-/**
  * @brief Initialize ping-pong buffer for GPU processing
  * @param data GPU flex data structure
  * @return 0 on success, -1 on failure
@@ -509,13 +467,13 @@ static void gpu_flex_deinit_pingpong_buffer(gpu_flex_data_t *data)
 /**
  * @brief Configure destination buffer based on rotation angle
  * @param data GPU flex data structure
- * @param rotation_degree Rotation angle (0 or 90)
+ * @param rotation_degree Rotation angle (0, 90 or 270)
  */
 static void gpu_flex_configure_dst_buffer(gpu_flex_data_t *data, bk_gpu_ctlr_config_t *config)
 {
     memset(&data->dst_buf, 0, sizeof(vg_lite_buffer_t));
 
-    if (config->rotate_degree == 90)
+    if (config->rotate_degree == 90 || config->rotate_degree == 270)
     {
         data->dst_buf.width  = config->flexa_lines;
         data->dst_buf.height = data->output_width;
@@ -529,7 +487,7 @@ static void gpu_flex_configure_dst_buffer(gpu_flex_data_t *data, bk_gpu_ctlr_con
     data->dst_buf.compress_mode = config->compress ? VG_LITE_DEC_HV_SAMPLE : VG_LITE_DEC_DISABLE;
     data->dst_buf.format = gpu_format_convert(config->dst_format);
 
-    data->dst_buf.tiled = VG_LITE_TILED;
+    data->dst_buf.tiled = config->compress == true ? VG_LITE_TILED : VG_LITE_LINEAR;
     vg_lite_allocate_with_data(&data->dst_buf, (void *)(uintptr_t)data->buffers[data->dst_buf_idx], NULL, NULL, NULL);
 }
 
@@ -603,6 +561,20 @@ static void gpu_flex_update_matrix(gpu_flex_data_t *data,
             data->draw_matrix.m[0][2] = offset;
         }
     }
+    else if (config->rotate_degree == 270)
+    {
+        float offset_x = -((float)(data->flexa_index - 1) * config->flexa_lines);
+        float offset_y = (float)data->output_width;
+        data->matrix.m[0][2] = offset_x;
+        data->matrix.m[1][2] = offset_y;
+
+        if (data->draw_enable)
+        {
+            data->draw_matrix.m[0][2] = offset_x;
+            data->draw_matrix.m[1][2] = offset_y;
+        }
+    }
+
 }
 
 /**
@@ -699,11 +671,13 @@ static inline void gpu_flex_data_deinit(gpu_flex_data_t *data, gpu_vn_ctlr_t *gp
     if (data->transfer_sem)
     {
         rtos_deinit_semaphore(&data->transfer_sem);
+        data->transfer_sem = NULL;
     }
 
     if (data->draw_mutex)
     {
         rtos_deinit_mutex(&data->draw_mutex);
+        data->draw_mutex = NULL;
     }
 }
 
@@ -724,6 +698,25 @@ static inline void gpu_flex_restart(gpu_vn_ctlr_t *gpu_vn_ctlr)
     flex->read_lines = 0;
 }
 
+static inline void gpu_flex_data_dma_transfer(gpu_flex_data_t *data, uint32_t offset,
+                                              uint32_t xsize, uint32_t ysize, uint32_t dst_step)
+{
+    hpdma_link_config_t dma_config[1];
+
+    dma_config[0].src_addr = (uint32_t)data->dst_buf.memory;
+    dma_config[0].dst_addr = (uint32_t)(data->dpu_frame_buffers + offset);
+    dma_config[0].src_xsize = xsize;
+    dma_config[0].dst_xsize = xsize;
+    dma_config[0].src_ysize = ysize;
+    dma_config[0].dst_ysize = ysize;
+    dma_config[0].src_step = 0;
+    dma_config[0].dst_step = dst_step;
+    dma_config[0].finish_int_en = 1;
+    dma_config[0].half_finish_int_en = 0;
+    BK_LOG_ON_ERR(bk_hpdma_link_set_descs(data->link_dma_list_table, (hpdma_link_config_t *)dma_config, 1));
+    BK_LOG_ON_ERR(bk_hpdma_link_transfer(data->gdma, data->link_dma_list_table));
+}
+
 /**
  * @brief Pull out processed line data from GPU buffer
  * @param data GPU flex data structure
@@ -742,69 +735,31 @@ static inline void gpu_flex_data_line_pull_out(gpu_flex_data_t *data, gpu_vn_ctl
     while(bk_hpdma_get_enable_status(data->gdma));
 #endif
     /* Copy processed data based on rotation angle */
-    if (config->rotate_degree == 90)
+    if (config->rotate_degree == 90 || config->rotate_degree == 270)
     {
-        uint32_t offset = 0;
-        uint32_t stride = 0;
-        if (config->compress)
+        uint32_t pixel_size = bk_pixel_size_get(config->dst_format);
+        uint32_t stride = (data->output_height - config->flexa_lines) * pixel_size;
+        uint32_t ysize = config->compress ? data->output_width / 4 : data->output_width;
+        uint32_t offset;
+
+        if (config->rotate_degree == 90)
         {
-            uint32_t output_height_div_flexa = data->output_height / config->flexa_lines;
-            offset = (output_height_div_flexa - data->flexa_index) * data->flexa_lines_x_4;
-            stride = data->output_height * bk_pixel_size_get(config->dst_format) - data->flexa_lines_x_4;
+            offset = (data->output_height - data->flexa_index * config->flexa_lines) * pixel_size;
         }
         else
         {
-            stride = (data->output_height - config->flexa_lines) * bk_pixel_size_get(config->dst_format);
-            offset = (data->output_height - data->flexa_index * config->flexa_lines) * bk_pixel_size_get(config->dst_format);
+            offset = (data->flexa_index - 1) * data->flexa_lines_x_4;
         }
 
-        // Use single descriptor for all rows (2D transfer)
-        hpdma_link_config_t dma_config[1];
-
-        // Source: continuous storage starting from dst_buf.memory
-        dma_config[0].src_addr = (uint32_t)data->dst_buf.memory;
-        // Destination: 2D layout starting from offset
-        dma_config[0].dst_addr = (uint32_t)(data->dpu_frame_buffers + offset);
-        // X size: 64 bytes per row (16 lines * 4 bytes)
-        dma_config[0].src_xsize = data->flexa_lines_x_4;
-        dma_config[0].dst_xsize = data->flexa_lines_x_4;
-        dma_config[0].src_ysize =  config->compress ? data->output_width / 4 : data->output_width;
-        dma_config[0].dst_ysize =  config->compress ? data->output_width / 4 : data->output_width;
-        // Source step: 0 (continuous storage)
-        dma_config[0].src_step = 0;
-        // Destination step: stride bytes per row (for 2D layout)
-        dma_config[0].dst_step = stride;
-        // Enable interrupt on completion
-        dma_config[0].finish_int_en = 1;
-        dma_config[0].half_finish_int_en = 0;
-        //LOGI("dma_config.src_xsize %d dma_config.dst_xsize %d dma_config.src_ysize %d dma_config.dst_ysize %d\r\n", dma_config[0].src_xsize, dma_config[0].dst_xsize,  dma_config[0].src_ysize, dma_config[0].dst_ysize);
-        BK_LOG_ON_ERR(bk_hpdma_link_set_descs(data->link_dma_list_table, (hpdma_link_config_t *)dma_config, 1));
-        /* Start transfer */
-        BK_LOG_ON_ERR(bk_hpdma_link_transfer(data->gdma, data->link_dma_list_table));
-        /* Wait for transfer complete */
+        gpu_flex_data_dma_transfer(data, offset, data->flexa_lines_x_4, ysize, stride);
     }
     else if (config->rotate_degree == 0)
     {
         uint32_t offset = (data->flexa_index - 1) * data->output_width_x_flexa_lines;
-        // uint32_t copy_size = data->output_width_x_flexa_lines;
+        uint32_t xsize = data->output_width * bk_pixel_size_get(config->dst_format);
+        uint32_t ysize = config->compress ? config->flexa_lines / 4 : config->flexa_lines;
 
-        // bk_hpdma_memcpy(data->dpu_frame_buffers + offset,
-        //                         data->dst_buf.memory,
-        //                         copy_size);
-        hpdma_link_config_t dma_config[1];
-
-        dma_config[0].src_addr = (uint32_t)data->dst_buf.memory;
-        dma_config[0].dst_addr = (uint32_t)(data->dpu_frame_buffers + offset);
-        dma_config[0].src_xsize = data->output_width;
-        dma_config[0].dst_xsize = data->output_width;
-        dma_config[0].src_ysize = 16;
-        dma_config[0].dst_ysize = 16;
-        dma_config[0].src_step = 0;
-        dma_config[0].dst_step = 0;
-        dma_config[0].finish_int_en = 1;
-        dma_config[0].half_finish_int_en = 0;
-        BK_LOG_ON_ERR(bk_hpdma_link_set_descs(data->link_dma_list_table, (hpdma_link_config_t *)dma_config, 1));
-        BK_LOG_ON_ERR(bk_hpdma_link_transfer(data->gdma, data->link_dma_list_table));
+        gpu_flex_data_dma_transfer(data, offset, xsize, ysize, 0);
     }
 
     /* Switch to next ping-pong buffer */
@@ -825,7 +780,7 @@ static void gpu_flex_data_frame_done_blit(gpu_flex_data_t *flex, const bk_gpu_ct
     memset(&display_buffer , 0, sizeof(display_buffer));
     memset(&front_buffer , 0, sizeof(front_buffer));
 
-    if (config->rotate_degree == 90)
+    if (config->rotate_degree == 90 || config->rotate_degree == 270)
     {
         display_buffer.width = flex->output_height;
         display_buffer.height = flex->output_width;
@@ -1162,9 +1117,12 @@ static avdk_err_t gpu_ctlr_init(bk_gpu_ctlr_handle_t handle)
             LOGE("%s, %d rtos_init_mutex failed\n", __func__, __LINE__);
             return ret;
         }
+    } else {
+        LOGE("%s %d flexa is not enabled\r\n", __func__, __LINE__);
+        return AVDK_ERR_INVAL;
     }
 
-    gpu_driver_init();
+    bk_gpu_driver_init();
 
     control->gpu_contiguous_buffer = bk_get_gpu_flexa_buffer(CONFIG_VG_LITE_GPU_CONTIGUOUS_MEM_SZ);
     if (control->gpu_contiguous_buffer == NULL)
@@ -1191,16 +1149,19 @@ static avdk_err_t gpu_ctlr_deinit(bk_gpu_ctlr_handle_t handle)
                 return ret;
             }
         }
+    } else {
+        LOGE("%s %d flexa is not enabled\r\n", __func__, __LINE__);
+        return AVDK_ERR_INVAL;
     }
+
+    vg_lite_close();
+
+    bk_gpu_driver_deinit();
 
     if (control->gpu_contiguous_buffer) {
         os_free(control->gpu_contiguous_buffer);
         control->gpu_contiguous_buffer = NULL;
     }
-
-    vg_lite_close();
-
-    gpu_driver_deinit();
 
     return AVDK_ERR_OK;
 }
@@ -1239,6 +1200,9 @@ static avdk_err_t gpu_ctlr_open(bk_gpu_ctlr_handle_t handle)
         rtos_get_semaphore(&control->gpu_flex_task_sem, BEKEN_WAIT_FOREVER);
 
         LOGI("%s, %d sem get successful\n", __func__, __LINE__);
+    } else {
+        LOGE("%s %d flexa is not enabled\r\n", __func__, __LINE__);
+        return AVDK_ERR_INVAL;
     }
 
     return AVDK_ERR_OK;
@@ -1258,25 +1222,28 @@ static avdk_err_t gpu_ctlr_close(bk_gpu_ctlr_handle_t handle)
 
         control->flexa_stop = true;
 
-	    if (control->gpu_process_sem)
-	    {
-	        bk_err_t ret = rtos_set_semaphore(&control->gpu_process_sem);
-            if (ret != BK_OK) {
-                LOGE("%s, %d rtos_set_semaphore failed\n", __func__, __LINE__);
-                return ret;
-            }
-	    }
 #if HDMA_OPEN_ISR_ENABLE
         if (control->flex.transfer_sem) {
             rtos_set_semaphore(&control->flex.transfer_sem);
         }
 #endif
+
+	    if (control->gpu_process_sem)
+	    {
+	        bk_err_t ret = rtos_set_semaphore(&control->gpu_process_sem);
+            if (ret != BK_OK) {
+                LOGW("%s, %d rtos_set_semaphore failed\n", __func__, __LINE__);
+            }
+	    }
         rtos_get_semaphore(&control->gpu_flex_task_sem, BEKEN_WAIT_FOREVER);
 
         rtos_deinit_semaphore(&control->gpu_flex_task_sem);
         control->gpu_flex_task_sem = NULL;
 
         LOGI("%s, %d sem get successful, flexa thread has exited\n", __func__, __LINE__);
+    } else {
+        LOGE("%s %d flexa is not enabled\r\n", __func__, __LINE__);
+        return AVDK_ERR_INVAL;
     }
 
     return AVDK_ERR_OK;

@@ -14,7 +14,7 @@
 #include <driver/gpio_types.h>
 #include "gpio_driver.h"
 
-#include "drv_vglite.h"
+#include "gpu_core.h"
 
 #include <components/bk_display.h>
 #include <components/bk_display_dpu_ctlr.h>
@@ -22,6 +22,8 @@
 #include <components/bk_lcd_panel.h>
 #include "tiger_paths.h"
 #include <lcd/lcd_hx8399c_mipi_1080x1920.h>
+
+
 #define TAG "app"
 
 #define LOGI(...) BK_LOGI(TAG, ##__VA_ARGS__)
@@ -250,7 +252,7 @@ static void render_tiger_task(void *arg)
         redraw(&g_disp_ctx->draw_buffer, &matrix);
 
         // Submit the drawn buffer to DPU for display
-        bk_display_layer_flush(g_disp_ctx->dpu_ctlr_handle, DPU_LAYER_VIDEO, g_disp_ctx->frame_buffer[g_disp_ctx->frame_buffer_index], NULL);
+        bk_display_flush(g_disp_ctx->dpu_ctlr_handle, g_disp_ctx->frame_buffer[g_disp_ctx->frame_buffer_index], NULL);
 
         // Swap frame buffer.
         g_disp_ctx->frame_buffer_index = (g_disp_ctx->frame_buffer_index + 1) % 2;
@@ -279,10 +281,6 @@ avdk_err_t draw_tiger(void)
         .video.enable = true,
         .video.decompress = true,
         .video.format = BK_PIXEL_FORMAT_ARGB8888,
-
-        .graphic.enable = false,
-        .graphic.blend_mode = DPU_BLEND_MODE_SRC_OVER,
-        .graphic.format = BK_PIXEL_FORMAT_ARGB8888,
     };
 
 	const bk_lcd_panel_dev_config_t panel_dev_config = 
@@ -312,14 +310,8 @@ avdk_err_t draw_tiger(void)
     dpu_config.video.disp_w = dpu_config.timing.h_size;
     dpu_config.video.disp_h = dpu_config.timing.v_size;
     
-    dpu_config.graphic.disp_x = 0;
-    dpu_config.graphic.disp_y = 0;
-    dpu_config.graphic.disp_w = dpu_config.timing.h_size;
-    dpu_config.graphic.disp_h = dpu_config.timing.v_size;
-
     AVDK_GOTO_ON_ERROR(bk_display_dpu_ctlr_new(&g_disp_ctx->dpu_ctlr_handle, &dpu_config), err, TAG, "display dpu ctlr new err\n");
     AVDK_GOTO_ON_ERROR(bk_display_init(g_disp_ctx->dpu_ctlr_handle), err, TAG, "display init err\n");
-    AVDK_GOTO_ON_ERROR(bk_display_open(g_disp_ctx->dpu_ctlr_handle), err, TAG, "display open err\n");
 
     /* enable backlight */
     gpio_dev_unmap(GPIO_7);
@@ -334,9 +326,8 @@ avdk_err_t draw_tiger(void)
     g_disp_ctx->frame_buffer[0] = (void*)((uint32_t)bk_frame_buffer_malloc(MEM_SLAB_HEAP_CODED, (dpu_config.timing.h_size + 64) * dpu_config.timing.v_size) & 0xFFFFFFC0);
     g_disp_ctx->frame_buffer[1] = (void*)((uint32_t)bk_frame_buffer_malloc(MEM_SLAB_HEAP_UNCODED, (dpu_config.timing.h_size + 64) * dpu_config.timing.v_size) & 0xFFFFFFC0);
 
-    if(gpu_bsp_init(dpu_config.timing.h_size / 2, dpu_config.timing.v_size / 2) == 0) {
-        LOGI("gpu_bsp_init ok\r\n");
-    }
+    bk_gpu_driver_init();
+    vg_lite_init(dpu_config.timing.h_size / 2, dpu_config.timing.v_size / 2);
 
     memset(&g_disp_ctx->draw_buffer,0,sizeof(vg_lite_buffer_t));
     vg_lite_buffer_t *pdraw_buffer = &g_disp_ctx->draw_buffer;

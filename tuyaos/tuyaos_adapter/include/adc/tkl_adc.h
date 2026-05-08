@@ -112,9 +112,18 @@ OPERATE_RET tkl_adc_read_single_channel(TUYA_ADC_NUM_E port_num, UINT8_T ch_id, 
 
 OPERATE_RET tkl_adc_read_voltage(TUYA_ADC_NUM_E port_num, INT32_T *buff, UINT16_T len);
 
+/**
+ * @brief adc io control
+ *
+ * @param[in] cmd: control command
+ * @param[in] args: command argument
+ *
+ * @return OPRT_OK on success. Others on error, please refer to tuya_error_code.h
+ */
+OPERATE_RET tkl_adc_ioctl(ADC_IOCTL_CMD_E cmd, VOID *args);
+
 #ifdef __cplusplus
 }
 #endif
 
 #endif
-

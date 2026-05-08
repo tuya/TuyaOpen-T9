@@ -21,7 +21,10 @@
 #include <components/bk_lcd_panel.h>
 #include <components/bk_camera_bus.h>
 #include <components/bk_flexa_bond.h>
-
+#include "app_jpeg_decode.h"
+#include <components/bk_encode/bk_h264_encode_ctlr.h>
+#include <lcd/lcd_hx8399c_mipi_1080x1920.h>
+#include <lcd/lcd_hx8394f_mipi_720x1280.h>
 
 #define LOGI(...) BK_LOGI(TAG, ##__VA_ARGS__)
 #define LOGW(...) BK_LOGW(TAG, ##__VA_ARGS__)
@@ -30,10 +33,20 @@
 
 #define TAG "db-cli"
 
+#if CONFIG_VOICE_SERVICE
+void cli_doorbell_audio_turn_on(uint32_t aec, uint32_t uac, uint32_t sample_rate, uint32_t fmt);
+void cli_doorbell_audio_turn_off(void);
+#endif
+#if (CONFIG_ASR_SERVICE)
+void cli_doorbell_asr_turn_on(uint32_t aec, uint32_t uac, uint32_t sample_rate, uint8_t asr_en);
+void cli_doorbell_asr_turn_off(void);
+#endif
+
 #define CMD_CONTAIN(value) cmd_contain(argc, argv, value)
 #define GET_PPI(value)     get_ppi_from_cmd(argc, argv, value)
 #define GET_NAME(value)    get_name_from_cmd(argc, argv, value)
 #define GET_ROTATE()    get_rotate_from_cmd(argc, argv)
+
 
 //isp open [mipi|dvp|dual] [camera_width] [camera_height] [isp_output_width] [isp_output_height]
 //isp open mipi 1280 720 960 412
@@ -305,31 +318,13 @@ void cli_avdk_doorbell_isp_cmd(char *pcWriteBuffer, int xWriteBufferLen, int arg
     }
 }
 
-void cli_avdk_doorbell_h264e_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv)
-{
-    avdk_err_t ret = AVDK_ERR_GENERIC;
-    if (CMD_CONTAIN("open"))
-    {
-        ret = app_h264e_turn_on();
-    }
 
-    if (CMD_CONTAIN("close"))
-    {
-        ret = app_h264e_turn_off();
-    }
-
-    if (ret != AVDK_ERR_OK)
-    {
-        LOGE("Failed to turn on/off H.264 encoder, ret=%d\n", ret);
-    }
-    else
-    {
-        LOGI("H.264 encoder turned on/off successfully\n");
-    }
-}
 extern display_board_config_t *display_board_config;
 extern gpu_board_config_t *gpu_board_config;
 static void *s_isp_gpu_bond = NULL;
+static void *s_isp_h264e_bond = NULL;
+static void *s_mjpegd_gpu_joint_bond = NULL;
+static void *s_mjpegd_h264e_bond = NULL;
 //display open [panel_name] [gpu_in_w] [gpu_in_h] [gpu_out_w] [gpu_out_h] [rotate]
 //display open hx8399c_mipi_1080x1920 960 412 412 960 90
 //display open (uses default panel from board config if available)
@@ -413,10 +408,10 @@ void cli_avdk_doorbell_display_cmd(char *pcWriteBuffer, int xWriteBufferLen, int
                 .src_format = BK_PIXEL_FORMAT_NV12,
                 .dst_format = BK_PIXEL_FORMAT_ARGB8888,
                 .dst_compress = true,
-                .scale = true,
+                .scale = false,
+                .enable = true,
             },
         };
-
         app_gpu_board_config_set(&gpu_config);
 
 
@@ -450,6 +445,21 @@ void cli_avdk_doorbell_display_cmd(char *pcWriteBuffer, int xWriteBufferLen, int
         if (ret != AVDK_ERR_OK)
         {
             LOGI("Turning on GPU failed, ret=%d\n", ret);
+        }
+        void *isp_handle = app_isp_handle_get();
+        if (isp_handle == NULL) {
+            LOGE("%s, app_isp_handle_get failed\n", __func__);
+            return;
+        }
+        bk_gpu_ctlr_handle_t gpu_handle = app_gpu_handle_get();
+        if (gpu_handle == NULL) {
+            LOGE("%s, app_gpu_handle_get failed\n", __func__);
+            return;
+        }
+        ret = bk_flexa_isp_gpu_bond_start(&s_isp_gpu_bond, isp_handle, gpu_handle);
+        if (ret != BK_OK) {
+            LOGE("%s, bk_flexa_isp_gpu_bond_start failed, ret = %d\n", __func__, ret);
+            return;
         }
     }
 
@@ -572,170 +582,367 @@ void test_hdma(void)
     bk_hpdma_link_deinit(desc_table);
 }
 
+/* MIPI LCD + DPU：joint_test open mipi / open uvc 时先开屏，再启相机链路 */
+static void joint_test_mipi_lcd_on(void)
+{
+    display_board_config_t display_board = {0};
+
+    display_board.mipi.enable = true;
+    display_board.mipi.pin_reset = GPIO_60;
+    display_board.mipi.pin_backlight = GPIO_7;
+    display_board.mipi.panel = &lcd_device_hx8399c_mipi_1080x1920;
+    display_board.dpu_video.enable = true;
+    display_board.dpu_video.decompress = true;
+    display_board.dpu_video.format = BK_PIXEL_FORMAT_ARGB8888;
+    app_display_board_config_set(&display_board);
+    app_mipi_lcd_turn_on(app_display_board_config_get());
+}
+
+/// @brief joint_test open mipi [720p|1080p] [fps] [h264e] | open uvc [h264e]
+/// @param pcWriteBuffer 
+/// @param xWriteBufferLen 
+/// @param argc 
+/// @param argv 
+/// ap_cmd joint_test open mipi 1080p 25
+//  ap_cmd joint_test open mipi 720p 30
+
 void cli_avdk_doorbell_joint_test_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv)
 {
     avdk_err_t ret = AVDK_ERR_GENERIC;
-    if (CMD_CONTAIN("open"))
-    {
-        ret = app_isp_mipi_camera_turn_on(app_camera_board_config_get());
 
-        // Find panel by name or use default
-        const bk_display_dsi_panel_t *selected_panel = NULL;
-        if (display_board_config && display_board_config->mipi.panel) {
-            selected_panel = display_board_config->mipi.panel;
-            LOGI("Using default panel from board config: %s\n", selected_panel->name);
-        } else {
-            // Fallback: try to find hx8399c by name
-            const bk_display_dsi_panel_t *panel_list[20];
-            uint32_t panel_count = bk_lcd_get_mipi_panel_list(panel_list, 20);
-            for (uint32_t i = 0; i < panel_count; i++) {
-                if (panel_list[i] != NULL && panel_list[i]->name != NULL) {
-                    if (os_strcmp(panel_list[i]->name, "hx8399c_mipi_1080x1920") == 0) {
-                        selected_panel = panel_list[i];
-                        LOGI("Found panel by name: %s\n", selected_panel->name);
-                        break;
-                    }
+    if (argc >= 2 && argv[1] != NULL && os_strcmp(argv[1], "open") == 0) 
+    {
+        if (argc >= 3 && argv[2] != NULL && os_strcmp(argv[2], "mipi") == 0) {
+            bool want_h264e = false;
+            bool use_1080p = false;
+            uint16_t sensor_fps = 25;
+            camera_board_config_t camera_board = {0};
+            gpu_board_config_t gpu_board = {0};
+
+            for (int i = 3; i < argc; ++i) {
+                if (argv[i] == NULL) {
+                    continue;
+                }
+
+                if (os_strcmp(argv[i], "h264e") == 0) {
+                    want_h264e = true;
+                    continue;
+                }
+
+                if (os_strcmp(argv[i], "720p") == 0) {
+                    use_1080p = false;
+                    continue;
+                }
+
+                if (os_strcmp(argv[i], "1080p") == 0) {
+                    use_1080p = true;
+                    continue;
+                }
+
+                sensor_fps = (uint16_t)os_strtoul(argv[i], NULL, 10);
+                if (sensor_fps == 0) {
+                    LOGE("Usage: joint_test open mipi [720p|1080p] [fps] [h264e]\n");
+                    return;
                 }
             }
-        }
-        
-        if (selected_panel != NULL) {
-            app_mipi_lcd_turn_on(app_display_board_config_get());
-        } else {
-            LOGE("No panel available for joint test\n");
-        }
-        // Use default values from board config (pass 0 to use defaults)
-        app_gpu_turn_on(app_gpu_board_config_get());
 
-        bk_gpu_ctlr_handle_t gpu_handle = app_gpu_handle_get();
-        if (gpu_handle == NULL) {
-            LOGE("%s, app_gpu_handle_get failed\n", __func__);
+            joint_test_mipi_lcd_on();
+
+            camera_board.mipi.enable = true;
+            camera_board.mipi.pin_scl = GPIO_69;
+            camera_board.mipi.pin_sda = GPIO_70;
+            camera_board.mipi.i2c_id = 1;
+            camera_board.mipi.pin_reset = GPIO_71;
+            camera_board.mipi.pin_pwdn = -1;
+            camera_board.mipi.pin_xclk = GPIO_59;
+            if (use_1080p) {
+                camera_board.mipi.sensor_max_width = 1920;
+                camera_board.mipi.sensor_max_height = 1080;
+                camera_board.isp.mp_width = 1920;
+                camera_board.isp.mp_height = 1080;
+            } else {
+                camera_board.mipi.sensor_max_width = 1280;
+                camera_board.mipi.sensor_max_height = 720;
+                camera_board.isp.mp_width = 1280;
+                camera_board.isp.mp_height = 720;
+            }
+            camera_board.mipi.sensor_fps = sensor_fps;
+            LOGI("joint_test open mipi %s fps=%u h264e=%d\n",
+                 use_1080p ? "1080p" : "720p",
+                 camera_board.mipi.sensor_fps,
+                 want_h264e);
+            camera_board.isp.mp_enable = true;
+            camera_board.isp.mp_flexa = true;
+            camera_board.isp.mp_format = BK_PIXEL_FORMAT_NV12;
+            camera_board.isp.sp_enable = false;
+            camera_board.isp.sp_flexa = false;
+            app_camera_board_config_set(&camera_board);
+            ret = app_isp_mipi_camera_turn_on(app_camera_board_config_get());
+            if (ret != BK_OK) {
+                LOGE("%s, app_isp_mipi_camera_turn_on failed, ret = %d\n", __func__, ret);
+                return;
+            }
+
+            ret = devices_mgmt_set_display_source(DISPLAY_STREAM_ID_MIPI_CSI, NULL);
+            if (ret != BK_OK) {
+                LOGE("%s, devices_mgmt_set_display_source(MIPI_CSI) failed, ret = %d\n", __func__, ret);
+                return;
+            }
+
+            void *isp_handle = app_isp_handle_get();
+            if (isp_handle == NULL) {
+                LOGE("%s, app_isp_handle_get failed\n", __func__);
+                return;
+            }
+
+            if (want_h264e) {
+                int h264_ret = app_h264e_turn_on();
+                if (h264_ret != BK_OK) {
+                    LOGE("%s, app_h264e_turn_on failed, ret = %d\n", __func__, h264_ret);
+                    return;
+                }
+                bk_h264_encode_ctlr_handle_t enc_handle =
+                    (bk_h264_encode_ctlr_handle_t)app_h264_encode_handle_get();
+                if (enc_handle == NULL) {
+                    LOGE("%s, app_h264_encode_handle_get failed\n", __func__);
+                    return;
+                }
+                ret = bk_flexa_isp_h264e_bond_start(&s_isp_h264e_bond, isp_handle, enc_handle);
+                if (ret != BK_OK) {
+                    LOGE("%s, bk_flexa_isp_h264e_bond_start failed, ret = %d\n", __func__, ret);
+                    return;
+                }
+            }
+            if (use_1080p) {
+                gpu_board.flexa.src_width = 1920;
+                gpu_board.flexa.src_height = 1080;
+                gpu_board.flexa.dst_width = 1920;
+                gpu_board.flexa.dst_height = 1080;
+                gpu_board.flexa.scale = false;
+            } else {
+                gpu_board.flexa.src_width = 1280;
+                gpu_board.flexa.src_height = 720;
+                gpu_board.flexa.dst_width = 1920;
+                gpu_board.flexa.dst_height = 1080;
+                gpu_board.flexa.scale = true;
+            }
+            gpu_board.flexa.degree = 90;
+            gpu_board.flexa.enable = true;
+            gpu_board.flexa.src_format = BK_PIXEL_FORMAT_NV12;
+            gpu_board.flexa.dst_format = BK_PIXEL_FORMAT_ARGB8888;
+            gpu_board.flexa.dst_compress = true;
+            app_gpu_board_config_set(&gpu_board);
+            ret = app_gpu_turn_on(app_gpu_board_config_get());
+            if (ret != AVDK_ERR_OK) {
+                LOGE("%s, app_gpu_turn_on failed, ret = %d\n", __func__, ret);
+                return;
+            }
+
+            bk_gpu_ctlr_handle_t gpu_handle = app_gpu_handle_get();
+            if (gpu_handle == NULL) {
+                LOGE("%s, app_gpu_handle_get failed\n", __func__);
+                return;
+            }
+
+            ret = bk_flexa_isp_gpu_bond_start(&s_isp_gpu_bond, isp_handle, gpu_handle);
+            if (ret != BK_OK) {
+                LOGE("%s, bk_flexa_isp_gpu_bond_start failed, ret = %d\n", __func__, ret);
+                return;
+            }
+
             return;
         }
+        if (argc >= 3 && argv[2] != NULL && os_strcmp(argv[2], "uvc") == 0) {
+#ifdef CONFIG_USB_CAMERA
+            bool want_h264e = false;
+            if (argc >= 4) {
+                if (argv[3] == NULL || os_strcmp(argv[3], "h264e") != 0) {
+                    LOGE("Usage: joint_test open uvc [h264e]\n");
+                    return;
+                }
+                want_h264e = true;
+            }
 
-        void *isp_handle = app_isp_handle_get();
-        if (isp_handle == NULL) {
-            LOGE("%s, app_isp_handle_get failed\n", __func__);
+            joint_test_mipi_lcd_on();
+
+            bk_jpeg_decode_ctlr_handle_t decode_handle = NULL;
+            uint16_t width = 1280;
+            uint16_t height = 720;
+            camera_parameters_ext_t ext_parameters = {
+                .camera_width = width,
+                .camera_height = height,
+                .camera_out_format = BK_IMAGE_FORMAT_MJPEG,
+                .port = 1,
+            };
+
+            ret = app_uvc_turn_on(&ext_parameters);
+            if (ret != BK_OK) {
+                LOGE("%s, app_uvc_turn_on failed, ret = %d\n", __func__, ret);
+                return;
+            }
+
+            ret = doorbell_jpeg_decode_open(width, height, BK_IMAGE_FORMAT_MJPEG, 1);
+            if (ret != BK_OK) {
+                LOGE("%s, doorbell_jpeg_decode_open failed, ret = %d\n", __func__, ret);
+                return;
+            }
+            ret = doorbell_decode_get_handle(&decode_handle);
+            if (ret != BK_OK) {
+                LOGE("%s, doorbell_decode_get_handle failed, ret = %d\n", __func__, ret);
+                return;
+            }
+            if (want_h264e) {
+                ret = doorbell_h264_encode_open(width, height);
+                if (ret != BK_OK) {
+                    LOGE("%s, doorbell_h264_encode_open failed, ret = %d\n", __func__, ret);
+                    return;
+                }
+                bk_h264_encode_ctlr_handle_t enc_handle = NULL;
+                ret = doorbell_h264_encode_get_handle(&enc_handle);
+                if (ret != BK_OK || enc_handle == NULL) {
+                    LOGE("%s, doorbell_h264_encode_get_handle failed, ret = %d\n", __func__, ret);
+                    return;
+                }
+
+                ret = bk_flexa_mjpegd_h264e_bond_start(&s_mjpegd_h264e_bond, decode_handle, enc_handle);
+                if (ret != BK_OK) {
+                    LOGE("%s, bk_flexa_mjpegd_h264e_bond_start failed, ret = %d\n", __func__, ret);
+                    return;
+                }
+            }
+            /* app_gpu_v2_turn_on 从全局 gpu_board 读旋转/缩放；MIPI 残留 1920x1080+scale 与 720p UVC 不一致，按 ap_main 720p+LCD 重新写入 */
+            {
+                gpu_board_config_t gpu_board_uvc = {0};
+                gpu_board_uvc.flexa.enable = true;
+                gpu_board_uvc.flexa.degree = 90;
+                gpu_board_uvc.flexa.src_width = width;
+                gpu_board_uvc.flexa.src_height = height;
+                gpu_board_uvc.flexa.dst_width = 1920;
+                gpu_board_uvc.flexa.dst_height = 1080;
+                gpu_board_uvc.flexa.src_format = BK_PIXEL_FORMAT_NV12;
+                gpu_board_uvc.flexa.dst_format = BK_PIXEL_FORMAT_ARGB8888;
+                gpu_board_uvc.flexa.dst_compress = true;
+                gpu_board_uvc.flexa.scale = true;
+                app_gpu_board_config_set(&gpu_board_uvc);
+            }
+            ret = app_gpu_v2_turn_on(width, height);
+            if (ret != BK_OK) {
+                LOGE("%s, app_gpu_v2_turn_on failed, ret = %d\n", __func__, ret);
+                return;
+            }
+            bk_gpu_ctlr_handle_t gpu_handle = app_gpu_handle_get();
+            if (gpu_handle == NULL) {
+                LOGE("%s, app_gpu_handle_get failed\n", __func__);
+                return;
+            }
+
+            ret = bk_flexa_mjpegd_gpu_bond_start(&s_mjpegd_gpu_joint_bond, decode_handle, gpu_handle);
+            if (ret != BK_OK) {
+                LOGE("%s, bk_flexa_mjpegd_gpu_bond_start failed, ret = %d\n", __func__, ret);
+                return;
+            }
+
+#else
+            LOGE("%s, open uvc: CONFIG_USB_CAMERA off\n", __func__);
+#endif
             return;
         }
-
-        ret = bk_flexa_isp_gpu_bond_start(&s_isp_gpu_bond, isp_handle, gpu_handle);
-        if (ret != BK_OK) {
-            LOGE("%s, bk_flexa_isp_gpu_bond_start failed, ret = %d\n", __func__, ret);
-            return;
-        }
+        LOGE("Usage: joint_test open mipi [720p|1080p] [fps] [h264e] | open uvc [h264e]\n");
+        return;
     }
-
-    if (CMD_CONTAIN("close"))
+    if (argc >= 2 && argv[1] != NULL && os_strcmp(argv[1], "close") == 0)
     {
+        if (argc >= 3 && argv[2] != NULL && os_strcmp(argv[2], "uvc") == 0) {
+#ifdef CONFIG_USB_CAMERA
+            ret = app_mipi_lcd_turn_off();
+            if (ret != BK_OK) {
+                LOGE("%s, app_mipi_lcd_turn_off failed, ret = %d\n", __func__, ret);
+                return;
+            }
+            if (s_mjpegd_h264e_bond != NULL) {
+                bk_flexa_mjpegd_h264e_bond_stop(s_mjpegd_h264e_bond);
+                s_mjpegd_h264e_bond = NULL;
+            }
+            if (s_mjpegd_gpu_joint_bond != NULL) {
+                bk_flexa_mjpegd_gpu_bond_stop(s_mjpegd_gpu_joint_bond);
+                s_mjpegd_gpu_joint_bond = NULL;
+            }
+            ret = app_uvc_turn_off(1);
+            if (ret != BK_OK) {
+                LOGE("%s, app_uvc_turn_off failed, ret = %d\n", __func__, ret);
+                return;
+            }
+            ret = doorbell_h264_encode_close();
+            if (ret != BK_OK) {
+                LOGE("%s, doorbell_h264_encode_close failed, ret = %d\n", __func__, ret);
+                return;
+            }
+            ret = doorbell_jpeg_decode_close();
+            if (ret != BK_OK) {
+                LOGE("%s, doorbell_jpeg_decode_close failed, ret = %d\n", __func__, ret);
+                return;
+            }
+            bk_gpu_ctlr_handle_t gpu_handle = app_gpu_handle_get();
+            if (gpu_handle != NULL) {
+                ret = app_gpu_turn_off(gpu_handle);
+                if (ret != BK_OK) {
+                    LOGE("%s, app_gpu_turn_off failed, ret = %d\n", __func__, ret);
+                    return;
+                }
+            }
+#else
+            LOGE("%s, close uvc: CONFIG_USB_CAMERA off\n", __func__);
+#endif
+            return;
+        }
+        if (argc >= 3 && argv[2] != NULL && os_strcmp(argv[2], "mipi") == 0) {
+            bool need_app_h264e_turn_off = (s_isp_h264e_bond != NULL);
 
+            ret = app_mipi_lcd_turn_off();
+            if (ret != BK_OK) {
+                LOGE("%s, app_mipi_lcd_turn_off failed, ret = %d\n", __func__, ret);
+                return;
+            }
+            if (s_isp_gpu_bond != NULL) {
+                bk_flexa_isp_gpu_bond_stop(s_isp_gpu_bond);
+                s_isp_gpu_bond = NULL;
+            }
+            if (s_isp_h264e_bond != NULL) {
+                bk_flexa_isp_h264e_bond_stop(s_isp_h264e_bond);
+                s_isp_h264e_bond = NULL;
+            }
+            bk_gpu_ctlr_handle_t gpu_handle = app_gpu_handle_get();
+            if (gpu_handle != NULL) {
+                ret = app_gpu_turn_off(gpu_handle);
+                if (ret != BK_OK) {
+                    LOGE("%s, app_gpu_turn_off failed, ret = %d\n", __func__, ret);
+                    return;
+                }
+            }
+            if (need_app_h264e_turn_off) {
+                int h264_ret = app_h264e_turn_off();
+                if (h264_ret != BK_OK) {
+                    LOGE("%s, app_h264e_turn_off failed, ret = %d\n", __func__, h264_ret);
+                    return;
+                }
+            }
+            ret = app_isp_camera_turn_off();
+            if (ret != BK_OK) {
+                LOGE("%s, app_isp_camera_turn_off failed, ret = %d\n", __func__, ret);
+                return;
+            }
+            return;
+        }
+        LOGE("Usage: joint_test close uvc|mipi\n");
+        return;
     }
-
-    if (CMD_CONTAIN("test"))
-    {
+    if (CMD_CONTAIN("test")) {
         test_hdma();
+        return;
     }
-#if 0
-    //PRODUCE
-
-    if (val_open == CLI_STATE_ENABLED)
-    {
-        camera_parameters_t *paramters = os_malloc(sizeof(camera_parameters_t));
-        os_memset(paramters, 0, sizeof(camera_parameters_t));
-
-        paramters->fps = 20;
-
-        if (argc >= 4)
-        {
-            paramters->width = os_strtoul(argv[2], NULL, 10);
-            paramters->height = os_strtoul(argv[3], NULL, 10);
-        }
-        else
-        {
-            paramters->width = 1280;
-            paramters->height = 720;
-        }
-        doorbell_msg_t msg;
-        msg.event = DBEVT_DEVICE_ISP_TURN_ON;
-        msg.param = (uintptr_t)paramters;
-        doorbell_send_msg(&msg);
-        msg.event = DBEVT_DEVICE_MIPI_LCD_TURN_ON;
-        msg.param = BK_OK;
-        doorbell_send_msg(&msg);
-        msg.event = DBEVT_DEVICE_ENCODE_ISP_CAMERA_TURN_ON;
-        msg.param = BK_OK;
-        doorbell_send_msg(&msg);
-    }
-    else if (val_open == CLI_STATE_DISABLED)
-    {
-        doorbell_msg_t msg;
-        msg.event = DBEVT_DEVICE_ENCODE_ISP_CAMERA_TURN_OFF;
-        msg.param = BK_OK;
-        doorbell_send_msg(&msg);
-        msg.event = DBEVT_DEVICE_MIPI_LCD_TURN_OFF;
-        msg.param = BK_OK;
-        doorbell_send_msg(&msg);
-        msg.event = DBEVT_DEVICE_ISP_TURN_OFF;
-        msg.param = BK_OK;
-        doorbell_send_msg(&msg);
-    }
-#endif
+    LOGE("Usage: joint_test open mipi [720p|1080p] [fps] [h264e] | open uvc [h264e] | test | close uvc|mipi\n");
 }
 
-void cli_avdk_doorbell_isp_h264e_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv)
-{
-#if 0
-    uint8_t val_open = CLI_STATE_INVALID;
-
-    if (CMD_CONTAIN("open"))
-    {
-        val_open = CLI_STATE_ENABLED;
-    }
-
-    if (CMD_CONTAIN("close"))
-    {
-        val_open = CLI_STATE_DISABLED;
-    }
-
-    //PRODUCE
-
-    if (val_open == CLI_STATE_ENABLED)
-    {
-        camera_parameters_t *paramters = os_malloc(sizeof(camera_parameters_t));
-        os_memset(paramters, 0, sizeof(camera_parameters_t));
-
-        paramters->fps = 20;
-
-        if (argc >= 4)
-        {
-            paramters->width = os_strtoul(argv[2], NULL, 10);
-            paramters->height = os_strtoul(argv[3], NULL, 10);
-        }
-        else
-        {
-            paramters->width = 1280;
-            paramters->height = 720;
-        }
-        doorbell_msg_t msg;
-        msg.event = DBEVT_DEVICE_ISP_TURN_ON;
-        msg.param = (uintptr_t)paramters;
-        doorbell_send_msg(&msg);
-        msg.event = DBEVT_DEVICE_ENCODE_ISP_CAMERA_TURN_ON;
-        msg.param = BK_OK;
-        doorbell_send_msg(&msg);
-    }
-    else if (val_open == CLI_STATE_DISABLED)
-    {
-        doorbell_msg_t msg;
-        msg.event = DBEVT_DEVICE_ENCODE_ISP_CAMERA_TURN_OFF;
-        msg.param = BK_OK;
-        doorbell_send_msg(&msg);
-        msg.event = DBEVT_DEVICE_ISP_TURN_OFF;
-        msg.param = BK_OK;
-        doorbell_send_msg(&msg);
-    }
-#endif
-}
 
 void cli_avdk_doorbell_uvc_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv)
 {
@@ -830,15 +1037,75 @@ void cli_avdk_doorbell_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, c
 #endif
 }
 
+void cli_avdk_doorbell_audio_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv)
+{
+    if (argc < 2 || argv[1] == NULL)
+    {
+        LOGE("Usage: audio <turn_on|turn_off>\n");
+        return;
+    }
+
+#if CONFIG_VOICE_SERVICE
+    if (os_strcmp(argv[1], "turn_on") == 0)
+    {
+        uint32_t aec = 1;
+        uint32_t uac = 0;
+        uint32_t fmt  = 2;
+        uint32_t sample_rate = 8000;
+        if (argc > 5 && argv[2] != NULL && argv[3] != NULL && argv[4] != NULL && argv[5] != NULL)
+        {
+            aec = os_strtoul(argv[2], NULL, 10);
+            uac = os_strtoul(argv[3], NULL, 10);
+            fmt = os_strtoul(argv[5], NULL, 10);
+            sample_rate = os_strtoul(argv[4], NULL, 10);
+        }
+        cli_doorbell_audio_turn_on(aec, uac, sample_rate, fmt);
+    }
+    else if (os_strcmp(argv[1], "turn_off") == 0)
+    {
+        cli_doorbell_audio_turn_off();
+    }
+#endif
+#if (CONFIG_ASR_SERVICE_WITH_MIC)
+    else if (os_strcmp(argv[1], "asr_turn_on") == 0)
+    {
+        uint32_t aec = 0;
+        uint32_t uac = 0;
+        uint32_t sample_rate = 16000;
+        uint8_t asr_en = 1;
+        if (argc > 4)
+        {
+            aec         = os_strtoul(argv[2], NULL, 10);
+            uac         = os_strtoul(argv[3], NULL, 10);
+            sample_rate = os_strtoul(argv[4], NULL, 10);
+            if (argv[5]) {
+                asr_en = os_strtoul(argv[5], NULL, 10);
+            }
+        } else {
+            LOGE("Usage: audio asr_turn_on <aec> <uac> <sample_rate>\n");
+            return; // TODO: add default value
+        }
+        cli_doorbell_asr_turn_on(aec, uac, sample_rate, asr_en);
+    }
+    else if (os_strcmp(argv[1], "asr_turn_off") == 0)
+    {
+        cli_doorbell_asr_turn_off();
+    }
+#endif
+    else
+    {
+        LOGE("Usage: audio <turn_on|turn_off>\n");
+    }
+}
+
 static const struct cli_command s_devices_cli_commands[] =
 {
     {"isp", "isp...", cli_avdk_doorbell_isp_cmd},
-    {"h264e", "h264e...", cli_avdk_doorbell_h264e_cmd},
     {"display", "display...", cli_avdk_doorbell_display_cmd},
-    {"isp_h264e", "isp_h264e...", cli_avdk_doorbell_isp_h264e_cmd},
-    {"joint_test", "joint_test...", cli_avdk_doorbell_joint_test_cmd},
+    {"joint_test", "joint_test open mipi [720p|1080p] [fps] [h264e] | open uvc [h264e] | test | close uvc|mipi", cli_avdk_doorbell_joint_test_cmd},
     {"uvc", "uvc...", cli_avdk_doorbell_uvc_cmd},
     {"doorbell", "doorbell...", cli_avdk_doorbell_cmd},
+    {"audio", "audio...", cli_avdk_doorbell_audio_cmd},
 };
 
 #define DEVICES_CLI_CMD_CNT  (sizeof(s_devices_cli_commands) / sizeof(struct cli_command))

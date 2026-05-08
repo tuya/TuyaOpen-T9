@@ -21,6 +21,7 @@
 #include <driver/int.h>
 #include "sys_driver.h"
 #include "sys/time.h"
+#include "bk_arch.h"
 
 #include <driver/aon_rtc.h>
 #include "aon_rtc_hal.h"
@@ -79,6 +80,17 @@ static aon_rtc_nodes_memory_t *s_aon_rtc_nodes_p[AON_RTC_UNIT_NUM];
 static uint64_t s_high_tick[AON_RTC_UNIT_NUM];
 static void aon_rtc_interrupt_disable(aon_rtc_id_t id);
 
+static inline void aon_rtc_clear_irq_pending(aon_rtc_id_t id)
+{
+	if (id == AON_RTC_ID_1) {
+		__NVIC_ClearPendingIRQ(INT_SRC_RTC);
+#if (SOC_AON_RTC_UNIT_NUM > 1)
+	} else if (id == AON_RTC_ID_2) {
+		__NVIC_ClearPendingIRQ(INT_SRC_RTC2);
+#endif
+	}
+}
+
 #define AONRTC_GET_SET_TIME_RTC_ID AON_RTC_ID_1
 static int64_t s_boot_time_us = 0;	//timeofday value
 
@@ -109,7 +121,7 @@ static uint32_t s_aon_rtc_clock_freq = AON_RTC_DEFAULT_CLOCK_FREQ;
 static uint64_t s_time_base_us = 0;
 static uint64_t s_time_base_tick = 0;
 
-float bk_rtc_get_ms_tick_count(void) {
+__attribute__((section(".iram"))) float bk_rtc_get_ms_tick_count(void) {
 	return (float)s_aon_rtc_clock_freq/1000;
 }
 
@@ -148,7 +160,7 @@ void bk_rtc_set_clock_freq(uint32_t clock_freq){
 #endif
 }
 
-uint64_t bk_aon_rtc_get_us(void) {
+__attribute__((section(".iram"))) uint64_t bk_aon_rtc_get_us(void) {
 	uint64_t time_tick = bk_aon_rtc_get_current_tick(AONRTC_GET_SET_TIME_RTC_ID);
 	uint64_t time_diff = (time_tick - s_time_base_tick)*1000LL/bk_rtc_get_ms_tick_count();
     uint64_t time_us = s_time_base_us + time_diff;
@@ -799,7 +811,7 @@ static bk_err_t aon_rtc_isr_handler(aon_rtc_id_t id)
 		aon_rtc_hal_clear_upper_int_status(&s_aon_rtc[id].hal);
 	}
 
-	//TODO: clear NVIC/INTC/PLIC int pending status
+	aon_rtc_clear_irq_pending(id);
 
 	return BK_OK;
 }
@@ -867,7 +879,7 @@ static bk_err_t aon_rtc_isr_handler(aon_rtc_id_t id)
 		aon_rtc_hal_clear_upper_int_status(&s_aon_rtc[id].hal);
 	}
 
-	//TODO: clear NVIC/INTC/PLIC int pending status
+	aon_rtc_clear_irq_pending(id);
 
 	AON_RTC_LOGV("%s[-]\r\n", __func__);
 #if CONFIG_AON_RTC_DEBUG
@@ -1271,7 +1283,7 @@ bk_err_t bk_aon_rtc_open_rtc_wakeup(rtc_tick_t period)
 }
 #endif
 
-uint64_t bk_aon_rtc_get_current_tick(aon_rtc_id_t id)
+__attribute__((section(".iram"))) uint64_t bk_aon_rtc_get_current_tick(aon_rtc_id_t id)
 {
 	if(id >= AON_RTC_ID_MAX)
 	{

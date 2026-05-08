@@ -69,6 +69,7 @@ void cli_tuya_gpu_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char *
 void cli_tuya_venc_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv);
 void cli_tuya_dac_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv);
 void cli_tuya_dmic_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv);
+void cli_tkl_adc_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv);
 // void cli_tuya_face_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv);
 int cli_mp3_init(void);
 int cli_dwt_init(void);

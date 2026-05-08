@@ -12,12 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <stddef.h>
 #include "os/os.h"
 #include "os/mem.h"
 #include "bk_arch.h"
 #include "common/bk_assert.h"
 #include "sdkconfig.h"
 #include "stack_base.h"
+#include "sys_sw_regs.h"
 #include "memory.h"
 
 extern unsigned char _data_ram_begin;
@@ -97,6 +99,23 @@ extern unsigned char __etext;
 #define CORE0_MSP_BOTTOM (uint32_t)&_estack
 #endif
 
+static void bk_get_ap_heap_info_common(bk_sys_sw_regs_ap_heap_id_t id, const char *name, bk_dump_mem_info_t *info)
+{
+    ap_heap_dump_info_t heap_info = {0};
+
+    info->name = name;
+
+    if (!bk_sys_sw_regs_get_ap_heap_dump(id, &heap_info) ||
+        (heap_info.max_alloc_end <= heap_info.pool_base)) {
+        info->start_addr = 0U;
+        info->size = 0U;
+        return;
+    }
+
+    info->start_addr = heap_info.pool_base;
+    info->size = heap_info.max_alloc_end - heap_info.pool_base;
+}
+
 const bk_dump_mem_info_t bk7259_sram_info[] = {
     {"SRAM0", SOC_SRAM0_DATA_BASE, SOC_SRAM0_DATA_SIZE},
     {"SRAM1", SOC_SRAM1_DATA_BASE, SOC_SRAM1_DATA_SIZE},
@@ -122,6 +141,10 @@ const bk_dump_mem_info_t bk7259_peri_reg_info[] = {
     {"SYS", (uint32_t)SOC_SYS_REG_BASE, (0x5c*4)},
     // flash regs warning!!!
     {"FLASH", (uint32_t)SOC_FLASH_REG_BASE, (0x20*4)},
+    {"HSPL0_CFG", (uint32_t)SOC_HSPL0_REG_BASE, (0x10*4)},
+    {"HSPL0_STA", (uint32_t)SOC_HSPL0_REG_BASE + (0x20*4), (0x10*4)},
+    {"HSPL1_CFG", (uint32_t)SOC_HSPL1_REG_BASE, (0x10*4)},
+    {"HSPL1_STA", (uint32_t)SOC_HSPL1_REG_BASE + (0x20*4), (0x10*4)},
     {"AON_PMU", (uint32_t)SOC_AON_PMU_REG_BASE, (0x7f*4)},
 #if (CONFIG_SUPPORT_IO_MATRIX)
     {"IOMX", (uint32_t)SOC_IOMX_REG_BASE + (0x40*4), (0x52*4)},
@@ -170,6 +193,11 @@ void bk_get_psram_heap_info(bk_dump_mem_info_t *info)
 	info->start_addr = 0;
 	info->size = 0;
 #endif
+}
+
+void bk_get_ap_psram_heap_info(bk_dump_mem_info_t *info)
+{
+    bk_get_ap_heap_info_common(BK_SYS_SW_REGS_AP_HEAP_PSRAM, "AP_PSRAM_HEAP", info);
 }
 
 void bk_get_psram_bss_info(bk_dump_mem_info_t *info)

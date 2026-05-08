@@ -4,16 +4,14 @@
 #include <components/shell_task.h>
 #include "cli.h"
 #include "components/media_types.h"
-#include "driver/drv_tp.h"
 #if CONFIG_LVGL
 #include "lvgl.h"
 #include "lv_vendor.h"
 #include "lv_demo_widgets.h"
 #endif
-#include "sys_driver.h"
+#include "driver/drv_tp.h"
 #include "media_service.h"
 #include <components/bk_frame_buffer.h>
-#include "tp_sensor_devices.h"
 #include <common/avdk_pixel_types.h>
 #include <components/bk_display.h>
 #include <components/bk_display_dpu_ctlr.h>
@@ -34,15 +32,9 @@
 
 extern void user_app_main(void);
 extern void rtos_set_user_app_entry(beken_thread_function_t entry);
-extern int bk_cli_init(void);
-
 
 #define SYS_ANA_REG_BASE    (0x44010000)
 #define LDO_ANA_REG         (0x69)
-
-#define SYS_M55_BASE_ADDR    (0x48000000)
-#define SYS_GPIO_BASE_ADDR    (0x44000400)
-
 
 static void bk_lodoen_enable(void)
 {
@@ -51,25 +43,6 @@ static void bk_lodoen_enable(void)
     reg &= ~(0xF << 11);
     reg |= (0x8 << 11);
     REG_WRITE(SYS_ANA_REG_BASE + LDO_ANA_REG * 4, reg);
-
-    // close multimedia clock
-    reg = REG_READ(SYS_M55_BASE_ADDR + 0xA * 4);
-    reg &= ~(1 << 2); // usb hs clock
-    reg &= ~(1 << 5); // qspi0 clock
-    reg &= ~(1 << 6); // qspi1 clock
-    reg &= ~(1 << 7); // sdio0 clock
-    reg &= ~(1 << 8); // sdio1 clock
-    reg &= ~(1 << 9); // isp clock
-    reg &= ~(1 << 10); // gpu clock
-    reg &= ~(1 << 11); // h264e clock
-    reg &= ~(1 << 12); // csi clock
-    reg &= ~(1 << 13); // dsi clock
-    reg &= ~(1 << 14); // dpu clock
-    reg &= ~(1 << 15); // usb fs clock
-    reg &= ~(1 << 22); // npu clock
-
-    reg &= ~(0x3F << 26); // not used clock
-    REG_WRITE(SYS_M55_BASE_ADDR + 0xA * 4, reg);
 }
 
 typedef struct
@@ -104,7 +77,6 @@ bk_err_t lvgl_app_widgets_init(void)
         .video.enable = true,
         .video.decompress = false,
         .video.format = BK_PIXEL_FORMAT_RGB565,
-        .graphic.enable = false,
     };
 
     const bk_lcd_panel_dev_config_t panel_dev_config =
@@ -135,11 +107,6 @@ bk_err_t lvgl_app_widgets_init(void)
     dpu_config.video.disp_w = dpu_config.timing.h_size;
     dpu_config.video.disp_h = dpu_config.timing.v_size;
     
-    dpu_config.graphic.disp_x = 0;
-    dpu_config.graphic.disp_y = 0;
-    dpu_config.graphic.disp_w = dpu_config.timing.h_size;
-    dpu_config.graphic.disp_h = dpu_config.timing.v_size;
-	
     AVDK_GOTO_ON_ERROR(bk_display_dpu_ctlr_new(&g_disp_ctx->dpu_ctlr_handle, &dpu_config), err, TAG, "display dpu ctlr new err\n");
     AVDK_GOTO_ON_ERROR(bk_display_init(g_disp_ctx->dpu_ctlr_handle), err, TAG, "display init err\n");
     AVDK_GOTO_ON_ERROR(bk_display_open(g_disp_ctx->dpu_ctlr_handle), err, TAG, "display open err\n");
@@ -151,20 +118,31 @@ bk_err_t lvgl_app_widgets_init(void)
     bk_gpio_set_capacity(GPIO_7, GPIO_DRIVER_CAPACITY_3);  // Enhance GPIO Driver Capacity
     bk_gpio_set_output_high(GPIO_7);
 
-#if (CONFIG_LV_USE_DRAW_VG_LITE || LV_USE_GPU_ROTATE)
-    extern int gpu_bsp_init(uint32_t tess_width, uint32_t tess_heigth);
-    gpu_bsp_init(WIDTH / 4, HEIGHT / 4);
-#endif
-
     lv_vnd_config.width = WIDTH;
     lv_vnd_config.height = HEIGHT;
-    lv_vnd_config.render_mode = RENDER_DIRECT_MODE;
+    lv_vnd_config.render_mode = RENDER_PARTIAL_MODE;
     if (lv_vnd_config.render_mode == RENDER_PARTIAL_MODE) {
-        lv_vnd_config.draw_pixel_size = 120 * 1024;
+        lv_vnd_config.draw_pixel_size = WIDTH * 64 * sizeof(bk_color_t);
     }
     lv_vnd_config.rotation = ROTATE_NONE;
-    lv_vnd_config.frame_buffer[0] = bk_frame_buffer_malloc(MEM_SLAB_HEAP_CODED, WIDTH * HEIGHT * sizeof(lv_color_t));
-    lv_vnd_config.frame_buffer[1] = bk_frame_buffer_malloc(MEM_SLAB_HEAP_UNCODED, WIDTH * HEIGHT * sizeof(lv_color_t));
+    lv_vnd_config.disp_width = WIDTH;
+    lv_vnd_config.disp_height = HEIGHT;
+    lv_vnd_config.output_compress = false;
+    if (lv_vnd_config.output_compress && lv_vnd_config.render_mode == RENDER_PARTIAL_MODE) {
+        if (WIDTH % 16 || HEIGHT % 4) {
+            lv_vnd_config.disp_width = (WIDTH + 15) & ~15;
+            lv_vnd_config.disp_height = (HEIGHT + 3) & ~3;
+        }
+        LOGI("lv_vnd_config.disp_width:%d, lv_vnd_config.disp_height:%d\r\n", lv_vnd_config.disp_width, lv_vnd_config.disp_height);
+    }
+
+    for (int i = 0; i < CONFIG_LVGL_FRAME_BUFFER_NUM; i++) {
+        if (i % 2) {
+            lv_vnd_config.frame_buffer[i] = bk_frame_buffer_malloc(MEM_SLAB_HEAP_UNCODED, lv_vnd_config.disp_width * lv_vnd_config.disp_height * sizeof(bk_color_t));
+        } else {
+            lv_vnd_config.frame_buffer[i] = bk_frame_buffer_malloc(MEM_SLAB_HEAP_CODED, lv_vnd_config.disp_width * lv_vnd_config.disp_height * sizeof(bk_color_t));
+        }
+    }
     lv_vnd_config.args = g_disp_ctx->dpu_ctlr_handle;
     lv_vnd_config.flush_cb = bk_widgets_flush_cb;
 
@@ -236,10 +214,7 @@ int main(void)
 
     bk_frame_buffer_init();
 
-#if CONFIG_TP
-    extern void bk_peripheral_init(void);
-    tp_sensor_devices_init();
-#endif
+    cli_widgets_init();
 
     lvgl_app_widgets_init();
 

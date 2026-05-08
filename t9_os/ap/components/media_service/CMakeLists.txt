@@ -5,6 +5,7 @@ if(CONFIG_MEDIA_SERVICE)
 
 list(APPEND srcs src/media_service.c
 	src/bk_flexa_mjpeg_bond.c
+	src/bk_flexa_h264d_bond.c
 	src/bk_flexa_isp_bond.c
 )
 
@@ -19,6 +20,6 @@ list(APPEND srcs
 
 endif() #CONFIG_MEDIA_SERVICE
 
-set(priv_req bk_common bk_vfs bk_display bk_rtos lwip_intf_v2_1 bk_h264d bk_h264e bk_encoder bk_decoder bk_gpu avdk_driver)
+set(priv_req bk_common bk_vfs bk_display bk_rtos lwip_intf_v2_1 bk_h264d bk_h264e bk_encoder bk_decoder bk_gpu avdk_driver bk_peripheral)
 
 armino_component_register(SRCS "${srcs}" INCLUDE_DIRS "${incs}" PRIV_REQUIRES "${priv_req}" REQUIRES)

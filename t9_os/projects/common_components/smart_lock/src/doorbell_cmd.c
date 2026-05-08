@@ -321,7 +321,15 @@ void doorbell_transmission_cmd_recive_callback(uint8_t *data, uint16_t length)
 #endif
 
             int ret = doorbell_camera_turn_on(&parameters);
-            doorbell_video_transfer_turn_on();
+            if (ret != BK_OK)
+            {
+                LOGE("doorbell_camera_turn_on failed\n");
+            }
+            ret = doorbell_video_transfer_turn_on();
+            if (ret != BK_OK)
+            {
+                LOGE("doorbell_video_transfer_turn_on failed\n");
+            }
 
             doorbell_transmission_event_report(cmd.opcode, ret & 0xFF, EVT_FLAGS_COMPLETE);
         }
@@ -331,7 +339,10 @@ void doorbell_transmission_cmd_recive_callback(uint8_t *data, uint16_t length)
         {
             doorbell_video_transfer_turn_off();
             int ret = doorbell_camera_turn_off();
-
+            if (ret != BK_OK)
+            {
+                LOGE("doorbell_camera_turn_off failed\n");
+            }
             doorbell_transmission_event_report(cmd.opcode, ret & 0xFF, EVT_FLAGS_COMPLETE);
         }
         break;
@@ -354,6 +365,10 @@ void doorbell_transmission_cmd_recive_callback(uint8_t *data, uint16_t length)
             STREAM_TO_UINT8(parameters.rmt_recorder_fmt, p);
             STREAM_TO_UINT8(parameters.rmt_player_fmt, p);
 
+#if (CONFIG_ASR_SERVICE_WITH_MIC)
+            extern int doorbell_asr_turn_off(void);
+            doorbell_asr_turn_off();
+#endif
             int ret = doorbell_audio_turn_on(&parameters);
 #else
             int ret = BK_FAIL;
@@ -371,6 +386,11 @@ void doorbell_transmission_cmd_recive_callback(uint8_t *data, uint16_t length)
             int ret = BK_FAIL;
 #endif
             doorbell_transmission_event_report(cmd.opcode, ret & 0xFF, EVT_FLAGS_COMPLETE);
+
+#if (CONFIG_ASR_SERVICE_WITH_MIC)
+            extern int doorbell_asr_turn_on(void);
+            doorbell_asr_turn_on();
+#endif
         }
         break;
 
@@ -388,7 +408,10 @@ void doorbell_transmission_cmd_recive_callback(uint8_t *data, uint16_t length)
             //STREAM_TO_UINT16(parameters.pixel_format, p);
 
             int ret = doorbell_display_turn_on(app_display_board_config_get());
-
+            if (ret != BK_OK)
+            {
+                LOGE("doorbell_display_turn_on failed\n");
+            }
             doorbell_transmission_event_report(cmd.opcode, ret & 0xFF, EVT_FLAGS_COMPLETE);
         }
         break;
@@ -396,7 +419,10 @@ void doorbell_transmission_cmd_recive_callback(uint8_t *data, uint16_t length)
         case DBCMD_SET_LCD_TURN_OFF:
         {
             int ret = doorbell_display_turn_off();
-
+            if (ret != BK_OK)
+            {
+                LOGE("doorbell_display_turn_off failed\n");
+            }
             doorbell_transmission_event_report(cmd.opcode, ret & 0xFF, EVT_FLAGS_COMPLETE);
         }
         break;
