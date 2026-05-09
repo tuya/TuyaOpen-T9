@@ -73,6 +73,7 @@ list(APPEND srcs
 	"hal/sdio1_hal_debug.c"
 	"hal/qspi_hal_debug.c"
 	"hal/i2s_hal.c"
+	"hal/i2s_multi_hal.c"
 	"hal/ckmn_hal_debug.c"
 	"hal/lin_hal_debug.c"
 	#"hal/scr_hal.c"
