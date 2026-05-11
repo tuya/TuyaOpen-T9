@@ -131,10 +131,17 @@ typedef struct {
 	int32 (*_sys_drv_int_disable)(uint32 param);
 	int32 (*_sys_drv_int_group2_enable)(uint32 param);
 	int32 (*_sys_drv_int_group2_disable)(uint32 param);
-	void (*_sys_ll_set_cpu_power_sleep_wakeup_pwd_ofdm)(uint32_t v);
-	uint32_t (*_sys_ll_get_cpu_power_sleep_wakeup_pwd_ofdm)(void);
-	uint32_t (*_sys_ll_get_cpu_device_clk_enable_mac_cken)(void);
-	uint32_t (*_sys_ll_get_cpu_device_clk_enable_phy_cken)(void);
+	void (*_sys_drv_set_cpu_power_sleep_wakeup_pwd_ofdm)(uint32_t v);
+	uint32_t (*_sys_drv_get_cpu_power_sleep_wakeup_pwd_ofdm)(void);
+	uint32_t (*_sys_drv_wifi_wrls_power_is_on)(void);
+	uint32_t (*_sys_drv_get_cpu_device_clk_enable_wlss_cken)(void);
+	uint32_t (*_sys_drv_get_cpu_device_clk_enable_mac_cken)(void);
+	uint32_t (*_sys_drv_get_cpu_device_clk_enable_phy_cken)(void);
+	uint32_t (*_sys_drv_get_cpu_device_clk_enable_rf_cken)(void);
+	uint32_t (*_sys_drv_get_cpu_device_clk_enable_ofdm_cken)(void);
+	uint32_t (*_sys_drv_wifi_mac_reg_access_is_valid)(void);
+	uint32_t (*_sys_drv_wifi_phy_reg_access_is_valid)(void);
+	void (*_sys_drv_wifi_reg_access_status_get)(uint32_t *clk_status, uint32_t *power_status);
 	int32 (*_sys_drv_module_power_state_get)(uint32_t module);
 	void (*_aon_pmu_drv_set_wlp_power_down)(uint32_t v);
 	void (*_power_save_delay_sleep_check)(void);
@@ -311,6 +318,7 @@ typedef struct {
 	void (*_coex_wifi_request)(uint32_t event,uint8_t mode,uint32_t duration);
 	void (*_coex_wifi_release)(uint32_t event);
 	uint32_t (*_coex_wifi_event_get)(void);
+	bk_err_t (*_bk_pm_clock_ctrl)(uint32_t module, uint32_t clock_state);
 } wifi_os_funcs_t;
 extern wifi_os_funcs_t g_wifi_os_funcs;
 
@@ -387,6 +395,11 @@ typedef struct {
 	uint32_t _int_src_modem_rc;
 	int32_t  _pm_low_voltage_delta_wakeup_delay_in_us;
 	bool _improve_he_tb_enable;
+	uint32_t _pm_clk_module_mac;
+	uint32_t _pm_clk_module_phy;
+	uint32_t _pm_clk_module_ofdm;
+	uint32_t _pm_clk_on;
+	uint32_t _pm_clk_off;
 } wifi_os_variable_t;
 extern wifi_os_variable_t g_wifi_os_variable;
 

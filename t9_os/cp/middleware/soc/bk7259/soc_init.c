@@ -25,6 +25,11 @@
 #include "cache.h"
 #include <driver/psram.h>
 
+#if CONFIG_AP_EMUBOOT
+#include "cmsis_gcc.h"
+#include "sys_sw_regs.h"
+#endif
+
 #include "bk_arch.h"
 
 #if CONFIG_DEEP_LV
@@ -126,10 +131,14 @@ void _soc_start(void)
     pm_hardware_init();
 
 #if CONFIG_AP_EMUBOOT
-#if (CONFIG_PSRAM)
-    bk_psram_init();
-    is_psram_init_done = true;
-#endif
+// #if (CONFIG_PSRAM)
+//     bk_psram_init();
+//     is_psram_init_done = true;
+// #endif
+	bk_sys_sw_regs_ptr()->flash_init_done = BK_SYS_SW_REGS_FLASH_INIT_NOT_DONE;
+	__DMB();
+	flush_dcache((void *)&bk_sys_sw_regs_ptr()->flash_init_done, sizeof(bk_sys_sw_regs_ptr()->flash_init_done));
+	__DMB();
 	bk_start_ap_system();
 #endif
 
@@ -248,12 +257,21 @@ uint32_t  g_debug_jtag_enable = 1;
 void dlv_hook(void)
 {
 #if CONFIG_DEEP_LV
-    extern void bk_wdt_close(void);
-    bk_wdt_close();
-    early_jtag_gpio_map();
-
+    asm volatile ("nop");
+    asm volatile ("nop");
+    asm volatile ("nop");
+    asm volatile ("nop");
+    asm volatile ("nop");
     if (dlv_is_startup())
     {
+#if CONFIG_DEEP_LV_DEBUG
+        GPIO_UP(27);//1
+        GPIO_DOWN(27);
+#endif
+        extern void bk_wdt_close(void);
+        bk_wdt_close();
+        early_jtag_gpio_map();
+    
         extern uint32_t __STACK_LIMIT;
         __set_MSPLIM((uint32_t)(&__STACK_LIMIT));
 

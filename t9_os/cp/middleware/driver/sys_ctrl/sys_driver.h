@@ -8,9 +8,7 @@
 #include "sys_types.h"
 #include "sys_hal.h"
 #include <modules/pm.h>
-#if CONFIG_HSPL
-#include "hspl_res_lock.h"
-#endif
+#include "aspl_lock.h"
 
 #define SYS_DRV_DEBUG   0
 
@@ -38,20 +36,12 @@
 
 static inline uint32_t sys_drv_enter_critical()
 {
-  #if CONFIG_HSPL
-	return bk_hspl_driver_enter_critical();
-  #else
-	return rtos_enter_critical();
-  #endif
+	return bk_aspl_driver_enter_critical();
 }
 
 static inline void sys_drv_exit_critical(uint32_t flags)
 {
-  #if CONFIG_HSPL
-	return bk_hspl_driver_exit_critical(flags);
-  #else
-	rtos_exit_critical(flags);
-  #endif
+	return bk_aspl_driver_exit_critical(flags);
 }
 
 /**  Platform Start **/
@@ -173,6 +163,10 @@ void sys_drv_gpio_ana_wakeup_enable(uint32_t count, uint32_t index, uint32_t typ
 void sys_drv_cpu_clk_div_set(uint32_t core_index, uint32_t value);
 uint32_t sys_drv_cpu_clk_div_get(uint32_t core_index);
 void sys_drv_low_power_hardware_init();
+uint32_t sys_drv_dev_clk_pwr_status_get(dev_clk_pwr_id_t dev);
+uint32_t sys_drv_dev_clk_pwr_is_enabled(dev_clk_pwr_id_t dev);
+void sys_drv_set_cpu_power_sleep_wakeup_pwd_ofdm(uint32_t v);
+uint32_t sys_drv_get_cpu_power_sleep_wakeup_pwd_ofdm(void);
 int32 sys_drv_lp_vol_set(uint32_t value);
 uint32_t sys_drv_lp_vol_get();
 int32 sys_drv_rf_tx_vol_set(uint32_t value);
@@ -281,36 +275,6 @@ void sys_drv_thread_rf_ctrl(bool en);
 
 
 /**  Video Start **/
-/**
-  * @brief	lcd_disp  system config
-  * param1: clk source sel 0:clk_320M      1:clk_480M,
-  * param2: clk_div  F/(1+clkdiv_disp_l+clkdiv_disp_h*2)
-  * param3: int_en eanble lcd cpu int
-  * param4: clk_always_on, BUS_CLK ENABLE,0: bus clock open when module is select,1:bus clock always open,  0 by defult
-  * return none
-  */
-uint32_t sys_drv_lcd_set(uint8_t clk_src_sel, uint8_t clk_div_l, uint8_t clk_div_h,uint8_t clk_always_on);
-
-/**
-  * @brief	lcd clk close and int disable, reg value recover default.
-  * return none
-  */
-uint32_t  sys_drv_lcd_close(void);
-
-/**
-  * @brief	dma2d system config
-  * param1: clk source sel 0:clk_320M	   1:clk_480M,
-  * param2: clk_always_on  ENABLE,0: bus clock open when module is select,1:bus clock always open
-  * return none
-  */
-uint32_t sys_drv_dma2d_set(uint8_t clk_always_on);
-
-/**
-  * @brief	jpeg dec system config
-  * param1: clk_always_on  ENABLE,0: bus clock open when module is select,1:bus clock always open
-  * return none
-  */
-uint32_t sys_drv_set_jpeg_dec_disckg(uint32_t value);
 
 /**  Video End **/
 
@@ -349,6 +313,9 @@ uint32_t sys_drv_modem_clk_ctrl(bool clk_en);
 uint32_t sys_drv_mac_bus_clk_ctrl(bool clk_en);
 //CMD_SCTRL_MAC_CLOCK480M_DISABLE,CMD_SCTRL_MAC_CLOCK480M_ENABLE
 uint32_t sys_drv_mac_clk_ctrl(bool clk_en);
+uint32_t sys_drv_wifi_mac_reg_access_is_valid(void);
+uint32_t sys_drv_wifi_phy_reg_access_is_valid(void);
+void sys_drv_wifi_reg_access_status_get(uint32_t *clk_status, uint32_t *power_status);
 //CMD_SCTRL_SET_VDD_VALUE
 uint32_t sys_drv_set_vdd_value(uint32_t param);
 //CMD_SCTRL_GET_VDD_VALUE
@@ -614,9 +581,6 @@ void sys_drv_h264_pwr_up(void);
 void sys_drv_h264_pwr_down(void);
 void sys_drv_slcd_clock_enable(void);
 void sys_drv_slcd_clock_disable(void);
-void sys_drv_set_ana_lcd_enable(void);
-void sys_drv_set_ana_lcd_disable(void);
-void sys_drv_set_ana_sw_bias(uint32_t value);
 void sys_drv_set_ana_crb(uint32_t value);
 void sys_drv_set_ana_com_port_enable(uint32_t value);
 void sys_drv_set_ana_seg_port_enable(uint32_t value);

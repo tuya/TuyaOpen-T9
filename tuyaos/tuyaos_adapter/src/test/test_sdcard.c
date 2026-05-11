@@ -223,8 +223,14 @@ static void __cli_sdcard_speed_test_opt(uint32_t size)
 }
 static void __cli_sdcard_speed_test(void)
 {
+    if (__cli_sdcard_mount() != 0) {
+        bk_printf("speed_test mount failed\r\n");
+        return;
+    }
+
     __cli_sdcard_speed_test_opt(256 * 1024);
     tkl_system_sleep(100);
+    __cli_sdcard_umount();
 }
 
 extern OPERATE_RET tkl_io_pinmux_config(TUYA_PIN_NAME_E pin, TUYA_PIN_FUNC_E pin_func);
@@ -298,14 +304,9 @@ void cli_sdcard_test_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, cha
             return;
         __cli_sdcard_list_file(TEST_SDCARD_MOUNT_POINT);
         __cli_sdcard_umount();
-        bk_sd_card_deinit();
     } else if (!os_strcmp(argv[1], "speed_test")) {
-        __cli_sdcard_mount();
         __cli_sdcard_speed_test();
-        __cli_sdcard_umount();
-        bk_sd_card_deinit();
     } else {
 
     }
 }
-

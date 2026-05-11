@@ -114,6 +114,8 @@ static const struct cli_command tuya_cli_commands[] = {
     {"xmipi",    "mipi test",        cli_tuya_mipi_cmd},
     {"xgpu",    "gpu pipeline test", cli_tuya_gpu_cmd},
     {"xvenc",   "video encode test", cli_tuya_venc_cmd},
+    {"xvdec",   "video decode test", cli_tuya_vdec_cmd},
+    {"xuvc",    "usb camera test",   cli_tuya_uvc_cmd},
     {"xdac",    "audio dac test",    cli_tuya_dac_cmd},
     {"xdmic",   "audio dmic test",   cli_tuya_dmic_cmd},
     {"xadc",    "audio adc test",    cli_adc_cmd},
@@ -121,6 +123,7 @@ static const struct cli_command tuya_cli_commands[] = {
     {"xgpio",   "gpio test",        cli_gpio_cmd},
     {"xwifi",   "wifi test",        cli_wifi_cmd},
     {"xsd",     "sd card test",     cli_sdcard_test_cmd},
+    {"xtkladc", "tkl saradc test",   cli_tkl_adc_cmd},
     // {"xface",   "face tflm test",   cli_tuya_face_cmd},
 #if 0
     {"xlp",     "lp test",          cli_lp_test_cmd},

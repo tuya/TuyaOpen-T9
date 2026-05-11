@@ -366,19 +366,7 @@ void sys_hal_thread_interrupt_ctrl(bool en);
 
 
 /**  Video Start **/
-void sys_hal_lcd_disp_clk_en(uint8_t clk_src_sel, uint8_t clk_div_l, uint8_t clk_div_h,uint8_t clk_always_on);
-void sys_hal_lcd_disp_close(void);
 
-void sys_hal_set_jpeg_dec_disckg(uint32_t value);
-void sys_hal_dma2d_clk_en(uint8_t clk_always_on);
-
-void sys_hal_set_slcd_clk_en(bool enable);
-void sys_hal_set_slcd_sw_bias(uint32_t value);
-void sys_hal_set_slcd_crb(uint32_t value);
-void sys_hal_set_slcd_com_enable(uint32_t value);
-void sys_hal_set_slcd_seg_enable(uint32_t value);
-uint32_t sys_hal_get_slcd_seg_enable_status(void);
-void sys_hal_set_slcd_enable(bool enable);
 
 /**  Video End **/
 
@@ -454,6 +442,14 @@ void sys_hal_modem_bus_clk_ctrl(bool clk_en);
 void sys_hal_modem_clk_ctrl(bool clk_en);
 void sys_hal_mac_bus_clk_ctrl(bool clk_en);
 void sys_hal_mac_clk_ctrl(bool clk_en);
+uint32_t sys_hal_clk_pwr_status_get(dev_clk_pwr_id_t dev);
+uint32_t sys_hal_clk_pwr_is_enabled(dev_clk_pwr_id_t dev);
+void sys_hal_set_cpu_power_sleep_wakeup_pwd_ofdm(uint32_t v);
+uint32_t sys_hal_get_cpu_power_sleep_wakeup_pwd_ofdm(void);
+uint32_t sys_hal_wifi_wlss_clk_is_enabled(void);
+uint32_t sys_hal_wifi_mac_clk_is_enabled(void);
+uint32_t sys_hal_wifi_phy_clk_is_enabled(void);
+void sys_hal_wifi_reg_access_status_get(uint32_t *clk_status, uint32_t *power_status);
 void sys_hal_set_vdd_value(uint32_t param);
 uint32_t sys_hal_get_vdd_value(void);
 void sys_hal_block_en_mux_set(uint32_t param);
@@ -691,6 +687,7 @@ void sys_hal_set_ana_vlsel_ldodig(uint32_t value);
 void sys_hal_set_ana_vhsel_ldodig(uint32_t value);
 void sys_hal_set_ana_vctrl_sysldo(uint32_t value);
 void sys_hal_enable_eth_int(uint32_t value);
+void sys_hal_set_eth_clk_en(uint32_t value);
 void sys_hal_set_yuv_buf_clock_en(uint32_t value);
 void sys_hal_set_h264_clock_en(uint32_t value);
 void sys_hal_set_ana_reg11_apfms(uint32_t value);
@@ -770,6 +767,8 @@ void sys_hal_set_7816_int_en(uint32_t core_id, uint32_t value);
 void sys_hal_set_scr_clk(uint32_t value);
 uint64_t sys_hal_get_low_voltage_sleep_duration_us(void);
 void sys_hal_set_low_voltage_sleep_duration_us(uint64_t sleep_duration);
+uint64_t sys_hal_get_low_voltage_wakeup_time_us(void);
+void sys_hal_set_low_voltage_wakeup_time_us(uint64_t wakeup_time);
 void sys_hal_set_cpu_device_clk_enable_otp_cken(uint32_t value);
 void sys_hal_set_cpu_power_sleep_wakeup_ticktimer_32k_enable(uint32_t value);
 

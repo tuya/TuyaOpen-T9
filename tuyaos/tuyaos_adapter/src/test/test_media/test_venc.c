@@ -1,7 +1,6 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <stdarg.h>
 
 #include <components/bk_frame_buffer.h>
 #include <common/avdk_pixel_types.h>
@@ -15,17 +14,20 @@
 
 #define VENC_TEST_DEFAULT_FPS      15U
 #define VENC_TEST_DEFAULT_GOP      30U
-#define VENC_TEST_DEFAULT_BITRATE  (2U * 1024U * 1024U)
 #define VENC_TEST_LOG_INTERVAL     30U
-#define VENC_TEST_LOG_BUF_SIZE     192U
+
+typedef enum {
+    VENC_TEST_SOURCE_CAMERA = 0,
+    VENC_TEST_SOURCE_VDEC,
+} test_venc_source_t;
 
 typedef struct {
     bool initialized;
     bool started;
     TUYA_VENC_HANDLE handle;
+    test_venc_source_t source;
     uint8_t fps;
     uint32_t gop;
-    uint32_t bitrate;
     uint16_t width;
     uint16_t height;
     uint32_t format;
@@ -43,9 +45,9 @@ static test_venc_ctx_t s_venc_ctx = {
     .initialized = false,
     .started = false,
     .handle = NULL,
+    .source = VENC_TEST_SOURCE_CAMERA,
     .fps = VENC_TEST_DEFAULT_FPS,
     .gop = VENC_TEST_DEFAULT_GOP,
-    .bitrate = VENC_TEST_DEFAULT_BITRATE,
     .width = 0U,
     .height = 0U,
     .format = BK_PIXEL_FORMAT_INVALID,
@@ -58,6 +60,17 @@ static test_venc_ctx_t s_venc_ctx = {
     .last_frame_type = TUYA_VCODEC_FRAME_UNKNOWN,
     .total_bytes = 0U,
 };
+
+extern OPERATE_RET test_vdec_get_flexa_source(TUYA_VCODEC_FLEXA_BUFFER_T *flexa);
+extern BOOL_T test_mipi_camera_is_inited(void);
+extern BOOL_T test_mipi_camera_is_started(void);
+extern BOOL_T test_mipi_camera_flexa_enabled(void);
+extern OPERATE_RET test_mipi_camera_get_flexa_source(TUYA_CAMERA_MIPI_FLEXA_SOURCE_T *camera_source);
+
+static const char *test_venc_source_name(test_venc_source_t source)
+{
+    return (source == VENC_TEST_SOURCE_VDEC) ? "vdec" : "camera";
+}
 
 static void test_venc_stream_stats_reset(void)
 {
@@ -84,9 +97,9 @@ static void test_venc_runtime_reset(void)
     s_venc_ctx.initialized = false;
     s_venc_ctx.started = false;
     s_venc_ctx.handle = NULL;
+    s_venc_ctx.source = VENC_TEST_SOURCE_CAMERA;
     s_venc_ctx.fps = VENC_TEST_DEFAULT_FPS;
     s_venc_ctx.gop = VENC_TEST_DEFAULT_GOP;
-    s_venc_ctx.bitrate = VENC_TEST_DEFAULT_BITRATE;
     test_venc_stats_reset();
 }
 
@@ -228,7 +241,52 @@ static OPERATE_RET test_venc_set_camera_source(void)
     return OPRT_OK;
 }
 
-static OPERATE_RET test_venc_init(uint8_t fps, uint32_t gop, uint32_t bitrate)
+static OPERATE_RET test_venc_set_vdec_source(void)
+{
+    OPERATE_RET ret;
+    TUYA_VCODEC_FLEXA_BUFFER_T flexa;
+    TUYA_VENC_SOURCE_T source;
+
+    os_memset(&flexa, 0, sizeof(flexa));
+    ret = test_vdec_get_flexa_source(&flexa);
+    if (ret != OPRT_OK) {
+        tkl_log_output("vdec get flexa source failed: %d, use: xvdec init ... flexa && xvdec start\r\n", ret);
+        return ret;
+    }
+
+    if (flexa.owner_handle == NULL) {
+        return OPRT_RESOURCE_NOT_READY;
+    }
+
+    os_memset(&source, 0, sizeof(source));
+    source.type = TUYA_VENC_SOURCE_VDEC_FLEXA;
+    source.vdec.vdec_handle = flexa.owner_handle;
+    source.vdec.flexa = flexa;
+
+    ret = tkl_venc_set_source(s_venc_ctx.handle, &source);
+    if (ret != OPRT_OK) {
+        tkl_log_output("venc set vdec source failed: %d\r\n", ret);
+        return ret;
+    }
+
+    s_venc_ctx.width = flexa.width;
+    s_venc_ctx.height = flexa.height;
+    s_venc_ctx.format = flexa.format;
+    test_venc_stream_stats_reset();
+
+    tkl_log_output("venc vdec source ready, owner=%p src=%ux%u fmt=%u buf=%p cnt=%u\r\n",
+            flexa.owner_handle,
+            flexa.width,
+            flexa.height,
+            (unsigned int)flexa.format,
+            flexa.src_buffer,
+            (unsigned int)flexa.buf_cnt);
+    return OPRT_OK;
+}
+
+static OPERATE_RET test_venc_init(test_venc_source_t source_type,
+                                  uint8_t fps,
+                                  uint32_t gop)
 {
     OPERATE_RET ret;
     TUYA_VENC_CFG_T cfg;
@@ -252,7 +310,6 @@ static OPERATE_RET test_venc_init(uint8_t fps, uint32_t gop, uint32_t bitrate)
     cfg.codec = TUYA_VCODEC_TYPE_H264;
     cfg.fps = fps;
     cfg.gop = gop;
-    cfg.bitrate = bitrate;
     cfg.input_format = BK_PIXEL_FORMAT_NV12;
 
     ret = tkl_venc_init(&s_venc_ctx.handle, &cfg);
@@ -273,7 +330,11 @@ static OPERATE_RET test_venc_init(uint8_t fps, uint32_t gop, uint32_t bitrate)
         return ret;
     }
 
-    ret = test_venc_set_camera_source();
+    if (source_type == VENC_TEST_SOURCE_VDEC) {
+        ret = test_venc_set_vdec_source();
+    } else {
+        ret = test_venc_set_camera_source();
+    }
     if (ret != OPRT_OK) {
         (void)tkl_venc_deinit(s_venc_ctx.handle);
         test_venc_runtime_reset();
@@ -282,18 +343,18 @@ static OPERATE_RET test_venc_init(uint8_t fps, uint32_t gop, uint32_t bitrate)
 
     s_venc_ctx.initialized = true;
     s_venc_ctx.started = false;
+    s_venc_ctx.source = source_type;
     s_venc_ctx.fps = fps;
     s_venc_ctx.gop = gop;
-    s_venc_ctx.bitrate = bitrate;
     test_venc_stream_stats_reset();
 
-    tkl_log_output("venc init ok, codec=H264 src=%ux%u fmt=%u fps=%u gop=%u bitrate=%u\r\n",
+    tkl_log_output("venc init ok, codec=H264 source=%s src=%ux%u fmt=%u fps=%u gop=%u\r\n",
+            test_venc_source_name(source_type),
             s_venc_ctx.width,
             s_venc_ctx.height,
             (unsigned int)s_venc_ctx.format,
             (unsigned int)fps,
-            (unsigned int)gop,
-            (unsigned int)bitrate);
+            (unsigned int)gop);
     return OPRT_OK;
 }
 
@@ -302,7 +363,7 @@ static OPERATE_RET test_venc_start(void)
     OPERATE_RET ret;
 
     if (s_venc_ctx.initialized != true || s_venc_ctx.handle == NULL) {
-        tkl_log_output("venc is not initialized, use: xvenc init [fps] [gop] [bitrate]\r\n");
+        tkl_log_output("venc is not initialized, use: xvenc init [camera|vdec] [fps] [gop]\r\n");
         return OPRT_RESOURCE_NOT_READY;
     }
 
@@ -312,13 +373,13 @@ static OPERATE_RET test_venc_start(void)
     }
     test_venc_stream_stats_reset();
 
-    tkl_log_output("venc start request: src=%ux%u fmt=%u fps=%u gop=%u bitrate=%u\r\n",
+    tkl_log_output("venc start request: source=%s src=%ux%u fmt=%u fps=%u gop=%u\r\n",
+            test_venc_source_name(s_venc_ctx.source),
             s_venc_ctx.width,
             s_venc_ctx.height,
             (unsigned int)s_venc_ctx.format,
             (unsigned int)s_venc_ctx.fps,
-            (unsigned int)s_venc_ctx.gop,
-            (unsigned int)s_venc_ctx.bitrate);
+            (unsigned int)s_venc_ctx.gop);
 
     ret = tkl_venc_start(s_venc_ctx.handle);
     if (ret != OPRT_OK) {
@@ -327,7 +388,8 @@ static OPERATE_RET test_venc_start(void)
     }
 
     s_venc_ctx.started = true;
-    tkl_log_output("venc started, src=%ux%u fmt=%u -> H264\r\n",
+    tkl_log_output("venc started, source=%s src=%ux%u fmt=%u -> H264\r\n",
+            test_venc_source_name(s_venc_ctx.source),
             s_venc_ctx.width,
             s_venc_ctx.height,
             (unsigned int)s_venc_ctx.format);
@@ -381,19 +443,19 @@ static OPERATE_RET test_venc_request_idr(void)
 static void test_venc_status_dump(void)
 {
     tkl_log_output("xvenc status:\r\n");
-    tkl_log_output("  venc_init=%u venc_start=%u camera_init=%u camera_start=%u camera_flexa=%u\r\n",
+    tkl_log_output("  venc_init=%u venc_start=%u source=%s camera_init=%u camera_start=%u camera_flexa=%u\r\n",
             (unsigned int)s_venc_ctx.initialized,
             (unsigned int)s_venc_ctx.started,
+            test_venc_source_name(s_venc_ctx.source),
             (unsigned int)test_mipi_camera_is_inited(),
             (unsigned int)test_mipi_camera_is_started(),
             (unsigned int)test_mipi_camera_flexa_enabled());
-    tkl_log_output("  src=%ux%u fmt=%u fps=%u gop=%u bitrate=%u\r\n",
+    tkl_log_output("  src=%ux%u fmt=%u fps=%u gop=%u\r\n",
             s_venc_ctx.width,
             s_venc_ctx.height,
             (unsigned int)s_venc_ctx.format,
             (unsigned int)s_venc_ctx.fps,
-            (unsigned int)s_venc_ctx.gop,
-            (unsigned int)s_venc_ctx.bitrate);
+            (unsigned int)s_venc_ctx.gop);
     tkl_log_output("  frames=%u i=%u p=%u hdr=%u unk=%u last_type=%s last_size=%u total_bytes=%llu\r\n",
             (unsigned int)s_venc_ctx.total_frames,
             (unsigned int)s_venc_ctx.i_frames,
@@ -411,7 +473,8 @@ void cli_tuya_venc_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char 
     const char *cmd = NULL;
     uint8_t fps = VENC_TEST_DEFAULT_FPS;
     uint32_t gop = VENC_TEST_DEFAULT_GOP;
-    uint32_t bitrate = VENC_TEST_DEFAULT_BITRATE;
+    test_venc_source_t source_type = VENC_TEST_SOURCE_CAMERA;
+    int arg_base = 2;
 
     if (pcWriteBuffer == NULL || xWriteBufferLen <= 0) {
         return;
@@ -419,7 +482,7 @@ void cli_tuya_venc_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char 
 
     if (argc < 2) {
         snprintf(pcWriteBuffer, xWriteBufferLen,
-                 "Usage: xvenc <init [fps] [gop] [bitrate]|start|stop|deinit|close|idr|status>");
+                 "Usage: xvenc <init [camera|vdec] [fps] [gop]|start|stop|deinit|close|idr|status>");
         return;
     }
 
@@ -427,23 +490,29 @@ void cli_tuya_venc_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char 
 
     if (os_strcmp(cmd, "init") == 0) {
         if (argc >= 3) {
-            fps = (uint8_t)os_strtoul(argv[2], NULL, 10);
+            if (os_strcmp(argv[2], "vdec") == 0) {
+                source_type = VENC_TEST_SOURCE_VDEC;
+                arg_base = 3;
+            } else if (os_strcmp(argv[2], "camera") == 0) {
+                source_type = VENC_TEST_SOURCE_CAMERA;
+                arg_base = 3;
+            }
         }
-        if (argc >= 4) {
-            gop = os_strtoul(argv[3], NULL, 10);
+        if (argc > arg_base) {
+            fps = (uint8_t)os_strtoul(argv[arg_base], NULL, 10);
         }
-        if (argc >= 5) {
-            bitrate = os_strtoul(argv[4], NULL, 10);
+        if (argc > (arg_base + 1)) {
+            gop = os_strtoul(argv[arg_base + 1], NULL, 10);
         }
 
-        ret = test_venc_init(fps, gop, bitrate);
+        ret = test_venc_init(source_type, fps, gop);
         snprintf(pcWriteBuffer, xWriteBufferLen,
-                 "xvenc init %s (%d), fps=%u gop=%u bitrate=%u\r\n",
+                 "xvenc init %s (%d), source=%s fps=%u gop=%u\r\n",
                  (ret == OPRT_OK) ? "ok" : "failed",
                  ret,
+                 test_venc_source_name(source_type),
                  (unsigned int)fps,
-                 (unsigned int)gop,
-                 (unsigned int)bitrate);
+                 (unsigned int)gop);
     } else if (os_strcmp(cmd, "start") == 0) {
         ret = test_venc_start();
         snprintf(pcWriteBuffer, xWriteBufferLen,
@@ -475,6 +544,6 @@ void cli_tuya_venc_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char 
                  "xvenc status ok, see logs\r\n");
     } else {
         snprintf(pcWriteBuffer, xWriteBufferLen,
-                 "Usage: xvenc <init [fps] [gop] [bitrate]|start|stop|deinit|close|idr|status>");
+                 "Usage: xvenc <init [camera|vdec] [fps] [gop]|start|stop|deinit|close|idr|status>");
     }
 }

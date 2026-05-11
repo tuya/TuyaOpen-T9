@@ -28,7 +28,7 @@
 #define LOGD(...) BK_LOGD(TAG, ##__VA_ARGS__)
 
 
-static bk_gpu_ctlr_handle_t gpu_handle = NULL;
+static bk_gpu_ctlr_handle_t s_gpu_handle = NULL;
 
 gpu_board_config_t *gpu_board_config = NULL;
 
@@ -80,9 +80,19 @@ avdk_err_t app_gpu_turn_on(gpu_board_config_t *config)
 {
     bk_gpu_ctlr_config_t gpu_config;
     isp_control_t *isp_control = (isp_control_t *)app_isp_handle_get();
+    if (isp_control == NULL) {
+        LOGW("%s, %d, isp handle is NULL\n", __func__, __LINE__);
+        return AVDK_ERR_GENERIC;
+    }
     uint16_t src_width, src_height, dst_width, dst_height;
     uint8_t r_degree;
 
+    if(isp_control == NULL) {
+        LOGW("%s, %d, isp control is NULL, cannot open GPU first\n", __func__, __LINE__);
+        return AVDK_ERR_NO_RESOURCE;
+    }
+
+    AVDK_RETURN_ON_FALSE((s_gpu_handle == NULL), AVDK_ERR_BUSY, TAG, "alread turned on");
     AVDK_RETURN_ON_FALSE(config, AVDK_ERR_INVAL, TAG, "config is NULL");
 #if (CONFIG_VG_LITE_GPU)
 
@@ -120,7 +130,7 @@ avdk_err_t app_gpu_turn_on(gpu_board_config_t *config)
     gpu_config.frame_done = NULL;
     gpu_config.frame_done_args = NULL;
 
-    avdk_err_t ret = bk_gpu_ctlr_new(&gpu_handle, &gpu_config);
+    avdk_err_t ret = bk_gpu_ctlr_new(&s_gpu_handle, &gpu_config);
 
     if (ret != BK_OK)
     {
@@ -128,7 +138,7 @@ avdk_err_t app_gpu_turn_on(gpu_board_config_t *config)
         return AVDK_ERR_GENERIC;
     }
 
-    ret = bk_gpu_init(gpu_handle);
+    ret = bk_gpu_init(s_gpu_handle);
 
     if (ret != BK_OK)
     {
@@ -136,7 +146,7 @@ avdk_err_t app_gpu_turn_on(gpu_board_config_t *config)
         return AVDK_ERR_GENERIC;
     }
 
-    ret = bk_gpu_open(gpu_handle);
+    ret = bk_gpu_open(s_gpu_handle);
 
     if (ret != BK_OK)
     {
@@ -148,35 +158,39 @@ avdk_err_t app_gpu_turn_on(gpu_board_config_t *config)
     return AVDK_ERR_OK;
 }
 
-avdk_err_t app_gpu_turn_off(bk_gpu_ctlr_handle_t gpu_handle)
+avdk_err_t app_gpu_turn_off(bk_gpu_ctlr_handle_t ctlr)
 {
     avdk_err_t ret = AVDK_ERR_OK;
 
-    if (gpu_handle == NULL)
+    if (ctlr == NULL)
     {
         LOGW("%s, %d, gpu handle is NULL\n", __func__, __LINE__);
         return AVDK_ERR_GENERIC;
     }
 
-    ret = bk_gpu_close(gpu_handle);
+    ret = bk_gpu_close(ctlr);
     if (ret != AVDK_ERR_OK)
     {
         LOGW("%s, %d, close gpu failed: %d\n", __func__, __LINE__, ret);
         return ret;
     }
 
-    ret = bk_gpu_deinit(gpu_handle);
+    ret = bk_gpu_deinit(ctlr);
     if (ret != AVDK_ERR_OK)
     {
         LOGW("%s, %d, deinit gpu failed: %d\n", __func__, __LINE__, ret);
         return ret;
     }
 
-    ret = bk_gpu_delete(gpu_handle);
+    ret = bk_gpu_delete(ctlr);
     if (ret != AVDK_ERR_OK)
     {
         LOGW("%s, %d, delete gpu failed: %d\n", __func__, __LINE__, ret);
         return ret;
+    }
+
+    if (ctlr == s_gpu_handle) {
+        s_gpu_handle = NULL;
     }
 
 #if (CONFIG_PSRAM_WRITE_THROUGH)
@@ -241,9 +255,13 @@ avdk_err_t app_gpu_v2_turn_on(uint16_t width, uint16_t height)
 
     uint8_t *decode_buffer = NULL;
     uint8_t decode_buf_cnt = 0;
-    doorbell_decode_get_flexa_context(&decode_buffer, &decode_buf_cnt);
+    ret = doorbell_decode_get_flexa_context(&decode_buffer, &decode_buf_cnt);
+    if (ret != AVDK_ERR_OK) {
+        LOGW("%s, %d get flexa context failed: %d\n", __func__, __LINE__, ret);
+        return ret;
+    }
     if (decode_buffer == NULL || decode_buf_cnt == 0) {
-        LOGW("%s, %d\n", __func__, __LINE__);
+        LOGW("%s, %d decode buffer %p\n", __func__, __LINE__, decode_buffer);
         return AVDK_ERR_GENERIC;
     }
 
@@ -256,23 +274,48 @@ avdk_err_t app_gpu_v2_turn_on(uint16_t width, uint16_t height)
     gpu_config.frame_done = frame_done_cb;
     gpu_config.frame_done_args = NULL;
 
-    ret = bk_gpu_ctlr_new(&gpu_handle, &gpu_config);
+    AVDK_RETURN_ON_FALSE((s_gpu_handle == NULL), AVDK_ERR_BUSY, TAG, "already turned on");
+
+#if (CONFIG_PSRAM_WRITE_THROUGH)
+    s_psram_cover_area = bk_psram_alloc_write_through_channel_with_psram_id(0);
+    if (s_psram_cover_area >= PSRAM_WRITE_THROUGH_AREA_COUNT) {
+        LOGE("%s alloc write-through channel failed\r\n", __func__);
+        return AVDK_ERR_GENERIC;
+    }
+#endif
+
+    ret = bk_gpu_ctlr_new(&s_gpu_handle, &gpu_config);
     if (ret != AVDK_ERR_OK)
     {
         LOGW("%s, %d\n", __func__, __LINE__);
+#if (CONFIG_PSRAM_WRITE_THROUGH)
+        (void)bk_psram_free_write_through_channel((psram_write_through_area_t)s_psram_cover_area);
+#endif
         return ret;
     }
 
-    ret = bk_gpu_init(gpu_handle);
+    ret = bk_gpu_init(s_gpu_handle);
     if (ret != AVDK_ERR_OK)
     {
         LOGW("%s, %d\n", __func__, __LINE__);
+        (void)bk_gpu_delete(s_gpu_handle);
+        s_gpu_handle = NULL;
+#if (CONFIG_PSRAM_WRITE_THROUGH)
+        (void)bk_psram_free_write_through_channel((psram_write_through_area_t)s_psram_cover_area);
+#endif
         return ret;
     }
 
-    ret = bk_gpu_open(gpu_handle);
+    ret = bk_gpu_open(s_gpu_handle);
     if (ret != AVDK_ERR_OK) {
         LOGW("%s, %d\n", __func__, __LINE__);
+        (void)bk_gpu_deinit(s_gpu_handle);
+        (void)bk_gpu_delete(s_gpu_handle);
+        s_gpu_handle = NULL;
+#if (CONFIG_PSRAM_WRITE_THROUGH)
+        (void)bk_psram_free_write_through_channel((psram_write_through_area_t)s_psram_cover_area);
+#endif
+        return ret;
     }
 
     return ret;
@@ -280,7 +323,7 @@ avdk_err_t app_gpu_v2_turn_on(uint16_t width, uint16_t height)
 
 bk_gpu_ctlr_handle_t app_gpu_handle_get(void)
 {
-    return gpu_handle;
+    return s_gpu_handle;
 }
 
 

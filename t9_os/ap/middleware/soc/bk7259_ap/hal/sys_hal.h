@@ -287,20 +287,6 @@ void sys_hal_thread_interrupt_ctrl(bool en);
 
 
 /**  Video Start **/
-void sys_hal_lcd_disp_clk_en(uint8_t clk_src_sel, uint8_t clk_div_l, uint8_t clk_div_h,uint8_t clk_always_on);
-void sys_hal_lcd_disp_close(void);
-
-void sys_hal_set_jpeg_dec_disckg(uint32_t value);
-void sys_hal_dma2d_clk_en(uint8_t clk_always_on);
-
-void sys_hal_set_slcd_clk_en(bool enable);
-void sys_hal_set_slcd_sw_bias(uint32_t value);
-void sys_hal_set_slcd_crb(uint32_t value);
-void sys_hal_set_slcd_com_enable(uint32_t value);
-void sys_hal_set_slcd_seg_enable(uint32_t value);
-uint32_t sys_hal_get_slcd_seg_enable_status(void);
-void sys_hal_set_slcd_enable(bool enable);
-
 /**  Video End **/
 
 
@@ -607,6 +593,7 @@ void sys_hal_set_ana_vlsel_ldodig(uint32_t value);
 void sys_hal_set_ana_vhsel_ldodig(uint32_t value);
 void sys_hal_set_ana_vctrl_sysldo(uint32_t value);
 void sys_hal_enable_eth_int(uint32_t value);
+void sys_hal_set_eth_clk_en(uint32_t value);
 void sys_hal_set_yuv_buf_clock_en(uint32_t value);
 void sys_hal_set_h264_clock_en(uint32_t value);
 void sys_hal_set_ana_reg11_apfms(uint32_t value);
@@ -727,11 +714,12 @@ bk_err_t sys_hal_spi2_cksel_set(cksel_sys_xtal_160m_t cksel);
 bk_err_t sys_hal_spi3_cksel_set(cksel_sys_xtal_160m_t cksel);
 
 /* ana_reg41: aux LDO enable / bypass (swb) / output trim (vsel) */
-bk_err_t sys_hal_auxldo_set(auxldo_sel_t auxldo_sel,uint32_t value);
+bk_err_t sys_hal_auxldo_enable(auxldo_sel_t auxldo_sel,uint32_t value);
+uint32_t sys_hal_auxldo_enable_state_get(auxldo_sel_t auxldo_sel);
 bk_err_t sys_hal_auxldo_swb_set(auxldo_swb_t swb, bool bypass);
 uint32_t sys_hal_auxldo_swb_get(auxldo_swb_t swb);
-bk_err_t sys_hal_auxldo_vsel_set(auxldo_vsel_t vsel, uint32_t value);
-uint32_t sys_hal_auxldo_vsel_get(auxldo_vsel_t vsel);
+bk_err_t sys_hal_auxldo_out_set(auxldo_sel_t vsel, uint32_t value);
+uint32_t sys_hal_auxldo_out_get(auxldo_sel_t vsel);
 
 bk_err_t sys_hal_uart0_cksel_set(cksel_sys_xtal_120m_t cksel);
 bk_err_t sys_hal_uart1_cksel_set(cksel_sys_xtal_120m_t cksel);

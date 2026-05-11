@@ -7,6 +7,7 @@
  */
 
 #include "tuya_cloud_types.h"
+#include <stdint.h>
 #include <common/avdk_pixel_types.h>
 #include <common/bk_err.h>
 #include <components/avdk_utils/avdk_error.h>
@@ -199,7 +200,7 @@ static OPERATE_RET tkl_venc_sink_validate(const TUYA_VENC_SINK_T *sink)
     return OPRT_OK;
 }
 
-static VOID *tkl_venc_outbuf_malloc(UINT32_T outbuf_size, VOID *args)
+static void *tkl_venc_outbuf_malloc(uint32_t outbuf_size, void *args)
 {
     TUYA_VENC_CTX_T *ctx = (TUYA_VENC_CTX_T *)args;
     TUYA_VENC_OUTBUF_T *outbuf = NULL;
@@ -233,7 +234,7 @@ static VOID *tkl_venc_outbuf_malloc(UINT32_T outbuf_size, VOID *args)
     return &outbuf->frame;
 }
 
-static UINT32_T tkl_venc_outbuf_complete(VOID *outbuf, UINT32_T status, VOID *args)
+static uint32_t tkl_venc_outbuf_complete(void *outbuf, uint32_t status, void *args)
 {
     TUYA_VENC_CTX_T *ctx = (TUYA_VENC_CTX_T *)args;
     TUYA_VENC_OUTBUF_T *node = (TUYA_VENC_OUTBUF_T *)outbuf;
@@ -270,7 +271,6 @@ static UINT32_T tkl_venc_outbuf_complete(VOID *outbuf, UINT32_T status, VOID *ar
 
 static OPERATE_RET tkl_venc_backend_create(TUYA_VENC_CTX_T *ctx)
 {
-    bk_h264_encode_hw_flexa_config_t hw_cfg;
     avdk_err_t ret;
     UINT16_T width = 0U;
     UINT16_T height = 0U;
@@ -289,26 +289,48 @@ static OPERATE_RET tkl_venc_backend_create(TUYA_VENC_CTX_T *ctx)
         return OPRT_INVALID_PARM;
     }
 
-    tkl_system_memset(&hw_cfg, 0, sizeof(hw_cfg));
-    hw_cfg.width = width;
-    hw_cfg.height = height;
-    hw_cfg.pframe_number = tkl_venc_gop_resolve(ctx);
-    hw_cfg.input_format = tkl_venc_input_format_resolve(ctx);
-    if (hw_cfg.input_format == BK_PIXEL_FORMAT_UNKNOW ||
-        hw_cfg.input_format == BK_PIXEL_FORMAT_INVALID) {
+    if (tkl_venc_input_format_resolve(ctx) == BK_PIXEL_FORMAT_UNKNOW ||
+        tkl_venc_input_format_resolve(ctx) == BK_PIXEL_FORMAT_INVALID) {
         return OPRT_INVALID_PARM;
     }
-    hw_cfg.input_flexa_cnt = tkl_venc_input_cnt_resolve(ctx);
-    hw_cfg.input_buf = tkl_venc_input_buf_resolve(ctx);
-    hw_cfg.input_size = tkl_venc_input_cnt_resolve(ctx);
-    hw_cfg.outbuf_malloc = tkl_venc_outbuf_malloc;
-    hw_cfg.outbuf_malloc_args = ctx;
-    hw_cfg.outbuf_complete = tkl_venc_outbuf_complete;
-    hw_cfg.outbuf_complete_args = ctx;
 
-    ret = bk_h264_encode_hw_flexa_new(&ctx->backend_handle, &hw_cfg);
+    if (ctx->source.type == TUYA_VENC_SOURCE_VDEC_FLEXA) {
+        bk_h264_encode_sw_flexa_config_t sw_cfg;
+
+        tkl_system_memset(&sw_cfg, 0, sizeof(sw_cfg));
+        sw_cfg.width = width;
+        sw_cfg.height = height;
+        sw_cfg.pframe_number = tkl_venc_gop_resolve(ctx);
+        sw_cfg.input_format = tkl_venc_input_format_resolve(ctx);
+        sw_cfg.input_flexa_cnt = tkl_venc_input_cnt_resolve(ctx);
+        sw_cfg.input_buf = tkl_venc_input_buf_resolve(ctx);
+        sw_cfg.input_size = height;
+        sw_cfg.outbuf_malloc = tkl_venc_outbuf_malloc;
+        sw_cfg.outbuf_malloc_args = ctx;
+        sw_cfg.outbuf_complete = tkl_venc_outbuf_complete;
+        sw_cfg.outbuf_complete_args = ctx;
+
+        ret = bk_h264_encode_sw_flexa_new(&ctx->backend_handle, &sw_cfg);
+    } else {
+        bk_h264_encode_hw_flexa_config_t hw_cfg;
+
+        tkl_system_memset(&hw_cfg, 0, sizeof(hw_cfg));
+        hw_cfg.width = width;
+        hw_cfg.height = height;
+        hw_cfg.pframe_number = tkl_venc_gop_resolve(ctx);
+        hw_cfg.input_format = tkl_venc_input_format_resolve(ctx);
+        hw_cfg.input_flexa_cnt = tkl_venc_input_cnt_resolve(ctx);
+        hw_cfg.input_buf = tkl_venc_input_buf_resolve(ctx);
+        hw_cfg.input_size = tkl_venc_input_cnt_resolve(ctx);
+        hw_cfg.outbuf_malloc = tkl_venc_outbuf_malloc;
+        hw_cfg.outbuf_malloc_args = ctx;
+        hw_cfg.outbuf_complete = tkl_venc_outbuf_complete;
+        hw_cfg.outbuf_complete_args = ctx;
+
+        ret = bk_h264_encode_hw_flexa_new(&ctx->backend_handle, &hw_cfg);
+    }
     if (ret != AVDK_ERR_OK) {
-        tkl_log_output("tkl_venc: bk_h264_encode_hw_flexa_new failed (%d)\r\n", ret);
+        tkl_log_output("tkl_venc: h264 flexa new failed (%d)\r\n", ret);
         if (ret == AVDK_ERR_NOMEM) {
             return OPRT_MALLOC_FAILED;
         }
@@ -631,24 +653,6 @@ OPERATE_RET tkl_venc_request_idr(TUYA_VENC_HANDLE handle)
     }
 
     return OPRT_OK;
-}
-
-OPERATE_RET tkl_venc_set_rate_ctrl(TUYA_VENC_HANDLE handle, const TUYA_VENC_RC_T *rc)
-{
-    TUYA_VENC_CTX_T *ctx = tkl_venc_ctx_get(handle);
-
-    if ((ctx == NULL) || (rc == NULL)) {
-        return OPRT_INVALID_PARM;
-    }
-
-    (void)rc;
-
-    /*
-     * The public bk_h264_encode controller wrapper does not expose
-     * rate-control configuration yet. Keep the API for future backend
-     * extension, but report unsupported for now.
-     */
-    return OPRT_NOT_SUPPORTED;
 }
 
 OPERATE_RET tkl_venc_submit_frame(TUYA_VENC_HANDLE handle, const TUYA_VCODEC_FRAME_T *frame)

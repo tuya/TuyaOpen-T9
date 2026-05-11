@@ -1,6 +1,7 @@
 #include "tkl_gpu.h"
 
 #include <stdbool.h>
+#include <stdint.h>
 #include <common/avdk_pixel_types.h>
 #include <components/bk_flexa_bond.h>
 #include <components/bk_gpu.h>
@@ -171,7 +172,7 @@ static const TUYA_GPU_FLEXA_BUFFER_T *tkl_gpu_source_flexa_get(const TUYA_GPU_SO
     }
 }
 
-static VOID *tkl_gpu_frame_malloc(UINT32_T size)
+static void *tkl_gpu_frame_malloc(uint32_t size)
 {
     if (s_gpu_ctx.sink.alloc_cb == NULL) {
         return NULL;

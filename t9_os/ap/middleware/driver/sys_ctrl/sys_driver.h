@@ -8,9 +8,7 @@
 #include "sys_types.h"
 #include "sys_hal.h"
 #include <modules/pm.h>
-#if CONFIG_HSPL
-#include "hspl_res_lock.h"
-#endif
+#include "aspl_lock.h"
 
 #define SYS_DRV_DEBUG   0
 
@@ -37,20 +35,12 @@
 
 static inline uint32_t sys_drv_enter_critical()
 {
-  #if CONFIG_HSPL
-	return bk_hspl_driver_enter_critical();
-  #else
-	return rtos_enter_critical();
-  #endif
+	return bk_aspl_driver_enter_critical();
 }
 
 static inline void sys_drv_exit_critical(uint32_t flags)
 {
-  #if CONFIG_HSPL
-	return bk_hspl_driver_exit_critical(flags);
-  #else
-	rtos_exit_critical(flags);
-  #endif
+	return bk_aspl_driver_exit_critical(flags);
 }
 
 /**  Platform Start **/
@@ -614,9 +604,6 @@ void sys_drv_h264_pwr_up(void);
 void sys_drv_h264_pwr_down(void);
 void sys_drv_slcd_clock_enable(void);
 void sys_drv_slcd_clock_disable(void);
-void sys_drv_set_ana_lcd_enable(void);
-void sys_drv_set_ana_lcd_disable(void);
-void sys_drv_set_ana_sw_bias(uint32_t value);
 void sys_drv_set_ana_crb(uint32_t value);
 void sys_drv_set_ana_com_port_enable(uint32_t value);
 void sys_drv_set_ana_seg_port_enable(uint32_t value);

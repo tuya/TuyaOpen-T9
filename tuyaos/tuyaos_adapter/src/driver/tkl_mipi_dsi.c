@@ -42,6 +42,36 @@ static UINT32_T tkl_mipi_dsi_clk_mhz_normalize(UINT32_T clk)
     return clk;
 }
 
+static UINT8_T tkl_mipi_dsi_fps_calculate(const TUYA_MIPI_BASE_CFG_T *base_cfg)
+{
+    UINT64_T pclk_hz;
+    UINT64_T frame_pixels;
+    UINT64_T fps;
+    UINT32_T h_total;
+    UINT32_T v_total;
+
+    if (base_cfg == NULL || base_cfg->clk == 0U || base_cfg->width == 0U || base_cfg->height == 0U) {
+        return 0U;
+    }
+
+    h_total = (UINT32_T)base_cfg->width + base_cfg->hsync_pulse_width +
+              base_cfg->hsync_back_porch + base_cfg->hsync_front_porch;
+    v_total = (UINT32_T)base_cfg->height + base_cfg->vsync_pulse_width +
+              base_cfg->vsync_back_porch + base_cfg->vsync_front_porch;
+    frame_pixels = (UINT64_T)h_total * v_total;
+    if (frame_pixels == 0U) {
+        return 0U;
+    }
+
+    pclk_hz = (base_cfg->clk > 1000U) ? base_cfg->clk : ((UINT64_T)base_cfg->clk * 1000000U);
+    fps = (pclk_hz + frame_pixels / 2U) / frame_pixels;
+    if (fps > 255U) {
+        fps = 255U;
+    }
+
+    return (UINT8_T)fps;
+}
+
 static UINT8_T tkl_mipi_dsi_lane_count_convert(UINT8_T n_lanes)
 {
     switch (n_lanes) {
@@ -127,6 +157,8 @@ static OPERATE_RET tkl_mipi_dsi_clock_set(const TUYA_MIPI_BASE_CFG_T *base_cfg)
     os_memset(&clock_cfg, 0, sizeof(clock_cfg));
     clock_cfg.clk = dpu_clk_mhz;
     clock_cfg.n_lanes = bk_n_lanes;
+    clock_cfg.fps = tkl_mipi_dsi_fps_calculate(base_cfg);
+    clock_cfg.clk_src = DPU_CLK_SRC_NANENG_DPHY_INTERNAL_DPLL;
     clock_cfg.timing.clk = dpu_clk_mhz;
     clock_cfg.timing.h_size = base_cfg->width;
     clock_cfg.timing.v_size = base_cfg->height;
@@ -231,10 +263,14 @@ static OPERATE_RET tkl_mipi_dpu_init(const TUYA_MIPI_BASE_CFG_T *base_cfg)
     }
 
     os_memset(&lcd_cfg, 0, sizeof(lcd_cfg));
+    lcd_cfg.clk_src = DPU_CLK_SRC_NANENG_DPHY_INTERNAL_DPLL;
     lcd_cfg.video.enable = true;
     lcd_cfg.video.decompress = (s_dpu_runtime.input_decompress != FALSE) ? true : false;
     lcd_cfg.video.format = pixel_format;
-    lcd_cfg.graphic.enable = false;
+    lcd_cfg.video.disp_x = 0;
+    lcd_cfg.video.disp_y = 0;
+    lcd_cfg.video.disp_w = base_cfg->width;
+    lcd_cfg.video.disp_h = base_cfg->height;
 
     lcd_cfg.timing.clk = dpu_clk_mhz;
     lcd_cfg.timing.h_size = base_cfg->width;

@@ -20,20 +20,6 @@
 #endif
 #include <lcd/lcd_hx8399c_mipi_1080x1920.h>
 
-#define SYS_ANA_REG_BASE    (0x44010000)
-#define LDO_ANA_REG         (0x69)
-
-
-static void bk_auxldo_enable(void)
-{
-    uint32_t reg = REG_READ(SYS_ANA_REG_BASE + LDO_ANA_REG * 4);
-    reg |= (0xF << 28) | (0x2 << 23) | (0x7 << 19) | (0x7 << 15);
-    reg &= ~(0xF << 11);
-    reg |= (0x8 << 11);
-    REG_WRITE(SYS_ANA_REG_BASE + LDO_ANA_REG * 4, reg);
-}
-
-
 int main(void)
 {
     bk_init();
@@ -54,7 +40,7 @@ int main(void)
     camera_board.mipi.pin_xclk = GPIO_59;
     camera_board.mipi.sensor_max_width = 1920;
     camera_board.mipi.sensor_max_height = 1080;
-    camera_board.mipi.sensor_fps = 15;
+    camera_board.mipi.sensor_fps = 25;
     camera_board.isp.mp_enable = true;
     camera_board.isp.mp_flexa = true;
     camera_board.isp.mp_width = 1920;
@@ -83,7 +69,6 @@ int main(void)
     gpu_board.flexa.scale = false; 
 
 
-    bk_auxldo_enable();
     bk_frame_buffer_init();
 
     /* Board config for Multimedia config */
@@ -101,6 +86,12 @@ int main(void)
     bk_smart_config_init();
     doorbell_core_init();
     doorbell_db_cam_cli_init();
+
+#if (CONFIG_ASR_SERVICE_WITH_MIC)
+    extern int doorbell_asr_turn_on(void);
+    doorbell_asr_turn_on();
+#endif
+
 #endif
 
 #if CONFIG_VOICE_SERVICE_TEST

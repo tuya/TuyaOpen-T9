@@ -15,6 +15,11 @@
 #include "doorbell_img_manager.h"
 #include <lcd/lcd_hx8399c_mipi_1080x1920.h>
 #include "devices_mgmt.h"
+#include <sys_types.h>
+#include <modules/pm.h>
+#if CONFIG_INTEGRATION_DOORBELL_KVS
+#include "doorbell_kvs_network_transfer.h"
+#endif
 #define TAG "db-device"
 
 #define LOGI(...) BK_LOGW(TAG, ##__VA_ARGS__)
@@ -152,7 +157,6 @@ int doorbell_camera_turn_on(camera_parameters_t *parameters)
     {
         info->transfer_format = BK_IMAGE_FORMAT_MJPEG;
     }
-
     if (parameters->id == UVC_DEVICE_ID)
     {
 #ifdef CONFIG_USB_CAMERA
@@ -166,33 +170,33 @@ int doorbell_camera_turn_on(camera_parameters_t *parameters)
         if (ret != BK_OK)
         {
             LOGE("%s, app_uvc_turn_on failed, ret = %d\n", __func__, ret);
-            return ret;
+            goto err;
         }
 
         ret = doorbell_jpeg_decode_open(parameters->width, parameters->height, BK_IMAGE_FORMAT_MJPEG, 1);
         if (ret != BK_OK)
         {
             LOGE("%s, decode_test_open failed, ret = %d\n", __func__, ret);
-            return ret;
+            goto err;
         }
         ret = doorbell_decode_get_handle(&info->decode_handle);
         if (ret != BK_OK)
         {
             LOGE("%s, doorbell_decode_get_handle failed, ret = %d\n", __func__, ret);
-            return ret;
+            goto err;
         }
         ret = doorbell_h264_encode_open(parameters->width, parameters->height);
         if (ret != BK_OK)
         {
             LOGE("%s, h264_encode_open failed, ret = %d\n", __func__, ret);
-            return ret;
+            goto err;
         }
 
         ret = doorbell_h264_encode_get_handle(&info->encode_handle);
         if (ret != BK_OK)
         {
             LOGE("%s, doorbell_h264_encode_get_handle failed, ret = %d\n", __func__, ret);
-            return ret;
+            goto err;
         }
 
         LOGI("%s %d decode_handle = %p, encode_handle = %p\r\n", __func__, __LINE__, info->decode_handle, info->encode_handle);
@@ -201,14 +205,14 @@ int doorbell_camera_turn_on(camera_parameters_t *parameters)
         if (ret != BK_OK)
         {
             LOGE("%s, bk_flexa_mjpegd_h264e_bond_start failed, ret = %d\n", __func__, ret);
-            return ret;
+            goto err;
         }
 
         if (info->gpu_handle != NULL) {
             ret = bk_flexa_mjpegd_gpu_bond_start(&info->gpu_bond, info->decode_handle, info->gpu_handle);
             if (ret != BK_OK) {
                 LOGE("%s, bk_flexa_mjpegd_gpu_bond_start failed, ret = %d\n", __func__, ret);
-                return ret;
+                goto err;
             }
         }
 #endif
@@ -220,7 +224,7 @@ int doorbell_camera_turn_on(camera_parameters_t *parameters)
         if (ret != BK_OK)
         {
             LOGE("app_isp_mipi_camera_turn_on failed\n");
-            return ret;
+            goto err;
         }
 
         ret = devices_mgmt_set_display_source(DISPLAY_STREAM_ID_MIPI_CSI, NULL);
@@ -228,7 +232,7 @@ int doorbell_camera_turn_on(camera_parameters_t *parameters)
         if (ret != BK_OK)
         {
             LOGE("devices_mgmt_set_display_source failed\n");
-            return ret;
+            goto err;
         }
 
         ret = app_h264e_turn_on();
@@ -236,32 +240,32 @@ int doorbell_camera_turn_on(camera_parameters_t *parameters)
         if (ret != BK_OK)
         {
             LOGE("app_h264e_turn_on failed\n");
-            return ret;
+            goto err;
         }
 
         info->isp_handle = app_isp_handle_get();
         if (info->isp_handle == NULL) {
             LOGE("%s, app_isp_handle_get failed\n", __func__);
-            return ret;
+            goto err;
         }
 
         info->encode_handle = app_h264_encode_handle_get();
         if (info->encode_handle == NULL) {
             LOGE("%s, app_h264_encode_handle_get failed\n", __func__);
-            return ret;
+            goto err;
         }
 
         ret = bk_flexa_isp_h264e_bond_start(&info->h264e_bond, info->isp_handle, info->encode_handle);
         if (ret != BK_OK) {
             LOGE("%s, bk_flexa_isp_bond_start failed, ret = %d\n", __func__, ret);
-            return ret;
+            goto err;
         }
 
         if (info->gpu_handle != NULL) {
             ret = bk_flexa_isp_gpu_bond_start(&info->gpu_bond, info->isp_handle, info->gpu_handle);
             if (ret != BK_OK) {
                 LOGE("%s, bk_flexa_isp_gpu_bond_start failed, ret = %d\n", __func__, ret);
-                return ret;
+                goto err;
             }
         }
 
@@ -270,13 +274,16 @@ int doorbell_camera_turn_on(camera_parameters_t *parameters)
     if (ret != BK_OK)
     {
         LOGE("%s, camera turn on failed, ret = %d\n", __func__, ret);
-        return ret;
+        goto err;
     }
 
     info->video_enable = true;
 
     LOGD("%s success\n", __func__);
 
+    return BK_OK;
+
+err:
     return ret;
 }
 
@@ -419,6 +426,54 @@ int doorbell_video_transfer_turn_off(void)
     return ret;
 }
 
+static int doorbell_display_gpu_stop(db_device_info_t *info, display_source_t *display_source)
+{
+    int ret = BK_OK;
+
+    if (info == NULL)
+    {
+        LOGE("%s, info is NULL\n", __func__);
+        return BK_FAIL;
+    }
+
+    if (display_source == NULL)
+    {
+        LOGE("%s, display_source not found\n", __func__);
+        return BK_FAIL;
+    }
+
+    if (display_source->id == DISPLAY_STREAM_ID_MIPI_CSI)
+    {
+        if (info->gpu_bond != NULL)
+        {
+            bk_flexa_isp_gpu_bond_stop(info->gpu_bond);
+            info->gpu_bond = NULL;
+        }
+    }
+    else
+    {
+        if (info->gpu_bond != NULL)
+        {
+            bk_flexa_mjpegd_gpu_bond_stop(info->gpu_bond);
+            info->gpu_bond = NULL;
+        }
+    }
+
+    if (info->gpu_handle != NULL)
+    {
+        ret = app_gpu_turn_off(info->gpu_handle);
+        if (ret != BK_OK)
+        {
+            LOGE("%s, app_gpu_turn_off failed, ret = %d\n", __func__, ret);
+            return ret;
+        }
+        info->gpu_handle = NULL;
+    }
+
+    info->isp_handle = NULL;
+    return BK_OK;
+}
+
 int doorbell_display_turn_on(display_board_config_t *config)
 {
     int ret = BK_FAIL;
@@ -461,7 +516,12 @@ int doorbell_display_turn_on(display_board_config_t *config)
             LOGE("%s, uvc_device not found\n", __func__);
             goto error;
         }
+        gpu_board_config_t *gpu_board = app_gpu_board_config_get();
 
+        if(uvc_device->width != config->mipi.panel->timing.h_size || uvc_device->height != config->mipi.panel->timing.v_size)
+        {
+            gpu_board->flexa.scale = true;
+        }
         ret = app_gpu_v2_turn_on(uvc_device->width, uvc_device->height);
 
         if (ret != BK_OK) {
@@ -511,32 +571,19 @@ int doorbell_display_turn_on(display_board_config_t *config)
     return BK_OK;
 
 error:
+    ret = doorbell_display_gpu_stop(info, display_source);
+    if (ret != BK_OK)
+    {
+        LOGE("%s, doorbell_display_gpu_stop failed, ret = %d\n", __func__, ret);
+    }
     ret = app_mipi_lcd_turn_off();
     if (ret != BK_OK)
     {
         LOGE("%s, app_mipi_lcd_turn_off failed, ret = %d\n", __func__, ret);
     }
-    if (info->gpu_handle != NULL) {
-        if (display_source->id == DISPLAY_STREAM_ID_PORT_0_UVC)
-        {
-            bk_flexa_mjpegd_gpu_bond_stop(info->gpu_bond);
-        }
-        else if (display_source->id == DISPLAY_STREAM_ID_MIPI_CSI) {
-            bk_flexa_isp_gpu_bond_stop(info->gpu_bond);
-        }
-        ret = app_gpu_turn_off(info->gpu_handle);
-        if (ret != BK_OK)
-        {
-            LOGE("%s, app_gpu_turn_off failed, ret = %d\n", __func__, ret);
-        }
-        info->gpu_bond = NULL;
-        info->gpu_handle = NULL;
-    }
-
-    info->isp_handle = NULL;
     info->lcd_enable = false;
     LOGD("%s failed\n", __func__);
-    return ret;
+    return BK_FAIL;
 }
 
 int doorbell_display_turn_off(void)
@@ -550,6 +597,14 @@ int doorbell_display_turn_off(void)
         return EVT_STATUS_ALREADY;
     }
 
+    display_source_t *display_source = devices_mgmt_get_display_source();
+    ret = doorbell_display_gpu_stop(info, display_source);
+    if (ret != BK_OK)
+    {
+        LOGE("%s, doorbell_display_gpu_stop failed, ret = %d\n", __func__, ret);
+        return ret;
+    }
+
     ret = app_mipi_lcd_turn_off();
     if (ret != BK_OK)
     {
@@ -557,38 +612,7 @@ int doorbell_display_turn_off(void)
         return ret;
     }
 
-    display_source_t *display_source = devices_mgmt_get_display_source();
-    if (display_source->id == DISPLAY_STREAM_ID_MIPI_CSI) {
-        if (info->gpu_bond != NULL) {
-            bk_flexa_isp_gpu_bond_stop(info->gpu_bond);
-            info->gpu_bond = NULL;
-        }
-
-        ret = app_gpu_turn_off(info->gpu_handle);
-        if (ret != BK_OK)
-        {
-            LOGE("%s, app_gpu_turn_off failed, ret = %d\n", __func__, ret);
-            return ret;
-        }
-        info->gpu_handle = NULL;
-    }
-    else
-    {
-        if (info->gpu_bond != NULL) {
-            bk_flexa_mjpegd_gpu_bond_stop(info->gpu_bond);
-            info->gpu_bond = NULL;
-        }
-
-        ret = app_gpu_turn_off(info->gpu_handle);
-        if (ret != BK_OK)
-        {
-            LOGE("%s, app_gpu_turn_off failed, ret = %d\n", __func__, ret);
-            return ret;
-        }
-        info->gpu_handle = NULL;
-    }
     info->lcd_enable = false;
-
     LOGD("%s success\n", __func__);
 
     return ret;
@@ -693,6 +717,7 @@ static void doorbell_devices_task_entry(beken_thread_arg_t data)
     cfg->enable = true;
     rtos_set_semaphore(&cfg->sem);
     uint8_t log_enable = 0;
+    bk_err_t ret = BK_OK;
 
     while (cfg->enable)
     {
@@ -711,20 +736,34 @@ static void doorbell_devices_task_entry(beken_thread_arg_t data)
 
         if (frame->sequence < 5)
         {
+            #if CONFIG_INTEGRATION_DOORBELL_KVS
+            char buf[64];
+            doorbell_kvs_get_format_utc_ts(buf, sizeof(buf));
+            LOGD("%s, frame sequence %d, utc: %s\n", __func__, frame->sequence, buf);
+            #else
             LOGD("%s, frame sequence %d\n", __func__, frame->sequence);
+            #endif
         }
 
         log_enable = 0;
 
         if (cfg->port_id == 0)
         {
-            ntwk_trans_video_send((uint8_t *)frame, frame->length, cfg->img_format);
+            ret = ntwk_trans_video_send((uint8_t *)frame, frame->length, cfg->img_format);
+            if (ret != BK_OK)
+            {
+                LOGV("%s,failed, ret = %d\n", __func__, ret);
+            }
         }
         else
         {
             // if (frame->h264_type == cfg->port_id)
             {
-                ntwk_trans_video_send((uint8_t *)frame, frame->length, BK_IMAGE_FORMAT_H264);
+                ret = ntwk_trans_video_send((uint8_t *)frame, frame->length, BK_IMAGE_FORMAT_H264);
+                if (ret != BK_OK)
+                {
+                    LOGV("%s,failed1, ret = %d\n", __func__, ret);
+                }
             }
         }
 
@@ -769,7 +808,7 @@ bk_err_t doorbell_devices_start(uint16_t img_format)
                                 BEKEN_DEFAULT_WORKER_PRIORITY,
                                 "trs_task",
                                 (beken_thread_function_t)doorbell_devices_task_entry,
-                                2560,
+                                4096,
                                 (beken_thread_arg_t)s_db_trans_cfg);
 
     if (BK_OK != ret)

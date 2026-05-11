@@ -39,7 +39,7 @@ int fatfs_mount(const char *mount_path, int type)
     partition.part_dev.device_name = FATFS_DEV_SDCARD;
     partition.mount_path = mount_path;
 
-    user_sdio_gpio_init();
+    // user_sdio_gpio_init();
 
     ret = mount("SOURCE_NONE", partition.mount_path, fs_type, 0, &partition);
     if (ret == 0) {

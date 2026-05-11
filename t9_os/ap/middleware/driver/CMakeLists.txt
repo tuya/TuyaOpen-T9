@@ -36,7 +36,6 @@ set(incs
 	wdt
 	timer
 	scr
-	slcd
 	pwr_clk
 	)
 
@@ -80,7 +79,6 @@ endif()
 		sys_ctrl/sys_wifi_driver.c
 		sys_ctrl/sys_bt_driver.c
 		sys_ctrl/sys_audio_driver.c
-		sys_ctrl/sys_video_driver.c
 		#sys_ctrl/sys_psram_driver.c
 		#sys_ctrl/sys_touch_driver.c
 		#gpio/gpio_driver_base.c
@@ -124,14 +122,13 @@ if (NOT CMAKE_BUILD_EARLY_EXPANSION)
 	#add_subdirectory(i2s)
 	add_subdirectory(psram)
 	add_subdirectory(irda)
-	#add_subdirectory(wwdt)
+	add_subdirectory(wwdt)
 	add_subdirectory(mailbox)
 	add_subdirectory(multicore)
 	add_subdirectory(ipi)
 	add_subdirectory(hspl)
 	add_subdirectory(h264)
 	add_subdirectory(device)
-	add_subdirectory(yuv_buf)
 	add_subdirectory(lin)
 	add_subdirectory(hp_dma)
 	add_subdirectory(sys_sw_regs)
@@ -157,12 +154,7 @@ if (CONFIG_I2S)
 
 	list(APPEND srcs
 		i2s/i2s_driver.c
-	)
-endif()
-
-if(CONFIG_SLCD)
-	list(APPEND srcs
-		"slcd/slcd_driver.c"
+		i2s/i2s_multi_driver.c
 	)
 endif()
 

@@ -9,6 +9,7 @@
 #include "private_h264_encode_ctlr.h"
 #include "hw_encoder_ctlr.h"
 #include <components/bk_frame_buffer.h>
+#include "avdk_monitor.h"
 
 #define TAG "bk_h264_encode_ctlr"
 
@@ -17,8 +18,6 @@
 #define LOGE(...) BK_LOGE(TAG, ##__VA_ARGS__)
 #define LOGD(...) BK_LOGD(TAG, ##__VA_ARGS__)
 #define LOGV(...) BK_LOGV(TAG, ##__VA_ARGS__)
-
-#define ENC_BUFFER_LEN (500 * 1024)
 
 /** 与解码侧 DECODE_FLEXA_LINES 一致：每 Flexa 块行数 */
 #define H264_SW_FLEXA_LINES_PER_BLOCK (16U)
@@ -29,6 +28,10 @@ static void handle_encode_error(private_h264_encode_sw_flexa_ctlr_t *ctrl, void 
     frame_buffer_t *frame = (frame_buffer_t *)buffer;
     if (frame != NULL) {
         frame->length = size;
+    }
+
+    if (ctrl->bond != NULL && ctrl->bond->frame_done != NULL) {
+        ctrl->bond->frame_done(BK_FAIL, ctrl->bond);
     }
 
     if (ctrl->config.outbuf_complete && ctrl->h264_encoder_param) {
@@ -44,7 +47,7 @@ static void handle_video_frame(private_h264_encode_sw_flexa_ctlr_t *ctrl, void *
     // Pre-allocate buffer for next frame
     frame_buffer_t *next_buffer = NULL;
     if (ctrl->config.outbuf_malloc) {
-        next_buffer = (frame_buffer_t *)ctrl->config.outbuf_malloc(ENC_BUFFER_LEN, ctrl->config.outbuf_malloc_args);
+        next_buffer = (frame_buffer_t *)ctrl->config.outbuf_malloc(CONFIG_BK_ENCODER_H264_MAX_OUTPUT_BUFFER, ctrl->config.outbuf_malloc_args);
         if (!next_buffer) {
             // LOGD("Failed to get next buffer, force IDR\r\n");
             handle_encode_error(ctrl, buffer, size);
@@ -67,6 +70,7 @@ static void handle_video_frame(private_h264_encode_sw_flexa_ctlr_t *ctrl, void *
 // H.264 encoding completion callback
 static void h264e_end_cb(void *buffer, uint32_t size, uint32_t type, uint32_t result, uint32_t param)
 {
+    ENCODE_FRAME_DONE;
     // Validate parameters
     if (!param || !buffer) {
         LOGE("Invalid parameters in h264e_end_cb\r\n");
@@ -95,6 +99,7 @@ static void h264e_end_cb(void *buffer, uint32_t size, uint32_t type, uint32_t re
 // Flexa slice done callback: driver expects (yDst, uDst, vDst, uint32_t param), returns uint32_t
 static uint32_t h264_encode_flexa_done_cb(uint8_t *yDst, uint8_t *uDst, uint8_t *vDst, uint32_t param)
 {
+    ENCODE_LINE_END;
     private_h264_encode_sw_flexa_ctlr_t *ctrl = (private_h264_encode_sw_flexa_ctlr_t *)(uintptr_t)param;
     if (ctrl == NULL) {
         return 0;
@@ -136,11 +141,15 @@ static avdk_err_t h264_encode_msg_callback(void *param)
         return AVDK_ERR_INVAL;
     }
     ctrl->last_flexa_line = 0;
+    ENCODE_FRAME_START;
+    ENCODE_LINE_START;
     bk_err_t ret = h264e_start_encode(&ctrl->h264e_handler, ctrl->h264_encoder_param);
     if (ret != BK_OK) {
         LOGE("h264e_start_encode failed: %d\r\n", ret);
+        ENCODE_FRAME_END;
         return AVDK_ERR_GENERIC;
     }
+    ENCODE_FRAME_END;
     return AVDK_ERR_OK;
 }
 
@@ -162,9 +171,15 @@ static void h264_encoder_entry(void *arg)
         if (!ctrl->enc_status) {
             break;
         }
-        param.out_size = ENC_BUFFER_LEN;
         if (param.out_buf == 0 && ctrl->config.outbuf_malloc != NULL) {
-            param.out_buf = (uint32_t)ctrl->config.outbuf_malloc(ENC_BUFFER_LEN, ctrl->config.outbuf_malloc_args);
+            frame_buffer_t *temp_buffer = (frame_buffer_t *)ctrl->config.outbuf_malloc(CONFIG_BK_ENCODER_H264_MAX_OUTPUT_BUFFER, ctrl->config.outbuf_malloc_args);
+            if (temp_buffer != NULL) {
+                param.out_buf = (uint32_t)temp_buffer;
+                param.out_size = temp_buffer->size;
+            } else {
+                param.out_buf = 0;
+                param.out_size = 0;
+            }
         }
         if (param.out_buf == 0) {
             LOGW("Failed to get output buffer, skip this frame\r\n");
@@ -189,7 +204,7 @@ static void h264_encoder_entry(void *arg)
             }
             continue;
         }
-        ret = rtos_get_semaphore(&ctrl->enc_done_sem, 500);
+        ret = rtos_get_semaphore(&ctrl->enc_done_sem, 3000);
         if (ret != AVDK_ERR_OK) {
             LOGE("%s %d rtos_get_semaphore failed: %d\r\n", __func__, __LINE__, ret);
             handle_encode_error(ctrl, (void *)param.out_buf, 0);
@@ -305,7 +320,7 @@ static avdk_err_t h264_encode_ctlr_open(bk_h264_encode_ctlr_handle_t handle)
     control->enc_status = 1;
     control->enc_start_first = 1;
     // Create encoding thread
-    ret = rtos_create_thread(&control->thread,
+    ret = rtos_create_hsram_thread(&control->thread,
                            BEKEN_DEFAULT_WORKER_PRIORITY,
                            "h264e_encoder",
                            (beken_thread_function_t)h264_encoder_entry,
@@ -343,6 +358,21 @@ static avdk_err_t h264_encode_ctlr_close(bk_h264_encode_ctlr_handle_t handle)
     control->enc_status = 0;
     rtos_set_semaphore(&control->enc_start_sem);
     rtos_get_semaphore(&control->sem, BEKEN_WAIT_FOREVER);
+
+    if (rtos_is_timer_init(&control->debug_timer)) {
+        bk_err_t ret = rtos_stop_timer(&control->debug_timer);
+        if (ret != BK_OK) {
+            LOGE("Stop timer failed: %d\r\n", ret);
+        }
+
+        ret = rtos_deinit_timer(&control->debug_timer);
+        if (ret != BK_OK) {
+            LOGE("Deinit timer failed: %d\r\n", ret);
+        }
+
+        control->debug_time_ms = 0;
+        LOGI("H.264 debug stopped\r\n");
+    }
 
     // Deregister encoder callbacks
     h264e_deregister_callback(&control->h264e_handler);
@@ -472,6 +502,7 @@ static avdk_err_t h264_encode_ctlr_ioctl(bk_h264_encode_ctlr_handle_t handle, ui
             break;
         case BK_H264_ENCODE_IOCTL_SET_FLEXA_LINES_READY: {
             h264e_flexa_input_linebuf_wrcnt_set(&control->h264e_handler, (uint32_t)arg);
+            ENCODE_LINE_START;
             break;
         }
         case BK_H264_ENCODE_IOCTL_SET_FRAME_READY: {
@@ -537,7 +568,7 @@ avdk_err_t bk_h264_encode_sw_flexa_ctlr_new(bk_h264_encode_ctlr_handle_t *handle
     controller->ops.ioctl = h264_encode_ctlr_ioctl;
     controller->ops.force_idr = h264_encode_ctlr_force_idr;
     controller->ops.deinit = h264_encode_ctlr_deinit;
-    controller->ops.delete = h264_encode_ctlr_delete;
+    controller->ops.del = h264_encode_ctlr_delete;
     *handle = &(controller->ops);
     LOGI("H.264 encoder controller created\r\n");
     return AVDK_ERR_OK;

@@ -100,15 +100,27 @@ static const pthread_attr_internal_t xDefaultThreadAttributes =
 static void prvExitThread( void )
 {
     pthread_internal_t * pxThread = ( pthread_internal_t * ) pthread_self();
+    extern void pthread_internal_local_storage_destructor_callback( TaskHandle_t handle );
+
+    configASSERT( pxThread != NULL );
+
+    if( pxThread == NULL )
+    {
+        vTaskDelete( NULL );
+    }
+
+    /* Run TLS destructors in the exiting thread's own context before any other
+     * thread can reclaim this pthread object. */
+    pthread_internal_local_storage_destructor_callback( pxThread->xTaskHandle );
 
     /* If this thread is joinable, wait for a call to pthread_join. */
     if( pthreadIS_JOINABLE( pxThread->xAttr.usSchedPriorityDetachState ) )
     {
         ( void ) xSemaphoreGive( ( SemaphoreHandle_t ) &pxThread->xJoinBarrier );
 
-        /* Suspend until the call to pthread_join. The caller of pthread_join
-         * will perform cleanup. */
-        vTaskSuspend( NULL );
+        /* Delete the task from its own context so another core cannot reclaim
+         * its TLS or pthread object while it is still executing. */
+        vTaskDelete( NULL );
     }
     else
     {
@@ -401,6 +413,13 @@ void pthread_exit( void * value_ptr )
 {
     pthread_internal_t * pxThread = ( pthread_internal_t * ) pthread_self();
 
+    configASSERT( pxThread != NULL );
+
+    if( pxThread == NULL )
+    {
+        vTaskDelete( NULL );
+    }
+
     /* Set the return value. */
     pxThread->xReturn = value_ptr;
 
@@ -454,8 +473,12 @@ int pthread_join( pthread_t pthread,
          * it should never fail. */
         ( void ) xSemaphoreTake( ( SemaphoreHandle_t ) &pxThread->xJoinBarrier, portMAX_DELAY );
 
-        /* Create a critical section to clean up the joined thread. */
-        //vTaskSuspendAll();
+        /* Ensure the target task has fully exited before reclaiming its
+         * synchronization objects and pthread metadata. */
+        while( xTaskIsTaskFinished( pxThread->xTaskHandle ) != pdTRUE )
+        {
+            taskYIELD();
+        }
 
         /* Release xJoinBarrier and delete it. */
         ( void ) xSemaphoreGive( ( SemaphoreHandle_t ) &pxThread->xJoinBarrier );
@@ -464,14 +487,6 @@ int pthread_join( pthread_t pthread,
         /* Release xJoinMutex and delete it. */
         ( void ) xSemaphoreGive( ( SemaphoreHandle_t ) &pxThread->xJoinMutex );
         vSemaphoreDelete( ( SemaphoreHandle_t ) &pxThread->xJoinMutex );
-
-        /* Delete the FreeRTOS task that ran the thread. */
-        extern void pthread_internal_local_storage_destructor_callback(TaskHandle_t handle);
-        if ( xTaskIsTaskFinished(pxThread->xTaskHandle) != pdTRUE )
-        {
-            pthread_internal_local_storage_destructor_callback(pxThread->xTaskHandle);
-            vTaskDelete(pxThread->xTaskHandle);
-        }
 
         /* Set the return value. */
         if( retval != NULL )
@@ -482,8 +497,6 @@ int pthread_join( pthread_t pthread,
         /* Free the thread object. */
         vPortFree( pxThread );
 
-        /* End the critical section. */
-        //xTaskResumeAll();
     }
 
     return iStatus;
@@ -527,5 +540,50 @@ int pthread_setschedparam( pthread_t thread,
 
     return iStatus;
 }
+
+/*-----------------------------------------------------------*/
+
+#if defined(CONFIG_KVS_PTHREAD_CANCEL_DETACH)
+
+int pthread_cancel( pthread_t thread )
+{
+    int iStatus = 0;
+    pthread_internal_t * pxThread = ( pthread_internal_t * ) thread;
+
+    if( pxThread == NULL )
+    {
+        return iStatus;
+    }
+
+    /* FreeRTOS has no POSIX-style cancellation points; treat as success (KVS compatibility). */
+    ( void ) pxThread;
+    return iStatus;
+}
+
+/*-----------------------------------------------------------*/
+
+int pthread_detach( pthread_t thread )
+{
+    int iStatus = 0;
+    pthread_internal_t * pxThread = ( pthread_internal_t * ) thread;
+
+    if( pxThread == NULL )
+    {
+        return iStatus;
+    }
+
+    if( !pthreadIS_JOINABLE( pxThread->xAttr.usSchedPriorityDetachState ) )
+    {
+        iStatus = EINVAL;
+    }
+
+    if (iStatus == 0) {
+        pxThread->xAttr.usSchedPriorityDetachState &= ( uint16_t ) ~pthreadDETACH_STATE_MASK;
+    }
+
+    return iStatus;
+}
+
+#endif /* CONFIG_KVS_PTHREAD_CANCEL_DETACH */
 
 /*-----------------------------------------------------------*/
