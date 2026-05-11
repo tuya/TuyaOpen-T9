@@ -94,7 +94,7 @@ else()
         # src/driver/tkl_rgb.c
         # src/driver/tkl_8080.c
         src/driver/tkl_adc.c
-        # src/driver/tkl_pwm.c
+        src/driver/tkl_pwm.c
         src/driver/tkl_uart.c
         src/driver/tkl_flash.c
         # src/driver/tkl_rtc.c
@@ -114,7 +114,7 @@ else()
         src/driver/tkl_aud_dac.c
         src/driver/tkl_aud_adc.c
         # src/driver/tkl_wired.c
-        # src/driver/tkl_i2s.c
+        src/driver/tkl_i2s.c
         # src/driver/tkl_dma2d.c
         # src/driver/tkl_dvp.c
         # src/driver/tkl_jpeg_codec.c
