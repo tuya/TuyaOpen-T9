@@ -71,6 +71,7 @@ OPERATE_RET tkl_vdec_stop(TUYA_VDEC_HANDLE handle);
 OPERATE_RET tkl_vdec_reset(TUYA_VDEC_HANDLE handle);
 OPERATE_RET tkl_vdec_submit_stream(TUYA_VDEC_HANDLE handle, const TUYA_VCODEC_STREAM_T *stream);
 OPERATE_RET tkl_vdec_get_handle(TUYA_VDEC_HANDLE handle, VOID **backend_handle);
+OPERATE_RET tkl_vdec_get_flexa_source(TUYA_VDEC_HANDLE handle, TUYA_VCODEC_FLEXA_BUFFER_T *flexa);
 
 #ifdef __cplusplus
 }

@@ -114,6 +114,8 @@ static const struct cli_command tuya_cli_commands[] = {
     {"xmipi",    "mipi test",        cli_tuya_mipi_cmd},
     {"xgpu",    "gpu pipeline test", cli_tuya_gpu_cmd},
     {"xvenc",   "video encode test", cli_tuya_venc_cmd},
+    {"xvdec",   "video decode test", cli_tuya_vdec_cmd},
+    {"xuvc",    "usb camera test",   cli_tuya_uvc_cmd},
     {"xdac",    "audio dac test",    cli_tuya_dac_cmd},
     {"xdmic",   "audio dmic test",   cli_tuya_dmic_cmd},
     {"xadc",    "audio adc test",    cli_adc_cmd},

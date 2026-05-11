@@ -108,6 +108,7 @@ else()
         src/driver/tkl_gpu.c
         src/driver/tkl_venc.c
         src/driver/tkl_vdec.c
+        src/driver/tkl_uvc.c
         # src/driver/tkl_i2s_v2.c
         src/driver/tkl_aud_dmic.c
         src/driver/tkl_aud_dac.c
@@ -171,6 +172,8 @@ else()
             src/test/test_media/test_mipi.c
             src/test/test_media/test_gpu.c
             src/test/test_media/test_venc.c
+            src/test/test_media/test_vdec.c
+            src/test/test_media/test_uvc.c
             src/test/test_media/test_adc.c
             src/test/test_media/test_dac.c
             src/test/test_media/test_dmic.c

@@ -33,19 +33,10 @@ typedef struct {
     UINT16_T width;
     UINT16_T height;
     UINT8_T fps;
-    UINT32_T bitrate;
     UINT32_T gop;
     UINT32_T codec;                 /* TUYA_VCODEC_TYPE_E, default H264 */
     UINT32_T input_format;          /* bk_pixel_format_t, default NV12 */
 } TUYA_VENC_CFG_T;
-
-typedef struct {
-    UINT16_T width;
-    UINT16_T height;
-    UINT8_T fps;
-    UINT32_T bitrate;
-    UINT32_T gop;
-} TUYA_VENC_RC_T;
 
 typedef struct {
     TUYA_VENC_STREAM_CB stream_cb;
@@ -76,7 +67,6 @@ OPERATE_RET tkl_venc_set_sink(TUYA_VENC_HANDLE handle, const TUYA_VENC_SINK_T *s
 OPERATE_RET tkl_venc_start(TUYA_VENC_HANDLE handle);
 OPERATE_RET tkl_venc_stop(TUYA_VENC_HANDLE handle);
 OPERATE_RET tkl_venc_request_idr(TUYA_VENC_HANDLE handle);
-OPERATE_RET tkl_venc_set_rate_ctrl(TUYA_VENC_HANDLE handle, const TUYA_VENC_RC_T *rc);
 OPERATE_RET tkl_venc_submit_frame(TUYA_VENC_HANDLE handle, const TUYA_VCODEC_FRAME_T *frame);
 OPERATE_RET tkl_venc_get_handle(TUYA_VENC_HANDLE handle, VOID **backend_handle);
 
