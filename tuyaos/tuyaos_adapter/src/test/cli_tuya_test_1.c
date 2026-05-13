@@ -18,19 +18,6 @@ extern void port_check_isr_stack(void);
 
 #include "sdkconfig.h"
 
-/*
- * Keep CLI linkable even when test_media/test_pwm.c is not compiled in this build.
- * When the real implementation is present, it overrides this weak stub.
- */
-__attribute__((weak)) void cli_pwm_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv)
-{
-    (void)pcWriteBuffer;
-    (void)xWriteBufferLen;
-    (void)argc;
-    (void)argv;
-    bk_printf("xpwm not enabled in current build\r\n");
-}
-
 static void cli_system_info_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv)
 {
     if (argc > 1) {
@@ -128,6 +115,11 @@ static const struct cli_command tuya_cli_commands[] = {
     {"xwifi",   "wifi test",        cli_wifi_cmd},
     {"xsd",     "sd card test",     cli_sdcard_test_cmd},
     {"xtkladc", "tkl saradc test",   cli_tkl_adc_cmd},
+    {"xi2c",    "i2c single|smoke|full|pajid [port...]", cli_xi2c_cmd},
+    {"xqspi",   "qspi test",        cli_xqspi_cmd},
+    {"xi2s",    "i2s test",         cli_tuya_i2s_cmd},
+    {"xspi",    "spi test",         cli_tkl_spi_test},
+    {"xtimer",  "timer test",       cli_tkl_timer_test},
     // {"xface",   "face tflm test",   cli_tuya_face_cmd},
 #if 0
     {"xlp",     "lp test",          cli_lp_test_cmd},
@@ -138,10 +130,8 @@ static const struct cli_command tuya_cli_commands[] = {
     {"xid",     "set mac",          cli_tmp_cmd},
     {"xlcd",    "lcd test",         cli_xlcd_cmd},
     {"xmt",     "media test",       cli_tuya_media_cmd},
-    {"xqspi",   "qspi test",        cli_xqspi_cmd},
     {"xqspilcd",   "qspi test",        cli_xqspi_lcd_cmd},
     {"xusb",    "usb device check", cli_usb_cmd},
-    {"xspi",    "spi test",         cli_spi_cmd},
 
     // {"xspi2",    "spi test",        cli_spi_2_3_cmd},
     // {"xeth",    "eth test",         cli_eth_cmd},
@@ -149,7 +139,6 @@ static const struct cli_command tuya_cli_commands[] = {
     // {"xmtd",   "mtd test",        cli_xmtd_cmd},
     // {"xmic",    "mic test",         cli_mic_cmd},
     // {"xspk",    "spk test",         cli_speaker_cmd},
-    // {"xi2s",    "i2s test",         cli_tuya_i2s_cmd},
 #endif
 };
 
