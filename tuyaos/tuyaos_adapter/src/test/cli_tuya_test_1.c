@@ -113,6 +113,9 @@ static const struct cli_command tuya_cli_commands[] = {
     {"xmem",    "memory debug commands", cli_memory_test_cmd},
     {"xmipi",    "mipi test",        cli_tuya_mipi_cmd},
     {"xgpu",    "gpu pipeline test", cli_tuya_gpu_cmd},
+#if (CONFIG_LVGL && CONFIG_LVGL_V9)
+    {"xlvgl",   "lvgl test",         cli_tuya_lvgl_cmd},
+#endif
     {"xvenc",   "video encode test", cli_tuya_venc_cmd},
     {"xvdec",   "video decode test", cli_tuya_vdec_cmd},
     {"xuvc",    "usb camera test",   cli_tuya_uvc_cmd},

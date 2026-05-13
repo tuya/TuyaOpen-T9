@@ -153,6 +153,18 @@ else()
     )
 
     if (CONFIG_TUYA_TEST_CLI)
+        if (CONFIG_LVGL AND CONFIG_LVGL_V9)
+            list(APPEND srcs
+                src/test/test_lvgl/tuya_lvgl_widgets_demo.c
+                src/test/test_lvgl/lvgl_stress_demo.c
+                src/test/test_lvgl/lv_demo_widgets.c
+                src/test/test_lvgl/assets/img_clothes.c
+                src/test/test_lvgl/assets/img_demo_widgets_avatar.c
+                src/test/test_lvgl/assets/img_demo_widgets_needle.c
+                src/test/test_lvgl/assets/img_lvgl_logo.c
+            )
+        endif()
+
         list(APPEND incs
             # src/test/test_media
             # src/test/coremark
