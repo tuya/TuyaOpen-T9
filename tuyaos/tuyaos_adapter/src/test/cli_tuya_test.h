@@ -48,6 +48,7 @@ void cli_adc_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv
 void cli_pwm_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv);
 void cli_audio_test_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv);
 void cli_gpio_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv);
+void cli_cpu_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv);
 void cli_tuya_media_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv);
 void cli_xqspi_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv);
 void cli_xqspi_lcd_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv);

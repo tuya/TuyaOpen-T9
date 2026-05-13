@@ -215,6 +215,7 @@ else()
             # src/test/coremark/core_util.c
             # src/test/coremark/posix/core_portme.c
             src/test/test_common.c
+            src/test/test_cpu.c
             # src/test/test_lp.c
             src/test/test_gpio.c
             src/test/test_sdcard.c

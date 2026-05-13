@@ -122,6 +122,7 @@ static const struct cli_command tuya_cli_commands[] = {
     {"xdac",    "audio dac test",    cli_tuya_dac_cmd},
     {"xdmic",   "audio dmic test",   cli_tuya_dmic_cmd},
     {"xadc",    "audio adc test",    cli_adc_cmd},
+    {"xcpu",    "cpu/os runtime test", cli_cpu_cmd},
     {"xpwm",    "pwm test",          cli_pwm_cmd},
     {"xgpio",   "gpio test",        cli_gpio_cmd},
     {"xwifi",   "wifi test",        cli_wifi_cmd},
