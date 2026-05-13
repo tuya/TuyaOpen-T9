@@ -174,12 +174,12 @@ else()
             src/test/test_adc.c
             # src/test/test_audio.c
             # src/test/test_lcd.c
-            # src/test/test_pwm.c
-            # src/test/test_qspi.c
+            src/test/test_pwm.c
+            src/test/test_qspi.c
             # src/test/test_mp3.c
-            # src/test/test_timer.c
+            src/test/test_timer.c
             # src/test/test_usb.c
-            # src/test/test_spi.c
+            src/test/test_spi.c
             src/test/test_ringbuffer/rb.c
             src/test/test_media/test_mipi.c
             src/test/test_media/test_gpu.c
@@ -193,9 +193,9 @@ else()
             # src/test/test_media.c
             # src/test/test_mic.c
             # src/test/test_speaker.c
-            # src/test/test_i2s.c
+            src/test/test_i2s.c
             # src/test/test_mtd.c
-            # src/test/test_i2s.c
+            src/test/test_i2c.c
             # src/test/test_mtd/qspi_flash_GD5F1G.c
             # src/test/test_media/test_media_audio.c
             # src/test/test_media/test_media_camera.c
@@ -227,6 +227,7 @@ else()
             # src/test/test_face_recognize/test_face_recognize.cc
             # src/test/test_littlefs.c
             src/test/cli_tuya_test_1.c
+            src/test/test_i2c.c
         )
     endif() # CONFIG_TUYA_TEST_CLI
 
