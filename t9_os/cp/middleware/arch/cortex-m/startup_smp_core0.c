@@ -18,7 +18,7 @@
 #include "soc/soc.h"
 #include "bk_arch.h"
 #include <stdint.h>
-
+#include "wdt_driver.h"
 
 /*----------------------------------------------------------------------------
   External References
@@ -62,42 +62,16 @@ __attribute__((naked)) void Default_Handler(void)
     __WFI();
   }
 }
-#define AON_PMU_BASE_ADDR          (0x44000000)
-#define AON_WDT_BASE_ADDR          (0x44000600)
-#define CPU_WWDT_BASE_ADDR         (0xE0050000)
-#define AON_WDT_CTRL_REG           (AON_WDT_BASE_ADDR + 0x0 * 4)
-#define CPU_WWDT_CTRL_REG          (CPU_WWDT_BASE_ADDR + 0x4 * 4)
-#define WDT_RESET_CFG_REG          (AON_PMU_BASE_ADDR + 0x2 * 4)
-#define WDT_RESET_ALL               (0x7)
-#define WDT_RESET_DEVS              (WDT_RESET_ALL)
-
-
-static void wdt_time_set(uint32_t val)
-{
-    uint32_t reset_dev = REG_READ(WDT_RESET_CFG_REG);
-    reset_dev &= ~(WDT_RESET_ALL);
-    reset_dev |= WDT_RESET_DEVS;
-    REG_WRITE(WDT_RESET_CFG_REG, reset_dev);
-    REG_WRITE(AON_WDT_CTRL_REG, (0x5A0000 | val));
-    REG_WRITE(AON_WDT_CTRL_REG, (0xA50000 | val));
-    REG_WRITE(CPU_WWDT_CTRL_REG, (0x5A0000 | val));
-    REG_WRITE(CPU_WWDT_CTRL_REG, (0xA50000 | val));
-}
-
-void bk_wdt_close(void)
-{
-    wdt_time_set(0);
-}
 
 void bk_enable_swd(void)
 {
     uint32_t reg = REG_READ(0xE000EE04);
     reg |= 0x2;
     REG_WRITE(0xE000EE04, reg);
-    REG_WRITE(0x44010000 + (0x3b << 2), 0x20000000);
-    reg = REG_READ(0x44050000 + (0xf << 2));
+    REG_WRITE(SOC_SYSTEM_REG_BASE + (0x3b << 2), 0x20000000);
+    reg = REG_READ(SOC_PPRO_REG_BASE + (0xf << 2));
     reg &= ~(0x8);
-    REG_WRITE(0x44050000 + (0xf << 2), reg);
+    REG_WRITE(SOC_PPRO_REG_BASE + (0xf << 2), reg);
 }
 
 /*----------------------------------------------------------------------------
@@ -221,7 +195,7 @@ __NO_RETURN ENTRY_SECTION void Reset_Handler_Core0(void)
 
     __disable_irq();
 
-    bk_wdt_close();
+    bk_wdt_force_feed();
     bk_enable_swd();
 
     b_system_base_init();

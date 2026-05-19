@@ -19,6 +19,7 @@
 #include "mb_ipc_cmd.h"
 
 #define MOD_TAG		"hrt"
+#define BEKEN_HEARTBEAT_PRIORITY 1
 
 #if (CONFIG_CPU_CNT > 1)
 
@@ -323,6 +324,14 @@ int mb_ipc_cpu_is_power_off(u32 cpu_id)
 
 #define MB_IPC_HEARTBEAT_TIME		2000
 
+static volatile u8  s_hb_paused = 0;
+
+void mb_ipc_heartbeat_pause(u8 pause)
+{
+	s_hb_paused = pause;
+	BK_LOGI(MOD_TAG, "heartbeat %s\r\n", pause ? "paused" : "resumed");
+}
+
 static void mb_ipc_task( void *para )
 {
 	ipc_send_power_up();
@@ -330,7 +339,10 @@ static void mb_ipc_task( void *para )
 	while(1)
 	{
 		rtos_delay_milliseconds(MB_IPC_HEARTBEAT_TIME);
-		ipc_send_heart_beat(0);
+		if(!s_hb_paused)
+		{
+			ipc_send_heart_beat(0);
+		}
 	}
 }
 
@@ -341,7 +353,7 @@ bk_err_t mb_ipc_heartbeat_init(void)
 	bk_err_t	ret_val = BK_FAIL;
 
 #if defined(MASTER_HB_TASK) || defined(SLAVE_HB_TASK)
-	ret_val = rtos_create_thread(NULL, BEKEN_DEFAULT_WORKER_PRIORITY, "heartbeat", mb_ipc_task, 512, 0);
+	ret_val = rtos_create_thread(NULL, BEKEN_HEARTBEAT_PRIORITY, "heartbeat", mb_ipc_task, 512, 0);
 #endif
 
 	if(ret_val != BK_OK)

@@ -14,7 +14,6 @@
 
 #pragma once
 
-#include "AvdkVideoReator.h"
 #include "AvdkDetectionModel.h"
 
 #include <driver/mipi_csi.h>
@@ -42,7 +41,7 @@ typedef enum {
 
 class AvdkVideoReator {
 
-private:
+protected:
     AvdkDetectionModel *detection_model;
 
 

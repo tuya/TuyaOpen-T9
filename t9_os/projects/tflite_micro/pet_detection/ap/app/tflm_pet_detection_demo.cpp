@@ -1,5 +1,10 @@
 #include "tflm_pet_detection_demo.h"
 
+/** 1: Invoke() 前后拉高/拉低 GPIO_55 供逻辑分析仪测时；0: 不编译 GPIO 相关代码（也可传 -DTFLM_INVOKE_TIME_TEST=0）。 */
+#ifndef TFLM_INVOKE_TIME_TEST
+#define TFLM_INVOKE_TIME_TEST 1
+#endif
+
 #include <math.h>
 #include <stdint.h>
 #include <string.h>
@@ -13,9 +18,11 @@ extern "C" {
 #include "os/str.h"
 #include <components/system.h>
 #include <components/bk_frame_buffer.h>
+#if TFLM_INVOKE_TIME_TEST
 #include <driver/gpio.h>
 #include <driver/gpio_types.h>
 #include "gpio_driver.h"
+#endif
 #include "dwt.h"
 void *__dso_handle = 0;
 }
@@ -441,18 +448,24 @@ static bk_err_t run_one_embedded_image(const char *tag, const uint8_t *img, size
     memcpy(input->data.int8, img, (size_t)input->bytes);
 
     char invoke_lbl[48];
+#if TFLM_INVOKE_TIME_TEST
     static bool s_tflm_profile_p55_inited;
     if (!s_tflm_profile_p55_inited) {
         (void)bk_gpio_enable_output(GPIO_55);
         (void)bk_gpio_set_output_low(GPIO_55);
         s_tflm_profile_p55_inited = true;
     }
+#endif
 
     dwt_init_cycle_counter();
     uint32_t start_cycles = dwt_get_cycle_counter_val();
+#if TFLM_INVOKE_TIME_TEST
     (void)bk_gpio_set_output_high(GPIO_55);
+#endif
     TfLiteStatus invoke_ret = g_interpreter->Invoke();
+#if TFLM_INVOKE_TIME_TEST
     (void)bk_gpio_set_output_low(GPIO_55);
+#endif
     if (invoke_ret != kTfLiteOk) {
         LOGE("%s: Invoke failed\r\n", tag);
         return BK_FAIL;

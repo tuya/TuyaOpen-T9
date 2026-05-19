@@ -103,10 +103,6 @@ static bk_err_t wait_for_cp_flash_init_done(void)
 #include <driver/qspi.h>
 #endif
 
-#if CONFIG_JPEGENC_HW
-#include <driver/jpeg_enc.h>
-#endif
-
 #if CONFIG_CALENDAR
 #include <driver/calendar.h>
 #endif
@@ -121,10 +117,6 @@ static bk_err_t wait_for_cp_flash_init_done(void)
 
 #if CONFIG_CHIP_SUPPORT
 #include "modules/chip_support.h"
-#endif
-
-#if CONFIG_H264
-#include <driver/h264.h>
 #endif
 
 #if CONFIG_SDMADC
@@ -184,7 +176,7 @@ void power_clk_rf_init()
 	dev_clk_pwr_id_t devid = 0;
 	for(devid = 0; devid < 32; devid++)
 	{
-	    sys_drv_dev_clk_pwr_up(devid, CLK_PWR_CTRL_PWR_UP);
+	    bk_pm_clock_ctrl(devid, CLK_PWR_CTRL_PWR_UP);
     }
 	#endif
 
@@ -375,14 +367,6 @@ int driver_init(void) {
 
 #if CONFIG_QSPI
 	bk_qspi_driver_init();
-#endif
-
-#if CONFIG_JPEGENC_HW
-	bk_jpeg_enc_driver_init();
-#endif
-
-#if CONFIG_H264
-	bk_h264_driver_init();
 #endif
 
 #if CONFIG_AON_RTC_KEEP_TIME_SUPPORT

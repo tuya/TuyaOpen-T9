@@ -13,12 +13,11 @@
 #include "devices_mgmt.h"
 #include "app_gpu.h"
 #include "avdk_monitor.h"
-#include "aov_detection.h"
-#include <lcd/lcd_hx8399c_mipi_1080x1920.h>
+#include <lcd/lcd_mipi_hx8399c_1080x1920.h>
 #define SYS_ANA_REG_BASE    (0x44010000)
 #define LDO_ANA_REG         (0x69)
 
-#include "AvdkVideoReator.h"
+#include "AvdkVideoReatorOSD.h"
 #include "AvdkDetectionModel.h"
 #include "YolofaceDetectionModel.h"
 
@@ -31,14 +30,33 @@ static void bk_auxldo_enable(void)
     REG_WRITE(SYS_ANA_REG_BASE + LDO_ANA_REG * 4, reg);
 }
 
-static AvdkVideoReator *video_reator = NULL;
+static AvdkVideoReatorOSD *video_reator = NULL;
 static YolofaceDetectionModel *model = NULL;
+
+static void detection_box_cb(Box *boxes, int count)
+{
+    if (boxes == NULL || count <= 0) {
+        box_detection_path_clear();
+        return;
+    }
+
+    bk_printf("detection_box_cb: score=%.3f, x=%.2f, y=%.2f, w=%.2f, h=%.2f\n",
+              boxes[0].score, boxes[0].x, boxes[0].y, boxes[0].w, boxes[0].h);
+
+    /* src = model input size (256x256), dst = display canvas size (1088x1088). */
+    box_detection_path_build(boxes, count, count, 0, model->getWidth(), model->getHeight(), 1088, 1088);
+}
 
 int ai_main_start()
 {
     model = new YolofaceDetectionModel();
-    video_reator = new AvdkVideoReator(model);
-    video_reator->start(AVDK_VIDEO_REATOR_MODE_DISPLAY);
+    model->setBoxDetectionCallback(detection_box_cb);
+
+    video_reator = new AvdkVideoReatorOSD(model);
+    video_reator->init();
+    video_reator->OpenISPCamera();
+    video_reator->OpenDisplay();
+    video_reator->start();
 
     return 0;
 }
@@ -93,6 +111,8 @@ int main(void)
     gpu_board.flexa.dst_format = BK_PIXEL_FORMAT_ARGB8888;
     gpu_board.flexa.dst_compress = true;
     gpu_board.flexa.scale = false;
+    gpu_board.flexa.tess_width = 1920 / 4;
+    gpu_board.flexa.tess_height = 1080 / 4;
 
     bk_auxldo_enable();
     bk_frame_buffer_init();

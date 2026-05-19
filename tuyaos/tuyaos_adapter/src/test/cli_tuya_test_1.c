@@ -116,9 +116,9 @@ static const struct cli_command tuya_cli_commands[] = {
     {"xsd",     "sd card test",     cli_sdcard_test_cmd},
     {"xtkladc", "tkl saradc test",   cli_tkl_adc_cmd},
     {"xi2c",    "i2c single|smoke|full|pajid [port...]", cli_xi2c_cmd},
-    {"xqspi",   "qspi test",        cli_xqspi_cmd},
+    // {"xqspi",   "qspi test",        cli_xqspi_cmd},
     {"xi2s",    "i2s test",         cli_tuya_i2s_cmd},
-    {"xspi",    "spi test",         cli_tkl_spi_test},
+    // {"xspi",    "spi test",         cli_tkl_spi_test},
     {"xtimer",  "timer test",       cli_tkl_timer_test},
     // {"xface",   "face tflm test",   cli_tuya_face_cmd},
 #if 0

@@ -1,4 +1,5 @@
 #include <common/bk_include.h>
+#include "cmsis_gcc.h"
 #include <common/bk_err.h>
 #include <common/bk_assert.h>
 #include <os/os.h>
@@ -151,7 +152,7 @@ bk_err_t bk_ipc_vote_boot_cp1_ctrl(uint32_t module,uint32_t power_state)
 
     rtos_start_oneshot_timer(&ipc_info->boot_timer);
 
-    ret = bk_pm_module_vote_boot_cp1_ctrl(module, power_state);
+    ret = bk_pm_module_vote_boot_ap_ctrl(module, power_state);
     return ret;
 }
 
@@ -212,7 +213,7 @@ static void bk_cpu_startup_request_timeout(void *arg1, void *arg2)
     if (ipc_info->vote_state)
     {
         LOGE("%s\n", __func__);
-        bk_pm_module_vote_boot_cp1_ctrl(PM_BOOT_CP1_MODULE_NAME_MULTIMEDIA, PM_POWER_MODULE_STATE_OFF);
+        bk_pm_module_vote_boot_ap_ctrl(PM_BOOT_AP_MODULE_NAME_MULTIMEDIA, PM_POWER_MODULE_STATE_OFF);
         ipc_info->vote_state = false;
     }
 
@@ -227,7 +228,7 @@ void bk_cpu_sleep_lock(bk_ipc_info_t *ipc_info)
     {
         if (ipc_info->vote_state == false)
         {
-            bk_pm_module_vote_boot_cp1_ctrl(PM_BOOT_CP1_MODULE_NAME_MULTIMEDIA, PM_POWER_MODULE_STATE_ON);
+            bk_pm_module_vote_boot_ap_ctrl(PM_BOOT_AP_MODULE_NAME_MULTIMEDIA, PM_POWER_MODULE_STATE_ON);
             ipc_info->vote_state = true;
         }
     }
@@ -749,6 +750,7 @@ static void bk_ipc_mailbox_rx_isr(void *param, mb_chnl_cmd_t *cmd_buf)
 #if (CONFIG_SUPPORT_CACHEABLE_SRAM)
     flush_all_dcache();
 #endif
+    __DMB();
 
     LOGV("%s %d\n", __func__, __LINE__);
 

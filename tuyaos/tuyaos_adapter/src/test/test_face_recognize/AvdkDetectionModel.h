@@ -14,16 +14,16 @@
 
 #pragma once
 
-#include "common/avdk_pixel_types.h"
+#include <box.h>
 
+#include "common/avdk_pixel_types.h"
 
 #include "tensorflow/lite/c/common.h"
 #include "tensorflow/lite/micro/micro_log.h"
 #include "tensorflow/lite/micro/micro_interpreter.h"
 #include "tensorflow/lite/micro/micro_mutable_op_resolver.h"
-#include "tensorflow/lite/schema/schema_generated.h"
 #include "tensorflow/lite/micro/testing/micro_test.h"
-
+#include "tensorflow/lite/schema/schema_generated.h"
 
 #define MICRO_OP_RESOLVER_SIZE 5
 
@@ -40,14 +40,14 @@ typedef enum {
     AVDK_NN_MODEL_TYPE_NPU,
 } avdk_nn_model_type_t;
 
+typedef void (*boxDetectionCallbackT)(Box *boxes, int count);
+
 class AvdkDetectionModel {
-
 protected:
-    uint8_t* tensor_arena;          // Aligned pointer for TFLM
-    void* tensor_arena_raw;          // Original pointer for freeing
-    tflite::MicroInterpreter* pinterpreter;
+    uint8_t *tensor_arena;
+    void *tensor_arena_raw;
+    tflite::MicroInterpreter *pinterpreter;
     tflite::MicroMutableOpResolver<MICRO_OP_RESOLVER_SIZE> micro_op_resolver;
-
 
     const char *name;
     uint16_t width;
@@ -73,18 +73,41 @@ protected:
     void *allocMemory(avdk_nn_mem_type_t type, uint32_t size);
     void freeMemory(avdk_nn_mem_type_t type, void *ptr);
 
-
     int LoadModel();
     int UnloadModel();
 
-public:
-    AvdkDetectionModel();
-    virtual ~AvdkDetectionModel() = default;
+    boxDetectionCallbackT boxDetectionCallback;
 
-    virtual void resolverLoad() = 0;
-    virtual void resourceLoad() = 0;
-    virtual void resourceUnload() = 0;
-    virtual int run(uint8_t *data, uint32_t size) = 0;
+public:
+    AvdkDetectionModel()
+        : tensor_arena(nullptr),
+          tensor_arena_raw(nullptr),
+          pinterpreter(nullptr),
+          name(nullptr),
+          width(0),
+          height(0),
+          format(BK_PIXEL_FORMAT_UNKNOW),
+          model_type(AVDK_NN_MODEL_TYPE_CPU),
+          model_ram_type(AVDK_NN_MEM_TYPE_FALSH),
+          model_data(nullptr),
+          model_data_size(0),
+          model_flash_data(nullptr),
+          model_flash_data_size(0),
+          fast_ram_type(AVDK_NN_MEM_TYPE_HSRAM),
+          fast_ram_data(nullptr),
+          fast_ram_data_size(0),
+          arena_ram_type(AVDK_NN_MEM_TYPE_HSRAM),
+          arena_ram_data(nullptr),
+          arena_data_size(0),
+          boxDetectionCallback(nullptr) {}
+
+    void setBoxDetectionCallback(boxDetectionCallbackT cb) { boxDetectionCallback = cb; }
+    void onBoxDetectionCallback(Box *boxes, int count);
+
+    virtual void resolverLoad(void) = 0;
+    virtual void resourceLoad(void) = 0;
+    virtual void resourceUnload(void) = 0;
+    virtual int run(uint8_t *data, uint32_t size, bk_pixel_format_t format) = 0;
 
     int init();
     int deinit();
@@ -99,6 +122,3 @@ public:
 
     static void LogEnable(bool enable);
 };
-
-
-

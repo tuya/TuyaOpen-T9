@@ -14,6 +14,7 @@ extern "C" {
 #include <string.h>
 
 #include "YolofaceDetectionModel.h"
+#include "box.h"
 
 #define FACE_TEST_TASK_PRIORITY     (BEKEN_DEFAULT_WORKER_PRIORITY - 1)
 #define FACE_TEST_TASK_STACK_SIZE   (20 * 1024)
@@ -23,6 +24,8 @@ extern "C" {
 #define FACE_TEST_FRAME_SIZE        (FACE_TEST_WIDTH * FACE_TEST_HEIGHT * FACE_TEST_BYTES_PER_PIXEL)
 #define FACE_TEST_LOOP_FOREVER      (0xFFFFFFFFU)
 #define FACE_TEST_DEFAULT_DELAY_MS  (200U)
+#define FACE_TEST_DISPLAY_WIDTH     1920U
+#define FACE_TEST_DISPLAY_HEIGHT    1080U
 
 static beken_thread_t s_face_thread = NULL;
 static volatile int s_face_stop = 0;
@@ -31,6 +34,33 @@ static uint32_t s_face_delay_ms = FACE_TEST_DEFAULT_DELAY_MS;
 static YolofaceDetectionModel *s_face_model = NULL;
 static uint8_t *s_face_frame_buf = NULL;
 static bool s_face_model_ready = false;
+
+static void face_test_box_cb(Box *boxes, int count)
+{
+    if (boxes == NULL || count <= 0) {
+        box_detection_path_clear();
+        return;
+    }
+
+    bk_printf("[xface] box count=%d best=score=%.3f x=%.1f y=%.1f w=%.1f h=%.1f\r\n",
+              count,
+              boxes[0].score,
+              boxes[0].x,
+              boxes[0].y,
+              boxes[0].w,
+              boxes[0].h);
+
+    if (s_face_model != NULL) {
+        box_detection_path_build(boxes,
+                                 count,
+                                 count,
+                                 0,
+                                 s_face_model->getWidth(),
+                                 s_face_model->getHeight(),
+                                 FACE_TEST_DISPLAY_WIDTH,
+                                 FACE_TEST_DISPLAY_HEIGHT);
+    }
+}
 
 static void face_test_usage(void)
 {
@@ -60,40 +90,49 @@ static uint32_t face_test_parse_u32(const char *str, uint32_t fallback)
     return (uint32_t)value;
 }
 
-static bk_err_t face_test_read_sp_frame(uint8_t *frame_buf, uint32_t frame_size)
+static bk_err_t face_test_read_sp_frame(TUYA_CAMERA_MIPI_FRAME_T *frame)
 {
     OPERATE_RET ret;
-    TUYA_CAMERA_MIPI_FRAME_T frame;
 
-    if (frame_buf == NULL || frame_size < FACE_TEST_FRAME_SIZE) {
+    if (frame == NULL || frame->buffer == NULL || frame->size < FACE_TEST_FRAME_SIZE) {
         return BK_ERR_PARAM;
     }
 
-    memset(&frame, 0, sizeof(frame));
-    frame.channel_id = TUYA_CAMERA_MIPI_CHANNEL_SP;
-    frame.buffer = frame_buf;
-    frame.size = frame_size;
-    frame.timeout_ms = 1000U;
+    frame->channel_id = TUYA_CAMERA_MIPI_CHANNEL_SP;
+    frame->timeout_ms = 1000U;
 
-    ret = tkl_camera_mipi_get_frame(&frame);
+    ret = tkl_camera_mipi_get_frame(frame);
     if (ret != OPRT_OK) {
         bk_printf("[xface] get SP frame failed, ret=%d\r\n", ret);
         return BK_FAIL;
     }
 
-    if ((frame.width != FACE_TEST_WIDTH) ||
-        (frame.height != FACE_TEST_HEIGHT) ||
-        (frame.format != BK_PIXEL_FORMAT_RGB888) ||
-        (frame.out_len < FACE_TEST_FRAME_SIZE)) {
+    if ((frame->width != FACE_TEST_WIDTH) ||
+        (frame->height != FACE_TEST_HEIGHT) ||
+        (frame->out_len < FACE_TEST_FRAME_SIZE)) {
         bk_printf("[xface] unexpected SP frame: %ux%u fmt=%u len=%u\r\n",
-                  frame.width,
-                  frame.height,
-                  (unsigned int)frame.format,
-                  (unsigned int)frame.out_len);
+                  frame->width,
+                  frame->height,
+                  (unsigned int)frame->format,
+                  (unsigned int)frame->out_len);
         return BK_FAIL;
     }
 
     return BK_OK;
+}
+
+static bk_pixel_format_t face_test_get_model_input_format(const TUYA_CAMERA_MIPI_FRAME_T *frame)
+{
+    if (frame == NULL) {
+        return BK_PIXEL_FORMAT_UNKNOW;
+    }
+
+    if ((frame->format == BK_PIXEL_FORMAT_RGB888 || frame->format == BK_PIXEL_FORMAT_BGR888) &&
+        frame->out_len == FACE_TEST_FRAME_SIZE) {
+        return BK_PIXEL_FORMAT_BGRA8888;
+    }
+
+    return (bk_pixel_format_t)frame->format;
 }
 
 static void face_test_model_release(void)
@@ -134,6 +173,7 @@ static bk_err_t face_test_model_prepare(void)
             face_test_model_release();
             return BK_ERR_NO_MEM;
         }
+        s_face_model->setBoxDetectionCallback(face_test_box_cb);
     }
 
     if (s_face_model_ready) {
@@ -155,6 +195,7 @@ static bk_err_t face_test_model_prepare(void)
 
 static void face_test_task(void *arg)
 {
+    TUYA_CAMERA_MIPI_FRAME_T frame;
     uint32_t rounds = s_face_rounds;
     uint32_t delay_ms = s_face_delay_ms;
     uint32_t index = 0;
@@ -172,8 +213,14 @@ static void face_test_task(void *arg)
     while (!s_face_stop && ((rounds == FACE_TEST_LOOP_FOREVER) || (index < rounds))) {
         bk_printf("[xface] round %u start\r\n", (unsigned int)(index + 1));
 
-        if (face_test_read_sp_frame(s_face_frame_buf, FACE_TEST_FRAME_SIZE) == BK_OK) {
-            ret = s_face_model->run(s_face_frame_buf, FACE_TEST_FRAME_SIZE);
+        memset(&frame, 0, sizeof(frame));
+        frame.buffer = s_face_frame_buf;
+        frame.size = FACE_TEST_FRAME_SIZE;
+
+        if (face_test_read_sp_frame(&frame) == BK_OK) {
+            ret = s_face_model->run(s_face_frame_buf,
+                                    frame.out_len,
+                                    face_test_get_model_input_format(&frame));
             bk_printf("[xface] round %u done, face=%d\r\n",
                       (unsigned int)(index + 1), ret);
         }

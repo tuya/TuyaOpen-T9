@@ -20,6 +20,7 @@
 extern "C" {
 #endif
 
+#include <components/bk_audio/audio_streams/onboard_mic_stream_v2.h>
 
 typedef enum
 {
@@ -30,6 +31,12 @@ typedef enum
     AUDIO_RECORD_ONBOARD_MIC,
     //AUDIO_RECORD_NET,
 } audio_record_type_t;
+
+typedef enum
+{
+    AUDIO_RECORD_ENCODER_PCM = 0,
+    AUDIO_RECORD_ENCODER_SBC,
+} audio_record_encoder_t;
 
 typedef enum {
 	AUDIO_MIC_MODE_DIFFEN = 0,
@@ -57,23 +64,26 @@ typedef struct
     uint8_t nChans;
     uint32_t sampRate;
     uint8_t bitsPerSample;
-    int adc_gain;
+    float adc_gain; /*!< mic digital gain in dB */
     audio_mic_mode_t mic_mode;
     uint32_t frame_size;
     uint32_t pool_size;
+    audio_record_encoder_t encoder_type; /*!< encoder type, PCM means output is pcm stream */
+    uint32_t ch_bitmap;
 } audio_record_cfg_t;
 
-#define DEFAULT_AUDIO_RECORD_CONFIG() {     \
-    .port = 0,                              \
-    .nChans = 1,                            \
-    .sampRate = 8000,                       \
-    .bitsPerSample = 16,                    \
-    .adc_gain = 0x2d,                       \
-    .mic_mode = AUDIO_MIC_MODE_DIFFEN,      \
-    .frame_size = 320,                      \
-    .pool_size = 640,                       \
+#define DEFAULT_AUDIO_RECORD_CONFIG() {              \
+    .port = 0,                                       \
+    .nChans = 1,                                     \
+    .sampRate = 8000,                                \
+    .bitsPerSample = 16,                             \
+    .adc_gain = 16.0f,                               \
+    .mic_mode = AUDIO_MIC_MODE_DIFFEN,               \
+    .frame_size = 320,                               \
+    .pool_size  = 640,                               \
+    .encoder_type = AUDIO_RECORD_ENCODER_PCM,        \
+    .ch_bitmap    = ONBOARD_MIC_ADC_ACTIVE_CH_0_BIT, \
 }
-
 
 typedef struct audio_record audio_record_t;
 
@@ -198,7 +208,7 @@ bk_err_t audio_record_control(audio_record_t *record, audio_record_ctl_t ctl);
  *    - BK_OK: success
  *    - NULL: failed
  */
-bk_err_t audio_play_set_adc_gain(audio_record_t *record, int value);
+bk_err_t audio_play_set_adc_gain(audio_record_t *record, float value);
 
 #ifdef __cplusplus
 }

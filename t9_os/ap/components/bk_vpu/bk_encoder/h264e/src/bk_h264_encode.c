@@ -61,6 +61,37 @@ avdk_err_t bk_h264_encode_force_idr(bk_h264_encode_ctlr_handle_t handle)
     return handle->force_idr(handle);
 }
 
+avdk_err_t bk_h264_encode_set_gop_frame_count(bk_h264_encode_ctlr_handle_t handle,
+                                              uint32_t gop_frame_count)
+{
+    AVDK_RETURN_ON_FALSE(handle, AVDK_ERR_INVAL, TAG, AVDK_ERR_INVAL_NULL_TEXT);
+    return bk_h264_encode_ioctl(handle, BK_H264_ENCODE_IOCTL_SET_GOP_FRAME_COUNT, &gop_frame_count);
+}
+
+avdk_err_t bk_h264_encode_get_gop_frame_count(bk_h264_encode_ctlr_handle_t handle,
+                                              uint32_t *gop_frame_count)
+{
+    AVDK_RETURN_ON_FALSE(handle, AVDK_ERR_INVAL, TAG, AVDK_ERR_INVAL_NULL_TEXT);
+    AVDK_RETURN_ON_FALSE(gop_frame_count, AVDK_ERR_INVAL, TAG, AVDK_ERR_INVAL_NULL_TEXT);
+    return bk_h264_encode_ioctl(handle, BK_H264_ENCODE_IOCTL_GET_GOP_FRAME_COUNT, gop_frame_count);
+}
+
+avdk_err_t bk_h264_encode_set_rate_ctrl(bk_h264_encode_ctlr_handle_t handle,
+                                         bk_h264_encode_rate_ctrl_t *rate_ctrl)
+{
+    AVDK_RETURN_ON_FALSE(handle, AVDK_ERR_INVAL, TAG, AVDK_ERR_INVAL_NULL_TEXT);
+    AVDK_RETURN_ON_FALSE(rate_ctrl, AVDK_ERR_INVAL, TAG, AVDK_ERR_INVAL_NULL_TEXT);
+    return bk_h264_encode_ioctl(handle, BK_H264_ENCODE_IOCTL_SET_RATE_CTRL, rate_ctrl);
+}
+
+avdk_err_t bk_h264_encode_get_rate_ctrl(bk_h264_encode_ctlr_handle_t handle,
+                                         bk_h264_encode_rate_ctrl_t *rate_ctrl)
+{
+    AVDK_RETURN_ON_FALSE(handle, AVDK_ERR_INVAL, TAG, AVDK_ERR_INVAL_NULL_TEXT);
+    AVDK_RETURN_ON_FALSE(rate_ctrl, AVDK_ERR_INVAL, TAG, AVDK_ERR_INVAL_NULL_TEXT);
+    return bk_h264_encode_ioctl(handle, BK_H264_ENCODE_IOCTL_GET_RATE_CTRL, rate_ctrl);
+}
+
 avdk_err_t bk_h264_encode_delete(bk_h264_encode_ctlr_handle_t handle)
 {
     AVDK_RETURN_ON_FALSE(handle, AVDK_ERR_INVAL, TAG, AVDK_ERR_INVAL_NULL_TEXT);

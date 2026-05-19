@@ -15,6 +15,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <limits.h>
 #include "FreeRTOSConfig.h"
 #include "FreeRTOS.h"
 #include "semphr.h"
@@ -37,6 +38,10 @@
 
 
 #define TAG  "ONBOARD_SPEAKER"
+
+#ifndef CONFIG_ADK_ONBOARD_SPEAKER_STEREO_CARRY_ONE_CH_ONLY
+#define CONFIG_ADK_ONBOARD_SPEAKER_STEREO_CARRY_ONE_CH_ONLY 0
+#endif
 
 //#define ONBOARD_SPK_DEBUG   //GPIO debug
 
@@ -151,8 +156,8 @@ typedef struct onboard_speaker_stream
 {
     uint8_t                  chl_num;                       /**< speaker channel number */
     uint32_t                 sample_rate[AUD_DAC_SOURCE_MAX];/**< speaker sample rate */
-    int32_t                  dig_gain;                      /**< audio dac digital gain: value range: , suggest: */
-    int32_t                  ana_gain;                      /**< audio dac analog gain: value range: , suggest: */
+    float                    dig_gain;                      /**< audio dac digital gain in dB */
+    int32_t                  ana_gain;                      /**< audio dac analog gain in dB */
     aud_dac_work_mode_t      work_mode;                     /**< audio dac mode: signal_ended/differen */
     uint8_t                  bits;                          /**< Bit wide (8, 16, 24, 32 bits) */
     aud_clk_t                clk_src;                       /**< audio clock: XTAL(26MHz)/APLL */
@@ -195,11 +200,134 @@ typedef struct onboard_speaker_stream
     aud_rsp_cfg_t            rsp_cfg[AUD_DAC_SOURCE_MAX];   /**< resampler config */
     uint16_t                *rsp_out_buff[AUD_DAC_SOURCE_MAX][MAX_CH_NUM];/**< resampler output buffer of speaker 0/1 */
     void                    *rsp_handler[AUD_DAC_SOURCE_MAX];/**< resampler handler */
+    onboard_speaker_stream_status_t status;                 /**< runtime status for upper layer */
+    uint8_t                         play_energy_threshold;  /**< voice-play enter threshold in range 0~100 */
+    uint8_t                         play_energy_hysteresis; /**< play-state hysteresis in range 0~100 */
+    onboard_speaker_status_cb_t     status_cb;              /**< status report callback */
+    void                            *status_cb_user_data;   /**< callback private data */
 } onboard_speaker_stream_t;
 
 static onboard_speaker_stream_t *gl_onboard_speaker = NULL;
 static uint32_t spk_dma_finish_bitmap = 0;
 static uint32_t open_cnt = 0;//workaround of aud dac dma stop issue
+
+static uint8_t onboard_spk_calc_energy_level(const uint8_t *data, uint32_t size, uint8_t bits)
+{
+    if (data == NULL || size == 0)
+    {
+        return 0;
+    }
+
+    uint64_t abs_sum = 0;
+    uint64_t full_scale = 0;
+    uint32_t sample_num = 0;
+
+    if (bits == 16)
+    {
+        const int16_t *samples = (const int16_t *)data;
+        sample_num = size / sizeof(int16_t);
+        full_scale = INT16_MAX;
+        for (uint32_t i = 0; i < sample_num; i++)
+        {
+            int32_t sample = samples[i];
+            uint64_t abs_val = (sample < 0) ? (uint64_t)(-sample) : (uint64_t)sample;
+            abs_sum += abs_val;
+        }
+    }
+    else
+    {
+        const int32_t *samples = (const int32_t *)data;
+        sample_num = size / sizeof(int32_t);
+        full_scale = INT32_MAX;
+        for (uint32_t i = 0; i < sample_num; i++)
+        {
+            int64_t sample = samples[i];
+            uint64_t abs_val = (sample < 0) ? (uint64_t)(-sample) : (uint64_t)sample;
+            abs_sum += abs_val;
+        }
+    }
+
+    if (full_scale == 0 || sample_num == 0)
+    {
+        return 0;
+    }
+
+    uint64_t denominator = full_scale * sample_num;
+    uint64_t level = (abs_sum * 100 + (denominator / 2)) / denominator;
+    return (level > 100) ? 100 : (uint8_t)level;
+}
+
+static void onboard_spk_notify_status(audio_element_handle_t self, onboard_speaker_stream_t *onboard_spk)
+{
+    if (onboard_spk && onboard_spk->status_cb)
+    {
+        onboard_spk->status_cb(self, &onboard_spk->status, onboard_spk->status_cb_user_data);
+    }
+}
+
+static bool onboard_spk_is_voice_playing(const onboard_speaker_stream_t *onboard_spk, uint8_t energy_level)
+{
+    uint8_t enter_threshold;
+    uint8_t exit_threshold;
+
+    if (onboard_spk == NULL || !onboard_spk->is_open)
+    {
+        return false;
+    }
+
+    enter_threshold = onboard_spk->play_energy_threshold;
+    exit_threshold = (enter_threshold > onboard_spk->play_energy_hysteresis) ?
+        (enter_threshold - onboard_spk->play_energy_hysteresis) : 0;
+
+    if (onboard_spk->status.is_playing)
+    {
+        return (energy_level > exit_threshold);
+    }
+
+    return (energy_level > enter_threshold);
+}
+
+static void onboard_spk_update_status(audio_element_handle_t self, onboard_speaker_stream_t *onboard_spk, bool is_playing, uint8_t energy_level, bool force_report)
+{
+    bool changed = false;
+
+    if (onboard_spk == NULL)
+    {
+        return;
+    }
+
+    if (onboard_spk->status.is_playing != is_playing)
+    {
+        onboard_spk->status.is_playing = is_playing;
+        changed = true;
+    }
+
+    if (onboard_spk->status.energy_level != energy_level)
+    {
+        onboard_spk->status.energy_level = energy_level;
+        changed = true;
+    }
+
+    if (force_report || changed)
+    {
+        onboard_spk_notify_status(self, onboard_spk);
+    }
+}
+
+static void onboard_spk_update_status_by_energy(audio_element_handle_t self, onboard_speaker_stream_t *onboard_spk, uint8_t energy_level, bool force_report)
+{
+    bool is_playing = onboard_spk_is_voice_playing(onboard_spk, energy_level);
+    onboard_spk_update_status(self, onboard_spk, is_playing, energy_level, force_report);
+}
+
+static inline uint32_t onboard_spk_active_dma_chl_num(const onboard_speaker_stream_t *onboard_spk)
+{
+    if ((onboard_spk->chl_num > 1) && CONFIG_ADK_ONBOARD_SPEAKER_STEREO_CARRY_ONE_CH_ONLY)
+    {
+        return 1;
+    }
+    return onboard_spk->chl_num;
+}
 
 #if CONFIG_ADK_ONBOARD_SPEAKER_STREAM_SUPPORT_MULTIPLE_SOURCE
 #define input_port_list_release(handle) xSemaphoreGive(handle)
@@ -354,7 +482,7 @@ static void pa_ctrl_en(onboard_speaker_stream_t *onboard_spk, bool en, bool dela
             {
                 /* not need delay */
                 _pa_gpio_ctrl(onboard_spk->pa_ctrl_gpio, onboard_spk->pa_on_level, true);
-                if (onboard_spk->dig_gain > 0)
+                if (onboard_spk->dig_gain > BK_AUD_DAC_DIG_GAIN_DB_SILENCE)
                 {
                     bk_aud_dac_unmute();
                     BK_LOGV(TAG, "%s, line: %d, audio dac unmute\n", __func__, __LINE__);
@@ -400,7 +528,7 @@ static void pa_turn_on_timer_callback(TimerHandle_t xTimer)
     /* turn on pa according to congfig */
     _pa_gpio_ctrl(onboard_spk->pa_ctrl_gpio, onboard_spk->pa_on_level, true);
 
-    if (onboard_spk->dig_gain > 0)
+    if (onboard_spk->dig_gain > BK_AUD_DAC_DIG_GAIN_DB_SILENCE)
     {
         bk_aud_dac_unmute();
         BK_LOGV(TAG, "%s, line: %d, audio dac unmute\n", __func__, __LINE__);
@@ -450,6 +578,7 @@ static void aud_dac_dma_finish_isr(dma_id_t dma_id)
     uint32_t i,k;
     bk_err_t ret = BK_OK;
     uint32_t valid_dma_fin_bitmap = 0;
+    uint32_t active_dma_chl_num = onboard_spk_active_dma_chl_num(gl_onboard_speaker);
     
     AUD_DAC_DMA_ISR_START();
     BK_LOGV(TAG, "%s,dma_id:%d finish!\n", __func__,dma_id);
@@ -457,11 +586,11 @@ static void aud_dac_dma_finish_isr(dma_id_t dma_id)
     for(i = 0; i < AUD_DAC_SOURCE_MAX; i++)
     {
         for(k = 0; k < MAX_CH_NUM; k++)
-        {  
+        {
             if(gl_onboard_speaker->spk_dma_id[i][k] == dma_id)
             {
                 spk_dma_finish_bitmap |= ((1 << k) << (i*MAX_CH_NUM));
-                valid_dma_fin_bitmap = (((1 << gl_onboard_speaker->chl_num) - 1) << (i*MAX_CH_NUM));
+                valid_dma_fin_bitmap = (((1 << active_dma_chl_num) - 1) << (i*MAX_CH_NUM));
 
                 if(valid_dma_fin_bitmap == (spk_dma_finish_bitmap & valid_dma_fin_bitmap))
                 {
@@ -491,6 +620,7 @@ static bk_err_t aud_dac_dma_config(onboard_speaker_stream_t *onboard_spk)
     uint32_t dac_port_addr;
     uint32_t i = 0, k = 0;
     uint32_t dma_buf_size, transfer_len;
+    uint32_t active_dma_chl_num = onboard_spk_active_dma_chl_num(onboard_spk);
 
 #if 0
     /* init dma driver */
@@ -510,16 +640,16 @@ static bk_err_t aud_dac_dma_config(onboard_speaker_stream_t *onboard_spk)
             if (AUD_DAC_SOURCE_A2DP == i)
             {
                 dma_buf_size = DEFAULT_AUD_DAC_SAMPLE_RATE * 20 / 1000 * 4;//A2DP always use 48000 sample rate
-                transfer_len = onboard_spk->dma_frame_size;
+                transfer_len = (onboard_spk->chl_num > 1) ? (onboard_spk->dma_frame_size / onboard_spk->chl_num) : onboard_spk->dma_frame_size;
             }
             else
             {
                 dma_buf_size = onboard_spk->frame_size[i] * 2;
-                transfer_len = onboard_spk->frame_size[i];
+                transfer_len = (onboard_spk->chl_num > 1) ? (onboard_spk->frame_size[i] / onboard_spk->chl_num) : onboard_spk->frame_size[i];
             }
             for(k = 0; k < MAX_CH_NUM; k++)
             {
-                if(k >= onboard_spk->chl_num)
+                if(k >= active_dma_chl_num)
                 {
                     break;
                 }
@@ -562,7 +692,7 @@ static bk_err_t aud_dac_dma_config(onboard_speaker_stream_t *onboard_spk)
                 #else
                 dma_config.dst.width = DMA_DATA_WIDTH_32BITS;
                 #endif
-                BK_LOGD(TAG, "%s, %d, 1 dma dst width:%d,sizeof(dma_config.dst.dev):%d\n", __func__, __LINE__, dma_config.dst.width,sizeof(dma_config.dst.dev));
+                BK_LOGD(TAG, "%s, %d, 1 dma dst width:%d\n", __func__, __LINE__, dma_config.dst.width);
                 /* get dac fifo address */
                 ret = bk_aud_dac_get_fifo_addr(i, k, &dma_config.dst.dev, &dac_port_addr);
                 if (ret != BK_OK)
@@ -626,14 +756,13 @@ static bk_err_t _onboard_speaker_open(audio_element_handle_t self)
     /* set read data timeout */
     audio_element_set_input_timeout(self, 0);   // 2000, 15 / portTICK_RATE_MS
 
-
     for(i = 0; i < AUD_DAC_SOURCE_MAX; i++)
     {
         if(onboard_spk->dac_source_bitmap & (1 << i))
         {
             for(k = 0; k < MAX_CH_NUM; k++)
             {
-                if(k >= onboard_spk->chl_num)
+                if(k >= onboard_spk_active_dma_chl_num(onboard_spk))
                 {
                     break;
                 }
@@ -705,8 +834,8 @@ static bk_err_t _onboard_speaker_open(audio_element_handle_t self)
     }
 
     onboard_spk->is_open = true;
-
     onboard_spk->valid_frame_count_in_spk_rb = 2;
+    onboard_spk_update_status_by_energy(self, onboard_spk, 0, true);
 
     /* turn on pa */
     if (onboard_spk->pa_ctrl_en)
@@ -715,7 +844,7 @@ static bk_err_t _onboard_speaker_open(audio_element_handle_t self)
     }
     else
     {
-        if (onboard_spk->dig_gain > 0)
+        if (onboard_spk->dig_gain > BK_AUD_DAC_DIG_GAIN_DB_SILENCE)
         {
             rtos_delay_milliseconds(4);
             bk_aud_dac_unmute();
@@ -835,11 +964,12 @@ static bk_err_t audio_dac_reconfig(onboard_speaker_stream_t *onboard_spk, int ra
 
         for (uint32_t k = 0; k < MAX_CH_NUM; k++)
         {
-            if (k >= onboard_spk->chl_num)
+            if (k >= onboard_spk_active_dma_chl_num(onboard_spk))
             {
                 break;
             }
-            bk_dma_set_transfer_len(onboard_spk->spk_dma_id[AUD_DAC_SOURCE_A2DP][k], onboard_spk->dma_frame_size);
+            bk_dma_set_transfer_len(onboard_spk->spk_dma_id[AUD_DAC_SOURCE_A2DP][k],
+                                    (onboard_spk->chl_num > 1) ? (onboard_spk->dma_frame_size / onboard_spk->chl_num) : onboard_spk->dma_frame_size);
         }
     }
 
@@ -1039,7 +1169,7 @@ static int _onboard_speaker_process(audio_element_handle_t self, char *in_buffer
             AUD_ONBOARD_SPK_INPUT_START();
             if (i == onboard_spk->main_dac_source)
             {
-                r_size = audio_element_input(self, in_buffer, onboard_spk->frame_size[i]*onboard_spk->chl_num);
+                r_size = audio_element_input(self, in_buffer, onboard_spk->frame_size[i]);
             }
             else
             {
@@ -1053,7 +1183,7 @@ static int _onboard_speaker_process(audio_element_handle_t self, char *in_buffer
                 {
                     if(onboard_spk->wr_spk_rb_done[i] == false)
                     {
-                        r_size = audio_element_multi_input(self, in_buffer, onboard_spk->frame_size[i]*onboard_spk->chl_num, multi_port_id, 0);
+                        r_size = audio_element_multi_input(self, in_buffer, onboard_spk->frame_size[i], multi_port_id, 0);
                         if(r_size <= 0)
                         {
                             continue;
@@ -1088,7 +1218,6 @@ static int _onboard_speaker_process(audio_element_handle_t self, char *in_buffer
                 else//24bits
                 {
                     lr_data_ptr_32bits = (int32_t *)in_buffer;
-
                     for (uint16_t j = 0; j < r_size / 8; j++)
                     {
                         onboard_spk->spk0_data[j] = lr_data_ptr_32bits[2 * j];
@@ -1131,6 +1260,10 @@ static int _onboard_speaker_process(audio_element_handle_t self, char *in_buffer
                         write_size = onboard_spk->frame_size[i];
                         write_addr = (uint8_t *)onboard_spk->spk0_data;
                     }
+                    if (onboard_spk->chl_num > 1)
+                    {
+                        write_size /= onboard_spk->chl_num;
+                    }
 
 #ifdef AEC_MIC_DELAY_POINTS_DEBUG
                     aec_mic_delay_debug((int16_t *)write_addr, write_size);
@@ -1141,7 +1274,7 @@ static int _onboard_speaker_process(audio_element_handle_t self, char *in_buffer
                     ONBOARD_SPK_DATA_DUMP_BY_UART_DATA(write_addr, write_size);
 
                     ring_buffer_write(&onboard_spk->spk_rb[i][0], (uint8_t *)write_addr, write_size);
-                    if(1 < onboard_spk->chl_num)
+                    if(1 < onboard_spk_active_dma_chl_num(onboard_spk))
                     {
                         if (AUD_DAC_SOURCE_A2DP == i && onboard_spk->rsp_handler[i])
                         {
@@ -1163,6 +1296,7 @@ static int _onboard_speaker_process(audio_element_handle_t self, char *in_buffer
                         ring_buffer_write(&onboard_spk->spk_rb[i][1], (uint8_t *)write_addr, write_size);
                     }
                     onboard_spk->wr_spk_rb_done[i] = true;
+                    onboard_spk_update_status_by_energy(self, onboard_spk, onboard_spk_calc_energy_level(write_addr, write_size, onboard_spk->bits), false);
                     /* write data to ref ring buffer */
                     audio_element_multi_output(self, (char *)onboard_spk->spk0_data, onboard_spk->frame_size[i], 0);
                     //read_data_valid_flag = false;
@@ -1180,6 +1314,10 @@ static int _onboard_speaker_process(audio_element_handle_t self, char *in_buffer
                     {
                         write_size = onboard_spk->frame_size[i];
                     }
+                    if (onboard_spk->chl_num > 1)
+                    {
+                        write_size /= onboard_spk->chl_num;
+                    }
                     os_memset(onboard_spk->temp_buff, 0x00, write_size);
 #ifdef AEC_MIC_DELAY_POINTS_DEBUG
                     aec_mic_delay_debug((int16_t *)onboard_spk->temp_buff, write_size);
@@ -1191,11 +1329,12 @@ static int _onboard_speaker_process(audio_element_handle_t self, char *in_buffer
                     ONBOARD_SPK_DATA_DUMP_BY_UART_DATA(onboard_spk->temp_buff, write_size);
 
                     ring_buffer_write(&onboard_spk->spk_rb[i][0], (uint8_t *)onboard_spk->temp_buff, write_size);
-                    if(1 < onboard_spk->chl_num)
+                    if(1 < onboard_spk_active_dma_chl_num(onboard_spk))
                     {
                         ring_buffer_write(&onboard_spk->spk_rb[i][1], (uint8_t *)onboard_spk->temp_buff, write_size);
                     }
                     onboard_spk->wr_spk_rb_done[i] = true;
+                    onboard_spk_update_status_by_energy(self, onboard_spk, 0, false);
                     /* write data to ref ring buffer */
                     audio_element_multi_output(self, (char *)onboard_spk->temp_buff, onboard_spk->frame_size[i], 0);
 
@@ -1226,6 +1365,7 @@ static int _onboard_speaker_process(audio_element_handle_t self, char *in_buffer
                         if (onboard_spk->valid_frame_count_in_spk_rb == 0)
                         {
                             w_size = r_size;
+                            onboard_spk_update_status(self, onboard_spk, false, 0, false);
                         }
                         else
                         {
@@ -1262,7 +1402,7 @@ static int _onboard_speaker_process(audio_element_handle_t self, char *in_buffer
     }
 #else
     AUD_ONBOARD_SPK_INPUT_START();
-    r_size = audio_element_input(self, in_buffer, onboard_spk->frame_size[main_src]*onboard_spk->chl_num);
+    r_size = audio_element_input(self, in_buffer, onboard_spk->frame_size[main_src]);
     AUD_ONBOARD_SPK_INPUT_END();
 
     if(1 < onboard_spk->chl_num)
@@ -1323,6 +1463,10 @@ static int _onboard_speaker_process(audio_element_handle_t self, char *in_buffer
                 write_size = onboard_spk->frame_size[main_src];
                 write_addr = (uint8_t *)onboard_spk->spk0_data;
             }
+            if (onboard_spk->chl_num > 1)
+            {
+                write_size /= onboard_spk->chl_num;
+            }
 #ifdef AEC_MIC_DELAY_POINTS_DEBUG
             aec_mic_delay_debug((int16_t *)write_addr, write_size);
 #endif
@@ -1332,7 +1476,7 @@ static int _onboard_speaker_process(audio_element_handle_t self, char *in_buffer
             ONBOARD_SPK_DATA_DUMP_BY_UART_DATA(write_addr, write_size);
 
             ring_buffer_write(&onboard_spk->spk_rb[main_src][0], (uint8_t *)write_addr, write_size);
-            if(1 < onboard_spk->chl_num)
+            if(1 < onboard_spk_active_dma_chl_num(onboard_spk))
             {
                 if (onboard_spk->rsp_handler[main_src])
                 {
@@ -1355,6 +1499,7 @@ static int _onboard_speaker_process(audio_element_handle_t self, char *in_buffer
                 ring_buffer_write(&onboard_spk->spk_rb[main_src][1], (uint8_t *)write_addr, write_size);
             }
             onboard_spk->wr_spk_rb_done[main_src] = true;
+            onboard_spk_update_status_by_energy(self, onboard_spk, onboard_spk_calc_energy_level(write_addr, write_size, onboard_spk->bits), false);
             /* write data to ref ring buffer */
             audio_element_multi_output(self, (char *)in_buffer, onboard_spk->frame_size[main_src], 0);
             //read_data_valid_flag = false;
@@ -1366,6 +1511,10 @@ static int _onboard_speaker_process(audio_element_handle_t self, char *in_buffer
             /* fill silence data */
             write_size = onboard_spk->rsp_handler[main_src] ? onboard_spk->dma_frame_size
                                                                     : onboard_spk->frame_size[main_src];
+            if (onboard_spk->chl_num > 1)
+            {
+                write_size /= onboard_spk->chl_num;
+            }
 
             os_memset(onboard_spk->temp_buff, 0x00, write_size);
 #ifdef AEC_MIC_DELAY_POINTS_DEBUG
@@ -1378,7 +1527,12 @@ static int _onboard_speaker_process(audio_element_handle_t self, char *in_buffer
             ONBOARD_SPK_DATA_DUMP_BY_UART_DATA(onboard_spk->temp_buff, write_size);
 
             ring_buffer_write(&onboard_spk->spk_rb[main_src][0], (uint8_t *)onboard_spk->temp_buff, write_size);
+            if (1 < onboard_spk_active_dma_chl_num(onboard_spk))
+            {
+                ring_buffer_write(&onboard_spk->spk_rb[main_src][1], (uint8_t *)onboard_spk->temp_buff, write_size);
+            }
             onboard_spk->wr_spk_rb_done[main_src] = true;
+            onboard_spk_update_status_by_energy(self, onboard_spk, 0, false);
             /* write data to ref ring buffer */
             audio_element_multi_output(self, (char *)onboard_spk->temp_buff, onboard_spk->frame_size[main_src], 0);
 
@@ -1416,6 +1570,7 @@ static int _onboard_speaker_process(audio_element_handle_t self, char *in_buffer
             if (onboard_spk->valid_frame_count_in_spk_rb == 0)
             {
                 w_size = r_size;
+                onboard_spk_update_status(self, onboard_spk, false, 0, false);
             }
             else
             {
@@ -1515,6 +1670,7 @@ static bk_err_t _onboard_speaker_close(audio_element_handle_t self)
         onboard_spk->wr_spk_rb_done[i] = false;
     }
     onboard_spk->valid_frame_count_in_spk_rb = 0;
+    onboard_spk_update_status(self, onboard_spk, false, 0, true);
 
     return BK_OK;
 }
@@ -1531,7 +1687,6 @@ static bk_err_t _onboard_speaker_destroy(audio_element_handle_t self)
     bk_aud_dac_deinit();
 
     /* free spk pool */
-
     if (onboard_spk)
     {
         if(onboard_spk->temp_buff)
@@ -1649,8 +1804,8 @@ audio_element_handle_t onboard_speaker_stream_init(onboard_speaker_stream_cfg_t 
         }
     }
 
-    /*input buffer size = max frame size * channel num*/
-    cfg.buffer_len = k * config->chl_num;
+    /*input buffer size = max frame size*/
+    cfg.buffer_len = k;
     BK_LOGD(TAG, "cfg.buffer_len: %d\n", cfg.buffer_len);
 
     uint32_t dma_frame_ref_src = AUD_DAC_SOURCE_A2DP;
@@ -1691,6 +1846,12 @@ audio_element_handle_t onboard_speaker_stream_init(onboard_speaker_stream_cfg_t 
     gl_onboard_speaker->work_mode = config->work_mode;
     gl_onboard_speaker->bits      = config->bits;
     gl_onboard_speaker->clk_src   = config->clk_src;
+    gl_onboard_speaker->status.is_playing = false;
+    gl_onboard_speaker->status.energy_level = 0;
+    gl_onboard_speaker->play_energy_threshold = (config->play_energy_threshold > 100) ? 100 : config->play_energy_threshold;
+    gl_onboard_speaker->play_energy_hysteresis = (config->play_energy_hysteresis > 100) ? 100 : config->play_energy_hysteresis;
+    gl_onboard_speaker->status_cb = config->status_cb;
+    gl_onboard_speaker->status_cb_user_data = config->status_cb_user_data;
 
     gl_onboard_speaker->pool_length      = config->pool_length;
     gl_onboard_speaker->pool_play_thold  = config->pool_play_thold;
@@ -1757,7 +1918,7 @@ audio_element_handle_t onboard_speaker_stream_init(onboard_speaker_stream_cfg_t 
     aud_dac_cfg.clk_src   = config->clk_src;
     aud_dac_cfg.dig_gain  = config->dig_gain;
     aud_dac_cfg.ana_gain  = config->ana_gain;
-    BK_LOGD(TAG, "dac_cfg chl_num: %s, dig_gain: 0x%08x, clk_src: %s, dac_mode: %s \n",
+    BK_LOGD(TAG, "dac_cfg chl_num: %s, dig_gain_db: %.2f, clk_src: %s, dac_mode: %s \n",
             aud_dac_cfg.dac_chl == AUD_DAC_CHL_L ? "AUD_DAC_CHL_L" : "AUD_DAC_CHL_LR",
             aud_dac_cfg.dig_gain,
             aud_dac_cfg.clk_src == 1 ? "APLL" : "XTAL",
@@ -1771,7 +1932,7 @@ audio_element_handle_t onboard_speaker_stream_init(onboard_speaker_stream_cfg_t 
         goto _onboard_speaker_init_exit;
     }
 
-    if (aud_dac_cfg.dig_gain == 0)
+    if (aud_dac_cfg.dig_gain <= BK_AUD_DAC_DIG_GAIN_DB_SILENCE)
     {
         bk_aud_dac_mute();
         BK_LOGV(TAG, "%s, line: %d, audio dac mute\n", __func__, __LINE__);
@@ -2135,14 +2296,14 @@ bk_err_t onboard_speaker_stream_set_digital_gain(audio_element_handle_t onboard_
     //     BK_LOGV(TAG, "%s, line: %d, audio dac unmute\n", __func__, __LINE__);
     // }
 
-    uint32_t res = 0;
-    err = bk_aud_dac_get_dig_gain(&res);
+    float res = 0.0f;
+    err = bk_aud_dac_get_dig_gain_db(&res);
     if (err != BK_OK)
     {
         BK_LOGE(TAG, "%s, line: %d, get dig gain fail \n", __func__, __LINE__);
         return err;
     }
-    BK_LOGD(TAG, "%s, line: %d, get dig gain: 0x%08x \n", __func__, __LINE__, res);
+    BK_LOGD(TAG, "%s, line: %d, get dig gain_db: %.2f \n", __func__, __LINE__, res);
     onboard_spk->dig_gain = res;
     audio_element_setdata(onboard_speaker_stream, onboard_spk);
 
@@ -2201,16 +2362,9 @@ bk_err_t onboard_speaker_stream_dac_mute_en(audio_element_handle_t onboard_speak
     return BK_OK;
 }
 
-bk_err_t onboard_speaker_stream_set_analog_gain(audio_element_handle_t onboard_speaker_stream, uint8_t gain)
+bk_err_t onboard_speaker_stream_set_analog_gain(audio_element_handle_t onboard_speaker_stream, int32_t gain_db)
 {
     onboard_speaker_stream_t *onboard_spk = (onboard_speaker_stream_t *)audio_element_getdata(onboard_speaker_stream);
-
-    /* check param */
-    if (gain < 0 || gain > 0x7)
-    {
-        BK_LOGE(TAG, "gain: %d is out of range: 0x00 ~ 0x7 \n", gain);
-        return BK_FAIL;
-    }
 
     /* check param */
     if (onboard_spk == NULL)
@@ -2219,15 +2373,15 @@ bk_err_t onboard_speaker_stream_set_analog_gain(audio_element_handle_t onboard_s
         return BK_FAIL;
     }
 
-    if (onboard_spk->ana_gain == gain)
+    if (onboard_spk->ana_gain == gain_db)
     {
         BK_LOGD(TAG, "not need update onboard spk analog gain \n");
         return BK_OK;
     }
 
-    if (BK_OK == bk_aud_set_ana_dac_gain(gain))
+    if (BK_OK == bk_aud_dac_set_ana_gain_db(gain_db))
     {
-        onboard_spk->ana_gain = gain;
+        onboard_spk->ana_gain = gain_db;
         audio_element_setdata(onboard_speaker_stream, onboard_spk);
     } else
     {
@@ -2237,13 +2391,13 @@ bk_err_t onboard_speaker_stream_set_analog_gain(audio_element_handle_t onboard_s
     return BK_OK;
 }
 
-bk_err_t onboard_speaker_stream_get_analog_gain(audio_element_handle_t onboard_speaker_stream, uint8_t *gain)
+bk_err_t onboard_speaker_stream_get_analog_gain(audio_element_handle_t onboard_speaker_stream, int32_t *gain_db)
 {
     onboard_speaker_stream_t *onboard_spk = (onboard_speaker_stream_t *)audio_element_getdata(onboard_speaker_stream);
     /* check param */
-    if (gain == NULL)
+    if (gain_db == NULL)
     {
-        BK_LOGE(TAG, "%s, line: %d, gain is NULL\n", __func__, __LINE__);
+        BK_LOGE(TAG, "%s, line: %d, gain_db is NULL\n", __func__, __LINE__);
         return BK_FAIL;
     }
     /* check param */
@@ -2253,7 +2407,27 @@ bk_err_t onboard_speaker_stream_get_analog_gain(audio_element_handle_t onboard_s
         return BK_FAIL;
     }
 
-    *gain = onboard_spk->ana_gain;
+    *gain_db = onboard_spk->ana_gain;
+    return BK_OK;
+}
+
+bk_err_t onboard_speaker_stream_get_status(audio_element_handle_t onboard_speaker_stream, onboard_speaker_stream_status_t *status)
+{
+    onboard_speaker_stream_t *onboard_spk = (onboard_speaker_stream_t *)audio_element_getdata(onboard_speaker_stream);
+
+    if (status == NULL)
+    {
+        BK_LOGE(TAG, "%s, line: %d, status is NULL\n", __func__, __LINE__);
+        return BK_FAIL;
+    }
+
+    if (onboard_spk == NULL)
+    {
+        BK_LOGE(TAG, "%s, line: %d, onboard_spk is not init \n", __func__, __LINE__);
+        return BK_FAIL;
+    }
+
+    *status = onboard_spk->status;
     return BK_OK;
 }
 

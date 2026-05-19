@@ -1,61 +1,29 @@
 #include "AvdkDetectionModel.h"
 #include "os/mem.h"
-#include "os/str.h"
 #include "os/os.h"
+#include "os/str.h"
 #include "components/bk_frame_buffer.h"
 
 #include "tensorflow/lite/micro/cortex_m_generic/debug_log_callback.h"
 
 #include "bk_ethosu.h"
 
+static const char *TAG = "det-model";
 
-static const char* TAG = "det-model";
-
-#define LOGI(...) BK_LOGW((char*)TAG, ##__VA_ARGS__)
-#define LOGW(...) BK_LOGW((char*)TAG, ##__VA_ARGS__)
-#define LOGE(...) BK_LOGE((char*)TAG, ##__VA_ARGS__)
-#define LOGD(...) BK_LOGD((char*)TAG, ##__VA_ARGS__)
-
-AvdkDetectionModel::AvdkDetectionModel()
-    : tensor_arena(NULL),
-      tensor_arena_raw(NULL),
-      pinterpreter(NULL),
-      name(NULL),
-      width(0),
-      height(0),
-      format(BK_PIXEL_FORMAT_UNKNOW),
-      model_type(AVDK_NN_MODEL_TYPE_CPU),
-      model_ram_type(AVDK_NN_MEM_TYPE_FALSH),
-      model_data(NULL),
-      model_data_size(0),
-      model_flash_data(NULL),
-      model_flash_data_size(0),
-      fast_ram_type(AVDK_NN_MEM_TYPE_HSRAM),
-      fast_ram_data(NULL),
-      fast_ram_data_size(0),
-      arena_ram_type(AVDK_NN_MEM_TYPE_HSRAM),
-      arena_ram_data(NULL),
-      arena_data_size(0)
-{
-
-}
+#define LOGI(...) BK_LOGW((char *)TAG, ##__VA_ARGS__)
+#define LOGW(...) BK_LOGW((char *)TAG, ##__VA_ARGS__)
+#define LOGE(...) BK_LOGE((char *)TAG, ##__VA_ARGS__)
+#define LOGD(...) BK_LOGD((char *)TAG, ##__VA_ARGS__)
 
 void *AvdkDetectionModel::allocMemory(avdk_nn_mem_type_t type, uint32_t size)
 {
-    if (type == AVDK_NN_MEM_TYPE_HSRAM)
-    {
+    if (type == AVDK_NN_MEM_TYPE_HSRAM) {
         return hsram_malloc(size);
-    }
-    else if (type == AVDK_NN_MEM_TYPE_SRAM)
-    {
+    } else if (type == AVDK_NN_MEM_TYPE_SRAM) {
         return os_sram_malloc(size);
-    }
-    else if (type == AVDK_NN_MEM_TYPE_PSRAM_HEAP)
-    {
+    } else if (type == AVDK_NN_MEM_TYPE_PSRAM_HEAP) {
         return psram_malloc(size);
-    }
-    else if (type == AVDK_NN_MEM_TYPE_PSRAM_SLAB)
-    {
+    } else if (type == AVDK_NN_MEM_TYPE_PSRAM_SLAB) {
         return bk_frame_buffer_malloc(MEM_SLAB_HEAP_CODED, size);
     }
 
@@ -65,25 +33,15 @@ void *AvdkDetectionModel::allocMemory(avdk_nn_mem_type_t type, uint32_t size)
 
 void AvdkDetectionModel::freeMemory(avdk_nn_mem_type_t type, void *ptr)
 {
-    if (type == AVDK_NN_MEM_TYPE_HSRAM)
-    {
+    if (type == AVDK_NN_MEM_TYPE_HSRAM) {
         hsram_free(ptr);
-    }
-
-    else if (type == AVDK_NN_MEM_TYPE_SRAM)
-    {
+    } else if (type == AVDK_NN_MEM_TYPE_SRAM) {
         os_sram_free(ptr);
-    }
-    else if (type == AVDK_NN_MEM_TYPE_PSRAM_HEAP)
-    {
+    } else if (type == AVDK_NN_MEM_TYPE_PSRAM_HEAP) {
         psram_free(ptr);
-    }
-    else if (type == AVDK_NN_MEM_TYPE_PSRAM_SLAB)
-    {
+    } else if (type == AVDK_NN_MEM_TYPE_PSRAM_SLAB) {
         bk_frame_buffer_free(ptr);
-    }
-    else
-    {
+    } else {
         LOGE("Unsupported memory type free\n");
     }
 }
@@ -94,18 +52,14 @@ int AvdkDetectionModel::LoadModel()
 
     resourceLoad();
 
-    if (model_ram_type == AVDK_NN_MEM_TYPE_FALSH)
-    {
+    if (model_ram_type == AVDK_NN_MEM_TYPE_FALSH) {
         model_data = model_flash_data;
         model_data_size = model_flash_data_size;
-    }
-    else
-    {
+    } else {
         model_data_size = model_flash_data_size;
-        model_data = (uint8_t*)allocMemory(model_ram_type, model_data_size);
+        model_data = (uint8_t *)allocMemory(model_ram_type, model_data_size);
 
-        if (model_data == NULL)
-        {
+        if (model_data == NULL) {
             LOGE("Failed to allocate model data\n");
             return -1;
         }
@@ -118,8 +72,7 @@ int AvdkDetectionModel::LoadModel()
 
 int AvdkDetectionModel::UnloadModel()
 {
-    if (model_ram_type != AVDK_NN_MEM_TYPE_FALSH && model_data != NULL)
-    {
+    if (model_ram_type != AVDK_NN_MEM_TYPE_FALSH && model_data != NULL) {
         freeMemory(model_ram_type, model_data);
         model_data = NULL;
         model_data_size = 0;
@@ -132,23 +85,20 @@ int AvdkDetectionModel::UnloadModel()
 
 int AvdkDetectionModel::npuStartup()
 {
-    fast_ram_data = (uint8_t*)allocMemory(fast_ram_type, fast_ram_data_size + 16);
+    fast_ram_data = (uint8_t *)allocMemory(fast_ram_type, fast_ram_data_size + 16);
 
-    if (fast_ram_data == NULL)
-    {
-      LOGE("Failed to allocate fast RAM\n");
-      return -1;
+    if (fast_ram_data == NULL) {
+        LOGE("Failed to allocate fast RAM\n");
+        return -1;
     }
 
-    void* aligned_ptr = fast_ram_data ? (void*)(((uint32_t)fast_ram_data + 15) & ~15) : nullptr;
+    void *aligned_ptr = fast_ram_data ? (void *)(((uint32_t)fast_ram_data + 15) & ~15) : nullptr;
 
     int ret = bk_ethosu_init(aligned_ptr, fast_ram_data_size);
 
-    if(ret != 0)
-    {
+    if (ret != 0) {
         LOGE("Failed to initialize Ethos-U driver, ret=%d\n", ret);
-        if (fast_ram_data)
-        {
+        if (fast_ram_data) {
             freeMemory(fast_ram_type, fast_ram_data);
             fast_ram_data = NULL;
         }
@@ -162,15 +112,13 @@ int AvdkDetectionModel::npuShutdown()
 {
     bk_ethosu_deinit();
 
-    if (fast_ram_data)
-    {
+    if (fast_ram_data) {
         freeMemory(fast_ram_type, fast_ram_data);
         fast_ram_data = NULL;
     }
 
     return 0;
 }
-
 
 int AvdkDetectionModel::cpuStartup()
 {
@@ -179,7 +127,6 @@ int AvdkDetectionModel::cpuStartup()
 
 int AvdkDetectionModel::cpuShutdown()
 {
-
     return 0;
 }
 
@@ -187,63 +134,54 @@ int AvdkDetectionModel::init()
 {
     int ret = -1;
 
+    pinterpreter = NULL;
+    arena_ram_data = NULL;
+
     ret = LoadModel();
 
-    if (ret != 0)
-    {
+    if (ret != 0) {
         LOGE("Failed to load model\n");
         return -1;
     }
 
-    if (model_type == AVDK_NN_MODEL_TYPE_NPU)
-    {
-      ret = npuStartup();
-    }
-    else if (model_type == AVDK_NN_MODEL_TYPE_CPU)
-    {
-      ret = cpuStartup();
-    }
-    else
-    {
-      LOGE("Unsupported model type\n");
-      return -1;
+    if (model_type == AVDK_NN_MODEL_TYPE_NPU) {
+        ret = npuStartup();
+    } else if (model_type == AVDK_NN_MODEL_TYPE_CPU) {
+        ret = cpuStartup();
+    } else {
+        LOGE("Unsupported model type\n");
+        return -1;
     }
 
     LOGI("AvdkDetectionModel::init %s\n", name);
 
-
-    if (model_data == NULL)
-    {
+    if (model_data == NULL) {
         LOGE("model_data is NULL\n");
         return -1;
     }
 
-    const tflite::Model* model = ::tflite::GetModel(model_data);
+    const tflite::Model *model = ::tflite::GetModel(model_data);
 
-    if(TFLITE_SCHEMA_VERSION != model->version())
-    {
+    if (TFLITE_SCHEMA_VERSION != model->version()) {
         LOGE("Model schema version mismatch\n");
         return -1;
     }
 
     resolverLoad();
 
-    arena_ram_data = (uint8_t*)allocMemory(arena_ram_type, arena_data_size + 16);
+    arena_ram_data = (uint8_t *)allocMemory(arena_ram_type, arena_data_size + 16);
 
-    if (arena_ram_data == NULL)
-    {
-      LOGE("Failed to allocate arena RAM\n");
-      goto error;
+    if (arena_ram_data == NULL) {
+        LOGE("Failed to allocate arena RAM\n");
+        goto error;
     }
 
-    if(!(pinterpreter = new tflite::MicroInterpreter(model, micro_op_resolver, arena_ram_data, arena_data_size)))
-    {
+    if (!(pinterpreter = new tflite::MicroInterpreter(model, micro_op_resolver, arena_ram_data, arena_data_size))) {
         ret = -3;
         goto error;
     }
 
-    if(kTfLiteOk != pinterpreter->AllocateTensors())
-    {
+    if (kTfLiteOk != pinterpreter->AllocateTensors()) {
         ret = -4;
         goto error;
     }
@@ -251,61 +189,49 @@ int AvdkDetectionModel::init()
     return ret;
 
 error:
-
-    if (model_type == AVDK_NN_MODEL_TYPE_NPU)
-    {
-        npuShutdown();
-    }
-    else if (model_type == AVDK_NN_MODEL_TYPE_CPU)
-    {
-        cpuShutdown();
-    }
-
-    if (pinterpreter)
-    {
+    if (pinterpreter) {
         delete pinterpreter;
         pinterpreter = NULL;
     }
 
-    if (arena_ram_data)
-    {
+    if (arena_ram_data) {
         freeMemory(arena_ram_type, arena_ram_data);
         arena_ram_data = NULL;
     }
 
+    if (model_type == AVDK_NN_MODEL_TYPE_NPU) {
+        npuShutdown();
+    } else if (model_type == AVDK_NN_MODEL_TYPE_CPU) {
+        cpuShutdown();
+    }
+
     UnloadModel();
 
-  return -1;
+    return -1;
 }
 
 int AvdkDetectionModel::deinit()
 {
     int ret = -1;
 
-    if (pinterpreter)
-    {
+    if (pinterpreter) {
         delete pinterpreter;
         pinterpreter = NULL;
     }
 
-    if (model_type == AVDK_NN_MODEL_TYPE_NPU)
-    {
-        npuShutdown();
-    }
-    else if (model_type == AVDK_NN_MODEL_TYPE_CPU)
-    {
-        cpuShutdown();
-    }
-
-    if (arena_ram_data)
-    {
+    if (arena_ram_data) {
         freeMemory(arena_ram_type, arena_ram_data);
         arena_ram_data = NULL;
     }
 
+    if (model_type == AVDK_NN_MODEL_TYPE_NPU) {
+        npuShutdown();
+    } else if (model_type == AVDK_NN_MODEL_TYPE_CPU) {
+        cpuShutdown();
+    }
+
     ret = UnloadModel();
-    if (ret != 0)
-    {
+    if (ret != 0) {
         LOGE("Failed to unload model\n");
         return -1;
     }
@@ -313,19 +239,16 @@ int AvdkDetectionModel::deinit()
     return 0;
 }
 
-
-static void debugLogCallback(const char* s){
-    BK_LOGI((char*)"TFLM", "%s", s);
+static void debugLogCallback(const char *s)
+{
+    BK_LOGI((char *)"TFLM", "%s", s);
 }
 
 void AvdkDetectionModel::LogEnable(bool enable)
 {
-    if (enable)
-    {
+    if (enable) {
         RegisterDebugLogCallback(debugLogCallback);
-    }
-    else
-    {
+    } else {
         RegisterDebugLogCallback(NULL);
     }
 }
@@ -343,4 +266,11 @@ uint16_t AvdkDetectionModel::getHeight()
 bk_pixel_format_t AvdkDetectionModel::getFormat()
 {
     return format;
+}
+
+void AvdkDetectionModel::onBoxDetectionCallback(Box *boxes, int count)
+{
+    if (boxDetectionCallback != nullptr) {
+        boxDetectionCallback(boxes, count);
+    }
 }

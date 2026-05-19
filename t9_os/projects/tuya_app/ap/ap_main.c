@@ -11,7 +11,8 @@
 #include "tuya_cloud_types.h"
 #include "tuya_iot_config.h"
 
-extern OPERATE_RET tuya_ipc_init(void);
+// extern OPERATE_RET tuya_ipc_init(void);
+extern int bk_ipc_init(void);
 extern void tuya_app_main(void);
 extern void test_core_mark(void);
 
@@ -27,7 +28,8 @@ static void entry_app_main(void)
 
     bk_pm_module_vote_cpu_freq(PM_DEV_ID_CPU1, PM_CPU_FRQ_480M);
 
-    tuya_ipc_init();
+    // tuya_ipc_init();
+    bk_ipc_init();
 
 #if defined(ENABLE_MULTI_SECTION_UPGRADE) && (ENABLE_MULTI_SECTION_UPGRADE == 1)
     if (TUYA_OTA_PATH_INVALID != tkl_ota_is_under_seg_upgrade()) {

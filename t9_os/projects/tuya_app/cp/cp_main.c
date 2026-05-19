@@ -11,7 +11,8 @@
 #include "tuya_cloud_types.h"
 #include "customer_msg.h"
 
-extern OPERATE_RET tuya_ipc_init(void);
+// extern OPERATE_RET tuya_ipc_init(void);
+extern void bt_ipc_init(void);
 extern void rtos_set_user_app_entry(beken_thread_function_t entry);
 
 void user_app_main(void)
@@ -23,10 +24,11 @@ void user_app_main(void)
         bk_start_ap_system();
         cifd_cust_msg_init();
         // doorbell_core_init();
-        bk_printf_raw(BK_LOG_INFO, NULL, "start cp1\r\n");
-        bk_pm_module_vote_boot_cp1_ctrl(PM_BOOT_CP1_MODULE_NAME_APP,PM_POWER_MODULE_STATE_ON);
+        // bk_printf_raw(BK_LOG_INFO, NULL, "start ap\r\n");
+        // bk_pm_module_vote_boot_ap_ctrl(PM_BOOT_AP_MODULE_NAME_APP,PM_POWER_MODULE_STATE_ON);
 
-        tuya_ipc_init();
+        // tuya_ipc_init();
+        bt_ipc_init();
 
 #if (CONFIG_TUYA_TEST_CLI)
         extern int cp_cli_tuya_test_init(void);

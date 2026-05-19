@@ -6,7 +6,9 @@
 
 static void *nano_malloc_wrapper(uint32_t size)
 {
+// Modified by TUYA Start
     return os_malloc(size);
+// Modified by TUYA End
 }
 
 static void nano_free_wrapper(void *ptr)

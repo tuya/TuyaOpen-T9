@@ -22,11 +22,6 @@
 #define TKL_VENC_STOP_DRAIN_MS 300U
 
 typedef struct {
-    frame_buffer_t frame;
-    VOID *payload;
-} TUYA_VENC_OUTBUF_T;
-
-typedef struct {
     BOOL_T started;
     BOOL_T backend_opened;
     TUYA_VENC_CFG_T cfg;
@@ -203,15 +198,9 @@ static OPERATE_RET tkl_venc_sink_validate(const TUYA_VENC_SINK_T *sink)
 static void *tkl_venc_outbuf_malloc(uint32_t outbuf_size, void *args)
 {
     TUYA_VENC_CTX_T *ctx = (TUYA_VENC_CTX_T *)args;
-    TUYA_VENC_OUTBUF_T *outbuf = NULL;
     VOID *payload = NULL;
 
     if (ctx == NULL) {
-        return NULL;
-    }
-
-    outbuf = (TUYA_VENC_OUTBUF_T *)tkl_system_calloc(1, sizeof(TUYA_VENC_OUTBUF_T));
-    if (outbuf == NULL) {
         return NULL;
     }
 
@@ -221,51 +210,44 @@ static void *tkl_venc_outbuf_malloc(uint32_t outbuf_size, void *args)
         payload = tkl_system_malloc(outbuf_size);
     }
 
-    if (payload == NULL) {
-        tkl_system_free(outbuf);
-        return NULL;
-    }
-
-    outbuf->payload = payload;
-    outbuf->frame.fmt = BK_IMAGE_FORMAT_H264;
-    outbuf->frame.frame = (UINT8_T *)payload;
-    outbuf->frame.size = outbuf_size;
-
-    return &outbuf->frame;
+    return payload;
 }
 
-static uint32_t tkl_venc_outbuf_complete(void *outbuf, uint32_t status, void *args)
+static uint32_t tkl_venc_outbuf_complete(bk_h264_encode_outbuf_info_t *info)
 {
-    TUYA_VENC_CTX_T *ctx = (TUYA_VENC_CTX_T *)args;
-    TUYA_VENC_OUTBUF_T *node = (TUYA_VENC_OUTBUF_T *)outbuf;
+    TUYA_VENC_CTX_T *ctx = NULL;
+    VOID *payload = NULL;
 
-    if (ctx == NULL || node == NULL) {
+    if (info == NULL) {
         return BK_FAIL;
     }
 
-    if (status == BK_OK) {
+    ctx = (TUYA_VENC_CTX_T *)info->args;
+    payload = info->outbuf;
+    if (ctx == NULL || payload == NULL) {
+        return BK_FAIL;
+    }
+
+    if (info->status == BK_OK) {
         TUYA_VCODEC_STREAM_T stream;
 
         tkl_system_memset(&stream, 0, sizeof(stream));
-        stream.data = node->frame.frame;
-        stream.size = node->frame.length;
-        stream.pts = node->frame.timestamp;
+        stream.data = (UINT8_T *)payload;
+        stream.size = info->length;
+        stream.pts = 0;
         stream.codec = ctx->cfg.codec;
-        stream.frame_type = tkl_venc_frame_type_convert(node->frame.h264_type);
-        stream.priv = outbuf;
+        stream.frame_type = tkl_venc_frame_type_convert(info->type);
+        stream.priv = payload;
 
         ctx->sink.stream_cb(&stream, ctx->sink.cb_arg);
     }
 
-    if (node->payload != NULL) {
-        if (ctx->sink.free_cb != NULL) {
-            (void)ctx->sink.free_cb(node->payload, ctx->sink.cb_arg);
-        } else {
-            tkl_system_free(node->payload);
-        }
+    if (ctx->sink.free_cb != NULL) {
+        (void)ctx->sink.free_cb(payload, ctx->sink.cb_arg);
+    } else {
+        tkl_system_free(payload);
     }
 
-    tkl_system_free(node);
     return BK_OK;
 }
 
@@ -300,7 +282,7 @@ static OPERATE_RET tkl_venc_backend_create(TUYA_VENC_CTX_T *ctx)
         tkl_system_memset(&sw_cfg, 0, sizeof(sw_cfg));
         sw_cfg.width = width;
         sw_cfg.height = height;
-        sw_cfg.pframe_number = tkl_venc_gop_resolve(ctx);
+        sw_cfg.gop_frame_count = tkl_venc_gop_resolve(ctx);
         sw_cfg.input_format = tkl_venc_input_format_resolve(ctx);
         sw_cfg.input_flexa_cnt = tkl_venc_input_cnt_resolve(ctx);
         sw_cfg.input_buf = tkl_venc_input_buf_resolve(ctx);
@@ -317,7 +299,7 @@ static OPERATE_RET tkl_venc_backend_create(TUYA_VENC_CTX_T *ctx)
         tkl_system_memset(&hw_cfg, 0, sizeof(hw_cfg));
         hw_cfg.width = width;
         hw_cfg.height = height;
-        hw_cfg.pframe_number = tkl_venc_gop_resolve(ctx);
+        hw_cfg.gop_frame_count = tkl_venc_gop_resolve(ctx);
         hw_cfg.input_format = tkl_venc_input_format_resolve(ctx);
         hw_cfg.input_flexa_cnt = tkl_venc_input_cnt_resolve(ctx);
         hw_cfg.input_buf = tkl_venc_input_buf_resolve(ctx);
