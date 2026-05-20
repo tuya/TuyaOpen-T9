@@ -131,20 +131,17 @@ struct cmd_param_t {
 #define sdio_mshc_0_base     0x48040000
 #define sdio_mshc_1_base     0x48050000
 
-/* Selects which SDIO host controller (and matching GPIO pinmux group)
- * the v3p0 driver targets:
- *   0 = SDIO0 (host base 0x48040000, default pinmux group: GPIO 2/3/4/5
- *       for CLK/CMD/DAT0/DAT1, plus GPIO 10/11 for DAT2/DAT3 in 4-wire).
- *       This is the production wiring (P2/P3/P4/P5 silkscreen).
- *   1 = SDIO1 (host base 0x48050000, pinmux group: GPIO 14..23). Used
- *       only for early chip bring-up verification.
- * Keep this at 0 unless you are doing SDIO1 controller verification. */
+// Modified by TUYA Start
+/* Default host when the board layer does not override sdio_board_use_sdio1().
+ * 0 = SDIO0, 1 = SDIO1. Tuya boards can override this at runtime from
+ * usr_sdio.c based on the configured pin group. */
 #define SDIO_VERIFY_USE_SDIO1    0
-#if SDIO_VERIFY_USE_SDIO1
-#define SDIO_ACTIVE_BASE         sdio_mshc_1_base
-#else
-#define SDIO_ACTIVE_BASE         sdio_mshc_0_base
-#endif
+
+uint8_t sdio_board_use_sdio1(void);
+uintptr_t sdio_board_get_active_base(void);
+
+#define SDIO_ACTIVE_BASE         sdio_board_get_active_base()
+// Modified by TUYA End
 
 //********user reg **********//
 #define sdio_reg0(addr)                                   *((volatile unsigned int *)  (addr + 0x700))

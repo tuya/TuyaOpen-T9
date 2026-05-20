@@ -18,16 +18,41 @@
 #include "driver/sd_card_types.h"
 #include "tkl_fs.h"
 #include "tkl_memory.h"
+#include <string.h>
 
+#define TEST_SDCARD_WR_FILE_NAME      "test.txt"
+#define TEST_SDCARD_WR_FILE_CONTENT   "hello_world"
+
+static void __cli_sdcard_list_file(const char *path);
 
 static int __cli_sdcard_mount(void)
 {
     return test_fs_mount(TEST_SDCARD_MOUNT_POINT, DEV_SDCARD);
 }
 
+static int __cli_sdcard_mount_once(void)
+{
+    int ret = tkl_fs_mount(TEST_SDCARD_MOUNT_POINT, DEV_SDCARD);
+    if (ret != 0) {
+        bk_printf("mount %s failed, ret=%d\r\n", TEST_SDCARD_MOUNT_POINT, ret);
+    }
+
+    return ret;
+}
+
 static void __cli_sdcard_umount(void)
 {
     test_fs_unmount(TEST_SDCARD_MOUNT_POINT);
+}
+
+static int __cli_sdcard_umount_once(void)
+{
+    int ret = tkl_fs_unmount(TEST_SDCARD_MOUNT_POINT);
+    if (ret != 0) {
+        bk_printf("unmount %s failed, ret=%d\r\n", TEST_SDCARD_MOUNT_POINT, ret);
+    }
+
+    return ret;
 }
 
 static void __cli_sdcard_unlink(const char *path)
@@ -95,6 +120,164 @@ static void __cli_sdcard_write(const char *path, const uint8_t *buf, uint32_t si
     tkl_fwrite(buf, size, f);
 
     tkl_fclose(f);
+}
+
+static int __cli_sdcard_write_file_overwrite(const char *path, const uint8_t *buf, uint32_t size)
+{
+    char fp[64] = {'\0'};
+    TUYA_FILE f = NULL;
+    int ret = 0;
+
+    if ((path == NULL) || (buf == NULL) || (size == 0)) {
+        bk_printf("write failed, invalid param\r\n");
+        return -1;
+    }
+
+    os_snprintf(fp, sizeof(fp), "%s/%s", TEST_SDCARD_MOUNT_POINT, path);
+
+    f = tkl_fopen(fp, "wb");
+    if (f == NULL) {
+        bk_printf("open %s failed\r\n", path);
+        return -1;
+    }
+
+    ret = tkl_fwrite((void *)buf, size, f);
+    if (ret != (int)size) {
+        bk_printf("write %s failed, ret=%d expect=%u\r\n", path, ret, size);
+        tkl_fclose(f);
+        return -1;
+    }
+
+    ret = tkl_fsync((int)f);
+    if (ret != 0) {
+        bk_printf("fsync %s failed, ret=%d\r\n", path, ret);
+        tkl_fclose(f);
+        return -1;
+    }
+
+    tkl_fclose(f);
+    bk_printf("write: %s\r\n", path);
+    return 0;
+}
+
+static int __cli_sdcard_read_and_check(const char *path, const uint8_t *expect, uint32_t expect_size)
+{
+    char buf[64] = {'\0'};
+    char fp[64] = {'\0'};
+    TUYA_FILE f = NULL;
+    int ret = 0;
+
+    if ((path == NULL) || (expect == NULL) || (expect_size == 0) || (expect_size >= sizeof(buf))) {
+        bk_printf("read check failed, invalid param\r\n");
+        return -1;
+    }
+
+    os_snprintf(fp, sizeof(fp), "%s/%s", TEST_SDCARD_MOUNT_POINT, path);
+
+    f = tkl_fopen(fp, "r");
+    if (f == NULL) {
+        bk_printf("open %s failed\r\n", path);
+        return -1;
+    }
+
+    ret = tkl_fread(buf, expect_size, f);
+    tkl_fclose(f);
+    if (ret != (int)expect_size) {
+        bk_printf("read %s failed, ret=%d expect=%u\r\n", path, ret, expect_size);
+        return -1;
+    }
+
+    buf[expect_size] = '\0';
+    if (memcmp(buf, expect, expect_size) != 0) {
+        bk_printf("read check failed, expect=%s actual=%s\r\n", (const char *)expect, buf);
+        return -1;
+    }
+
+    bk_printf("read: %s\r\n", buf);
+    return 0;
+}
+
+static int __cli_sdcard_delete_file(const char *path)
+{
+    char fp[64] = {'\0'};
+    int ret = 0;
+
+    if (path == NULL) {
+        bk_printf("delete failed, no file name spec\r\n");
+        return -1;
+    }
+
+    os_snprintf(fp, sizeof(fp), "%s/%s", TEST_SDCARD_MOUNT_POINT, path);
+
+    ret = tkl_fs_remove(fp);
+    if (ret != 0) {
+        bk_printf("rm %s failed, ret=%d\r\n", path, ret);
+        return -1;
+    }
+
+    bk_printf("rm file: %s\r\n", path);
+    return 0;
+}
+
+static int __cli_sdcard_loop_wr(uint32_t loops)
+{
+    uint32_t i = 0;
+    uint32_t pass = 0;
+    uint32_t fail = 0;
+    int ret = 0;
+
+    if (loops == 0) {
+        bk_printf("invalid loops: 0\r\n");
+        return -1;
+    }
+
+    for (i = 0; i < loops; i++) {
+        bk_printf("[xsd wr] loop %u/%u begin\r\n", i + 1, loops);
+
+        ret = __cli_sdcard_mount_once();
+        if (ret != 0) {
+            bk_printf("[xsd wr] mount failed, ret=%d\r\n", ret);
+            fail++;
+            continue;
+        }
+
+        ret = __cli_sdcard_write_file_overwrite(TEST_SDCARD_WR_FILE_NAME,
+                                                (const uint8_t *)TEST_SDCARD_WR_FILE_CONTENT,
+                                                strlen(TEST_SDCARD_WR_FILE_CONTENT));
+        if (ret != 0) {
+            goto loop_end;
+        }
+
+        ret = __cli_sdcard_read_and_check(TEST_SDCARD_WR_FILE_NAME,
+                                          (const uint8_t *)TEST_SDCARD_WR_FILE_CONTENT,
+                                          strlen(TEST_SDCARD_WR_FILE_CONTENT));
+        if (ret != 0) {
+            goto loop_end;
+        }
+
+        __cli_sdcard_list_file(TEST_SDCARD_MOUNT_POINT);
+
+        ret = __cli_sdcard_delete_file(TEST_SDCARD_WR_FILE_NAME);
+
+loop_end:
+        {
+            int umount_ret = __cli_sdcard_umount_once();
+            if ((ret == 0) && (umount_ret != 0)) {
+                ret = umount_ret;
+            }
+        }
+
+        if (ret == 0) {
+            pass++;
+            bk_printf("[xsd wr] loop %u/%u pass\r\n", i + 1, loops);
+        } else {
+            fail++;
+            bk_printf("[xsd wr] loop %u/%u fail\r\n", i + 1, loops);
+        }
+    }
+
+    bk_printf("[xsd wr] done, loops=%u, pass=%u, fail=%u\r\n", loops, pass, fail);
+    return (fail == 0) ? 0 : -1;
 }
 
 static void __cli_sdcard_list_file(const char* path)
@@ -306,7 +489,17 @@ void cli_sdcard_test_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, cha
         __cli_sdcard_umount();
     } else if (!os_strcmp(argv[1], "speed_test")) {
         __cli_sdcard_speed_test();
-    } else {
+    } else if (!os_strcmp(argv[1], "wr")) {
+        uint32_t loops = 0;
 
+        if (argv[2] == NULL) {
+            bk_printf("usage: xsd wr <loops>\r\n");
+            return;
+        }
+
+        loops = os_strtoul(argv[2], NULL, 10);
+        __cli_sdcard_loop_wr(loops);
+    } else {
+        bk_printf("unknown cmd: %s\r\n", argv[1]);
     }
 }

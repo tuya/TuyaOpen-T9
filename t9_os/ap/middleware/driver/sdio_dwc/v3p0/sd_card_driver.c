@@ -158,19 +158,33 @@ static sdcard_rw_state_t sd_card_check_continious_rw(sdcard_rw_ops_t ops, uint32
 
 // Modified by TUYA Start
 extern void user_sdio_gpio_init(void) __attribute__((weak));
+extern void user_sdio_set_width(uint8_t width_sel) __attribute__((weak));
 static void sdio_gpio_init(uint8_t io_pos, sdio_wire_width_sel_t width_sel);
+
+uint8_t __attribute__((weak)) sdio_board_use_sdio1(void)
+{
+	return SDIO_VERIFY_USE_SDIO1 ? 1 : 0;
+}
+
+uintptr_t __attribute__((weak)) sdio_board_get_active_base(void)
+{
+	return sdio_board_use_sdio1() ? sdio_mshc_1_base : sdio_mshc_0_base;
+}
 
 static void sdio_board_gpio_init(sdio_wire_width_sel_t width_sel)
 {
-	// if (user_sdio_gpio_init) {
-	// 	/*
-	// 	 * Tuya adapter owns the board-level SDIO pin selection. Keep the
-	// 	 * current v3p0 driver width argument for fallback only.
-	// 	 */
-	// 	(void)width_sel;
-	// 	user_sdio_gpio_init();
-	// 	return;
-	// }
+	if (user_sdio_gpio_init) {
+		/*
+		 * Tuya adapter owns the board-level SDIO pin selection. Keep the
+		 * current v3p0 driver width argument so the adapter can distinguish
+		 * 1-bit/4-bit setup and keep DAT3 high during 1-bit init.
+		 */
+		if (user_sdio_set_width) {
+			user_sdio_set_width((uint8_t)width_sel);
+		}
+		user_sdio_gpio_init();
+		return;
+	}
 
 	sdio_gpio_init(0, width_sel);
 }
@@ -1040,13 +1054,15 @@ void sdio_reset(void)
 	sdio_reg2(SDIO_ACTIVE_BASE)= 0<<0;
 	sdio_reg2(SDIO_ACTIVE_BASE)= 3<<0;
 	card_clk_stop(SDIO_ACTIVE_BASE);
-#if SDIO_VERIFY_USE_SDIO1
-	sys_hal_sdio1_set_cken(0);
-	sys_hal_sdio1_set_cken(1);
-#else
-	sys_hal_sdio0_set_cken(0);
-	sys_hal_sdio0_set_cken(1);
-#endif
+// Modified by TUYA Start
+	if (sdio_board_use_sdio1()) {
+		sys_hal_sdio1_set_cken(0);
+		sys_hal_sdio1_set_cken(1);
+	} else {
+		sys_hal_sdio0_set_cken(0);
+		sys_hal_sdio0_set_cken(1);
+	}
+// Modified by TUYA End
 }
 
 bk_err_t sdio_host_init()
@@ -1125,8 +1141,9 @@ static bk_err_t sdio_host_resume(void)
 	sys_drv_set_int_en(rtos_get_core_id(), INT_SRC_SDIO0, 1);
 	sys_drv_set_int_en(rtos_get_core_id(), INT_SRC_SDIO1, 1);
 #endif
-
-	sdio_gpio_init(0, SDIO_WIRE_WIDTH_SEL_1);
+// Modified by TUYA Start
+	sdio_board_gpio_init(SDIO_WIRE_WIDTH_SEL_1);
+// Modified by TUYA End
 	PWR_CTRL_R(SDIO_ACTIVE_BASE) = 0x01;
 	rtos_delay_milliseconds(10);
 	sdio_clear_controller_irq(SDIO_ACTIVE_BASE);

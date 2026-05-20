@@ -8,8 +8,6 @@
 #include "driver/sd_card.h"
 #include "driver/sd_card_types.h"
 
-extern void user_sdio_gpio_init(void);
-
 #if defined(BK_PARTITION_LITTLEFS)
 #define BK_PARTITION_FS_ID BK_PARTITION_LITTLEFS
 #else
@@ -39,15 +37,13 @@ int fatfs_mount(const char *mount_path, int type)
     partition.part_dev.device_name = FATFS_DEV_SDCARD;
     partition.mount_path = mount_path;
 
-    // user_sdio_gpio_init();
-
     ret = mount("SOURCE_NONE", partition.mount_path, fs_type, 0, &partition);
     if (ret == 0) {
         sd_card_info_t card_info;
         bk_sd_card_get_card_info(&card_info);
         uint32_t cap = bk_sd_card_get_card_size();
         sd_card_state_t state = bk_sd_card_get_card_state();
-        bk_printf("mount on sdcard, version: %d, type: %d, class: %d, rca: %d, size: %d, stat: %d\r\n",
+        bk_printf("mount on sdcard, version: %d, type: %d, class: %d, rca: %d, size: %u, stat: %d\r\n",
                 card_info.card_version, card_info.card_type, card_info.class,
                 card_info.relative_card_addr, cap, state);
     }
