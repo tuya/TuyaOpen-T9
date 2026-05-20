@@ -18,22 +18,31 @@
 extern "C" {
 #endif//__cplusplus
 
-// Face detection box structure
+/**
+ * Generic 2D detection box used across all NN detection models in this module
+ * (faces, palms, gestures, ...).
+ *
+ *   x, y  : top-left corner    (inclusive), in source-image pixel units
+ *   w, h  : box size in pixels (so the bottom-right corner is (x+w, y+h))
+ *   score : confidence score (model-specific scale)
+ *
+ * Coordinates are float so that sub-pixel detection output (e.g. the raw
+ * cx/cy/w/h decoded from a model tensor before any rounding) can flow all
+ * the way through rotation/scaling/clamping with no precision loss; the
+ * final pixel-snap (cast to int) only happens at the very last step inside
+ * box_detection_path_build() when the GPU draw command is emitted.
+ */
 typedef struct {
-    float score;  // confidence score
-    short xmin;   // left top x
-    short ymin;   // left top y
-    short xmax;   // right bottom x
-    short ymax;   // right bottom y
-    short lm[0];  // if landmark enabled, elements of lm will be FACE_LANDMARK_POINTS * 2
-} FaceBox;
-
-typedef struct {
-    int x1, y1, x2, y2;
+    float x;
+    float y;
+    float w;
+    float h;
     float score;
 } Box;
 
-int box_detection_path_build(FaceBox *faces, int count, int buffer_count, int rotate, int src_width, int src_height, int dst_width, int dst_height);
+int  box_detection_path_build(Box *boxes, int count, int buffer_count, int rotate,
+                              int src_width, int src_height,
+                              int dst_width, int dst_height);
 void box_detection_path_clear(void);
 
 #ifdef  __cplusplus

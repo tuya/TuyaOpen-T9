@@ -15,9 +15,8 @@ extern "C" {
 #include "devices_mgmt.h"
 #include "app_gpu.h"
 #include "avdk_monitor.h"
-#include "aov_detection.h"
-#include <lcd/lcd_hx8399c_mipi_1080x1920.h>
-#include <lcd/lcd_lt8912b_mipi_bridge.h>
+#include <lcd/lcd_mipi_hx8399c_1080x1920.h>
+#include <lcd/lcd_mipi_lt8912b_bridge.h>
 #define SYS_ANA_REG_BASE    (0x44010000)
 #define LDO_ANA_REG         (0x69)
 
@@ -235,6 +234,8 @@ int main(void)
     gpu_board.flexa.dst_format = BK_PIXEL_FORMAT_ARGB8888;
     gpu_board.flexa.dst_compress = true;
     gpu_board.flexa.scale = false;
+    gpu_board.flexa.tess_width = 0;
+    gpu_board.flexa.tess_height = 0;
 
     bk_auxldo_enable();
     bk_frame_buffer_init();

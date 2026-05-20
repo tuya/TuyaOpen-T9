@@ -64,9 +64,9 @@ set(srcs
     # src/system/tkl_atomic.c
     # src/system/tkl_task_notify.c
     src/driver/tkl_watchdog.c
-    # src/driver/tkl_hci.c
-    src/driver/tkl_ipc.c
-    src/misc/tuya_tkl_ipc.c
+    src/driver/tkl_hci.c
+    # src/driver/tkl_ipc.c
+    # src/misc/tuya_tkl_ipc.c
     # src/misc/tkl_mftest.c
     include/init/src/tkl_init_system.c
 )
@@ -74,7 +74,7 @@ set(srcs
 if ("${CONFIG_CPU_INDEX}" STREQUAL "0")
     # tkl_init_system.c always references tkl_ota_*; tkl_ota.c provides CPU0 stubs under #elif CONFIG_CPU_INDEX == 0
     list(APPEND srcs src/system/tkl_ota.c)
-    list(APPEND srcs src/driver/tkl_hci_0.c)
+    # list(APPEND srcs src/driver/tkl_hci_0.c)
     if (CONFIG_TUYA_TEST_CLI)
         list(APPEND srcs src/test/cli_tuya_test_0.c)
         list(APPEND srcs src/test/test_memory.c)
@@ -83,7 +83,7 @@ else()
     list(APPEND srcs
         src/driver/tkl_wifi.c
         src/driver/tkl_wired.c
-        src/driver/tkl_hci_1.c
+        # src/driver/tkl_hci_1.c
         # src/driver/tkl_video_enc.c
         # src/driver/tkl_video_in.c
         # src/driver/tkl_mic.c
@@ -175,11 +175,11 @@ else()
             # src/test/test_audio.c
             # src/test/test_lcd.c
             src/test/test_pwm.c
-            src/test/test_qspi.c
+            # src/test/test_qspi.c
             # src/test/test_mp3.c
             src/test/test_timer.c
             # src/test/test_usb.c
-            src/test/test_spi.c
+            # src/test/test_spi.c
             src/test/test_ringbuffer/rb.c
             src/test/test_media/test_mipi.c
             src/test/test_media/test_gpu.c

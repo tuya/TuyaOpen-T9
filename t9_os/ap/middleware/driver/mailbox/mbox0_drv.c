@@ -1,3 +1,5 @@
+#include <common/bk_include.h>
+#include "cmsis_gcc.h"
 #include "sdkconfig.h"
 #include "cpu_id.h"
 #include "mbox0_drv.h"
@@ -38,6 +40,7 @@ static void __BK_IRQ mbox0_drv_isr_handler(void)
 		if(fifo_status & RX_FIFO_STAT_NOT_EMPTY)
 		{
 			mbox0_drv_recieve_message(&message);
+			__DMB();
 
 			if(message.data[1] != 0)  /* message data len is not 0. */
 			{
@@ -58,6 +61,7 @@ static void __BK_IRQ mbox0_drv_isr_handler(void)
 			break;
 		}
 	} while(1);
+	__DSB();
 	
 }
 
@@ -78,6 +82,17 @@ int mbox0_drv_get_send_stat(uint32_t dest_cpu, uint32_t *fifo_status)
 int mbox0_drv_send_message(mbox0_message_t* message)
 {
 	return mbox0_dev.chn_drv[SELF_CHNL]->chn_send(&mbox0_dev.hal, message);
+}
+
+int mbox0_drv_core_int_enable(uint32_t core_id, uint32_t enable)
+{
+	if ((mbox0_init == 0) || (core_id >= MBOX_CHNL_NUM) || (mbox0_dev.chn_drv[core_id] == NULL))
+		return MBOX0_HAL_SW_PARAM_ERR;
+
+	mbox0_dev.chn_drv[core_id]->chn_int_enable(&mbox0_dev.hal, enable ? 1 : 0);
+	sys_drv_set_int_en(core_id, INT_SRC_MAILBOX, enable ? 1 : 0);
+
+	return 0;
 }
 
 int mbox0_drv_callback_register(mbox0_rx_callback_t callback)

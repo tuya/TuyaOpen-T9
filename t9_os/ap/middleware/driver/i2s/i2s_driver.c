@@ -529,7 +529,6 @@ bk_err_t bk_i2s_init(i2s_gpio_group_id_t id, const i2s_config_t *config)
 	return BK_OK;
 }
 
-
 bk_err_t bk_i2s_deinit(void)
 {
 	i2s_drv_info_t *drv_info;
@@ -2623,3 +2622,4 @@ bk_err_t bk_i2s_stop(void)
 
 	return BK_OK;
 }
+

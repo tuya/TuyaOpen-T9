@@ -9,8 +9,9 @@
  *   xi2c smoke [port] [loops]
  *   xi2c full [master_port] [slave_port] [slave_addr_hex] [loops] [bytes]
  *   xi2c pajid [port] [dev_addr_hex]
+ *   xi2c slave [port] [slave_addr_hex] [bytes] [loops]
  *
- * Loopback cases are disabled in current suite.
+ * Loopback wiring: connect I2C0_SDA<->I2C1_SDA, I2C0_SCL<->I2C1_SCL (external pull-up required).
  *
  * Log format:
  *   [xi2c] PASS|FAIL|SKIP test_name=<item> return_code=...
@@ -47,12 +48,12 @@ extern void bk_printf(const char *fmt, ...);
 #define PAJ7620_EXPECT_ID_H           0x76U
 #define I2C_WAIT_MS                   10000U
 #define I2C_POLL_INTERVAL_MS          2U
-#define I2C_SLAVE_ARM_WAIT_MS         10U
+#define I2C_SLAVE_ARM_WAIT_MS         50U
 
 static UINT32_T s_pass;
 static UINT32_T s_fail;
 static UINT32_T s_skip;
-static UINT8_T s_loopback_case_enable = 0U;
+static UINT8_T s_loopback_case_enable = 1U;
 
 static UINT8_T s_loop_slave_rx[I2C_LOOPBACK_BYTES_MAX];
 static UINT8_T s_loop_slave_tx[I2C_LOOPBACK_BYTES_MAX];
@@ -302,6 +303,33 @@ static OPERATE_RET test_i2c_case_pajid(TUYA_I2C_NUM_E port, UINT16_T dev_addr)
 
     (void)tkl_i2c_deinit(port);
     return ret;
+}
+
+static void test_i2c_log_buf_head(const char *test_name, const UINT8_T *buf, UINT32_T len)
+{
+    char hex[16U * 3U + 1U];
+    UINT32_T i;
+    UINT32_T show = (len > 16U) ? 16U : len;
+    UINT32_T off = 0U;
+
+    if ((test_name == NULL) || (buf == NULL) || (len == 0U)) {
+        return;
+    }
+
+    for (i = 0U; i < show; i++) {
+        off += (UINT32_T)snprintf(hex + off, sizeof(hex) - off, "%02X ", (unsigned)buf[i]);
+        if (off >= (sizeof(hex) - 1U)) {
+            break;
+        }
+    }
+    if (off > 0U) {
+        hex[off - 1U] = '\0';
+    } else {
+        hex[0] = '\0';
+    }
+
+    bk_printf("[xi2c] INFO test_name=%s len=%u head=%s%s\r\n",
+              test_name, (unsigned)len, hex, (len > show) ? " ..." : "");
 }
 
 /* @note Loopback case requires wiring in file header. */
@@ -638,7 +666,7 @@ static OPERATE_RET test_i2c_case_loopback(TUYA_I2C_NUM_E master_port, TUYA_I2C_N
         (void)slave_addr;
         (void)bytes;
         (void)loops;
-        test_i2c_skip(test_name, "loopback case removed");
+        test_i2c_skip(test_name, "loopback case disabled");
         return OPRT_NOT_SUPPORTED;
     }
 
@@ -921,6 +949,79 @@ static void test_i2c_run_pajid(int port, UINT16_T dev_addr)
     test_i2c_stats_print("pajid");
 }
 
+static void test_i2c_run_slave(int port, UINT16_T slave_addr, UINT32_T bytes, UINT32_T loops)
+{
+    TUYA_IIC_BASE_CFG_T cfg;
+    OPERATE_RET ret;
+    UINT32_T i;
+
+    if (!test_i2c_port_ok(port)) {
+        bk_printf("[xi2c] ERROR invalid_port=%d hw_ports=%u\r\n", port, (unsigned)test_i2c_hw_port_num());
+        return;
+    }
+
+    if (bytes == 0U) {
+        bytes = I2C_LOOPBACK_BYTES_DEFAULT;
+    }
+    if (bytes > I2C_LOOPBACK_BYTES_MAX) {
+        bytes = I2C_LOOPBACK_BYTES_MAX;
+    }
+    if (loops == 0U) {
+        loops = 1U;
+    }
+
+    test_i2c_stats_reset();
+    bk_printf("[xi2c] SUITE BEGIN test_name=SLAVE_WAIT_RX port=%d slave_addr=0x%02x bytes=%u loops=%u\r\n",
+              port, (unsigned)slave_addr, (unsigned)bytes, (unsigned)loops);
+
+    (void)tkl_i2c_deinit((TUYA_I2C_NUM_E)port);
+    cfg = test_i2c_build_cfg(TUYA_IIC_MODE_SLAVE, TUYA_IIC_BUS_SPEED_100K, TUYA_IIC_ADDRESS_7BIT);
+    ret = tkl_i2c_init((TUYA_I2C_NUM_E)port, &cfg);
+    if (ret != OPRT_OK) {
+        test_i2c_item_fail_ret("S01_slave_init", ret, OPRT_OK);
+        test_i2c_stats_print("slave");
+        return;
+    }
+    test_i2c_item_pass_ret("S01_slave_init", ret);
+
+    ret = tkl_i2c_set_slave_addr((TUYA_I2C_NUM_E)port, slave_addr);
+    if (ret != OPRT_OK) {
+        test_i2c_item_fail_ret("S02_set_slave_addr", ret, OPRT_OK);
+        (void)tkl_i2c_deinit((TUYA_I2C_NUM_E)port);
+        test_i2c_stats_print("slave");
+        return;
+    }
+    test_i2c_item_pass_ret("S02_set_slave_addr", ret);
+
+    for (i = 0U; i < loops; i++) {
+        (void)os_memset(s_loop_slave_rx, 0, bytes);
+        ret = tkl_i2c_slave_receive((TUYA_I2C_NUM_E)port, s_loop_slave_rx, bytes);
+        if (ret != OPRT_OK) {
+            test_i2c_item_fail_ret("S03_slave_receive", ret, OPRT_OK);
+            break;
+        }
+
+        if ((i < 3U) || ((i + 1U) == loops) || ((i & 0x3FU) == 0U)) {
+            bk_printf("[xi2c] INFO test_name=S03_slave_receive iter=%u/%u\r\n",
+                      (unsigned)(i + 1U), (unsigned)loops);
+            test_i2c_log_buf_head("S03_slave_rx_data", s_loop_slave_rx, bytes);
+        }
+    }
+
+    if (ret == OPRT_OK) {
+        test_i2c_item_pass_plain("S03_slave_receive");
+    }
+
+    ret = tkl_i2c_deinit((TUYA_I2C_NUM_E)port);
+    if (ret == OPRT_OK) {
+        test_i2c_item_pass_ret("S04_slave_deinit", ret);
+    } else {
+        test_i2c_item_fail_ret("S04_slave_deinit", ret, OPRT_OK);
+    }
+
+    test_i2c_stats_print("slave");
+}
+
 void cli_xi2c_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv)
 {
     int port = 0;
@@ -928,6 +1029,7 @@ void cli_xi2c_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **arg
     int slave_port = 1;
     UINT32_T loops = I2C_SMOKE_LOOPS_DEFAULT;
     UINT32_T bytes = I2C_LOOPBACK_BYTES_DEFAULT;
+    UINT32_T slave_loops = 1U;
     UINT16_T slave_addr = (UINT16_T)I2C_DEFAULT_SLAVE_ADDR;
 
     (void)pcWriteBuffer;
@@ -938,7 +1040,8 @@ void cli_xi2c_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **arg
         bk_printf("[xi2c] USAGE: xi2c smoke [port] [loops]\r\n");
         bk_printf("[xi2c] USAGE: xi2c full [master_port] [slave_port] [slave_addr_hex] [loops] [bytes]\r\n");
         bk_printf("[xi2c] USAGE: xi2c pajid [port] [dev_addr_hex]\r\n");
-        bk_printf("[xi2c] NOTE: loopback cases are removed in current build.\r\n");
+        bk_printf("[xi2c] USAGE: xi2c slave [port] [slave_addr_hex] [bytes] [loops]\r\n");
+        bk_printf("[xi2c] NOTE: loopback requires wiring I2C0<->I2C1 with pull-ups.\r\n");
         return;
     }
 
@@ -992,6 +1095,23 @@ void cli_xi2c_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **arg
             dev_addr = (UINT16_T)strtoul(argv[3], NULL, 16);
         }
         test_i2c_run_pajid(port, dev_addr);
+        return;
+    }
+
+    if (strcmp(argv[1], "slave") == 0) {
+        if ((argc >= 3) && (argv[2] != NULL)) {
+            port = atoi(argv[2]);
+        }
+        if ((argc >= 4) && (argv[3] != NULL)) {
+            slave_addr = (UINT16_T)strtoul(argv[3], NULL, 16);
+        }
+        if ((argc >= 5) && (argv[4] != NULL)) {
+            bytes = (UINT32_T)strtoul(argv[4], NULL, 10);
+        }
+        if ((argc >= 6) && (argv[5] != NULL)) {
+            slave_loops = (UINT32_T)strtoul(argv[5], NULL, 10);
+        }
+        test_i2c_run_slave(port, slave_addr, bytes, slave_loops);
         return;
     }
 

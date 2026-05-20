@@ -16,15 +16,15 @@
 #include "reset_reason.h"
 #include <driver/trng.h>
 #include "tkl_memory.h"
-#include <driver/otp.h>
-#include "tkl_ipc.h"
 #include "atomic.h"
+#include <components/bk_uid.h>
 #include "tkl_semaphore.h"
 #include "sdkconfig.h"
 
 extern void bk_printf(const char *fmt, ...);
 static TKL_SEM_HANDLE get_cpu_info_sem = NULL;
 
+#if 0
 #if CONFIG_CPU_INDEX == 0
 static TaskHandle_t __gi_thread_handle = NULL;
 static void __get_info_func(void *arg)
@@ -76,6 +76,7 @@ void tkl_sys_ipc_func(struct ipc_msg_s *msg)
 
     return;
 }
+#endif
 
 /**
  * @brief Get system ticket count
@@ -274,6 +275,7 @@ INT_T tkl_system_get_random(CONST UINT_T range)
     return (bk_rand() % trange);
 }
 
+#if 0
 #define EFUSE_DEVICE_ID_BYTE_NUM 5
 #define OTP_DEVICE_ID 29
 
@@ -347,6 +349,54 @@ OPERATE_RET tkl_system_get_cpu_info(TUYA_CPU_INFO_T **cpu_ary, INT_T *cpu_cnt)
 
     return OPRT_OK;
 }
+#endif
+
+OPERATE_RET tkl_system_get_cpu_info(TUYA_CPU_INFO_T **cpu_ary, INT_T *cpu_cnt)
+{
+    if (cpu_ary == NULL) {
+        return OPRT_INVALID_PARM;
+    }
+
+    *cpu_ary = NULL;
+    if (cpu_cnt) {
+        *cpu_cnt = 0;
+    }
+
+    TUYA_CPU_INFO_T *cpu = (TUYA_CPU_INFO_T *)tkl_system_malloc(sizeof(TUYA_CPU_INFO_T));
+    if (cpu == NULL) {
+        return OPRT_MALLOC_FAILED;
+    }
+
+    memset(cpu, 0, sizeof(TUYA_CPU_INFO_T));
+
+    uint8_t uid[32] = {0};
+    if (bk_uid_get_data(uid) != BK_OK) {
+        tkl_system_free(cpu);
+        return OPRT_COM_ERROR;
+    }
+
+    UINT_T copy_len = (UINT_T)sizeof(cpu->chipid);
+    if (copy_len > (UINT_T)sizeof(uid)) {
+        copy_len = (UINT_T)sizeof(uid);
+    }
+
+    memcpy(cpu->chipid, uid, copy_len);
+    cpu->chipidlen = copy_len;
+
+    if (cpu_cnt) {
+        *cpu_cnt = 1;
+    }
+
+    *cpu_ary = cpu;
+
+    // bk_printf_raw(BK_LOG_INFO, NULL,
+    //               "get cpu info, %p, 0x%02x%02x%02x%02x%02x%02x%02x%02x\r\n",
+    //               cpu, cpu->chipid[0], cpu->chipid[1], cpu->chipid[2], cpu->chipid[3],
+    //               cpu->chipid[4], cpu->chipid[5], cpu->chipid[6], cpu->chipid[7]);
+
+    return OPRT_OK;
+}
+
 
 /**
  * @brief system enter critical

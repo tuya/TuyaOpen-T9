@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <common/bk_include.h>
+#include "cmsis_gcc.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -32,6 +34,8 @@
 #include <wdt_driver.h>
 
 #define MOD_TAG		"IPC"
+
+extern void bk_coredump_dump_ap_memory_for_trap(void);
 
 
 #if (CONFIG_CPU_CNT > 1)
@@ -159,6 +163,7 @@ static void ipc_cmd_rx_isr(ipc_chnl_cb_t *chnl_cb, mb_chnl_cmd_t *cmd_buf)
 				#if CONFIG_SUPPORT_CACHEABLE_SRAM
 				flush_dcache(ipc_cmd->cmd_buff, ipc_cmd->cmd_data_len);
 				#endif
+				__DMB();
 				
 				memcpy(chnl_cb->rsp_buf, ipc_cmd->cmd_buff, ipc_cmd->cmd_data_len);
 
@@ -202,6 +207,7 @@ static void ipc_cmd_rx_isr(ipc_chnl_cb_t *chnl_cb, mb_chnl_cmd_t *cmd_buf)
 				#if CONFIG_SUPPORT_CACHEABLE_SRAM
 				flush_dcache(ipc_cmd->cmd_buff, ipc_cmd->cmd_data_len);
 				#endif
+				__DMB();
 				
 				memcpy(chnl_cb->cmd_buf, ipc_cmd->cmd_buff, ipc_cmd->cmd_data_len);
 
@@ -272,6 +278,7 @@ static void ipc_cmd_tx_cmpl_isr(ipc_chnl_cb_t *chnl_cb, mb_chnl_ack_t *ack_buf) 
 					#if CONFIG_SUPPORT_CACHEABLE_SRAM
 					flush_dcache(ipc_rsp->rsp_buff, ipc_rsp->rsp_data_len);
 					#endif
+					__DMB();
 
 					memcpy(chnl_cb->rsp_buf, ipc_rsp->rsp_buff, ipc_rsp->rsp_data_len);
 					chnl_cb->rsp_len = ipc_rsp->rsp_data_len;
@@ -697,16 +704,16 @@ static u32 ipc_cmd_handler(ipc_chnl_cb_t *chnl_cb, mb_chnl_ack_t *ack_buf)
 				ipc_rsp->rsp_data_len = 0;
 				result = ACK_STATE_COMPLETE;
 
-                g_ap_dump_flag = 0;
-
 				u8   dump_cpu_id = GET_DST_CPU_ID(chnl_cb->chnl_id);
-				mb_ipc_dump_notify(dump_cpu_id, 0);
 				/* no params, no returns. */
 				#if (CONFIG_SHELL_ASYNCLOG)
 				shell_set_log_cpu(SHELL_MAX_CPU_CNT);
 				shell_log_flush();
 				#endif
 
+				bk_coredump_dump_ap_memory_for_trap();
+				g_ap_dump_flag = 0;
+				mb_ipc_dump_notify(dump_cpu_id, 0);
 				bk_wdt_force_reboot();
 
 			}

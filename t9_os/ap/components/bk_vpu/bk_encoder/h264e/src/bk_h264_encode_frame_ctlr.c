@@ -21,13 +21,16 @@
 // Handle encoding failure
 static void handle_encode_error(private_h264_encode_frame_ctlr_t *ctrl, void *buffer, uint32_t size)
 {
-    frame_buffer_t *frame = (frame_buffer_t *)buffer;
-    if (frame != NULL) {
-        frame->length = size;
-    }
-
-    if (ctrl->config.outbuf_complete && ctrl->h264_encoder_param) {
-        ctrl->config.outbuf_complete(frame, BK_FAIL, ctrl->config.outbuf_complete_args);
+    if (buffer != NULL && ctrl->config.outbuf_complete && ctrl->h264_encoder_param) {
+        bk_h264_encode_outbuf_info_t info = {
+            .outbuf = buffer,
+            .length = size,
+            .type = 0,
+            .status = BK_FAIL,
+            .sequence = 0,
+            .args = ctrl->config.outbuf_complete_args,
+        };
+        ctrl->config.outbuf_complete(&info);
         ctrl->h264_encoder_param->out_buf = 0;
     }
     h264e_set_force_idr(&ctrl->h264e_handler);
@@ -37,10 +40,10 @@ static void handle_encode_error(private_h264_encode_frame_ctlr_t *ctrl, void *bu
 static void handle_video_frame(private_h264_encode_frame_ctlr_t *ctrl, void *buffer, uint32_t size, uint32_t type)
 {
     // Pre-allocate buffer for next frame
-    frame_buffer_t *next_buffer = NULL;
+    void *next_buffer = NULL;
     if (ctrl->config.outbuf_malloc) {
-        next_buffer = (frame_buffer_t *)ctrl->config.outbuf_malloc(CONFIG_BK_ENCODER_H264_MAX_OUTPUT_BUFFER,
-                                                                   ctrl->config.outbuf_malloc_args);
+        next_buffer = ctrl->config.outbuf_malloc(CONFIG_BK_ENCODER_H264_MAX_OUTPUT_BUFFER,
+                                                 ctrl->config.outbuf_malloc_args);
         if (!next_buffer) {
             LOGD("Failed to get next buffer, force IDR\r\n");
             handle_encode_error(ctrl, buffer, size);
@@ -48,15 +51,21 @@ static void handle_video_frame(private_h264_encode_frame_ctlr_t *ctrl, void *buf
         }
     }
 
-    // Fill current frame information
-    frame_buffer_t *frame = (frame_buffer_t *)buffer;
-    frame->h264_type = type;
-    frame->length = size;
-
     // Notify upper layer and save buffer for next frame
     if (ctrl->config.outbuf_complete && ctrl->h264_encoder_param) {
-        ctrl->config.outbuf_complete(frame, BK_OK, ctrl->config.outbuf_complete_args);
+        enc_h264_debug_t *debug_info = NULL;
+        h264e_get_debug_info(&ctrl->h264e_handler, &debug_info);
+        bk_h264_encode_outbuf_info_t info = {
+            .outbuf = buffer,
+            .length = size,
+            .type = type,
+            .status = BK_OK,
+            .sequence = debug_info ? debug_info->all_frame_count : 0,
+            .args = ctrl->config.outbuf_complete_args,
+        };
+        ctrl->config.outbuf_complete(&info);
         ctrl->h264_encoder_param->out_buf = (uint32_t)next_buffer;
+        ctrl->h264_encoder_param->out_size = CONFIG_BK_ENCODER_H264_MAX_OUTPUT_BUFFER;
     }
 }
 
@@ -139,11 +148,11 @@ static void h264_encoder_entry(void *arg)
             break;
         }
         if (param.out_buf == 0 && ctrl->config.outbuf_malloc != NULL) {
-            frame_buffer_t *temp_buffer = (frame_buffer_t *)ctrl->config.outbuf_malloc(CONFIG_BK_ENCODER_H264_MAX_OUTPUT_BUFFER,
-                                                                                       ctrl->config.outbuf_malloc_args);
+            void *temp_buffer = ctrl->config.outbuf_malloc(CONFIG_BK_ENCODER_H264_MAX_OUTPUT_BUFFER,
+                                                           ctrl->config.outbuf_malloc_args);
             if (temp_buffer != NULL) {
                 param.out_buf = (uint32_t)temp_buffer;
-                param.out_size = temp_buffer->size;
+                param.out_size = CONFIG_BK_ENCODER_H264_MAX_OUTPUT_BUFFER;
             } else {
                 param.out_buf = 0;
                 param.out_size = 0;
@@ -227,7 +236,7 @@ static avdk_err_t h264_encode_ctlr_open(bk_h264_encode_ctlr_handle_t handle)
     config.flexa_mode = BK_H264_ENCODE_FLEXA_MODE_NONE;
     config.input_type = control->config.input_format;
     config.buf_cnt = control->config.input_flexa_cnt;
-    config.idr_interval = control->config.pframe_number;
+    config.idr_interval = control->config.gop_frame_count;
     LOGI("Start H.264 encoder %dx%d, mode=%d\r\n", config.width, config.height, config.flexa_mode);
     // Initialize H.264 encoder
     bk_err_t ret = h264e_init(&control->h264e_handler, &config);
@@ -365,6 +374,103 @@ static avdk_err_t h264_encode_ctlr_delete(bk_h264_encode_ctlr_handle_t handle)
     return AVDK_ERR_OK;
 }
 
+static avdk_err_t h264_encode_ctlr_set_gop_frame_count(private_h264_encode_frame_ctlr_t *control,
+                                                       uint32_t gop_frame_count)
+{
+    if (gop_frame_count == 0) {
+        LOGE("invalid GOP frame count: %u\r\n", gop_frame_count);
+        return AVDK_ERR_INVAL;
+    }
+
+    control->config.gop_frame_count = gop_frame_count;
+    if (control->h264e_handler != NULL) {
+        bk_err_t ret = h264e_set_gop_frame_count(&control->h264e_handler, gop_frame_count);
+        if (ret != BK_OK) {
+            LOGE("set gop config failed: %d\r\n", ret);
+            return AVDK_ERR_GENERIC;
+        }
+    }
+
+    LOGI("H.264 GOP frame count set, count=%u\r\n", gop_frame_count);
+    return AVDK_ERR_OK;
+}
+
+static avdk_err_t h264_encode_ctlr_get_gop_frame_count(private_h264_encode_frame_ctlr_t *control,
+                                                       uint32_t *gop_frame_count)
+{
+    if (gop_frame_count == NULL) {
+        LOGE("GOP frame count arg is NULL\r\n");
+        return AVDK_ERR_INVAL;
+    }
+
+    if (control->h264e_handler != NULL) {
+        bk_err_t ret = h264e_get_gop_frame_count(&control->h264e_handler, gop_frame_count);
+        if (ret != BK_OK) {
+            LOGE("get gop frame count failed: %d\r\n", ret);
+            return AVDK_ERR_GENERIC;
+        }
+    } else {
+        *gop_frame_count = control->config.gop_frame_count;
+    }
+
+    return AVDK_ERR_OK;
+}
+
+static avdk_err_t h264_encode_ctlr_set_rate_ctrl(private_h264_encode_frame_ctlr_t *control,
+                                                 bk_h264_encode_rate_ctrl_t *rate_ctrl)
+{
+    if (rate_ctrl == NULL) {
+        LOGE("rate_ctrl arg is NULL\r\n");
+        return AVDK_ERR_INVAL;
+    }
+    if (control->h264e_handler == NULL) {
+        LOGE("h264 encoder is not opened\r\n");
+        return AVDK_ERR_INVAL;
+    }
+
+    h264_encoder_rate_ctrl_t h264e_rc = {
+        .bitrate = rate_ctrl->bitrate,
+        .qp_min_i = rate_ctrl->qp_min_i,
+        .qp_max_i = rate_ctrl->qp_max_i,
+        .qp_min_p = rate_ctrl->qp_min_p,
+        .qp_max_p = rate_ctrl->qp_max_p,
+    };
+    bk_err_t ret = h264e_set_rate_ctrl(&control->h264e_handler, &h264e_rc);
+    if (ret != BK_OK) {
+        LOGE("set rate ctrl failed: %d\r\n", ret);
+        return AVDK_ERR_GENERIC;
+    }
+
+    return AVDK_ERR_OK;
+}
+
+static avdk_err_t h264_encode_ctlr_get_rate_ctrl(private_h264_encode_frame_ctlr_t *control,
+                                                 bk_h264_encode_rate_ctrl_t *rate_ctrl)
+{
+    if (rate_ctrl == NULL) {
+        LOGE("rate_ctrl arg is NULL\r\n");
+        return AVDK_ERR_INVAL;
+    }
+    if (control->h264e_handler == NULL) {
+        LOGE("h264 encoder is not opened\r\n");
+        return AVDK_ERR_INVAL;
+    }
+
+    h264_encoder_rate_ctrl_t h264e_rc = {0};
+    bk_err_t ret = h264e_get_rate_ctrl(&control->h264e_handler, &h264e_rc);
+    if (ret != BK_OK) {
+        LOGE("get rate ctrl failed: %d\r\n", ret);
+        return AVDK_ERR_GENERIC;
+    }
+
+    rate_ctrl->qp_min_i = h264e_rc.qp_min_i;
+    rate_ctrl->qp_max_i = h264e_rc.qp_max_i;
+    rate_ctrl->qp_min_p = h264e_rc.qp_min_p;
+    rate_ctrl->qp_max_p = h264e_rc.qp_max_p;
+    rate_ctrl->bitrate = h264e_rc.bitrate;
+    return AVDK_ERR_OK;
+}
+
 // Debug timer callback
 static void h264e_debug_callback(void *arg)
 {
@@ -437,10 +543,18 @@ static avdk_err_t h264_encode_ctlr_ioctl(bk_h264_encode_ctlr_handle_t handle, ui
             LOGI("H.264 debug stopped\r\n");
             break;
         }
-        case BK_H264_ENCODE_IOCTL_SET_PARAM:
-            // TODO: Implement parameter setting
-            LOGW("BK_H264_ENCODE_IOCTL_SET_PARAM not implemented\r\n");
-            break;
+        case BK_H264_ENCODE_IOCTL_SET_GOP_FRAME_COUNT:
+            if (arg == NULL) {
+                LOGE("GOP frame count arg is NULL\r\n");
+                return AVDK_ERR_INVAL;
+            }
+            return h264_encode_ctlr_set_gop_frame_count(control, *(uint32_t *)arg);
+        case BK_H264_ENCODE_IOCTL_GET_GOP_FRAME_COUNT:
+            return h264_encode_ctlr_get_gop_frame_count(control, (uint32_t *)arg);
+        case BK_H264_ENCODE_IOCTL_SET_RATE_CTRL:
+            return h264_encode_ctlr_set_rate_ctrl(control, (bk_h264_encode_rate_ctrl_t *)arg);
+        case BK_H264_ENCODE_IOCTL_GET_RATE_CTRL:
+            return h264_encode_ctlr_get_rate_ctrl(control, (bk_h264_encode_rate_ctrl_t *)arg);
         case BK_H264_ENCODE_IOCTL_SET_FLEXA_LINES_READY: {
             h264e_flexa_input_linebuf_wrcnt_set(&control->h264e_handler, (uint32_t)arg);
             break;

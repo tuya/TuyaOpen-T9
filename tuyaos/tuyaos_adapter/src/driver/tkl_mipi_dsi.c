@@ -3,7 +3,7 @@
 #include <common/bk_err.h>
 #include <components/bk_display.h>
 #include <components/bk_display_bus.h>
-#include <components/bk_display_dpu_ctlr.h>
+#include <driver/mipi_dsi.h>
 #include <driver/mipi_dsi_types.h>
 #include "tkl_mipi_dsi.h"
 #include "tkl_output.h"
@@ -158,7 +158,7 @@ static OPERATE_RET tkl_mipi_dsi_clock_set(const TUYA_MIPI_BASE_CFG_T *base_cfg)
     clock_cfg.clk = dpu_clk_mhz;
     clock_cfg.n_lanes = bk_n_lanes;
     clock_cfg.fps = tkl_mipi_dsi_fps_calculate(base_cfg);
-    clock_cfg.clk_src = DPU_CLK_SRC_NANENG_DPHY_INTERNAL_DPLL;
+    clock_cfg.clk_src = DPU_CLK_SRC_DPHY_DPLL;
     clock_cfg.timing.clk = dpu_clk_mhz;
     clock_cfg.timing.h_size = base_cfg->width;
     clock_cfg.timing.v_size = base_cfg->height;
@@ -169,7 +169,11 @@ static OPERATE_RET tkl_mipi_dsi_clock_set(const TUYA_MIPI_BASE_CFG_T *base_cfg)
     clock_cfg.timing.hsync_pulse_width = base_cfg->hsync_pulse_width;
     clock_cfg.timing.vsync_pulse_width = base_cfg->vsync_pulse_width;
 
-    return bk_display_bus_set_clock(s_dsi_runtime.dis_bus_handle, &clock_cfg);
+    if (bk_display_bus_set_clock_src(s_dsi_runtime.dis_bus_handle, clock_cfg.clk_src) != OPRT_OK) {
+        return OPRT_COM_ERROR;
+    }
+
+    return mipi_dsi_clock_set(&clock_cfg);
 }
 
 OPERATE_RET tkl_mipi_dsi_init(const TUYA_MIPI_BASE_CFG_T *base_cfg)
@@ -185,11 +189,6 @@ OPERATE_RET tkl_mipi_dsi_init(const TUYA_MIPI_BASE_CFG_T *base_cfg)
     }
 
     ret = bk_display_dsi_bus_new(&s_dsi_runtime.dis_bus_handle, NULL);
-    if (ret != OPRT_OK) {
-        goto err;
-    }
-
-    ret = bk_display_bus_enable(s_dsi_runtime.dis_bus_handle);
     if (ret != OPRT_OK) {
         goto err;
     }
@@ -231,7 +230,7 @@ OPERATE_RET tkl_mipi_dsi_tx_cmd(UINT8_T cmd, const VOID_T *param, UINT32_T size)
         return OPRT_INVALID_PARM;
     }
 
-    return bk_display_bus_write(s_dsi_runtime.dis_bus_handle, BK_DISPLAY_BUS_RW_DSI_CMD, cmd, param, size);
+    return bk_display_bus_tx_param(s_dsi_runtime.dis_bus_handle, cmd, param, size);
 }
 
 static OPERATE_RET tkl_mipi_dpu_init(const TUYA_MIPI_BASE_CFG_T *base_cfg)
@@ -263,7 +262,7 @@ static OPERATE_RET tkl_mipi_dpu_init(const TUYA_MIPI_BASE_CFG_T *base_cfg)
     }
 
     os_memset(&lcd_cfg, 0, sizeof(lcd_cfg));
-    lcd_cfg.clk_src = DPU_CLK_SRC_NANENG_DPHY_INTERNAL_DPLL;
+    lcd_cfg.clk_src = DPU_CLK_SRC_DPHY_DPLL;
     lcd_cfg.video.enable = true;
     lcd_cfg.video.decompress = (s_dpu_runtime.input_decompress != FALSE) ? true : false;
     lcd_cfg.video.format = pixel_format;

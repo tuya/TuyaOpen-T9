@@ -1,12 +1,12 @@
 set(incs
     include
-    src/face_detection
     ../../tflite_micro/gesture_detection/ap/ui/beken_generated
 )
 set(srcs
 	src/core/box.c
 	src/core/AvdkDetectionModel.cc
 	src/core/AvdkVideoReator.cc
+	src/core/AvdkVideoReatorOSD.cc
 )
 
 if (CONFIG_TFLM_PERSON_DETECTION_V1)
@@ -23,6 +23,12 @@ if (CONFIG_TFLM_PET_DETECTION_V1)
 	)
 endif()
 
+if (CONFIG_TFLM_HAND_GESTURE_DETECTION_V1)
+	list(APPEND srcs
+		src/tflm_hand_gesture_detection/hand_gesture_detect_model_data.cc
+	)
+endif()
+
 if (CONFIG_TFLM_FACE_DETECTION_V1)
 	list(APPEND srcs
 		src/tflm_face_detection/swift_yolo_1xb16_300e_coco_300_model_data.c
@@ -35,13 +41,6 @@ if (CONFIG_TFLM_GESTURE_DETECTION_V1)
 	list(APPEND srcs
 		src/tflm_gesture_detection/gesture_detection_model_data.cc
 		src/tflm_gesture_detection/GestureDetectionModel.cc
-	)
-endif()
-
-if (CONFIG_FACE_DETECTION_V2)
-	list(APPEND srcs
-		src/face_detection/cfacedetectcnn.c
-		src/face_detection/face_detection.c
 	)
 endif()
 
@@ -87,7 +86,7 @@ if (CONFIG_COMMON_LVGL_UI)
     list(APPEND srcs ${beken_generated_source})
 endif()
 
-set(priv_req bk_common unity include avdk_utils bk_tflite_micro doorbell_device_service lvgl bk_peripheral)
+set(priv_req bk_common unity include avdk_utils bk_tflite_micro multimedia_device_service lvgl bk_peripheral)
 
 
 armino_component_register(SRCS "${srcs}" INCLUDE_DIRS "${incs}" PRIV_REQUIRES "${priv_req}")

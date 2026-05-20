@@ -51,7 +51,7 @@ void cli_gpio_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **arg
 void cli_cpu_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv);
 void cli_tuya_media_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv);
 /* QSPI self-test: only exported entry is cli_xqspi_cmd (body in test_qspi.c); xqspi single|smoke|full [port] [loops] */
-void cli_xqspi_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv);
+// void cli_xqspi_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv);
 /* I2C self-test: only exported entry is cli_xi2c_cmd (body in test_i2c.c); xi2c single|smoke|full ... */
 void cli_xi2c_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv);
 void cli_xqspi_lcd_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv);
@@ -61,7 +61,7 @@ void cli_tkl_timer_test(char *pcWriteBuffer, int xWriteBufferLen, int argc, char
 void cli_usb_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv);
 void cli_sdcard_test_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv);
 void cli_tkl_spi_test(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv);
-void cli_spi_2_3_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv);
+// void cli_spi_2_3_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv);
 void cli_eth_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv);
 void cli_iperf_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv);
 void cli_speaker_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv);

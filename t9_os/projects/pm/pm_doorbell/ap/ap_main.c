@@ -18,7 +18,7 @@
 #include "bk_smart_config.h"
 #include "doorbell_db_cam_cli.h"
 #endif
-#include <lcd/lcd_hx8399c_mipi_1080x1920.h>
+#include <lcd/lcd_mipi_hx8399c_1080x1920.h>
 
 #define SYS_ANA_REG_BASE    (0x44010000)
 #define LDO_ANA_REG         (0x69)
@@ -37,6 +37,8 @@ static void bk_auxldo_enable(void)
 int main(void)
 {
     bk_init();
+    bk_printf("M55 main running...\r\n");
+    #if 0
     media_service_init();
 
     bk_printf("M55 main running...\r\n");
@@ -80,7 +82,9 @@ int main(void)
     gpu_board.flexa.src_format = BK_PIXEL_FORMAT_NV12;
     gpu_board.flexa.dst_format = BK_PIXEL_FORMAT_ARGB8888;
     gpu_board.flexa.dst_compress = true;
-    gpu_board.flexa.scale = false; 
+    gpu_board.flexa.scale = false;
+    gpu_board.flexa.tess_width = 0;
+    gpu_board.flexa.tess_height = 0;
 
 
     bk_auxldo_enable();
@@ -112,6 +116,8 @@ int main(void)
 #if CONFIG_VOICE_SERVICE_TEST
     int cli_voice_init(void);
     cli_voice_init();
+#endif
+
 #endif
 
     return 0;

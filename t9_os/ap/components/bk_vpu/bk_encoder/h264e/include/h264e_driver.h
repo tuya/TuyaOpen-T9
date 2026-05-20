@@ -111,12 +111,11 @@ typedef struct
 
 typedef struct
 {
-    uint16_t           width;
-    uint16_t           height;
-    uint8_t            qp_min;
-    uint8_t            qp_max;
-    uint8_t            fps;
     uint32_t           bitrate;
+    uint8_t            qp_min_i;
+    uint8_t            qp_max_i;
+    uint8_t            qp_min_p;
+    uint8_t            qp_max_p;
 } h264_encoder_rate_ctrl_t;
 
 typedef struct
@@ -148,6 +147,8 @@ bk_err_t h264e_close(h264_encoder_handle_t* handle);
 bk_err_t h264e_start_encode(h264_encoder_handle_t* handle, h264_encoder_parameters_t* para);
 bk_err_t h264e_stop_encode(h264_encoder_handle_t* handle);
 bk_err_t h264e_set_force_idr(h264_encoder_handle_t* handle);
+bk_err_t h264e_set_gop_frame_count(h264_encoder_handle_t* handle, uint32_t gop_frame_count);
+bk_err_t h264e_get_gop_frame_count(h264_encoder_handle_t* handle, uint32_t *gop_frame_count);
 
 bk_err_t h264e_set_rate_ctrl(h264_encoder_handle_t* handle, h264_encoder_rate_ctrl_t* rate_ctrl);
 bk_err_t h264e_get_rate_ctrl(h264_encoder_handle_t* handle, h264_encoder_rate_ctrl_t* rate_ctrl);

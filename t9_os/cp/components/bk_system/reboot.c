@@ -16,6 +16,7 @@
 #include <components/log.h>
 #include <common/bk_err.h>
 #include <components/system.h>
+#include <driver/timer.h>
 #include <driver/wdt.h>
 #include "bk_misc.h"
 #include "reset_reason.h"
@@ -45,19 +46,20 @@ void bk_reboot_ex(uint32_t reset_reason)
 		bk_pm_module_vote_cpu_freq(PM_DEV_ID_DEFAULT,PM_CPU_FRQ_60M);
 
 		BK_LOGD(TAG, "wdt reboot\r\n");
+#if CONFIG_WDT_EN
+		/* Stop the periodic auto-feed path before forcing a reboot in SMP. */
+		(void)bk_timer_stop(TIMER_ID2);
+#endif
 		rtos_disable_int();
-		if (reset_reason < RESET_SOURCE_UNKNOWN) {
-			bk_misc_set_reset_reason(reset_reason);
-		}
 	}
 	//fix reboot hang 16s issue
 	bk_flash_power_saving_enter();
+#if CONFIG_AON_PMU_REG0_REFACTOR_DEV
+    aon_pmu_drv_r0_latch_to_r7b();
+#endif
 
 #if CONFIG_AON_WDT
-	// TTODO:20260209,IN SMP,this cfg may cause reboot failed
-	// REG_WRITE(SOC_AON_PMU_REG_BASE + 0x2 * 4, 0x102);
-	REG_WRITE(SOC_AON_WDT_REG_BASE, 0x5A000A);
-    REG_WRITE(SOC_AON_WDT_REG_BASE, 0xA5000A);
+	bk_wdt_force_reboot();
 #endif
 
 	while(1);

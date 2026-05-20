@@ -20,11 +20,26 @@
 #include <components/log.h>
 
 #define SDIOD_TAG "sdio_dwc"
+
+/*
+ * Global debug-level log switch for the whole SDIO_DWC driver.
+ *   0 - disable all SDIOD_LOGD prints (default, less noise)
+ *   1 - enable SDIOD_LOGD prints for full debugging
+ * Only the verbose D level is gated; SDIOD_LOGI/SDIOD_LOGW/SDIOD_LOGE
+ * (key events, warnings and errors) are always kept.
+ */
+#ifndef CONFIG_SDIO_DWC_LOG_EN
+#define CONFIG_SDIO_DWC_LOG_EN 0
+#endif
+
 #define SDIOD_LOGI(...) BK_LOGI(SDIOD_TAG, ##__VA_ARGS__)
-//#define SDIOD_LOGI(...) 
 #define SDIOD_LOGW(...) BK_LOGW(SDIOD_TAG, ##__VA_ARGS__)
 #define SDIOD_LOGE(...) BK_LOGE(SDIOD_TAG, ##__VA_ARGS__)
+#if CONFIG_SDIO_DWC_LOG_EN
 #define SDIOD_LOGD(...) BK_LOGD(SDIOD_TAG, ##__VA_ARGS__)
+#else
+#define SDIOD_LOGD(...) do {} while (0)
+#endif
 
 
 #ifdef CONFIG_CPU64_BIT
@@ -116,13 +131,17 @@ struct cmd_param_t {
 #define sdio_mshc_0_base     0x48040000
 #define sdio_mshc_1_base     0x48050000
 
-/* Temporary switch for chip verification: 1 = use SDIO1, 0 = use SDIO0. Revert to 0 after verification. */
+// Modified by TUYA Start
+/* Default host when the board layer does not override sdio_board_use_sdio1().
+ * 0 = SDIO0, 1 = SDIO1. Tuya boards can override this at runtime from
+ * usr_sdio.c based on the configured pin group. */
 #define SDIO_VERIFY_USE_SDIO1    0
-#if SDIO_VERIFY_USE_SDIO1
-#define SDIO_ACTIVE_BASE         sdio_mshc_1_base
-#else
-#define SDIO_ACTIVE_BASE         sdio_mshc_0_base
-#endif
+
+uint8_t sdio_board_use_sdio1(void);
+uintptr_t sdio_board_get_active_base(void);
+
+#define SDIO_ACTIVE_BASE         sdio_board_get_active_base()
+// Modified by TUYA End
 
 //********user reg **********//
 #define sdio_reg0(addr)                                   *((volatile unsigned int *)  (addr + 0x700))

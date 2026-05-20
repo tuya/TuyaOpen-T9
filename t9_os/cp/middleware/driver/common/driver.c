@@ -63,10 +63,6 @@
 #include <driver/spi.h>
 #endif
 
-#if CONFIG_JPEGENC_HW
-#include <driver/jpeg_enc.h>
-#endif
-
 #if CONFIG_CALENDAR
 #include <driver/calendar.h>
 #endif
@@ -81,10 +77,6 @@
 
 #if CONFIG_CHIP_SUPPORT
 #include "modules/chip_support.h"
-#endif
-
-#if CONFIG_H264
-#include <driver/h264.h>
 #endif
 
 #if CONFIG_SDMADC
@@ -152,7 +144,7 @@ void power_clk_rf_init()
 	dev_clk_pwr_id_t devid = 0;
 	for(devid = 0; devid < 32; devid++)
 	{
-	    sys_drv_dev_clk_pwr_up(devid, CLK_PWR_CTRL_PWR_UP);
+	    bk_pm_clock_ctrl(devid, CLK_PWR_CTRL_PWR_UP);
     }
 	#endif
 
@@ -343,14 +335,6 @@ int driver_init(void) {
 	bk_qspi_driver_init();
 #endif
 
-#if CONFIG_JPEGENC_HW
-	bk_jpeg_enc_driver_init();
-#endif
-
-#if CONFIG_H264
-	bk_h264_driver_init();
-#endif
-
 #if CONFIG_CALENDAR
 	bk_calendar_driver_init();
 #endif
@@ -403,13 +387,14 @@ int driver_init(void) {
 #if CONFIG_SUPPORT_IRDA
 	bk_irda_driver_init();
 #endif
-
+#if !CONFIG_PM_AP_POWERDOWN_WHEN_LV
 #if (CONFIG_PSRAM)
 	extern bool is_psram_init_done;
 	if (!is_psram_init_done) {
 		bk_psram_init();
 		is_psram_init_done = true;
 	}
+#endif
 #endif
 	BK_LOGD(NULL,"driver_init end\r\n");
 

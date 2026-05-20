@@ -14,6 +14,7 @@
 
 #include <os/mem.h>
 #include <os/os.h>
+#include <os/str.h>
 #include <driver/sdio_host.h>
 #include <driver/sd_card.h>
 #include "sd_card_driver.h"
@@ -34,6 +35,19 @@
 
 #define INIT_400K	 1
 #define MAX_WAIT_STATE_TRANS_TIMES	200
+
+/* Returned by send_cmd() when the CMD line timed out (no response from card). */
+#define SDIO_CMD_TIMEOUT_RESP        0xFFFFFFFFu
+/* Max time waiting for the PSTATE_REG card-detect logic to stabilize on boot. */
+#define SDIO_CARD_STABLE_TIMEOUT_MS  50
+
+/* PSTATE_REG bit definitions not provided by mshc_regs.h. */
+#ifndef CARD_STATE_STABLE
+#define CARD_STATE_STABLE            BIT(17)
+#endif
+#ifndef CARD_DETECT_PIN_LEVEL
+#define CARD_DETECT_PIN_LEVEL        BIT(18)
+#endif
 
 
 uint32 adma3_wr_descriptor_addr[42];
@@ -121,27 +135,56 @@ typedef struct
 static volatile sd_card_sw_status_t s_sdcard_sw_status;
 #endif
 static bool s_sd_card_is_init = false;
+/* Card enumerated (RCA/CSD valid); unmount uses soft deinit + resume instead of SW_RST. */
+static bool s_sd_card_enum_valid = false;
+/* Set by send_cmd() when the last command timed out on the CMD line.
+ * sd_card_init() polls this between commands to implement fail-fast. */
+static volatile bool s_last_cmd_timeout = false;
 
 static sd_card_obj_t s_sd_card_obj = {0};
 
+static void sdio_wait_sw_rst_done(uintptr_t addr);
+static void sdio_flush_read_buffer(uintptr_t addr);
+static bk_err_t sdio_wait_buf_rd_ready(uintptr_t addr, uint32_t timeout_ms);
+static bk_err_t sdio_wait_card_transfer(uint32_t timeout_ms);
+static void sdio_drain_semaphores(void);
+static void sdio_disable_host_interrupts(void);
+static void sdio_clear_controller_irq(uintptr_t addr);
+static void sdio_clear_drv_state(void);
+static void sdio_card_idle_before_reset(void);
+static bk_err_t sdio_host_resume(void);
 
 static sdcard_rw_state_t sd_card_check_continious_rw(sdcard_rw_ops_t ops, uint32_t addr, uint32_t blk_cnt);
 
 // Modified by TUYA Start
 extern void user_sdio_gpio_init(void) __attribute__((weak));
+extern void user_sdio_set_width(uint8_t width_sel) __attribute__((weak));
 static void sdio_gpio_init(uint8_t io_pos, sdio_wire_width_sel_t width_sel);
+
+uint8_t __attribute__((weak)) sdio_board_use_sdio1(void)
+{
+	return SDIO_VERIFY_USE_SDIO1 ? 1 : 0;
+}
+
+uintptr_t __attribute__((weak)) sdio_board_get_active_base(void)
+{
+	return sdio_board_use_sdio1() ? sdio_mshc_1_base : sdio_mshc_0_base;
+}
 
 static void sdio_board_gpio_init(sdio_wire_width_sel_t width_sel)
 {
-	// if (user_sdio_gpio_init) {
-	// 	/*
-	// 	 * Tuya adapter owns the board-level SDIO pin selection. Keep the
-	// 	 * current v3p0 driver width argument for fallback only.
-	// 	 */
-	// 	(void)width_sel;
-	// 	user_sdio_gpio_init();
-	// 	return;
-	// }
+	if (user_sdio_gpio_init) {
+		/*
+		 * Tuya adapter owns the board-level SDIO pin selection. Keep the
+		 * current v3p0 driver width argument so the adapter can distinguish
+		 * 1-bit/4-bit setup and keep DAT3 high during 1-bit init.
+		 */
+		if (user_sdio_set_width) {
+			user_sdio_set_width((uint8_t)width_sel);
+		}
+		user_sdio_gpio_init();
+		return;
+	}
 
 	sdio_gpio_init(0, width_sel);
 }
@@ -236,6 +279,8 @@ int send_cmd(uintptr_t addr, uint8 CMD_INDEX, uint8 RESP_TYPE, uint32 ARGUMENT)
 	uint32 pstate;
 	uint32 resp01;
 
+	s_last_cmd_timeout = false;
+
 	for(int i = 0; i < MAX_WAIT_STATE_TRANS_TIMES; i++) {
 		pstate = PSTATE_REG_R(addr);
 		// BIT(0) means cmd ready when it is 0
@@ -262,6 +307,26 @@ int send_cmd(uintptr_t addr, uint8 CMD_INDEX, uint8 RESP_TYPE, uint32 ARGUMENT)
 	ret = rtos_get_semaphore(&s_sdio_cmd_done_sema, 2000);
 	if(ret != 0) {
 		SDIOD_LOGE("func %s: get sem s_sdio_cmd_done_sema timeout\r\n", __func__);
+		s_last_cmd_timeout = true;
+		return SDIO_CMD_TIMEOUT_RESP;
+	}
+
+	/* CMD line timeout: the ISR has set CMD_TOUT_ERR_STATE, cleared the
+	 * status, masked the CMD_TOUT_ERR signal-enable bit and released the
+	 * semaphore. We must reset the CMD line here before any next command
+	 * can be issued, then re-arm the masked signal. */
+	if (CMD_TOUT_ERR_STATE) {
+		CMD_TOUT_ERR_STATE = 0;
+		SW_RST_R(addr) |= SW_RST_CMD;
+		for (int i = 0; i < MAX_WAIT_STATE_TRANS_TIMES; i++) {
+			if ((SW_RST_R(addr) & SW_RST_CMD) == 0) {
+				break;
+			}
+			rtos_delay_milliseconds(1);
+		}
+		ERROR_INT_SIGNAL_EN_R(addr) |= CMD_TOUT_ERR_STAT_EN;
+		s_last_cmd_timeout = true;
+		return SDIO_CMD_TIMEOUT_RESP;
 	}
 
 	resp01 = RESP01_R(addr);
@@ -276,21 +341,57 @@ bk_err_t sd_card_init(uintptr_t addr)
 	uint32_t resp[4] = {0};
 	uint32_t retry_cnt = 0;
 
+	/* ----  1: SDHCI hardware card-detect pre-check ----
+	 * Wait for CARD_STATE_STABLE then read CARD_INSERTED. If the slot CD
+	 * pin is not routed to the SDIO controller this check is unreliable
+	 * (the bit may be hard-wired 0 or 1) - fail-fast in send_cmd() is
+	 * the second line of defense.
+	 */
+	{
+		uint32_t pstate = 0;
+		int i;
+		for (i = 0; i < SDIO_CARD_STABLE_TIMEOUT_MS; i++) {
+			pstate = PSTATE_REG_R(addr);
+			if (pstate & CARD_STATE_STABLE) {
+				break;
+			}
+			rtos_delay_milliseconds(1);
+		}
+		if (!(pstate & CARD_INSERTED)) {
+			SDIOD_LOGW("no card present (PSTATE=0x%08x), skip sd init\r\n",
+				   pstate);
+			return BK_FAIL;
+		}
+	}
+
+	/* ----  2: fail-fast on CMD line timeout ----
+	 * send_cmd() sets s_last_cmd_timeout=true and performs SW_RST_CMD
+	 * when the controller reports CMD_TOUT_ERR. We bail out of init on
+	 * the very first timeout so we never spin in the ACMD41 retry loop
+	 * when no card is responding.
+	 */
+
 	send_cmd(addr, CMD0, 0, 0); //send CMD0
 	rtos_delay_milliseconds(5);
+	if (s_last_cmd_timeout) goto no_card;
 
 	send_cmd(addr, CMD8, 2, 0x1aa); //send CMD8
 	rtos_delay_milliseconds(1);
+	if (s_last_cmd_timeout) goto no_card;
 
 	send_cmd(addr, CMD55, 2, 0); //send ACMD41
 	rtos_delay_milliseconds(1);
+	if (s_last_cmd_timeout) goto no_card;
 	resp[0] = send_cmd(addr, CMD41, 2, (0xff8000|0x40000000)); //send_cmd(addr, CMD41, 2, (0xff80001|0x40000000)); //send CMD41
-	while(!((0xFFFFFFFF != resp[0]) && ((resp[0] >> 31) & 0x01)))
+	if (s_last_cmd_timeout) goto no_card;
+	while(!((SDIO_CMD_TIMEOUT_RESP != resp[0]) && ((resp[0] >> 31) & 0x01)))
 	{
 		rtos_delay_milliseconds(5);
 		send_cmd(addr, CMD55, 2, 0); //send ACMD41
 		rtos_delay_milliseconds(1);
+		if (s_last_cmd_timeout) goto no_card;
 		resp[0] = send_cmd(addr, CMD41, 2, (0x200000|0x40000000)); //send_cmd(addr, CMD41, 2, (0xff80001|0x40000000)); //send CMD41
+		if (s_last_cmd_timeout) goto no_card;
 		if (retry_cnt++ > MAX_WAIT_STATE_TRANS_TIMES) {
 			SDIOD_LOGE("init card ACMD41 timeout, card may not be powered up.\r\n");
 			return BK_FAIL;
@@ -300,6 +401,7 @@ bk_err_t sd_card_init(uintptr_t addr)
 	rtos_delay_milliseconds(1);
 
 	resp[0] = send_cmd(addr, CMD2, 1, 0); //send CMD2
+	if (s_last_cmd_timeout) goto no_card;
 	s_sd_card_obj.cid[0] = RESP01_R(addr);
 	s_sd_card_obj.cid[1] = RESP23_R(addr);
 	s_sd_card_obj.cid[2] = RESP45_R(addr);
@@ -308,9 +410,11 @@ bk_err_t sd_card_init(uintptr_t addr)
 
 	resp[0] = send_cmd(addr, CMD3, 2, 0); //send CMD3
 	rtos_delay_milliseconds(1);
+	if (s_last_cmd_timeout) goto no_card;
 
 	sdio_rca = resp[0] & 0xFFFF0000;
 	resp[0] = send_cmd(addr, CMD9, 1, sdio_rca);	//send CMD9
+	if (s_last_cmd_timeout) goto no_card;
 #if 1
 	s_sd_card_obj.csd.csd_3.v = RESP01_R(addr);
 	s_sd_card_obj.csd.csd_2.v = RESP23_R(addr);
@@ -330,8 +434,13 @@ SD_CARD_LOGD("csd[0]=0x%x, csd[1]=0x%x, csd[2]=0x%x, csd[3]=0x%x\r\n",
 
 	resp[0] = send_cmd(addr, CMD7, 3, sdio_rca);	//send CMD7
 	rtos_delay_milliseconds(1);
+	if (s_last_cmd_timeout) goto no_card;
 
 	return ret;
+
+no_card:
+	SDIOD_LOGW("sd init aborted: no card response (CMD timeout)\r\n");
+	return BK_FAIL;
 }
 
 
@@ -394,15 +503,17 @@ bk_err_t send_mult_data(uintptr_t addr, const uint8_t *data, uint16 BLOCK_SIZE,u
 
 	int ret = 0;
 	ret = rtos_get_semaphore(&s_sdio_cmd_done_sema, 2000);
-	if(ret != 0) {
+	if (ret != 0) {
 		SDIOD_LOGE("func %s: get sem s_sdio_cmd_done_sema timeout\r\n", __func__);
+		return BK_FAIL;
 	}
 
 	for (block_num = 0; block_num < BLOCK_CNT; block_num = block_num+1)
 	{
 		ret = rtos_get_semaphore(&s_sdio_wr_buf_ready_sema, 2000);
-		if(ret != 0) {
+		if (ret != 0) {
 			SDIOD_LOGE("func %s: get sem s_sdio_wr_buf_ready_sema timeout\r\n", __func__);
+			return BK_FAIL;
 		}
 		while(num<(128*(block_num+1)))
 		{
@@ -414,8 +525,9 @@ bk_err_t send_mult_data(uintptr_t addr, const uint8_t *data, uint16 BLOCK_SIZE,u
 
 
 	ret = rtos_get_semaphore(&s_sdio_data_xfer_done_sema, 2000);
-	if(ret != 0) {
+	if (ret != 0) {
 		SDIOD_LOGE("func %s: get sem s_sdio_data_xfer_done_sema timeout\r\n", __func__);
+		return BK_FAIL;
 	}
 
 #if 0   //As CMD23 is added, CMD12 is not necessary 
@@ -435,7 +547,7 @@ bk_err_t send_mult_data(uintptr_t addr, const uint8_t *data, uint16 BLOCK_SIZE,u
 	return BK_OK;
 }
 
-int receive_mult_data(uintptr_t addr, uint8_t *data, uint16 BLOCK_SIZE,uint16 BLOCK_CNT,uint16 CMD,uint32 ARGUMENT)
+bk_err_t receive_mult_data(uintptr_t addr, uint8_t *data, uint16 BLOCK_SIZE,uint16 BLOCK_CNT,uint16 CMD,uint32 ARGUMENT)
 {
 	uint32 read_data;
 	uint32 num=0;
@@ -456,32 +568,46 @@ int receive_mult_data(uintptr_t addr, uint8_t *data, uint16 BLOCK_SIZE,uint16 BL
 
 	int ret = 0;
 	ret = rtos_get_semaphore(&s_sdio_cmd_done_sema, 2000);
-	if(ret != 0) {
+	if (ret != 0) {
 		SDIOD_LOGE("func %s: get sem s_sdio_cmd_done_sema timeout\r\n", __func__);
+		return BK_FAIL;
 	}
 
 	for (block_num=0; block_num<BLOCK_CNT; block_num++)
 	{
 		ret = rtos_get_semaphore(&s_sdio_rd_buf_ready_sema, 2000);
-		if(ret != 0) {
+		if (ret != 0) {
 			SDIOD_LOGE("func %s: get sem s_sdio_rd_buf_ready_sema timeout\r\n", __func__);
+			return BK_FAIL;
 		}
 
-		while(num<128*(block_num+1))
-		{
-			read_data=BUF_DATA_R(addr);
+		while (num < 128 * (block_num + 1)) {
+			if (sdio_wait_buf_rd_ready(addr, 100) != BK_OK) {
+				SDIOD_LOGE("func %s: BUF_RD_ENABLE timeout, num=%u\r\n", __func__, num);
+				return BK_FAIL;
+			}
+			read_data = BUF_DATA_R(addr);
 			*((uint32_t *)data + num) = read_data;
-			//SDIOD_LOGI("Receive: BUF_DATA = %x, num =%x \r\n",read_data,num);
-			num = num+1;
+			num = num + 1;
 		}
 	}
 
 	ret = rtos_get_semaphore(&s_sdio_data_xfer_done_sema, 2000);
-	if(ret != 0) {
+	if (ret != 0) {
 		SDIOD_LOGE("func %s: get sem s_sdio_data_xfer_done_sema timeout\r\n", __func__);
+		return BK_FAIL;
 	}
 
-	return ret;
+	if (DATA_CRC_ERR_STATE || DATA_TOUT_ERR_STATE || DATA_END_BIT_ERR_STATE) {
+		SDIOD_LOGE("func %s: data error crc=%d tout=%d end=%d\r\n", __func__,
+			DATA_CRC_ERR_STATE, DATA_TOUT_ERR_STATE, DATA_END_BIT_ERR_STATE);
+		DATA_CRC_ERR_STATE = 0;
+		DATA_TOUT_ERR_STATE = 0;
+		DATA_END_BIT_ERR_STATE = 0;
+		return BK_FAIL;
+	}
+
+	return BK_OK;
 }
 
 bk_err_t adma2_send_data(uintptr_t addr,uint32 SYS_ADDR,uint16 BLOCK_SIZE,uint16 BLOCK_CNT,uint16 CMD,uint32 ARGUMENT)
@@ -797,24 +923,146 @@ bk_err_t mshc_host_init(uintptr_t addr,uint16 sysclk_div,uint16 sdclk_div,uint8 
 }
 
 
+static void sdio_wait_sw_rst_done(uintptr_t addr)
+{
+	for (int i = 0; i < MAX_WAIT_STATE_TRANS_TIMES; i++) {
+		if (SW_RST_R(addr) == 0) {
+			break;
+		}
+		rtos_delay_milliseconds(1);
+	}
+}
+
+static void sdio_flush_read_buffer(uintptr_t addr)
+{
+	uint32_t flush_cnt = 0;
+
+	while ((PSTATE_REG_R(addr) & BUF_RD_ENABLE) && (flush_cnt < 512)) {
+		(void)BUF_DATA_R(addr);
+		flush_cnt++;
+	}
+}
+
+static bk_err_t sdio_wait_buf_rd_ready(uintptr_t addr, uint32_t timeout_ms)
+{
+	for (uint32_t i = 0; i < timeout_ms; i++) {
+		if (PSTATE_REG_R(addr) & BUF_RD_ENABLE) {
+			return BK_OK;
+		}
+		rtos_delay_milliseconds(1);
+	}
+	return BK_FAIL;
+}
+
+static bk_err_t sdio_wait_card_transfer(uint32_t timeout_ms)
+{
+	for (uint32_t i = 0; i < timeout_ms; i++) {
+		if (bk_sd_card_get_card_state() == SD_CARD_TRANSFER) {
+			return BK_OK;
+		}
+		rtos_delay_milliseconds(1);
+	}
+	SDIOD_LOGW("card not in transfer state\r\n");
+	return BK_FAIL;
+}
+
+static void sdio_drain_semaphores(void)
+{
+	if (s_sdio_cmd_done_sema) {
+		while (rtos_get_semaphore(&s_sdio_cmd_done_sema, 0) == 0) {
+		}
+	}
+	if (s_sdio_wr_buf_ready_sema) {
+		while (rtos_get_semaphore(&s_sdio_wr_buf_ready_sema, 0) == 0) {
+		}
+	}
+	if (s_sdio_rd_buf_ready_sema) {
+		while (rtos_get_semaphore(&s_sdio_rd_buf_ready_sema, 0) == 0) {
+		}
+	}
+	if (s_sdio_data_xfer_done_sema) {
+		while (rtos_get_semaphore(&s_sdio_data_xfer_done_sema, 0) == 0) {
+		}
+	}
+}
+
+static void sdio_disable_host_interrupts(void)
+{
+#if CONFIG_SOC_SMP
+	sys_drv_set_int_en(CPU2_CORE_ID, INT_SRC_SDIO0, 0);
+	sys_drv_set_int_en(CPU2_CORE_ID, INT_SRC_SDIO1, 0);
+#else
+	sys_drv_set_int_en(rtos_get_core_id(), INT_SRC_SDIO0, 0);
+	sys_drv_set_int_en(rtos_get_core_id(), INT_SRC_SDIO1, 0);
+#endif
+}
+
+static void sdio_clear_controller_irq(uintptr_t addr)
+{
+	NORMAL_INT_STAT_EN_R(addr) = 0;
+	NORMAL_INT_SIGNAL_EN_R(addr) = 0;
+	ERROR_INT_STAT_EN_R(addr) = 0;
+	ERROR_INT_SIGNAL_EN_R(addr) = 0;
+	NORMAL_INT_STAT_R(addr) = 0xffff;
+	ERROR_INT_STAT_R(addr) = 0xffff;
+}
+
+static void sdio_clear_drv_state(void)
+{
+	s_last_cmd_timeout = false;
+	CMD_TOUT_ERR_STATE = 0;
+	CMD_CRC_ERR_STATE = 0;
+	CMD_END_BIT_ERR_STATE = 0;
+	CMD_IDX_ERR_STATE = 0;
+	DATA_TOUT_ERR_STATE = 0;
+	DATA_CRC_ERR_STATE = 0;
+	DATA_END_BIT_ERR_STATE = 0;
+	sdio_rca = 0;
+	os_memset(&s_sd_card_obj, 0, sizeof(s_sd_card_obj));
+}
+
+static void sdio_card_idle_before_reset(void)
+{
+	uint32_t saved_rca;
+
+	if (!s_sd_card_is_init) {
+		return;
+	}
+
+	saved_rca = sdio_rca;
+	/* Best-effort: stop in-flight transfer and deselect card before host reset. */
+	send_cmd(SDIO_ACTIVE_BASE, SD_CMD_STOP_TRANSMISSION, 1, 0);
+	rtos_delay_milliseconds(5);
+	if (saved_rca != 0) {
+		send_cmd(SDIO_ACTIVE_BASE, SD_CMD_SELECT_DESELECT_CARD, 3, saved_rca);
+		rtos_delay_milliseconds(2);
+	}
+	send_cmd(SDIO_ACTIVE_BASE, SD_CMD_SELECT_DESELECT_CARD, 3, 0);
+	rtos_delay_milliseconds(5);
+}
+
 void sdio_reset(void)
 {
 	SDIOD_LOGI("func %s .\r\n", __func__);
 
-	SW_RST_R(SDIO_ACTIVE_BASE)=0xff;
+	sdio_flush_read_buffer(SDIO_ACTIVE_BASE);
+	SW_RST_R(SDIO_ACTIVE_BASE) = SW_RST_ALL | SW_RST_CMD | SW_RST_DAT;
+	sdio_wait_sw_rst_done(SDIO_ACTIVE_BASE);
 	CLK_CTRL_R(SDIO_ACTIVE_BASE) = 0;
 	HOST_CTRL2_R(SDIO_ACTIVE_BASE) = 0;
 	PWR_CTRL_R(SDIO_ACTIVE_BASE) = 0;
 	sdio_reg2(SDIO_ACTIVE_BASE)= 0<<0;
 	sdio_reg2(SDIO_ACTIVE_BASE)= 3<<0;
 	card_clk_stop(SDIO_ACTIVE_BASE);
-#if SDIO_VERIFY_USE_SDIO1
-	sys_hal_sdio1_set_cken(0);
-	sys_hal_sdio1_set_cken(1);
-#else
-	sys_hal_sdio0_set_cken(0);
-	sys_hal_sdio0_set_cken(1);
-#endif
+// Modified by TUYA Start
+	if (sdio_board_use_sdio1()) {
+		sys_hal_sdio1_set_cken(0);
+		sys_hal_sdio1_set_cken(1);
+	} else {
+		sys_hal_sdio0_set_cken(0);
+		sys_hal_sdio0_set_cken(1);
+	}
+// Modified by TUYA End
 }
 
 bk_err_t sdio_host_init()
@@ -842,6 +1090,9 @@ bk_err_t sdio_host_init()
 	sdio_board_gpio_init(SDIO_WIRE_WIDTH_SEL_1);
 // Modified by TUYA End
 	PWR_CTRL_R(SDIO_ACTIVE_BASE) = 0x01;
+	rtos_delay_milliseconds(50);
+	sdio_clear_controller_irq(SDIO_ACTIVE_BASE);
+	sdio_flush_read_buffer(SDIO_ACTIVE_BASE);
 
 	//tuning_cfg(SDIO_ACTIVE_BASE,0x0,0x0,0,0,0x0,0x0,0,0,1);
 	tuning_cfg(SDIO_ACTIVE_BASE,0x0,0x0,0,0,0x0,0x0,0,0,0);	//TODO: V2 chip positive edge tuning
@@ -865,9 +1116,55 @@ bk_err_t sdio_host_init()
 	rtos_delay_milliseconds(1);
 	sd_card_interface_set(SDIO_ACTIVE_BASE,UHS_MODE_SDR50);
 	sd_clk_change(SDIO_ACTIVE_BASE, 3);  //时钟分频: 80/(3+1)=20MHz
-	rtos_delay_milliseconds(1);
+	rtos_delay_milliseconds(10);
+	send_cmd(SDIO_ACTIVE_BASE, SD_CMD_SELECT_DESELECT_CARD, 3, sdio_rca);
+	rtos_delay_milliseconds(2);
+	sdio_drain_semaphores();
+	sdio_clear_controller_irq(SDIO_ACTIVE_BASE);
+	sdio_flush_read_buffer(SDIO_ACTIVE_BASE);
+	if (sdio_wait_card_transfer(500) != BK_OK) {
+		SDIOD_LOGE("sdio_host_init: card not ready for transfer\r\n");
+		return BK_FAIL;
+	}
 
 	return ret;
+}
+
+static bk_err_t sdio_host_resume(void)
+{
+	SDIOD_LOGD("SDIO resume Start...\r\n");
+
+#if CONFIG_SOC_SMP
+	sys_drv_set_int_en(CPU2_CORE_ID, INT_SRC_SDIO0, 1);
+	sys_drv_set_int_en(CPU2_CORE_ID, INT_SRC_SDIO1, 1);
+#else
+	sys_drv_set_int_en(rtos_get_core_id(), INT_SRC_SDIO0, 1);
+	sys_drv_set_int_en(rtos_get_core_id(), INT_SRC_SDIO1, 1);
+#endif
+// Modified by TUYA Start
+	sdio_board_gpio_init(SDIO_WIRE_WIDTH_SEL_1);
+// Modified by TUYA End
+	PWR_CTRL_R(SDIO_ACTIVE_BASE) = 0x01;
+	rtos_delay_milliseconds(10);
+	sdio_clear_controller_irq(SDIO_ACTIVE_BASE);
+	sdio_flush_read_buffer(SDIO_ACTIVE_BASE);
+
+	host_ctrl_set(SDIO_ACTIVE_BASE, SD_BUS_PWR_VDD1, 0x0e, SD_CARD, DATA_WIDTH1);
+	sd_card_interface_set(SDIO_ACTIVE_BASE, UHS_MODE_SDR50);
+	sd_clk_change(SDIO_ACTIVE_BASE, 3);
+	rtos_delay_milliseconds(10);
+	send_cmd(SDIO_ACTIVE_BASE, SD_CMD_SELECT_DESELECT_CARD, 3, sdio_rca);
+	rtos_delay_milliseconds(2);
+	sdio_drain_semaphores();
+	sdio_clear_controller_irq(SDIO_ACTIVE_BASE);
+	sdio_flush_read_buffer(SDIO_ACTIVE_BASE);
+
+	if (sdio_wait_card_transfer(500) != BK_OK) {
+		SDIOD_LOGE("sdio_host_resume: card not ready for transfer\r\n");
+		return BK_FAIL;
+	}
+
+	return BK_OK;
 }
 
 void sdio_switch_wire_width(sdio_wire_width_sel_t width_sel)
@@ -983,80 +1280,87 @@ void sdio_dwc_isr0(void)
 	if(error_int & ERROR_INTERRUPT_STAT_EN)
 	{
 		ERROR_INTERRUPT_STATE = 1;
-		SDIOD_LOGI("ERROR_INTERRUPT\r\n");
+		SDIOD_LOGD("ERROR_INTERRUPT\r\n");
 	}
 #else
 	if(normal_int & ERROR_INTERRUPT_STAT_EN)
 	{
 		ERROR_INTERRUPT_STATE = 1;
-		SDIOD_LOGI("ERROR_INTERRUPT\r\n");
+		SDIOD_LOGD("ERROR_INTERRUPT\r\n");
 	}
 #endif
 
 	if(error_int & CMD_TOUT_ERR_STAT_EN)
 	{
 		CMD_TOUT_ERR_STATE = 1;
-		SDIOD_LOGI("CMD_TOUT_ERR, command timeout error\r\n");
+		SDIOD_LOGD("CMD_TOUT_ERR, command timeout error\r\n");
+		/* Mask the signal so the controller stops retriggering this ISR
+		 * before software resets the CMD line. send_cmd() error path
+		 * re-arms this bit after SW_RST_CMD completes. */
+		ERROR_INT_SIGNAL_EN_R(SDIO_ACTIVE_BASE) &= ~CMD_TOUT_ERR_STAT_EN;
 		ERROR_INT_STAT_R(SDIO_ACTIVE_BASE)= CLR_CMD_TOUT_ERR_STAT;
+		/* Wake up the send_cmd() waiter so fail-fast actually fails
+		 * fast rather than waiting the full 2000ms semaphore timeout. */
+		rtos_set_semaphore(&s_sdio_cmd_done_sema);
 	}
 	if(error_int & CMD_CRC_ERR_STAT_EN)
 	{
 		CMD_CRC_ERR_STATE = 1;
-		SDIOD_LOGI("CMD_CRC_ERR\r\n");
+		SDIOD_LOGD("CMD_CRC_ERR\r\n");
 		ERROR_INT_STAT_R(SDIO_ACTIVE_BASE)= CLR_CMD_CRC_ERR_STAT;
 	}
 	if(error_int & CMD_END_BIT_ERR_STAT_EN)
 	{
 		CMD_END_BIT_ERR_STATE = 1;
-		SDIOD_LOGI("CMD_END_BIT_ERR\r\n");
+		SDIOD_LOGD("CMD_END_BIT_ERR\r\n");
 		ERROR_INT_STAT_R(SDIO_ACTIVE_BASE)= CLR_CMD_END_BIT_ERR_STAT;
 	}
 	if(error_int & CMD_IDX_ERR_STAT_EN)
 	{
 		CMD_IDX_ERR_STATE = 1;
-		SDIOD_LOGI("CMD_IDX_ERR\r\n");
+		SDIOD_LOGD("CMD_IDX_ERR\r\n");
 		ERROR_INT_STAT_R(SDIO_ACTIVE_BASE)= CLR_CMD_IDX_ERR_STAT;
 	}
 	if(error_int & DATA_TOUT_ERR_STAT_EN)
 	{
 		DATA_TOUT_ERR_STATE = 1;
-		SDIOD_LOGI("DATA_TOUT_ERR\r\n");
+		SDIOD_LOGD("DATA_TOUT_ERR\r\n");
 		ERROR_INT_STAT_R(SDIO_ACTIVE_BASE)= CLR_DATA_TOUT_ERR_STAT;
 	}
 	if(error_int & DATA_CRC_ERR_STAT_EN)
 	{
 		DATA_CRC_ERR_STATE = 1;
-		SDIOD_LOGI("DATA_CRC_ERR\r\n");
+		SDIOD_LOGD("DATA_CRC_ERR\r\n");
 		ERROR_INT_STAT_R(SDIO_ACTIVE_BASE)= CLR_DATA_CRC_ERR_STAT;
 	}
 	if(error_int & DATA_END_BIT_ERR_STAT_EN)
 	{
 		DATA_END_BIT_ERR_STATE = 1;
-		SDIOD_LOGI("DATA_END_BIT_ERR\r\n");
+		SDIOD_LOGD("DATA_END_BIT_ERR\r\n");
 		ERROR_INT_STAT_R(SDIO_ACTIVE_BASE)= CLR_DATA_END_BIT_ERR_STAT;
 	}
 	if(error_int & CUR_LMT_ERR_STAT_EN)
 	{
 		CUR_LMT_ERR_STATE = 1;
-		SDIOD_LOGI("CUR_LMT_ERR\r\n");
+		SDIOD_LOGD("CUR_LMT_ERR\r\n");
 		ERROR_INT_STAT_R(SDIO_ACTIVE_BASE)= CLR_CUR_LMT_ERR_STAT;
 	}
 	if(error_int & AUTO_CMD_ERR_STAT_EN)
 	{
 		AUTO_CMD_ERR_STATE = 1;
-		SDIOD_LOGI("AUTO_CMD_ERR\r\n");
+		SDIOD_LOGD("AUTO_CMD_ERR\r\n");
 		ERROR_INT_STAT_R(SDIO_ACTIVE_BASE)= CLR_AUTO_CMD_ERR_STAT;
 	}
 	if(error_int & ADMA_ERR_STAT_EN)
 	{
 		ADMA_ERR_STATE = 1;
-		SDIOD_LOGI("ADMA_ERR\r\n");
+		SDIOD_LOGD("ADMA_ERR\r\n");
 		ERROR_INT_STAT_R(SDIO_ACTIVE_BASE)= CLR_ADMA_ERR_STAT;
 	}
 	if(error_int & TUNING_ERR_STAT_EN)
 	{
 		TUNING_ERR_STATE = 1;
-		SDIOD_LOGI("TUNING_ERR\r\n");
+		SDIOD_LOGD("TUNING_ERR\r\n");
 		ERROR_INT_STAT_R(SDIO_ACTIVE_BASE)= CLR_TUNING_ERR_STAT;
 	}
 	if(error_int & RESP_ERR_STAT_EN)
@@ -1066,33 +1370,37 @@ void sdio_dwc_isr0(void)
 		uint32_t resp_err2 = RESP23_R(SDIO_ACTIVE_BASE);
 		uint32_t resp_err3 = RESP45_R(SDIO_ACTIVE_BASE);
 		uint32_t resp_err6 = RESP67_R(SDIO_ACTIVE_BASE);
-		//SDIOD_LOGI("RESP_ERR, xfer_mode=0x%08x\r\n", xfer_mode);
+		//SDIOD_LOGD("RESP_ERR, xfer_mode=0x%08x\r\n", xfer_mode);
 		RESP_ERR_STATE = 1;
-		SDIOD_LOGI("RESP_ERR, resp_err=0x%08x, resp_err2=0x%08x, resp_err3=0x%08x, resp_err6=0x%08x\r\n", resp_err, resp_err2, resp_err3, resp_err6);
+		SDIOD_LOGD("RESP_ERR, resp_err=0x%08x, resp_err2=0x%08x, resp_err3=0x%08x, resp_err6=0x%08x\r\n", resp_err, resp_err2, resp_err3, resp_err6);
+		(void)resp_err;
+		(void)resp_err2;
+		(void)resp_err3;
+		(void)resp_err6;
 		ERROR_INT_STAT_R(SDIO_ACTIVE_BASE)= CLR_RESP_ERR_STAT;
 	}
 	if(error_int & BOOT_ACK_ERR_STAT_EN)
 	{
 		BOOT_ACK_ERR_STATE = 1;
-		SDIOD_LOGI("BOOT_ACK_ERR\r\n");
+		SDIOD_LOGD("BOOT_ACK_ERR\r\n");
 		ERROR_INT_STAT_R(SDIO_ACTIVE_BASE)= CLR_BOOT_ACK_ERR_STAT;
 	}
 	if(error_int & VENDOR_ERR1_STAT_EN)
 	{
 		VENDOR_ERR1_STATE = 1;
-		SDIOD_LOGI("VENDOR_ERR1\r\n");
+		SDIOD_LOGD("VENDOR_ERR1\r\n");
 		ERROR_INT_STAT_R(SDIO_ACTIVE_BASE)= CLR_VENDOR_ERR1_STAT;
 	}
 	if(error_int & VENDOR_ERR2_STAT_EN)
 	{
 		VENDOR_ERR2_STATE = 1;
-		SDIOD_LOGI("VENDOR_ERR2\r\n");
+		SDIOD_LOGD("VENDOR_ERR2\r\n");
 		ERROR_INT_STAT_R(SDIO_ACTIVE_BASE)= CLR_VENDOR_ERR2_STAT;
 	}
 	if(error_int & VENDOR_ERR3_STAT_EN)
 	{
 		VENDOR_ERR3_STATE = 1;
-		SDIOD_LOGI("VENDOR_ERR3\r\n");
+		SDIOD_LOGD("VENDOR_ERR3\r\n");
 		ERROR_INT_STAT_R(SDIO_ACTIVE_BASE)= CLR_VENDOR_ERR3_STAT;
 	}
 
@@ -1203,103 +1511,105 @@ void sdio_dwc_isr1(void)
 	if(error_int & ERROR_INTERRUPT_STAT_EN)
 	{
 		ERROR_INTERRUPT_STATE = 1;
-		SDIOD_LOGI("ERROR_INTERRUPT\r\n");
+		SDIOD_LOGD("ERROR_INTERRUPT\r\n");
 	}
 
 	if(error_int & CMD_TOUT_ERR_STAT_EN)
 	{
 		CMD_TOUT_ERR_STATE = 1;
-		SDIOD_LOGI("CMD_TOUT_ERR\r\n");
+		SDIOD_LOGD("CMD_TOUT_ERR\r\n");
+		ERROR_INT_SIGNAL_EN_R(SDIO_ACTIVE_BASE) &= ~CMD_TOUT_ERR_STAT_EN;
 		ERROR_INT_STAT_R(SDIO_ACTIVE_BASE)= CLR_CMD_TOUT_ERR_STAT;
+		rtos_set_semaphore(&s_sdio_cmd_done_sema);
 	}
 	if(error_int & CMD_CRC_ERR_STAT_EN)
 	{
 		CMD_CRC_ERR_STATE = 1;
-		SDIOD_LOGI("CMD_CRC_ERR\r\n");
+		SDIOD_LOGD("CMD_CRC_ERR\r\n");
 		ERROR_INT_STAT_R(SDIO_ACTIVE_BASE)= CLR_CMD_CRC_ERR_STAT;
 	}
 	if(error_int & CMD_END_BIT_ERR_STAT_EN)
 	{
 		CMD_END_BIT_ERR_STATE = 1;
-		SDIOD_LOGI("CMD_END_BIT_ERR\r\n");
+		SDIOD_LOGD("CMD_END_BIT_ERR\r\n");
 		ERROR_INT_STAT_R(SDIO_ACTIVE_BASE)= CLR_CMD_END_BIT_ERR_STAT;
 	}
 	if(error_int & CMD_IDX_ERR_STAT_EN)
 	{
 		CMD_IDX_ERR_STATE = 1;
-		SDIOD_LOGI("CMD_IDX_ERR\r\n");
+		SDIOD_LOGD("CMD_IDX_ERR\r\n");
 		ERROR_INT_STAT_R(SDIO_ACTIVE_BASE)= CLR_CMD_IDX_ERR_STAT;
 	}
 	if(error_int & DATA_TOUT_ERR_STAT_EN)
 	{
 		DATA_TOUT_ERR_STATE = 1;
-		SDIOD_LOGI("DATA_TOUT_ERR\r\n");
+		SDIOD_LOGD("DATA_TOUT_ERR\r\n");
 		ERROR_INT_STAT_R(SDIO_ACTIVE_BASE)= CLR_DATA_TOUT_ERR_STAT;
 	}
 	if(error_int & DATA_CRC_ERR_STAT_EN)
 	{
 		DATA_CRC_ERR_STATE = 1;
-		SDIOD_LOGI("DATA_CRC_ERR\r\n");
+		SDIOD_LOGD("DATA_CRC_ERR\r\n");
 		ERROR_INT_STAT_R(SDIO_ACTIVE_BASE)= CLR_DATA_CRC_ERR_STAT;
 	}
 	if(error_int & DATA_END_BIT_ERR_STAT_EN)
 	{
 		DATA_END_BIT_ERR_STATE = 1;
-		SDIOD_LOGI("DATA_END_BIT_ERR\r\n");
+		SDIOD_LOGD("DATA_END_BIT_ERR\r\n");
 		ERROR_INT_STAT_R(SDIO_ACTIVE_BASE)= CLR_DATA_END_BIT_ERR_STAT;
 	}
 	if(error_int & CUR_LMT_ERR_STAT_EN)
 	{
 		CUR_LMT_ERR_STATE = 1;
-		SDIOD_LOGI("CUR_LMT_ERR\r\n");
+		SDIOD_LOGD("CUR_LMT_ERR\r\n");
 		ERROR_INT_STAT_R(SDIO_ACTIVE_BASE)= CLR_CUR_LMT_ERR_STAT;
 	}
 	if(error_int & AUTO_CMD_ERR_STAT_EN)
 	{
 		AUTO_CMD_ERR_STATE = 1;
-		SDIOD_LOGI("AUTO_CMD_ERR\r\n");
+		SDIOD_LOGD("AUTO_CMD_ERR\r\n");
 		ERROR_INT_STAT_R(SDIO_ACTIVE_BASE)= CLR_AUTO_CMD_ERR_STAT;
 	}
 	if(error_int & ADMA_ERR_STAT_EN)
 	{
 		ADMA_ERR_STATE = 1;
-		SDIOD_LOGI("ADMA_ERR\r\n");
+		SDIOD_LOGD("ADMA_ERR\r\n");
 		ERROR_INT_STAT_R(SDIO_ACTIVE_BASE)= CLR_ADMA_ERR_STAT;
 	}
 	if(error_int & TUNING_ERR_STAT_EN)
 	{
 		TUNING_ERR_STATE = 1;
-		SDIOD_LOGI("TUNING_ERR\r\n");
+		SDIOD_LOGD("TUNING_ERR\r\n");
 		ERROR_INT_STAT_R(SDIO_ACTIVE_BASE)= CLR_TUNING_ERR_STAT;
 	}
 	if(error_int & RESP_ERR_STAT_EN)
 	{
 		RESP_ERR_STATE = 1;
-		SDIOD_LOGI("RESP_ERR\r\n");
+		SDIOD_LOGD("RESP_ERR\r\n");
 		ERROR_INT_STAT_R(SDIO_ACTIVE_BASE)= CLR_RESP_ERR_STAT;
 	}
 	if(error_int & BOOT_ACK_ERR_STAT_EN)
 	{
 		BOOT_ACK_ERR_STATE = 1;
-		SDIOD_LOGI("BOOT_ACK_ERR\r\n");
+		SDIOD_LOGD("BOOT_ACK_ERR\r\n");
 		ERROR_INT_STAT_R(SDIO_ACTIVE_BASE)= CLR_BOOT_ACK_ERR_STAT;
 	}
 	if(error_int & VENDOR_ERR1_STAT_EN)
 	{
 		VENDOR_ERR1_STATE = 1;
-		SDIOD_LOGI("VENDOR_ERR1\r\n");
+		SDIOD_LOGD("VENDOR_ERR1\r\n");
 		ERROR_INT_STAT_R(SDIO_ACTIVE_BASE)= CLR_VENDOR_ERR1_STAT;
 	}
 	if(error_int & VENDOR_ERR2_STAT_EN)
 	{
 		VENDOR_ERR2_STATE = 1;
-		SDIOD_LOGI("VENDOR_ERR2\r\n");
+		SDIOD_LOGD("VENDOR_ERR2\r\n");
 		ERROR_INT_STAT_R(SDIO_ACTIVE_BASE)= CLR_VENDOR_ERR2_STAT;
 	}
 	if(error_int & VENDOR_ERR3_STAT_EN)
 	{
 		VENDOR_ERR3_STATE = 1;
-		SDIOD_LOGI("VENDOR_ERR3\r\n");
+		SDIOD_LOGD("VENDOR_ERR3\r\n");
 		ERROR_INT_STAT_R(SDIO_ACTIVE_BASE)= CLR_VENDOR_ERR3_STAT;
 	}
 }
@@ -1333,10 +1643,9 @@ bk_err_t bk_sd_card_init(void)
 	bk_err_t ret = BK_OK;
 
 	if (s_sd_card_is_init) {
-		SDIOD_LOGI("sd card has inited\r\n");
-		return BK_OK;
+		SDIOD_LOGW("sd card re-init: deinit stale state first\r\n");
+		bk_sd_card_deinit();
 	}
-
 
 	if (s_sdio_cmd_done_sema == NULL)
 	{
@@ -1374,10 +1683,25 @@ bk_err_t bk_sd_card_init(void)
 		}
 	}
 
-	ret = sdio_host_init();
-	if(ret)
-		return ret;
+	if (s_sd_card_enum_valid && sdio_rca != 0) {
+		ret = sdio_host_resume();
+		if (ret == BK_OK) {
+			s_sd_card_is_init = true;
+			return BK_OK;
+		}
+		SDIOD_LOGW("SDIO resume failed, fallback to full init\r\n");
+		s_sd_card_enum_valid = false;
+		sdio_reset();
+		sdio_clear_drv_state();
+	}
 
+	ret = sdio_host_init();
+	if (ret != BK_OK) {
+		s_sd_card_enum_valid = false;
+		return ret;
+	}
+
+	s_sd_card_enum_valid = true;
 	s_sd_card_is_init = true;
 	return BK_OK;
 }
@@ -1385,11 +1709,13 @@ bk_err_t bk_sd_card_init(void)
 bk_err_t bk_sd_card_deinit(void)
 {
 	uint32_t ret = 0;
-	sdio_reset(); //reset
 
-
+	sdio_card_idle_before_reset();
+	sdio_disable_host_interrupts();
+	sdio_clear_controller_irq(SDIO_ACTIVE_BASE);
+	sdio_drain_semaphores();
+	card_clk_stop(SDIO_ACTIVE_BASE);
 	s_sd_card_is_init = false;
-
 
 	if(s_sdio_cmd_done_sema)
 	{
@@ -1454,9 +1780,34 @@ bk_err_t bk_sd_card_write_blocks(const uint8_t *data, uint32_t block_addr, uint3
 bk_err_t bk_sd_card_read_blocks(uint8_t *data, uint32_t block_addr, uint32_t block_num)
 {
 	uint32_t addr = (s_sd_card_obj.sd_card.card_type == SD_CARD_TYPE_SDSC) ? (block_addr << 9) : block_addr;
-	//CPU buffer read
-	bk_err_t ret = receive_mult_data(SDIO_ACTIVE_BASE, data, 0x200,block_num,18,addr);
+	uint32_t data_len = block_num * 0x200;
 
+	SD_CARD_LOGD("read_blocks: block_addr=0x%08x, block_num=%u, byte_addr=0x%08x, len=%u\r\n",
+		block_addr, block_num, addr, data_len);
+
+	//CPU buffer read
+	bk_err_t ret = receive_mult_data(SDIO_ACTIVE_BASE, data, 0x200, block_num, 18, addr);
+
+	// if (ret == BK_OK && data != NULL && data_len > 0) {
+	// 	char line[80];
+	// 	uint32_t i;
+
+	// 	for (i = 0; i < data_len; i += 16) {
+	// 		uint32_t n = data_len - i;
+	// 		int off;
+
+	// 		if (n > 16)
+	// 			n = 16;
+	// 		off = os_snprintf(line, sizeof(line), "%08x:", i);
+	// 		for (uint32_t j = 0; j < n; j++) {
+	// 			off += os_snprintf(line + off, sizeof(line) - (uint32_t)off,
+	// 				" %02x", data[i + j]);
+	// 		}
+	// 		SD_CARD_LOGI("%s\r\n", line);
+	// 	}
+	// } else if (ret != BK_OK) {
+	// 	SD_CARD_LOGE("read_blocks failed: ret=%d\r\n", ret);
+	// }
 
 	return ret;
 }

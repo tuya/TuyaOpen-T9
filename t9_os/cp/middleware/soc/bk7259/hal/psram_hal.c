@@ -14,6 +14,7 @@
 #include "psram_ll_macro_def.h"
 #include "bk_pm_internal_api.h"
 #include "sys_driver.h"
+#include <modules/pm.h>
 #include "aon_pmu_ll.h"
 #include <driver/psram.h>
 #include <modules/chip_support.h>
@@ -502,10 +503,10 @@ void psram_hal_power_clk_enable(uint8_t enable)
 
 		sys_drv_psram_ldo_enable(1);
 		bk_delay_us(1000);
-		if(bk_pm_module_power_state_get(PM_POWER_SUB_MODULE_NAME_AHBP_PSRAM) != 0)
-		{
-			bk_pm_module_vote_power_ctrl(PM_POWER_SUB_MODULE_NAME_AHBP_PSRAM, PM_POWER_MODULE_STATE_ON);
-		}
+
+
+		//bk_pm_module_vote_power_ctrl(PM_POWER_SUB_MODULE_NAME_AHBP_PSRAM, PM_POWER_MODULE_STATE_ON);
+
 
 		// psram bus clk always open
 		sys_drv_psram_psram0_disckg(1);
@@ -515,19 +516,19 @@ void psram_hal_power_clk_enable(uint8_t enable)
 		psram_hal_set_clk_with_id(PSRAM_ID_0, PSRAM_80M);
 		psram_hal_set_clk_with_id(PSRAM_ID_1, PSRAM_80M);
 
-		sys_drv_dev_clk_pwr_up(CLK_PWR_ID_PSRAM0, CLK_PWR_CTRL_PWR_UP);
-		sys_drv_dev_clk_pwr_up(CLK_PWR_ID_PSRAM1, CLK_PWR_CTRL_PWR_UP);
+		bk_pm_clock_ctrl(CLK_PWR_ID_PSRAM0, CLK_PWR_CTRL_PWR_UP);
+		bk_pm_clock_ctrl(CLK_PWR_ID_PSRAM1, CLK_PWR_CTRL_PWR_UP);
 	}
 	else
 	{
 		bk_psram_heap_init_flag_set(false);
 
-		bk_pm_module_vote_power_ctrl(PM_POWER_SUB_MODULE_NAME_AHBP_PSRAM, PM_POWER_MODULE_STATE_OFF);
+		//bk_pm_module_vote_power_ctrl(PM_POWER_SUB_MODULE_NAME_AHBP_PSRAM, PM_POWER_MODULE_STATE_OFF);
 		psram_hal_set_sf_reset_with_id(PSRAM_ID_0, 0);
 		psram_hal_set_sf_reset_with_id(PSRAM_ID_1, 0);
 
-		sys_drv_dev_clk_pwr_up(CLK_PWR_ID_PSRAM0, CLK_PWR_CTRL_PWR_DOWN);
-		sys_drv_dev_clk_pwr_up(CLK_PWR_ID_PSRAM1, CLK_PWR_CTRL_PWR_DOWN);
+		bk_pm_clock_ctrl(CLK_PWR_ID_PSRAM0, CLK_PWR_CTRL_PWR_DOWN);
+		bk_pm_clock_ctrl(CLK_PWR_ID_PSRAM1, CLK_PWR_CTRL_PWR_DOWN);
 
 		// power down
 		sys_drv_psram_ldo_enable(0);

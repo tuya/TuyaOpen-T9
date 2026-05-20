@@ -13,16 +13,15 @@
 #include "devices_mgmt.h"
 #include "app_gpu.h"
 #include "avdk_monitor.h"
-#include "aov_detection.h"
-#include <lcd/lcd_hx8399c_mipi_1080x1920.h>
+#include <lcd/lcd_mipi_hx8399c_1080x1920.h>
 #define SYS_ANA_REG_BASE    (0x44010000)
 #define LDO_ANA_REG         (0x69)
 
-#include "AvdkVideoReator.h"
+#include "AvdkVideoReatorOSD.h"
 #include "AvdkDetectionModel.h"
 #include "PalmDetectionModel.h"
-#include "app_event.h"
-#include "car_control.h"
+#include "box.h"
+#include "servo.h"
 
 static void bk_auxldo_enable(void)
 {
@@ -33,29 +32,63 @@ static void bk_auxldo_enable(void)
     REG_WRITE(SYS_ANA_REG_BASE + LDO_ANA_REG * 4, reg);
 }
 
-static AvdkVideoReator *video_reator = NULL;
+static AvdkVideoReatorOSD *video_reator = NULL;
 static PalmDetectionModel *model = NULL;
+
+static void detection_box_cb(Box *boxes, int count)
+{
+    if (boxes == NULL || count <= 0) {
+        box_detection_path_clear();
+        return;
+    }
+
+    /* Pick the box with the largest area (w*h) to drive the servo.
+     *
+     * boxes[] arrives sorted by score (NMS output), but the highest-score box
+     * is not always the largest one -- a small but very distinct palm in a
+     * corner can outscore a partially-clipped larger palm in the center. For
+     * servo tracking we want "the palm closest to the camera", and box area
+     * is a robust proxy for that regardless of pose. When count==1 we skip
+     * the scan entirely. */
+    int target = 0;
+    if (count > 1) {
+        float best_area = boxes[0].w * boxes[0].h;
+        for (int i = 1; i < count; i++) {
+            float area = boxes[i].w * boxes[i].h;
+            if (area > best_area) {
+                best_area = area;
+                target = i;
+            }
+        }
+    }
+
+    bk_printf("detection_box_cb: count=%d target=%d score=%.3f xywh=(%.2f,%.2f,%.2fx%.2f)\n",
+              count, target, boxes[target].score,
+              boxes[target].x, boxes[target].y, boxes[target].w, boxes[target].h);
+
+    /* Draw ALL detected palms. The user can still see secondary palms on the
+     * OSD even though the servo only follows the largest one.
+     * src = model input size (256x256), dst = display canvas size (1088x1088). */
+    box_detection_path_build(boxes, count, count, 0, model->getWidth(), model->getHeight(), 1088, 1088);
+
+    /* Drive servo from the chosen box's center: top-left (x,y) + half size. */
+    palm_track_servo(boxes[target].x + boxes[target].w * 0.5f,
+                     boxes[target].y + boxes[target].h * 0.5f,
+                     model->getWidth(), model->getHeight());
+}
 
 int ai_main_start()
 {
-    /* Init UART for car/gimbal control (optional; skip if not connected). */
-    const car_control_config_t car_config = DEFAULT_CAR_CONTROL_CONFIG();
-    if (car_control_init(&car_config) != BK_OK)
-    {
-        bk_printf("car_control_init failed\n");
-    }
-
-    /* Init palm event module (queue + tracking task). Pass NULL for default center/thresholds. */
-    if (app_event_init(NULL) != BK_OK)
-    {
-        bk_printf("app_event_init failed\n");
-    }
+    servo_init();
+    servo_set_angle(SERVO_CENTER_ANGLE);
 
     model = new PalmDetectionModel();
-    model->setResultCallback(app_event_get_result_callback());
-    video_reator = new AvdkVideoReator(model);
-    video_reator->start(AVDK_VIDEO_REATOR_MODE_DISPLAY);
-    //video_reator->start(AVDK_VIDEO_REATOR_MODE_NODISPLAY);
+    model->setBoxDetectionCallback(detection_box_cb);
+    video_reator = new AvdkVideoReatorOSD(model);
+    video_reator->init();
+    video_reator->OpenISPCamera();
+    video_reator->OpenDisplay();
+    video_reator->start();
 
     return 0;
 }
@@ -110,6 +143,8 @@ int main(void)
     gpu_board.flexa.dst_format = BK_PIXEL_FORMAT_ARGB8888;
     gpu_board.flexa.dst_compress = true;
     gpu_board.flexa.scale = false;
+    gpu_board.flexa.tess_width = 1920 / 4;
+    gpu_board.flexa.tess_height = 1080 / 4;
 
     bk_auxldo_enable();
     bk_frame_buffer_init();
