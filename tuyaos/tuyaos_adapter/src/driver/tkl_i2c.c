@@ -15,10 +15,13 @@
 
 #include "tkl_mutex.h"
 
+#include <os/os.h>
+
 extern void bk_printf(const char *fmt, ...);
 
 #define TKL_I2C_DEFAULT_SLAVE_ADDR       0x42u
 #define TKL_I2C_XFER_TIMEOUT_MS          500u
+#define TKL_I2C_SLAVE_XFER_TIMEOUT_MS    BEKEN_NEVER_TIMEOUT
 #define TKL_I2C_REG_WIDTH_8BIT           1u
 #define TKL_I2C_REG_WIDTH_16BIT          2u
 
@@ -837,7 +840,7 @@ __EXIT:
         return ret;
     }
 
-    bk_ret = bk_i2c_slave_write(id, (const uint8_t *)data, size, TKL_I2C_XFER_TIMEOUT_MS);
+    bk_ret = bk_i2c_slave_write(id, (const uint8_t *)data, size, TKL_I2C_SLAVE_XFER_TIMEOUT_MS);
     ret = __tkl_i2c_map_bk_err(bk_ret, OPRT_OS_ADAPTER_I2C_WRITE_FAILED);
 
     lock_ret = __tkl_i2c_port_lock(port);
@@ -889,7 +892,7 @@ __EXIT:
         return ret;
     }
 
-    bk_ret = bk_i2c_slave_read(id, (uint8_t *)data, size, TKL_I2C_XFER_TIMEOUT_MS);
+    bk_ret = bk_i2c_slave_read(id, (uint8_t *)data, size, TKL_I2C_SLAVE_XFER_TIMEOUT_MS);
     ret = __tkl_i2c_map_bk_err(bk_ret, OPRT_OS_ADAPTER_I2C_READ_FAILED);
 
     lock_ret = __tkl_i2c_port_lock(port);
