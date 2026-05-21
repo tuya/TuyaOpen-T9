@@ -86,6 +86,8 @@ typedef enum {
     BK_SYS_SW_REGS_AP_HEAP_MAX,
 } bk_sys_sw_regs_ap_heap_id_t;
 
+#define BK_SYS_SW_REGS_AP_EXTRA_DUMP_EXT_SRAM_HEAP  0U
+
 typedef struct {
     volatile uint32_t valid;
     volatile uint32_t pool_base;

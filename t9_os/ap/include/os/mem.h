@@ -19,6 +19,7 @@ typedef enum {
     HEAP_MEM_TYPE_SRAM,    /**< SRAM heap memory type */
     HEAP_MEM_TYPE_PSRAM,   /**< PSRAM heap memory type */
     HEAP_MEM_TYPE_HSRAM,   /**< HSRAM heap memory type */
+    HEAP_MEM_TYPE_EXT_SRAM,/**< Extended SRAM heap memory type */
     MEM_TYPE_MAX = 0xf
 } beken_mem_type_t;
 
@@ -156,6 +157,12 @@ void *hsram_realloc_debug(const char *func_name, int line, void *ptr, size_t siz
 void *hsram_realloc_release(void *ptr, size_t size);
 void *hsram_zalloc_release(size_t size);
 
+void *ext_sram_malloc_debug(const char *func_name, int line, size_t size, int need_zero);
+void *ext_sram_malloc_release(size_t size);
+void *ext_sram_realloc_debug(const char *func_name, int line, void *ptr, size_t size, int need_zero);
+void *ext_sram_realloc_release(void *ptr, size_t size);
+void *ext_sram_zalloc_release(size_t size);
+
 #if (CONFIG_MALLOC_STATIS || CONFIG_MEM_DEBUG)
 
 #define os_malloc(size)         os_malloc_debug((const char*)__FUNCTION__,__LINE__,size, 0)
@@ -174,6 +181,10 @@ void *hsram_zalloc_release(size_t size);
 #define hsram_malloc(size)      hsram_malloc_debug((const char*)__FUNCTION__,__LINE__,size, 0)
 #define hsram_zalloc(size)      hsram_malloc_debug((const char*)__FUNCTION__,__LINE__,size, 1)
 #define hsram_realloc(ptr, size) hsram_realloc_debug((const char*)__FUNCTION__,__LINE__,ptr,size, 0)
+
+#define ext_sram_malloc(size)      ext_sram_malloc_debug((const char*)__FUNCTION__,__LINE__,size, 0)
+#define ext_sram_zalloc(size)      ext_sram_malloc_debug((const char*)__FUNCTION__,__LINE__,size, 1)
+#define ext_sram_realloc(ptr, size) ext_sram_realloc_debug((const char*)__FUNCTION__,__LINE__,ptr,size, 0)
 
 void os_dump_memory_stats(uint32_t start_tick, uint32_t ticks_since_malloc, const char* task);
 
@@ -196,6 +207,10 @@ void os_dump_memory_stats(uint32_t start_tick, uint32_t ticks_since_malloc, cons
 #define hsram_zalloc(size)      hsram_zalloc_release(size)
 #define hsram_realloc(ptr, size) hsram_realloc_release(ptr, size)
 
+#define ext_sram_malloc(size)      ext_sram_malloc_release(size)
+#define ext_sram_zalloc(size)      ext_sram_zalloc_release(size)
+#define ext_sram_realloc(ptr, size) ext_sram_realloc_release(ptr, size)
+
 #endif
 
 #define bk_psram_realloc psram_realloc
@@ -203,6 +218,7 @@ void os_dump_memory_stats(uint32_t start_tick, uint32_t ticks_since_malloc, cons
 #define os_sram_free      os_free
 #define psram_free        os_free
 #define hsram_free        os_free
+#define ext_sram_free     os_free
 
 /** @brief   get the current used psram size
   *

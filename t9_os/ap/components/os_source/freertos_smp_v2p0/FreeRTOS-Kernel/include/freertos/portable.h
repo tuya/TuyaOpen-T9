@@ -191,6 +191,9 @@ uint32_t prvHeapGetTotalSize(void) PRIVILEGED_FUNCTION;
 size_t xPortGetHsramTotalHeapSize( void ) PRIVILEGED_FUNCTION;
 size_t xPortGetHsramFreeHeapSize( void )PRIVILEGED_FUNCTION;
 size_t xPortGetHsramMinimumFreeHeapSize( void ) PRIVILEGED_FUNCTION;
+size_t xPortGetExtSramTotalHeapSize( void ) PRIVILEGED_FUNCTION;
+size_t xPortGetExtSramFreeHeapSize( void ) PRIVILEGED_FUNCTION;
+size_t xPortGetExtSramMinimumFreeHeapSize( void ) PRIVILEGED_FUNCTION;
 #endif
 
 #if ( configUSE_MALLOC_FAILED_HOOK == 1 )

@@ -757,6 +757,12 @@ static inline void *task_malloc(size_t size, beken_mem_type_t eMemType)
 #else
         return NULL;
 #endif
+    case HEAP_MEM_TYPE_EXT_SRAM:
+#if CONFIG_AP_EXT_SRAM_HEAP_ADDR
+        return ext_sram_malloc(size);
+#else
+        return NULL;
+#endif
     case HEAP_MEM_TYPE_SRAM:
         return os_sram_malloc(size);
     default:
@@ -6081,4 +6087,3 @@ uint32_t vTaskTcbAddr()
 #endif //CONFIG_CM_BACKTRACE
 
 // eof
-

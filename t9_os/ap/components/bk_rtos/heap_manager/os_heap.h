@@ -34,6 +34,14 @@ void hsram_free_debug(const char *func_name, int line, void *ptr);
 void hsram_free_release(void *ptr);
 #endif
 
+#ifdef CONFIG_AP_EXT_SRAM_HEAP_ADDR
+void *ext_sram_malloc_impl(size_t size);
+void ext_sram_free_impl(void *ptr);
+bool ptr_is_ext_sram_heap(void *ptr);
+void ext_sram_free_debug(const char *func_name, int line, void *ptr);
+void ext_sram_free_release(void *ptr);
+#endif
+
 #ifdef CONFIG_AP_PSRAM_HEAP_ADDR
 void *psram_malloc_impl(size_t size);
 void psram_free_impl(void *ptr);

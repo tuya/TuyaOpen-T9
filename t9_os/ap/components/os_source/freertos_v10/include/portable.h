@@ -197,6 +197,9 @@ uint32_t prvHeapGetTotalSize(void) PRIVILEGED_FUNCTION;
 size_t xPortGetHsramTotalHeapSize( void ) PRIVILEGED_FUNCTION;
 size_t xPortGetHsramFreeHeapSize( void )PRIVILEGED_FUNCTION;
 size_t xPortGetHsramMinimumFreeHeapSize( void ) PRIVILEGED_FUNCTION;
+size_t xPortGetExtSramTotalHeapSize( void ) PRIVILEGED_FUNCTION;
+size_t xPortGetExtSramFreeHeapSize( void ) PRIVILEGED_FUNCTION;
+size_t xPortGetExtSramMinimumFreeHeapSize( void ) PRIVILEGED_FUNCTION;
 #endif
 
 #if ( configSTACK_ALLOCATION_FROM_SEPARATE_HEAP == 1 )

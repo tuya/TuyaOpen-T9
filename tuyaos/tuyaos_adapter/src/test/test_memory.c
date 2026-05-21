@@ -1,10 +1,13 @@
 #include "cli.h"
 #include "cli_tuya_test.h"
 #include "sdkconfig.h"
+#include "ram_regions.h"
 
 #include <stdint.h>
+#include <stddef.h>
 
 #include <components/system.h>
+#include <driver/aon_rtc.h>
 #include <os/mem.h>
 #include <os/os.h>
 #include <os/str.h>
@@ -94,10 +97,40 @@ static const memory_slab_region_t s_memory_slab_regions[] = {
 };
 #endif
 
+#if (CONFIG_CPU_INDEX == 1) && defined(CONFIG_AP_EXT_SRAM_HEAP_ADDR)
+extern size_t xPortGetExtSramTotalHeapSize(void);
+extern size_t xPortGetExtSramFreeHeapSize(void);
+extern size_t xPortGetExtSramMinimumFreeHeapSize(void);
+#define MEMORY_EXT_SRAM_ENABLED 1
+#else
+#define MEMORY_EXT_SRAM_ENABLED 0
+#endif
+
+#define MEMORY_ALLOC_TEST_DEFAULT_SIZE      (4096U)
+#define MEMORY_ALLOC_TEST_DEFAULT_COUNT     (1000U)
+#define MEMORY_FALLBACK_MAX_BLOCKS          (256U)
+
+typedef void *(*memory_alloc_func_t)(size_t size);
+typedef void (*memory_free_func_t)(void *ptr);
+
+static void *s_memory_os_test_ptr;
+#if MEMORY_EXT_SRAM_ENABLED
+static void *s_memory_ext_test_ptr;
+static void *s_memory_fallback_ptrs[MEMORY_FALLBACK_MAX_BLOCKS];
+#endif
+
 static void memory_cli_usage(void)
 {
     bk_printf("Usage:\r\n");
     bk_printf("  xmem show\r\n");
+    bk_printf("  xmem ext\r\n");
+    bk_printf("  xmem ext_malloc [bytes]\r\n");
+    bk_printf("  xmem ext_free\r\n");
+    bk_printf("  xmem ext_loop [bytes] [count]\r\n");
+    bk_printf("  xmem os_malloc [bytes]\r\n");
+    bk_printf("  xmem os_free\r\n");
+    bk_printf("  xmem os_loop [bytes] [count]\r\n");
+    bk_printf("  xmem os_fallback [block_bytes] [max_blocks]\r\n");
     bk_printf("  xmem dump [seconds_since_malloc] [start_tick] [task]\r\n");
     bk_printf("  xmem sum [func|task] [seconds_since_malloc] [start_tick] [task]\r\n");
     bk_printf("  xmem mark [name]\r\n");
@@ -121,6 +154,8 @@ typedef struct {
     uint32_t psram_min_free_bytes;
     uint32_t hsram_free_bytes;
     uint32_t hsram_min_free_bytes;
+    uint32_t ext_sram_free_bytes;
+    uint32_t ext_sram_min_free_bytes;
 } memory_snapshot_t;
 
 static memory_snapshot_t s_memory_snapshot;
@@ -152,6 +187,11 @@ static void memory_read_snapshot(memory_snapshot_t *snapshot, const char *name)
     snapshot->hsram_free_bytes = (uint32_t)rtos_get_hsram_free_heap_size();
     snapshot->hsram_min_free_bytes = (uint32_t)rtos_get_hsram_minimum_free_heap_size();
 #endif
+
+#if MEMORY_EXT_SRAM_ENABLED
+    snapshot->ext_sram_free_bytes = (uint32_t)xPortGetExtSramFreeHeapSize();
+    snapshot->ext_sram_min_free_bytes = (uint32_t)xPortGetExtSramMinimumFreeHeapSize();
+#endif
 }
 
 static void memory_show_heap(void)
@@ -175,6 +215,16 @@ static void memory_show_heap(void)
                            (uint32_t)rtos_get_hsram_total_heap_size(),
                            (uint32_t)rtos_get_hsram_free_heap_size(),
                            (uint32_t)rtos_get_hsram_minimum_free_heap_size());
+#endif
+
+#if MEMORY_EXT_SRAM_ENABLED
+    memory_print_heap_line("ext_sram",
+                           (uint32_t)xPortGetExtSramTotalHeapSize(),
+                           (uint32_t)xPortGetExtSramFreeHeapSize(),
+                           (uint32_t)xPortGetExtSramMinimumFreeHeapSize());
+    bk_printf("ext_sram range: [0x%08x, 0x%08x)\r\n",
+              CONFIG_AP_EXT_SRAM_HEAP_ADDR,
+              CONFIG_AP_EXT_SRAM_HEAP_ADDR + CONFIG_AP_EXT_SRAM_HEAP_SIZE);
 #endif
 }
 
@@ -343,6 +393,218 @@ static void memory_dump_slab_heap(const char *heap_name)
 }
 #endif
 
+static uint32_t memory_arg_u32(int argc, char **argv, int index, uint32_t default_value)
+{
+    if ((index < argc) && (argv[index] != NULL)) {
+        return os_strtoul(argv[index], NULL, 10);
+    }
+
+    return default_value;
+}
+
+static void memory_touch_block(void *ptr, uint32_t size)
+{
+    volatile uint8_t *buf = (volatile uint8_t *)ptr;
+
+    if ((buf == NULL) || (size == 0U)) {
+        return;
+    }
+
+    buf[0] = 0x5a;
+    buf[size - 1U] = 0xa5;
+}
+
+static void memory_os_free_wrapper(void *ptr)
+{
+    os_free(ptr);
+}
+
+static void *memory_os_malloc_wrapper(size_t size)
+{
+    return os_malloc(size);
+}
+
+static void memory_print_timing(const char *name, uint32_t size, uint32_t count,
+                                uint32_t ok_count, uint32_t fail_count, uint64_t elapsed_us)
+{
+    uint64_t avg_x100 = (count == 0U) ? 0U : ((elapsed_us * 100U) / count);
+
+    bk_printf("%s size=%u count=%u ok=%u fail=%u elapsed=%llu us avg=%llu.%02llu us/op\r\n",
+              name, size, count, ok_count, fail_count,
+              elapsed_us, avg_x100 / 100U, avg_x100 % 100U);
+}
+
+static void memory_run_alloc_loop(const char *name, memory_alloc_func_t alloc_fn,
+                                  memory_free_func_t free_fn, uint32_t size, uint32_t count)
+{
+    uint32_t ok_count = 0;
+    uint32_t fail_count = 0;
+    uint64_t start_us;
+    uint64_t elapsed_us;
+
+    if ((alloc_fn == NULL) || (free_fn == NULL) || (count == 0U)) {
+        bk_printf("invalid %s test parameter\r\n", name);
+        return;
+    }
+
+    start_us = bk_aon_rtc_get_us();
+    for (uint32_t i = 0; i < count; i++) {
+        void *ptr = alloc_fn(size);
+
+        if (ptr == NULL) {
+            fail_count++;
+            continue;
+        }
+
+        memory_touch_block(ptr, size);
+        free_fn(ptr);
+        ok_count++;
+    }
+    elapsed_us = bk_aon_rtc_get_us() - start_us;
+
+    memory_print_timing(name, size, count, ok_count, fail_count, elapsed_us);
+    memory_show_heap();
+}
+
+static void memory_test_single_alloc(const char *name, memory_alloc_func_t alloc_fn,
+                                     memory_free_func_t free_fn, void **saved_ptr, uint32_t size)
+{
+    uint64_t start_us;
+    uint64_t elapsed_us;
+    void *ptr;
+
+    if ((alloc_fn == NULL) || (free_fn == NULL) || (saved_ptr == NULL)) {
+        bk_printf("invalid %s malloc parameter\r\n", name);
+        return;
+    }
+
+    if (*saved_ptr != NULL) {
+        free_fn(*saved_ptr);
+        *saved_ptr = NULL;
+    }
+
+    start_us = bk_aon_rtc_get_us();
+    ptr = alloc_fn(size);
+    elapsed_us = bk_aon_rtc_get_us() - start_us;
+
+    memory_touch_block(ptr, size);
+    *saved_ptr = ptr;
+
+    bk_printf("%s malloc size=%u ptr=%p elapsed=%llu us\r\n", name, size, ptr, elapsed_us);
+    memory_show_heap();
+}
+
+static void memory_test_single_free(const char *name, memory_free_func_t free_fn, void **saved_ptr)
+{
+    uint64_t start_us;
+    uint64_t elapsed_us;
+
+    if ((free_fn == NULL) || (saved_ptr == NULL)) {
+        bk_printf("invalid %s free parameter\r\n", name);
+        return;
+    }
+
+    if (*saved_ptr == NULL) {
+        bk_printf("%s free skipped: no saved pointer\r\n", name);
+        return;
+    }
+
+    start_us = bk_aon_rtc_get_us();
+    free_fn(*saved_ptr);
+    elapsed_us = bk_aon_rtc_get_us() - start_us;
+
+    bk_printf("%s free ptr=%p elapsed=%llu us\r\n", name, *saved_ptr, elapsed_us);
+    *saved_ptr = NULL;
+    memory_show_heap();
+}
+
+#if MEMORY_EXT_SRAM_ENABLED
+static void *memory_ext_sram_malloc_wrapper(size_t size)
+{
+    return ext_sram_malloc(size);
+}
+
+static void memory_ext_sram_free_wrapper(void *ptr)
+{
+    ext_sram_free(ptr);
+}
+
+static uint8_t memory_ptr_in_ext_sram(const void *ptr)
+{
+    uintptr_t addr = (uintptr_t)ptr;
+
+    return ((addr >= (uintptr_t)CONFIG_AP_EXT_SRAM_HEAP_ADDR) &&
+            (addr < (uintptr_t)(CONFIG_AP_EXT_SRAM_HEAP_ADDR + CONFIG_AP_EXT_SRAM_HEAP_SIZE))) ? 1U : 0U;
+}
+
+static void memory_test_os_fallback(uint32_t block_size, uint32_t max_blocks)
+{
+    uint32_t alloc_count = 0;
+    uint32_t ext_count = 0;
+    uint32_t ext_index = UINT32_MAX;
+    uint32_t fail_index = UINT32_MAX;
+    uint64_t start_us;
+    uint64_t elapsed_us;
+    uint32_t before_sram = (uint32_t)rtos_get_free_heap_size();
+    uint32_t before_ext = (uint32_t)xPortGetExtSramFreeHeapSize();
+
+    if (block_size == 0U) {
+        block_size = MEMORY_ALLOC_TEST_DEFAULT_SIZE;
+    }
+
+    if ((max_blocks == 0U) || (max_blocks > MEMORY_FALLBACK_MAX_BLOCKS)) {
+        max_blocks = MEMORY_FALLBACK_MAX_BLOCKS;
+    }
+
+    os_memset(s_memory_fallback_ptrs, 0, sizeof(s_memory_fallback_ptrs));
+
+    start_us = bk_aon_rtc_get_us();
+    for (uint32_t i = 0; i < max_blocks; i++) {
+        void *ptr = os_malloc(block_size);
+
+        if (ptr == NULL) {
+            fail_index = i;
+            break;
+        }
+
+        memory_touch_block(ptr, block_size);
+        s_memory_fallback_ptrs[i] = ptr;
+        alloc_count++;
+
+        if (memory_ptr_in_ext_sram(ptr)) {
+            ext_count++;
+            if (ext_index == UINT32_MAX) {
+                ext_index = i;
+            }
+        }
+    }
+    elapsed_us = bk_aon_rtc_get_us() - start_us;
+
+    bk_printf("os_fallback block=%u max=%u alloc=%u ext_alloc=%u first_ext_index=%d fail_index=%d elapsed=%llu us\r\n",
+              block_size, max_blocks, alloc_count, ext_count,
+              (ext_index == UINT32_MAX) ? -1 : (int32_t)ext_index,
+              (fail_index == UINT32_MAX) ? -1 : (int32_t)fail_index, elapsed_us);
+    bk_printf("before: sram_free=%u ext_free=%u\r\n", before_sram, before_ext);
+    bk_printf("during: sram_free=%u ext_free=%u\r\n",
+              (uint32_t)rtos_get_free_heap_size(), (uint32_t)xPortGetExtSramFreeHeapSize());
+
+    for (uint32_t i = 0; i < alloc_count; i++) {
+        os_free(s_memory_fallback_ptrs[i]);
+        s_memory_fallback_ptrs[i] = NULL;
+    }
+
+    bk_printf("after:  sram_free=%u ext_free=%u\r\n",
+              (uint32_t)rtos_get_free_heap_size(), (uint32_t)xPortGetExtSramFreeHeapSize());
+    if (ext_index == UINT32_MAX) {
+        bk_printf("os_fallback result: ext_sram was not used. Try larger block or max_blocks.\r\n");
+    } else if (fail_index != UINT32_MAX) {
+        bk_printf("os_fallback result: os_malloc used AP_EXT_SRAM_HEAP, then failed when both heaps could not satisfy block.\r\n");
+    } else {
+        bk_printf("os_fallback result: os_malloc used AP_EXT_SRAM_HEAP, max_blocks reached before allocation failure.\r\n");
+    }
+}
+#endif
+
 static void memory_mark(const char *name)
 {
     memory_read_snapshot(&s_memory_snapshot, name);
@@ -381,6 +643,11 @@ static void memory_diff(void)
 #if (CONFIG_CPU_INDEX == 1) && defined(CONFIG_AP_HSRAM_HEAP_ADDR)
     memory_print_diff_line("hsram", s_memory_snapshot.hsram_free_bytes, current.hsram_free_bytes,
                            s_memory_snapshot.hsram_min_free_bytes, current.hsram_min_free_bytes);
+#endif
+
+#if MEMORY_EXT_SRAM_ENABLED
+    memory_print_diff_line("ext_sram", s_memory_snapshot.ext_sram_free_bytes, current.ext_sram_free_bytes,
+                           s_memory_snapshot.ext_sram_min_free_bytes, current.ext_sram_min_free_bytes);
 #endif
 }
 
@@ -436,6 +703,89 @@ void cli_memory_test_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, cha
 
     if (os_strcmp(argv[1], "show") == 0) {
         memory_show_heap();
+        return;
+    }
+
+    if ((os_strcmp(argv[1], "ext") == 0) || (os_strcmp(argv[1], "extra") == 0)) {
+#if MEMORY_EXT_SRAM_ENABLED
+        memory_print_heap_line("ext_sram",
+                               (uint32_t)xPortGetExtSramTotalHeapSize(),
+                               (uint32_t)xPortGetExtSramFreeHeapSize(),
+                               (uint32_t)xPortGetExtSramMinimumFreeHeapSize());
+        bk_printf("ext_sram range: [0x%08x, 0x%08x)\r\n",
+                  CONFIG_AP_EXT_SRAM_HEAP_ADDR,
+                  CONFIG_AP_EXT_SRAM_HEAP_ADDR + CONFIG_AP_EXT_SRAM_HEAP_SIZE);
+#else
+        bk_printf("AP_EXT_SRAM_HEAP is not configured.\r\n");
+#endif
+        return;
+    }
+
+    if (os_strcmp(argv[1], "ext_malloc") == 0) {
+#if MEMORY_EXT_SRAM_ENABLED
+        memory_test_single_alloc("ext_sram", memory_ext_sram_malloc_wrapper, memory_ext_sram_free_wrapper,
+                                 &s_memory_ext_test_ptr,
+                                 memory_arg_u32(argc, argv, 2, MEMORY_ALLOC_TEST_DEFAULT_SIZE));
+#else
+        bk_printf("AP_EXT_SRAM_HEAP is not configured.\r\n");
+#endif
+        return;
+    }
+
+    if (os_strcmp(argv[1], "ext_free") == 0) {
+#if MEMORY_EXT_SRAM_ENABLED
+        memory_test_single_free("ext_sram", memory_ext_sram_free_wrapper, &s_memory_ext_test_ptr);
+#else
+        bk_printf("AP_EXT_SRAM_HEAP is not configured.\r\n");
+#endif
+        return;
+    }
+
+    if (os_strcmp(argv[1], "ext_loop") == 0) {
+#if MEMORY_EXT_SRAM_ENABLED
+        memory_run_alloc_loop("ext_sram malloc/free",
+                              memory_ext_sram_malloc_wrapper,
+                              memory_ext_sram_free_wrapper,
+                              memory_arg_u32(argc, argv, 2, MEMORY_ALLOC_TEST_DEFAULT_SIZE),
+                              memory_arg_u32(argc, argv, 3, MEMORY_ALLOC_TEST_DEFAULT_COUNT));
+#else
+        bk_printf("AP_EXT_SRAM_HEAP is not configured.\r\n");
+#endif
+        return;
+    }
+
+    if (os_strcmp(argv[1], "os_malloc") == 0) {
+        memory_test_single_alloc("os", memory_os_malloc_wrapper, memory_os_free_wrapper,
+                                 &s_memory_os_test_ptr,
+                                 memory_arg_u32(argc, argv, 2, MEMORY_ALLOC_TEST_DEFAULT_SIZE));
+        return;
+    }
+
+    if (os_strcmp(argv[1], "os_free") == 0) {
+        memory_test_single_free("os", memory_os_free_wrapper, &s_memory_os_test_ptr);
+        return;
+    }
+
+    if (os_strcmp(argv[1], "os_loop") == 0) {
+        memory_run_alloc_loop("os malloc/free",
+                              memory_os_malloc_wrapper,
+                              memory_os_free_wrapper,
+                              memory_arg_u32(argc, argv, 2, MEMORY_ALLOC_TEST_DEFAULT_SIZE),
+                              memory_arg_u32(argc, argv, 3, MEMORY_ALLOC_TEST_DEFAULT_COUNT));
+        return;
+    }
+
+    if (os_strcmp(argv[1], "os_fallback") == 0) {
+#if MEMORY_EXT_SRAM_ENABLED
+#if defined(CONFIG_OS_MALLOC_EXT_SRAM_FALLBACK)
+        memory_test_os_fallback(memory_arg_u32(argc, argv, 2, MEMORY_ALLOC_TEST_DEFAULT_SIZE),
+                                memory_arg_u32(argc, argv, 3, 128U));
+#else
+        bk_printf("CONFIG_OS_MALLOC_EXT_SRAM_FALLBACK is disabled.\r\n");
+#endif
+#else
+        bk_printf("AP_EXT_SRAM_HEAP is not configured.\r\n");
+#endif
         return;
     }
 

@@ -3,6 +3,7 @@
 #include "os_heap.h"
 #include "bk_heap/port/port_heap.h"
 #include "os_heap_debug.h"
+#include "os_heap_malloc_fallback.h"
 #include "sys_sw_regs.h"
 
 extern unsigned char _heap_start;
@@ -38,6 +39,20 @@ static void bk_heap_track_ap_heap_window(void *ptr, size_t size)
     else if (ptr_is_hsram_heap(ptr)) {
         heap_id = BK_SYS_SW_REGS_AP_HEAP_HSRAM;
         pool_base = CONFIG_AP_HSRAM_HEAP_ADDR;
+    }
+#endif
+#ifdef CONFIG_AP_EXT_SRAM_HEAP_ADDR
+    else if (ptr_is_ext_sram_heap(ptr)) {
+        ap_extra_dump_info_t extra_info;
+        uint32_t usage = (uint32_t)(alloc_end - CONFIG_AP_EXT_SRAM_HEAP_ADDR);
+
+        if (bk_sys_sw_regs_get_ap_extra_dump(BK_SYS_SW_REGS_AP_EXTRA_DUMP_EXT_SRAM_HEAP, &extra_info) &&
+            (usage <= extra_info.size)) {
+            return;
+        }
+        bk_sys_sw_regs_update_ap_extra_dump(BK_SYS_SW_REGS_AP_EXTRA_DUMP_EXT_SRAM_HEAP,
+                                            CONFIG_AP_EXT_SRAM_HEAP_ADDR, usage);
+        return;
     }
 #endif
     else {
@@ -90,6 +105,11 @@ size_t os_heap_get_allocated_size(void *ptr)
     #ifdef CONFIG_AP_HSRAM_HEAP_ADDR
     else if (ptr_is_hsram_heap(ptr)) {
         return hsram_get_allocated_size(ptr);
+    }
+    #endif
+    #ifdef CONFIG_AP_EXT_SRAM_HEAP_ADDR
+    else if (ptr_is_ext_sram_heap(ptr)) {
+        return ext_sram_get_allocated_size(ptr);
     }
     #endif
     else {
@@ -151,6 +171,11 @@ void os_free_debug(const char *func_name, int line, void *ptr)
         hsram_free_debug(func_name, line, ptr);
     }
     #endif
+    #ifdef CONFIG_AP_EXT_SRAM_HEAP_ADDR
+    else if (ptr_is_ext_sram_heap(ptr)) {
+        ext_sram_free_debug(func_name, line, ptr);
+    }
+    #endif
     else {
         BK_ASSERT(0);
     }
@@ -171,12 +196,19 @@ void os_free_release(void *ptr)
         hsram_free_release(ptr);
     }
     #endif
+    #ifdef CONFIG_AP_EXT_SRAM_HEAP_ADDR
+    else if (ptr_is_ext_sram_heap(ptr)) {
+        ext_sram_free_release(ptr);
+    }
+    #endif
     else {
         BK_ASSERT(0);
     }
 }
 
-/* Default OS heap type selection (Kconfig: OS_HEAP_TYPE) */
+/* Default OS heap type selection (Kconfig: OS_HEAP_TYPE).
+ * Scheme C (OS_MALLOC_EXT_SRAM_FALLBACK): os_malloc* implemented after ext_sram_heap. */
+#if !OS_MALLOC_EXT_SRAM_FALLBACK_ENABLED
 #if defined(CONFIG_OS_HEAP_USE_HSRAM)
     void *os_malloc_debug(const char *func_name, int line, size_t size, int need_zero) __attribute__((alias("hsram_malloc_debug")));
     void *os_malloc_release(size_t size) __attribute__((alias("hsram_malloc_release")));
@@ -196,32 +228,7 @@ void os_free_release(void *ptr)
     void *os_malloc_release(size_t size) __attribute__((alias("sram_malloc_release")));
     void *os_zalloc_release(size_t size) __attribute__((alias("sram_zalloc_release")));
 #endif
-
-void *os_realloc_debug(const char *func_name, int line, void *ptr, size_t size, int need_zero)
-{
-    void *tmp;
-  
-    tmp = (void *)os_malloc_debug(func_name, line, size, need_zero);
-    if (tmp && ptr) {
-        os_memcpy(tmp, ptr, size);
-        os_free_debug(func_name, line, ptr);
-    }
-
-    return tmp;
-}
-
-void *os_realloc_release(void *ptr, size_t size)
-{
-    void *tmp;
-
-    tmp = (void *)os_malloc_release(size);
-    if (tmp && ptr) {
-        os_memcpy(tmp, ptr, size);
-        os_free_release(ptr);
-    }
-
-    return tmp;
-}
+#endif /* !OS_MALLOC_EXT_SRAM_FALLBACK_ENABLED */
 
 /* =========================== SRAM HEAP =========================== */
 #if CONFIG_MEM_DEBUG
@@ -333,6 +340,75 @@ void *hsram_realloc_release(void *ptr, size_t size)
     return tmp;
 }
 #endif
+/* =========================== EXT SRAM HEAP =========================== */
+#ifdef CONFIG_AP_EXT_SRAM_HEAP_ADDR
+#if CONFIG_MEM_DEBUG
+static struct list_head s_ext_sram_used;
+void bk_heap_ext_sram_debug_init(void)
+{
+    INIT_LIST_HEAD(&s_ext_sram_used);
+}
+#endif
+
+static const bk_heap_t bk_heap_ext_sram = {
+    .malloc = ext_sram_malloc_impl,
+    .free = ext_sram_free_impl,
+#if CONFIG_MEM_DEBUG
+    .used_list = &s_ext_sram_used,
+#endif
+};
+
+void *ext_sram_malloc_debug(const char *func_name, int line, size_t size, int need_zero)
+{
+    return bk_heap_malloc_impl(&bk_heap_ext_sram, func_name, line, size, need_zero);
+}
+
+void ext_sram_free_debug(const char *func_name, int line, void *ptr)
+{
+    bk_heap_free_impl(&bk_heap_ext_sram, func_name, line, ptr);
+}
+
+void *ext_sram_malloc_release(size_t size)
+{
+    return bk_heap_malloc_impl(&bk_heap_ext_sram, "NULL", 0, size, 0);
+}
+
+void ext_sram_free_release(void *ptr)
+{
+    bk_heap_free_impl(&bk_heap_ext_sram, "NULL", 0, ptr);
+}
+
+void *ext_sram_zalloc_release(size_t size)
+{
+    return bk_heap_malloc_impl(&bk_heap_ext_sram, "NULL", 0, size, 1);
+}
+
+void *ext_sram_realloc_debug(const char *func_name, int line, void *ptr, size_t size, int need_zero)
+{
+    void *tmp;
+
+    tmp = (void *)ext_sram_malloc_debug(func_name, line, size, need_zero);
+    if (tmp && ptr) {
+        os_memcpy(tmp, ptr, size);
+        ext_sram_free_debug(func_name, line, ptr);
+    }
+
+    return tmp;
+}
+
+void *ext_sram_realloc_release(void *ptr, size_t size)
+{
+    void *tmp;
+
+    tmp = (void *)ext_sram_malloc_release(size);
+    if (tmp && ptr) {
+        os_memcpy(tmp, ptr, size);
+        ext_sram_free_release(ptr);
+    }
+
+    return tmp;
+}
+#endif
 /* =========================== PSRAM HEAP =========================== */
 #ifdef CONFIG_AP_PSRAM_HEAP_ADDR
 #if CONFIG_MEM_DEBUG
@@ -416,6 +492,12 @@ void os_dump_memory_stats(uint32_t start_tick, uint32_t ticks_since_malloc, cons
         BK_DUMP_OUT("hsram heap list is empty.\r\n");
     }
     #endif
+    #ifdef CONFIG_AP_EXT_SRAM_HEAP_ADDR
+    BK_DUMP_OUT(">>>>> ext sram heap dump memory stats.\r\n");
+    if (bk_heap_debug_dump_mem_stats(start_tick, ticks_since_malloc, task, &s_ext_sram_used) != 0) {
+        BK_DUMP_OUT("ext sram heap list is empty.\r\n");
+    }
+    #endif
     #ifdef CONFIG_AP_PSRAM_HEAP_ADDR
     BK_DUMP_OUT(">>>>> psram heap dump memory stats.\r\n");
     if (bk_heap_debug_dump_mem_stats(start_tick, ticks_since_malloc, task, &s_psram_used) != 0) {
@@ -439,3 +521,109 @@ void bk_psram_heap_get_used_state(void)
     }
 }
 #endif
+
+/* =========================== os_malloc ext_sram fallback (scheme C) =========================== */
+#if OS_MALLOC_EXT_SRAM_FALLBACK_ENABLED
+
+#if defined(CONFIG_OS_HEAP_USE_HSRAM)
+#define OS_HEAP_PRIMARY_MALLOC_DEBUG(func_name, line, size, need_zero) \
+    hsram_malloc_debug((func_name), (line), (size), (need_zero))
+#define OS_HEAP_PRIMARY_MALLOC_RELEASE(size)    hsram_malloc_release(size)
+#define OS_HEAP_PRIMARY_ZALLOC_RELEASE(size)    hsram_zalloc_release(size)
+#elif defined(CONFIG_OS_HEAP_USE_PSRAM)
+#define OS_HEAP_PRIMARY_MALLOC_DEBUG(func_name, line, size, need_zero) \
+    psram_malloc_debug((func_name), (line), (size), (need_zero))
+#define OS_HEAP_PRIMARY_MALLOC_RELEASE(size)    psram_malloc_release(size)
+#define OS_HEAP_PRIMARY_ZALLOC_RELEASE(size)    psram_zalloc_release(size)
+#else
+#define OS_HEAP_PRIMARY_MALLOC_DEBUG(func_name, line, size, need_zero) \
+    sram_malloc_debug((func_name), (line), (size), (need_zero))
+#define OS_HEAP_PRIMARY_MALLOC_RELEASE(size)    sram_malloc_release(size)
+#define OS_HEAP_PRIMARY_ZALLOC_RELEASE(size)    sram_zalloc_release(size)
+#endif
+
+void *os_malloc_debug(const char *func_name, int line, size_t size, int need_zero)
+{
+    void *ptr = OS_HEAP_PRIMARY_MALLOC_DEBUG(func_name, line, size, need_zero);
+
+    if ((ptr == NULL) && (size != 0U)) {
+        ptr = ext_sram_malloc_debug(func_name, line, size, need_zero);
+    }
+    return ptr;
+}
+
+void *os_malloc_release(size_t size)
+{
+    void *ptr = OS_HEAP_PRIMARY_MALLOC_RELEASE(size);
+
+    if ((ptr == NULL) && (size != 0U)) {
+        ptr = ext_sram_malloc_release(size);
+    }
+    return ptr;
+}
+
+void *os_zalloc_release(size_t size)
+{
+    void *ptr = OS_HEAP_PRIMARY_ZALLOC_RELEASE(size);
+
+    if ((ptr == NULL) && (size != 0U)) {
+        ptr = ext_sram_zalloc_release(size);
+    }
+    return ptr;
+}
+
+void *os_realloc_debug(const char *func_name, int line, void *ptr, size_t size, int need_zero)
+{
+    void *tmp;
+
+    tmp = (void *)os_malloc_debug(func_name, line, size, need_zero);
+    if (tmp && ptr) {
+        os_memcpy(tmp, ptr, size);
+        os_free_debug(func_name, line, ptr);
+    }
+
+    return tmp;
+}
+
+void *os_realloc_release(void *ptr, size_t size)
+{
+    void *tmp;
+
+    tmp = (void *)os_malloc_release(size);
+    if (tmp && ptr) {
+        os_memcpy(tmp, ptr, size);
+        os_free_release(ptr);
+    }
+
+    return tmp;
+}
+
+#endif /* OS_MALLOC_EXT_SRAM_FALLBACK_ENABLED */
+
+#if !OS_MALLOC_EXT_SRAM_FALLBACK_ENABLED
+void *os_realloc_debug(const char *func_name, int line, void *ptr, size_t size, int need_zero)
+{
+    void *tmp;
+
+    tmp = (void *)os_malloc_debug(func_name, line, size, need_zero);
+    if (tmp && ptr) {
+        os_memcpy(tmp, ptr, size);
+        os_free_debug(func_name, line, ptr);
+    }
+
+    return tmp;
+}
+
+void *os_realloc_release(void *ptr, size_t size)
+{
+    void *tmp;
+
+    tmp = (void *)os_malloc_release(size);
+    if (tmp && ptr) {
+        os_memcpy(tmp, ptr, size);
+        os_free_release(ptr);
+    }
+
+    return tmp;
+}
+#endif /* !OS_MALLOC_EXT_SRAM_FALLBACK_ENABLED */

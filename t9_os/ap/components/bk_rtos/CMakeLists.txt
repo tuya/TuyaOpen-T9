@@ -83,6 +83,7 @@ list(APPEND srcs
 	heap_manager/sram_heap.c
 	heap_manager/psram_heap.c
 	heap_manager/hsram_heap.c
+	heap_manager/ext_sram_heap.c
 )
 list(APPEND priv_incs
 	heap_manager/bk_heap/include

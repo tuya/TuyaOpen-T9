@@ -28,6 +28,16 @@ menu "Bk_rtos"
 					Select the default heap type as hsrams heap.
 		endchoice
 
+		config OS_MALLOC_EXT_SRAM_FALLBACK
+			bool "os_malloc fallback to AP_EXT_SRAM_HEAP on failure"
+			default n
+			help
+				When enabled, os_malloc/os_zalloc try the primary heap (OS_HEAP_TYPE)
+				first; if allocation fails, fall back to AP_EXT_SRAM_HEAP (requires
+				AP_EXT_SRAM_HEAP entry in project ram_regions.csv).
+				os_free still routes by pointer address. Disable to use ext_sram_malloc
+				only for explicit allocations.
+
 	endmenu
 
 	config CUSTOMIZE_HEAP_SIZE
