@@ -92,6 +92,14 @@ BaseType_t xTaskCreateInHsram( TaskFunction_t pxTaskCode,
                         TaskHandle_t * const pxCreatedTask,
                         const BaseType_t xCoreID );
 
+BaseType_t xTaskCreateInExtSram( TaskFunction_t pxTaskCode,
+                        const char * const pcName, /*lint !e971 Unqualified char types are allowed for strings and single characters only. */
+                        const configSTACK_DEPTH_TYPE usStackDepth,
+                        void * const pvParameters,
+                        UBaseType_t uxPriority,
+                        TaskHandle_t * const pxCreatedTask,
+                        const BaseType_t xCoreID );
+
 /******************************************************
  *                   Enumerations
  ******************************************************/
@@ -368,6 +376,30 @@ bk_err_t rtos_create_hsram_thread( beken_thread_t* thread, uint8_t priority, con
         return kGeneralErr;
     }
     return kGeneralErr;
+}
+
+bk_err_t rtos_create_ext_sram_thread( beken_thread_t* thread, uint8_t priority, const char* name,
+                        beken_thread_function_t function, uint32_t stack_size, beken_thread_arg_t arg )
+{
+    if ( priority > RTOS_HIGHEST_PRIORITY )
+    {
+        priority = RTOS_HIGHEST_PRIORITY;
+    }
+
+    if( pdPASS == xTaskCreateInExtSram( (native_thread_t)function,
+                                      name,
+                                     (unsigned short) (stack_size/sizeof( portSTACK_TYPE )),
+                                     (void *)arg,
+                                     BK_PRIORITY_TO_NATIVE_PRIORITY(priority),
+                                     (TaskHandle_t *)thread,
+                                      tskNO_AFFINITY) )
+    {
+        return kNoErr;
+    }
+    else
+    {
+        return kGeneralErr;
+    }
 }
 
 bk_err_t rtos_delete_thread( beken_thread_t* thread )

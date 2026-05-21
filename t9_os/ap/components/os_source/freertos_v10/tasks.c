@@ -741,33 +741,62 @@ static void prvAddNewTaskToReadyList( TCB_t * pxNewTCB ) PRIVILEGED_FUNCTION;
 /*-----------------------------------------------------------*/
 
 #include <os/mem.h>
+
+#if defined(CONFIG_OS_MALLOC_EXT_SRAM_FALLBACK) && defined(CONFIG_AP_EXT_SRAM_HEAP_ADDR)
+#define TASK_MALLOC_EXT_SRAM_FALLBACK_ENABLED    1
+#else
+#define TASK_MALLOC_EXT_SRAM_FALLBACK_ENABLED    0
+#endif
+
+static inline void *task_malloc_ext_sram_on_fail(size_t size, void *ptr)
+{
+#if TASK_MALLOC_EXT_SRAM_FALLBACK_ENABLED
+    if ((ptr == NULL) && (size != 0U)) {
+        return ext_sram_malloc(size);
+    }
+#else
+    (void)size;
+#endif
+    return ptr;
+}
+
 static inline void *task_malloc(size_t size, beken_mem_type_t eMemType)
 {
+    void *ptr = NULL;
+
     switch (eMemType)
     {
     case HEAP_MEM_TYPE_PSRAM:
 #if CONFIG_PSRAM_AS_SYS_MEMORY
-        return psram_malloc(size);
+        ptr = psram_malloc(size);
 #else
-        return NULL;
+        ptr = NULL;
 #endif
+        break;
     case HEAP_MEM_TYPE_HSRAM:
 #if CONFIG_AP_HSRAM_HEAP_ADDR
-        return hsram_malloc(size);
+        ptr = hsram_malloc(size);
 #else
-        return NULL;
+        ptr = NULL;
 #endif
+        break;
     case HEAP_MEM_TYPE_EXT_SRAM:
 #if CONFIG_AP_EXT_SRAM_HEAP_ADDR
-        return ext_sram_malloc(size);
+        ptr = ext_sram_malloc(size);
 #else
-        return NULL;
+        ptr = NULL;
 #endif
+        break;
     case HEAP_MEM_TYPE_SRAM:
-        return os_sram_malloc(size);
+        ptr = os_sram_malloc(size);
+        ptr = task_malloc_ext_sram_on_fail(size, ptr);
+        break;
     default:
-        return os_malloc(size);
+        ptr = os_malloc(size);
+        break;
     }
+
+    return ptr;
 }
 
 #if ( configSUPPORT_DYNAMIC_ALLOCATION == 1 )
@@ -910,6 +939,16 @@ static inline void *task_malloc(size_t size, beken_mem_type_t eMemType)
                             TaskHandle_t * const pxCreatedTask )
     {
         return xTaskCreate_ex(pxTaskCode, pcName, usStackDepth, pvParameters, uxPriority, pxCreatedTask, HEAP_MEM_TYPE_HSRAM);
+    }
+
+    BaseType_t xTaskCreateInExtSram( TaskFunction_t pxTaskCode,
+                            const char * const pcName, /*lint !e971 Unqualified char types are allowed for strings and single characters only. */
+                            const configSTACK_DEPTH_TYPE usStackDepth,
+                            void * const pvParameters,
+                            UBaseType_t uxPriority,
+                            TaskHandle_t * const pxCreatedTask )
+    {
+        return xTaskCreate_ex(pxTaskCode, pcName, usStackDepth, pvParameters, uxPriority, pxCreatedTask, HEAP_MEM_TYPE_EXT_SRAM);
     }
 
 #endif /* configSUPPORT_DYNAMIC_ALLOCATION */
