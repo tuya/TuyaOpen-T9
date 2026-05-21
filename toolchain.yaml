@@ -3,7 +3,7 @@ sources:
 - https://registry.code.tuya-inc.top/embed_ci_space_group/embed_repo_space.git
 info:
   name: T9
-  version: 0.0.2-beta.6
+  version: 0.0.2-beta.7
   proj_id: 216115
   brc_id: 237837
   repo: https://registry.code.tuya-inc.top/embtuyaosimport/rtos-kernel/T9
