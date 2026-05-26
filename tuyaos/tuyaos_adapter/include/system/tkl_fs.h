@@ -24,6 +24,24 @@ typedef enum {
     DEV_SDCARD,
 } FS_DEV_TYPE_T;
 
+/**
+ * @brief File system usage / capacity information
+ *
+ * total_bytes = block_size * total_blocks
+ * free_bytes  = block_size * free_blocks
+ * avail_bytes = block_size * avail_blocks (usually equal to free_blocks for
+ *               file systems without privileged-only reserved space)
+ */
+typedef struct {
+    UINT64_T total_bytes;
+    UINT64_T free_bytes;
+    UINT64_T avail_bytes;
+    UINT32_T block_size;
+    UINT32_T total_blocks;
+    UINT32_T free_blocks;
+    UINT32_T avail_blocks;
+} TUYA_FS_STAT_T;
+
 /********************************************************************************
  *********************************tuya_os_fs_intf********************************
  ********************************************************************************/
@@ -384,6 +402,37 @@ INT_T tkl_fs_mount(CONST CHAR_T *path, FS_DEV_TYPE_T dev_type);
 * @return 0 success,-1 failed
 */
 INT_T tkl_fs_unmount(CONST CHAR_T *path);
+
+/**
+* @brief Format storage device and create the corresponding file system on it
+*
+* @param[in] path     mount path or partition selector used by the lower
+*                     file system adapter (may be NULL for some devices,
+*                     e.g. SD card)
+* @param[in] dev_type storage device type
+*
+* @note This API erases all data on the target device and re-creates the
+*       file system. The device MUST be unmounted before calling this API.
+*       On T9, only DEV_SDCARD is supported by default; other device types
+*       return a negative value.
+*
+* @return 0 on success, others on failed
+*/
+INT_T tkl_fs_format(CONST CHAR_T *path, FS_DEV_TYPE_T dev_type);
+
+/**
+* @brief Get file system capacity and usage info of a mounted volume
+*
+* @param[in]  path mount point (e.g. "/sdcard"). MUST be already mounted.
+* @param[out] stat file system stat info filled on success. MUST NOT be NULL.
+*
+* @note Wraps bk_vfs_statfs(); supports FAT (SD card) and LittleFS volumes
+*       on T9. Values are the logical file-system view, not the raw block
+*       device size.
+*
+* @return 0 on success, others on failed
+*/
+INT_T tkl_fs_statfs(CONST CHAR_T *path, TUYA_FS_STAT_T *stat);
 
 #ifdef __cplusplus
 } // extern "C"

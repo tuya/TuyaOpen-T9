@@ -762,6 +762,8 @@ TUYA_WEAK_ATTRIBUTE INT_T tkl_ftruncate(INT_T fd, UINT64_T length)
 */
 extern int fatfs_mount(const char *mount_path, int type);
 extern int littlefs_mount(const char *mount_path, int type);
+extern int fatfs_format(const char *mount_path);
+extern int littlefs_format(const char *mount_path, int type);
 INT_T tkl_fs_mount(CONST CHAR_T *path, FS_DEV_TYPE_T dev_type)
 {
     int ret = 0;
@@ -797,4 +799,92 @@ INT_T tkl_fs_mount(CONST CHAR_T *path, FS_DEV_TYPE_T dev_type)
 INT_T tkl_fs_unmount(CONST CHAR_T *path)
 {
     return umount(path);
+}
+
+/**
+ * @brief Format storage device and create the corresponding file system on it
+ *
+ * @param[in] path     mount path or partition selector (may be NULL for SD card)
+ * @param[in] dev_type storage device type
+ *
+ * @note  - DEV_SDCARD       => FatFs on the SD card.
+ *        - DEV_INNER_FLASH  => LittleFS on the internal flash file-system
+ *                              partition (BK_PARTITION_LITTLEFS, falling back
+ *                              to BK_PARTITION_USR_CONFIG).
+ *        - DEV_EXT_FLASH    => LittleFS on the external QSPI flash. Whether
+ *                              this is actually available depends on
+ *                              CONFIG_QSPI_MST_FLASH; current T9 adapter
+ *                              returns -1.
+ *
+ *        The device MUST be unmounted before calling this API. All data on the
+ *        device will be erased.
+ *
+ * @return 0 on success, others on failed
+ */
+INT_T tkl_fs_format(CONST CHAR_T *path, FS_DEV_TYPE_T dev_type)
+{
+    int ret = 0;
+
+    switch (dev_type) {
+        case DEV_SDCARD:
+            ret = fatfs_format(path);
+            break;
+        case DEV_INNER_FLASH:
+            ret = littlefs_format(path, LFS_FLASH);
+            break;
+        case DEV_EXT_FLASH:
+            ret = littlefs_format(path, LFS_QSPI_FLASH);
+            break;
+        default:
+            bk_printf("tkl_fs_format: unsupported dev_type %d\r\n", (int)dev_type);
+            return -1;
+    }
+
+    return ret;
+}
+
+/**
+ * @brief Get file system capacity and usage info of a mounted volume
+ *
+ * @param[in]  path mount point (e.g. "/sdcard"). MUST be already mounted.
+ * @param[out] stat file system stat info filled on success.
+ *
+ * @note Wraps bk_vfs_statfs(). Works for any file system registered with the
+ *       VFS layer (FAT on SD card, LittleFS on internal flash, etc.). Values
+ *       reflect the logical file-system view, not the raw block device size.
+ *
+ * @return 0 on success, others on failed
+ */
+INT_T tkl_fs_statfs(CONST CHAR_T *path, TUYA_FS_STAT_T *stat)
+{
+#ifdef CONFIG_VFS
+    struct statfs sf;
+    int ret;
+
+    if (path == NULL || stat == NULL) {
+        return -1;
+    }
+
+    memset(&sf, 0, sizeof(sf));
+    ret = bk_vfs_statfs(path, &sf);
+    if (ret != 0) {
+        bk_printf("tkl_fs_statfs: bk_vfs_statfs(%s) failed, ret=%d\r\n", path, ret);
+        return ret;
+    }
+
+    stat->block_size   = (UINT32_T)sf.f_bsize;
+    stat->total_blocks = (UINT32_T)sf.f_blocks;
+    stat->free_blocks  = (UINT32_T)sf.f_bfree;
+    stat->avail_blocks = (UINT32_T)sf.f_bavail;
+    stat->total_bytes  = (UINT64_T)sf.f_bsize * (UINT64_T)sf.f_blocks;
+    stat->free_bytes   = (UINT64_T)sf.f_bsize * (UINT64_T)sf.f_bfree;
+    stat->avail_bytes  = (UINT64_T)sf.f_bsize * (UINT64_T)sf.f_bavail;
+
+    return 0;
+#else
+    (void)path;
+    (void)stat;
+    bk_printf("tkl_fs_statfs: CONFIG_VFS is disabled\r\n");
+    return -1;
+#endif
 }

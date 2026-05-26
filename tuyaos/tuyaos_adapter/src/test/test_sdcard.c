@@ -480,7 +480,36 @@ void cli_sdcard_test_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, cha
         }
         __cli_sdcard_unlink(argv[2]);
     } else if (!os_strcmp(argv[1], "format")) {
-        bk_printf("TODO...\r\n");
+        int ret = tkl_fs_unmount(TEST_SDCARD_MOUNT_POINT);
+        if (ret != 0) {
+            bk_printf("[xsd format] unmount %s ret=%d (ignored if not mounted)\r\n",
+                      TEST_SDCARD_MOUNT_POINT, ret);
+        }
+
+        ret = tkl_fs_format(TEST_SDCARD_MOUNT_POINT, DEV_SDCARD);
+        if (ret != 0) {
+            bk_printf("[xsd format] failed, ret=%d\r\n", ret);
+        } else {
+            bk_printf("[xsd format] ok\r\n");
+        }
+    } else if (!os_strcmp(argv[1], "df")) {
+        TUYA_FS_STAT_T stat = {0};
+        int ret = tkl_fs_statfs(TEST_SDCARD_MOUNT_POINT, &stat);
+        if (ret != 0) {
+            bk_printf("[xsd df] failed, ret=%d\r\n", ret);
+        } else {
+            uint32_t total_mb = (uint32_t)(stat.total_bytes >> 20);
+            uint32_t free_mb  = (uint32_t)(stat.free_bytes  >> 20);
+            uint32_t used_mb  = total_mb - free_mb;
+            uint32_t used_pct = (stat.total_bytes == 0)
+                                ? 0
+                                : (uint32_t)((stat.total_bytes - stat.free_bytes) * 100ULL
+                                             / stat.total_bytes);
+            bk_printf("[xsd df] %s: total=%u MB, used=%u MB, free=%u MB, used=%u%%\r\n",
+                      TEST_SDCARD_MOUNT_POINT, total_mb, used_mb, free_mb, used_pct);
+            bk_printf("[xsd df] block_size=%u, blocks total/free/avail = %u / %u / %u\r\n",
+                      stat.block_size, stat.total_blocks, stat.free_blocks, stat.avail_blocks);
+        }
     } else if (!os_strcmp(argv[1], "auto")) {
         int ret = __cli_sdcard_mount();
         if (ret != 0)

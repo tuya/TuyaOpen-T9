@@ -115,3 +115,86 @@ int littlefs_mount(const char *mount_path, int type)
     return BK_FAIL;
 #endif
 }
+
+int fatfs_format(const char *mount_path)
+{
+#if !(CONFIG_FATFS && CONFIG_SDCARD)
+    (void)mount_path;
+    bk_printf("fatfs format failed, CONFIG_FATFS or CONFIG_SDCARD is disabled\r\n");
+    return BK_FAIL;
+#else
+    int ret;
+    const char *fs_type = "fatfs";
+    struct bk_fatfs_partition partition;
+
+    os_memset(&partition, 0, sizeof(partition));
+    partition.part_type = FATFS_DEVICE;
+    partition.part_dev.device_name = FATFS_DEV_SDCARD;
+    partition.mount_path = mount_path;
+
+    ret = mkfs("PART_NONE", fs_type, &partition);
+    if (ret != 0) {
+        bk_printf("format fatfs sdcard failed, ret=%d\r\n", ret);
+    } else {
+        bk_printf("format fatfs sdcard ok\r\n");
+    }
+
+    return ret;
+#endif
+}
+
+int littlefs_format(const char *mount_path, int type)
+{
+#if !CONFIG_LITTLEFS
+    (void)mount_path;
+    (void)type;
+    bk_printf("lfs format failed, CONFIG_LITTLEFS is disabled\r\n");
+    return BK_FAIL;
+#else
+    int ret;
+    const char *fs_type = "littlefs";
+    struct bk_little_fs_partition partition;
+
+    os_memset(&partition, 0, sizeof(partition));
+
+    if (type == LFS_FLASH) {
+        bk_logic_partition_t *pt = bk_flash_partition_get_info(BK_PARTITION_FS_ID);
+
+        if (pt == NULL) {
+            bk_printf("lfs format failed, no flash partition info\r\n");
+            return BK_FAIL;
+        }
+
+        partition.part_type = LFS_FLASH;
+        partition.part_flash.start_addr = pt->partition_start_addr;
+        partition.part_flash.size = pt->partition_length;
+    } else if (type == LFS_QSPI_FLASH) {
+        /* Keep behavior consistent with littlefs_mount(): external QSPI flash
+         * is not configured in this adapter yet. */
+#if CONFIG_QSPI_MST_FLASH
+        bk_printf("lfs format failed, ext flash size is not configured in current adapter\r\n");
+        return BK_FAIL;
+#else
+        bk_printf("lfs format failed, CONFIG_QSPI_MST_FLASH is disabled\r\n");
+        return BK_FAIL;
+#endif
+    } else {
+        bk_printf("lfs format failed, device type not support: %d\r\n", type);
+        return BK_FAIL;
+    }
+
+    partition.mount_path = mount_path;
+
+    bk_printf("format littlefs begin, type=%d, addr=0x%08x, size=0x%08x\r\n",
+              type, partition.part_flash.start_addr, partition.part_flash.size);
+
+    ret = mkfs("PART_NONE", fs_type, &partition);
+    if (ret != 0) {
+        bk_printf("format littlefs failed, ret=%d\r\n", ret);
+    } else {
+        bk_printf("format littlefs ok\r\n");
+    }
+
+    return ret;
+#endif
+}
