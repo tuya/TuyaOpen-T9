@@ -138,6 +138,7 @@ static uint32_t tkl_camera_mipi_sp_frame_size_get(void)
 {
     uint32_t frame_size;
 
+    /* ISP hardware outputs RGB888/BGR888 as RGBX with 4 bytes per pixel */
     if (s_cam_ctx.cfg.sp_format == BK_PIXEL_FORMAT_RGB888 ||
         s_cam_ctx.cfg.sp_format == BK_PIXEL_FORMAT_BGR888) {
         return (uint32_t)s_cam_ctx.cfg.sp_width * s_cam_ctx.cfg.sp_height * 4U;
@@ -337,7 +338,6 @@ OPERATE_RET tkl_camera_mipi_init(TUYA_CAMERA_MIPI_CFG_T *config)
 
     if (s_cam_ctx.initialized == TRUE) {
         tkl_camera_mipi_cleanup_resources();
-        tkl_camera_mipi_runtime_reset(FALSE);
     }
 
     tkl_camera_mipi_runtime_reset(FALSE);
@@ -431,11 +431,6 @@ OPERATE_RET tkl_camera_mipi_start(void)
     }
 
     control = __containerof(s_cam_ctx.camera_ctlr_handle, bk_camera_isp_ctlr_t, ops);
-    if (control == NULL) {
-        tkl_log_output( "camera control is null\r\n");
-        ret = OPRT_COM_ERROR;
-        goto err_start;
-    }
     s_cam_ctx.isp_handle = control->isp_handle;
 
     ret = bk_isp_camera_port_init(s_cam_ctx.camera_ctlr_handle, &isp_ctlr_cfg);
@@ -508,7 +503,7 @@ OPERATE_RET tkl_camera_mipi_stop(void)
     return OPRT_OK;
 }
 
-OPERATE_RET tkl_camera_mipi_get_frame(void *frame)
+OPERATE_RET tkl_camera_mipi_get_frame(TUYA_CAMERA_MIPI_FRAME_T *frame)
 {
     OPERATE_RET ret;
     uint32_t expect_size;
@@ -517,9 +512,8 @@ OPERATE_RET tkl_camera_mipi_get_frame(void *frame)
     uint16_t width;
     uint16_t height;
     uint32_t format;
-    TUYA_CAMERA_MIPI_FRAME_T *req = (TUYA_CAMERA_MIPI_FRAME_T *)frame;
 
-    if (req == NULL || req->buffer == NULL) {
+    if (frame == NULL || frame->buffer == NULL) {
         return OPRT_INVALID_PARM;
     }
 
@@ -527,7 +521,7 @@ OPERATE_RET tkl_camera_mipi_get_frame(void *frame)
         return OPRT_RESOURCE_NOT_READY;
     }
 
-    channel_id = req->channel_id;
+    channel_id = frame->channel_id;
     if (channel_id == TUYA_CAMERA_MIPI_CHANNEL_SP) {
         if (s_cam_ctx.cfg.sp_enable != TRUE) {
             return OPRT_RESOURCE_NOT_READY;
@@ -564,23 +558,23 @@ OPERATE_RET tkl_camera_mipi_get_frame(void *frame)
         return OPRT_INVALID_PARM;
     }
 
-    if (expect_size == 0U || req->size < expect_size) {
+    if (expect_size == 0U || frame->size < expect_size) {
         return OPRT_INVALID_PARM;
     }
 
     ret = bk_isp_camera_read(s_cam_ctx.camera_ctlr_handle,
                              isp_channel_id,
-                             req->buffer,
+                             frame->buffer,
                              expect_size,
-                             (req->timeout_ms != 0U) ? req->timeout_ms : s_cam_ctx.cfg.read_timeout_ms);
+                             (frame->timeout_ms != 0U) ? frame->timeout_ms : s_cam_ctx.cfg.read_timeout_ms);
     if (ret != OPRT_OK) {
         return ret;
     }
 
-    req->out_len = expect_size;
-    req->width = width;
-    req->height = height;
-    req->format = format;
+    frame->out_len = expect_size;
+    frame->width = width;
+    frame->height = height;
+    frame->format = format;
 
     return OPRT_OK;
 }
