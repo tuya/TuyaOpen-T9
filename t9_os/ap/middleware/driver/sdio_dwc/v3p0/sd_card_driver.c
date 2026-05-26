@@ -402,10 +402,29 @@ bk_err_t sd_card_init(uintptr_t addr)
 
 	resp[0] = send_cmd(addr, CMD2, 1, 0); //send CMD2
 	if (s_last_cmd_timeout) goto no_card;
-	s_sd_card_obj.cid[0] = RESP01_R(addr);
-	s_sd_card_obj.cid[1] = RESP23_R(addr);
-	s_sd_card_obj.cid[2] = RESP45_R(addr);
-	s_sd_card_obj.cid[3] = RESP67_R(addr);
+	/*
+	 * CMD2 returns R2 (long, 136-bit) response carrying the full CID register.
+	 * Same DWC MSHC R2 register layout as CMD9/CSD above: RESPx slices are
+	 * right-aligned with the bottom 8 bits (CID[7:0] = CRC + end bit) dropped,
+	 * so the reassembly needs an 8-bit left shift across adjacent words to
+	 * produce a canonical CID[127:0] view.
+	 *
+	 *   cid[3] = CID[127:96]
+	 *   cid[2] = CID[95:64]
+	 *   cid[1] = CID[63:32]
+	 *   cid[0] = CID[31:0]
+	 */
+	{
+		uint32_t r01 = RESP01_R(addr);
+		uint32_t r23 = RESP23_R(addr);
+		uint32_t r45 = RESP45_R(addr);
+		uint32_t r67 = RESP67_R(addr);
+
+		s_sd_card_obj.cid[3] = ((r67 & 0x00FFFFFFU) << 8) | ((r45 >> 24) & 0xFFU);
+		s_sd_card_obj.cid[2] = ((r45 & 0x00FFFFFFU) << 8) | ((r23 >> 24) & 0xFFU);
+		s_sd_card_obj.cid[1] = ((r23 & 0x00FFFFFFU) << 8) | ((r01 >> 24) & 0xFFU);
+		s_sd_card_obj.cid[0] = ((r01 & 0x00FFFFFFU) << 8); /* CID[7:0] = CRC, unavailable */
+	}
 	rtos_delay_milliseconds(1);
 
 	resp[0] = send_cmd(addr, CMD3, 2, 0); //send CMD3
@@ -415,21 +434,49 @@ bk_err_t sd_card_init(uintptr_t addr)
 	sdio_rca = resp[0] & 0xFFFF0000;
 	resp[0] = send_cmd(addr, CMD9, 1, sdio_rca);	//send CMD9
 	if (s_last_cmd_timeout) goto no_card;
-#if 1
-	s_sd_card_obj.csd.csd_3.v = RESP01_R(addr);
-	s_sd_card_obj.csd.csd_2.v = RESP23_R(addr);
-	s_sd_card_obj.csd.csd_1.v = RESP45_R(addr);
-	s_sd_card_obj.csd.csd_0.v = RESP67_R(addr);
-	SD_CARD_LOGD("csd[0]=0x%x, csd[1]=0x%x, csd[2]=0x%x, csd[3]=0x%x\r\n",
-		s_sd_card_obj.csd.csd_0.v,s_sd_card_obj.csd.csd_1.v,s_sd_card_obj.csd.csd_2.v,s_sd_card_obj.csd.csd_3.v);
-#else
-s_sd_card_obj.csd.csd_0.v = RESP01_R(addr);
-s_sd_card_obj.csd.csd_1.v = RESP23_R(addr);
-s_sd_card_obj.csd.csd_2.v = RESP45_R(addr);
-s_sd_card_obj.csd.csd_3.v = RESP67_R(addr);
-SD_CARD_LOGD("csd[0]=0x%x, csd[1]=0x%x, csd[2]=0x%x, csd[3]=0x%x\r\n",
-	s_sd_card_obj.csd.csd_0.v,s_sd_card_obj.csd.csd_1.v,s_sd_card_obj.csd.csd_2.v,s_sd_card_obj.csd.csd_3.v);
-#endif
+	/*
+	 * CMD9 returns R2 (long, 136-bit) response carrying the full CSD register.
+	 *
+	 * DWC MSHC R2 register layout (SDHCI-compliant):
+	 *   The controller strips off the 6-bit start/transmission header and the
+	 *   1-bit end bit, then stores the remaining payload right-aligned across
+	 *   four 32-bit registers. Because the 8-bit CRC sits at the very bottom
+	 *   of the CSD frame (CSD[7:0]) and is discarded by the hardware, the
+	 *   slices land like this:
+	 *       RESP01_R[31:0]  = CSD[39:8]
+	 *       RESP23_R[31:0]  = CSD[71:40]
+	 *       RESP45_R[31:0]  = CSD[103:72]
+	 *       RESP67_R[23:0]  = CSD[127:104]   (RESP67_R[31:24] is 0)
+	 *       CSD[7:0]        = CRC + end bit  (not retained)
+	 *
+	 * However sd_card_csd_t is defined against the canonical SD spec layout
+	 * (csd_3 = CSD[127:96], csd_2 = CSD[95:64], csd_1 = CSD[63:32],
+	 *  csd_0 = CSD[31:0]), so we MUST do an 8-bit-shifted reassembly across
+	 * adjacent RESPx words to produce a true CSD[127:0] view.
+	 *
+	 * Without this fix the CSD parser reads completely misaligned fields and
+	 * c_size ends up looking like an all-1s pattern (~0x3F325B), which made
+	 * every card appear to be ~2TB, broke bk_sd_card_get_card_size() and in
+	 * turn caused f_mkfs to write FAT metadata to non-existent sectors and
+	 * hang the SD bus.
+	 */
+	{
+		uint32_t r01 = RESP01_R(addr);
+		uint32_t r23 = RESP23_R(addr);
+		uint32_t r45 = RESP45_R(addr);
+		uint32_t r67 = RESP67_R(addr);
+
+		s_sd_card_obj.csd.csd_3.v = ((r67 & 0x00FFFFFFU) << 8) | ((r45 >> 24) & 0xFFU);
+		s_sd_card_obj.csd.csd_2.v = ((r45 & 0x00FFFFFFU) << 8) | ((r23 >> 24) & 0xFFU);
+		s_sd_card_obj.csd.csd_1.v = ((r23 & 0x00FFFFFFU) << 8) | ((r01 >> 24) & 0xFFU);
+		s_sd_card_obj.csd.csd_0.v = ((r01 & 0x00FFFFFFU) << 8); /* CSD[7:0] = CRC, unavailable */
+
+		SD_CARD_LOGD("csd raw resp: r67=0x%08x r45=0x%08x r23=0x%08x r01=0x%08x\r\n",
+			r67, r45, r23, r01);
+		SD_CARD_LOGD("csd reassembled [3..0]=0x%08x 0x%08x 0x%08x 0x%08x\r\n",
+			(uint32_t)s_sd_card_obj.csd.csd_3.v, (uint32_t)s_sd_card_obj.csd.csd_2.v,
+			(uint32_t)s_sd_card_obj.csd.csd_1.v, (uint32_t)s_sd_card_obj.csd.csd_0.v);
+	}
 	rtos_delay_milliseconds(1);
 
 	resp[0] = send_cmd(addr, CMD7, 3, sdio_rca);	//send CMD7
@@ -1832,14 +1879,30 @@ uint32_t bk_sd_card_get_card_size(void)
 	// #endregion
 
 	/*
-	 * SD NAND chips may report wrong csd_structure (e.g. v3.0) while
-	 * ACMD41 CCS=0 indicates SDSC.  CCS from OCR is authoritative for
-	 * capacity class, so force v1.0 parsing for SDSC cards.
+	 * SD NAND / industrial / counterfeit cards may report wrong csd_structure.
+	 * CCS from OCR (ACMD41 response) is authoritative for capacity class,
+	 * so force CSD version parsing based on card_type:
+	 *   - SDSC  (CCS=0)        -> CSD v1.0 (csd_structure should be 0)
+	 *   - SDHC/SDXC (CCS=1)    -> CSD v2.0 (csd_structure should be 1)
+	 *                             SD spec requires v2.0 for capacities up to 2TB.
+	 *                             csd_structure>=2 is reserved for SDUC (>2TB)
+	 *                             which is extremely rare; if reported here it
+	 *                             is almost certainly a malformed CSD. Forcing
+	 *                             v2.0 keeps the calculated capacity within
+	 *                             physical limits and prevents the FatFs/disk
+	 *                             driver from writing to non-existent sectors
+	 *                             (which would otherwise hang the SD bus on
+	 *                             f_mkfs / large sequential writes).
 	 */
 	if (card_type == SD_CARD_TYPE_SDSC) {
 		ver = 1;
 		if (csd_struct_raw != 0) {
 			SD_CARD_LOGW("SDSC(CCS=0) but csd_structure=%d, force v1.0 parse\r\n", csd_struct_raw);
+		}
+	} else if (card_type == SD_CARD_TYPE_SDHC_SDXC) {
+		ver = 2;
+		if (csd_struct_raw != 1) {
+			SD_CARD_LOGW("SDHC/SDXC(CCS=1) but csd_structure=%d, force v2.0 parse\r\n", csd_struct_raw);
 		}
 	} else {
 		ver = csd_struct_raw + 1;
