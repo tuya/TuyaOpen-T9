@@ -44,7 +44,7 @@ TUYA_WEAK_ATTRIBUTE INT_T tkl_fs_mkdir(CONST CHAR_T *path)
 
     ret = mkdir(path, 0777);
     if ((ret != 0) && (errno != EEXIST)) {
-        bk_printf("tkl_fs_mkdir failed, path:%s errno=%d\r\n", path, errno);
+        bk_printf("tkl_fs_mkdir failed, path:%s ret=%d errno=%d\r\n", path, ret, errno);
         return -1;
     }
 

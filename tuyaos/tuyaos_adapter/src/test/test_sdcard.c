@@ -219,6 +219,38 @@ static int __cli_sdcard_delete_file(const char *path)
     return 0;
 }
 
+static int __cli_sdcard_is_exist(const char *path)
+{
+    char fp[64] = {'\0'};
+    const char *check_path = NULL;
+    BOOL_T is_exist = FALSE;
+    int ret = 0;
+    int len = 0;
+
+    if (path == NULL) {
+        bk_printf("usage: xsd exist <path>\r\n");
+        return -1;
+    }
+
+    if (path[0] == '/') {
+        check_path = path;
+    } else {
+        len = os_snprintf(fp, sizeof(fp), "%s/%s", TEST_SDCARD_MOUNT_POINT, path);
+        if ((len < 0) || (len >= (int)sizeof(fp))) {
+            bk_printf("[xsd exist] path too long: %s\r\n", path);
+            return -1;
+        }
+        check_path = fp;
+    }
+
+    ret = tkl_fs_is_exist(check_path, &is_exist);
+    bk_printf("[xsd exist] path=%s ret=%d exist=%u\r\n",
+              check_path,
+              ret,
+              (unsigned int)is_exist);
+    return ret;
+}
+
 static int __cli_sdcard_loop_wr(uint32_t loops)
 {
     uint32_t i = 0;
@@ -479,6 +511,12 @@ void cli_sdcard_test_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, cha
             return;
         }
         __cli_sdcard_unlink(argv[2]);
+    } else if (!os_strcmp(argv[1], "exist") || !os_strcmp(argv[1], "is_exist")) {
+        if (argv[2] == NULL) {
+            bk_printf("usage: xsd exist <path>\r\n");
+            return;
+        }
+        __cli_sdcard_is_exist(argv[2]);
     } else if (!os_strcmp(argv[1], "format")) {
         int ret = tkl_fs_unmount(TEST_SDCARD_MOUNT_POINT);
         if (ret != 0) {
