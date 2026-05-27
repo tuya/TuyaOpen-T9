@@ -616,6 +616,11 @@ OPERATE_RET tkl_aud_adc_init(TUYA_AUDIO_ADC_PORT_E port, TKL_AUD_ADC_CFG_T *conf
                      aud_adc_cfg.adc_mode == 1 ? "AUD_ADC_MODE_SIGNAL_END" : "AUD_ADC_MODE_DIFFEN");
 #endif
 
+    /*
+     * Reset shared audio hardware before ADC-only init. DAC init already does
+     * this; without it, cold-start ADC can report started but never produce DMA frames.
+     */
+    bk_aud_hardware_reset();
     ret = bk_aud_adc_init(&aud_adc_cfg);
     if (ret != BK_OK) {
         TKL_AUD_ADC_LOG("bk_aud_adc_init fail\n");
