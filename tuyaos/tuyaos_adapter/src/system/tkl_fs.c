@@ -136,8 +136,8 @@ TUYA_WEAK_ATTRIBUTE INT_T tkl_fs_is_exist(CONST CHAR_T *path, BOOL_T *is_exist)
     int ret             = stat(path, &statbuf);
     if (ret != 0) {
         *is_exist = FALSE;
-        bk_printf("tkl_fs_is_exist path:%s stat failed \r\n",path);
-        return ret;
+        bk_printf("tkl_fs_is_exist path:%s stat failed, ret=%d\r\n",path, ret);
+        return 0;
     }
     else {
         bk_printf("tkl_fs_is_exist path:%s exist \r\n",path);
