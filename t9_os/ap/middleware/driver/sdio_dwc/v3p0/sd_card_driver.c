@@ -1804,6 +1804,11 @@ bk_err_t bk_sd_card_deinit(void)
 		s_sdio_data_xfer_done_sema = NULL;
 	}
 
+// Modified by TUYA Start
+	s_sd_card_enum_valid = false;
+	sdio_clear_drv_state();
+// Modified by TUYA End
+
 	return BK_OK;
 }
 
