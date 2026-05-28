@@ -35,6 +35,7 @@ extern void bk_printf(const char *fmt, ...);
  * This prevents DMA from overwriting unread data.
  */
 #define DMA_BUF_SAFE_INTERVAL    (8)
+#define DMA_BUF_FRAME_CNT        (8)
 
 #if CONFIG_AUD_DRIVER_V2
 #define TKL_AUD_ADC_LOGICAL_GAIN_DB0       (0x2D)      /* 0 dB point */
@@ -379,8 +380,9 @@ static bk_err_t __tkl_aud_adc_dma_config(void)
         goto exit;
     }
 
-    /* Two frames + safe interval for dma_set_dst_pause_addr flow control */
-    gl_adc_ctx->mic_dma_buf = (int8_t *)audio_dma_mem_calloc(2, frame_size + DMA_BUF_SAFE_INTERVAL / 2);
+    /* DMA_BUF_FRAME_CNT frames + safe interval for dma_set_dst_pause_addr flow control */
+    gl_adc_ctx->mic_dma_buf = (int8_t *)audio_dma_mem_calloc(DMA_BUF_FRAME_CNT,
+                                          frame_size + DMA_BUF_SAFE_INTERVAL / DMA_BUF_FRAME_CNT);
     if (gl_adc_ctx->mic_dma_buf == NULL)
     {
         TKL_AUD_ADC_LOG("malloc dma buffer fail\n");
@@ -428,7 +430,7 @@ static bk_err_t __tkl_aud_adc_dma_config(void)
     dma_config.dst.addr_loop_en = DMA_ADDR_LOOP_ENABLE;
     dma_config.dst.start_addr = (uint32_t)(uintptr_t)gl_adc_ctx->mic_dma_buf;
     dma_config.dst.end_addr = (uint32_t)(uintptr_t)gl_adc_ctx->mic_dma_buf
-                              + frame_size * 2 + DMA_BUF_SAFE_INTERVAL;
+                              + frame_size * DMA_BUF_FRAME_CNT + DMA_BUF_SAFE_INTERVAL;
 
     ret = bk_dma_init(gl_adc_ctx->mic_dma_id, &dma_config);
     if (ret != BK_OK)
@@ -450,7 +452,7 @@ static bk_err_t __tkl_aud_adc_dma_config(void)
     /* ring_buffer_init sets dma_set_dst_pause_addr(dma_id, buf + capacity - 8) */
     ring_buffer_init(&gl_adc_ctx->mic_rb,
                      (uint8_t *)gl_adc_ctx->mic_dma_buf,
-                     frame_size * 2 + DMA_BUF_SAFE_INTERVAL,
+                     frame_size * DMA_BUF_FRAME_CNT + DMA_BUF_SAFE_INTERVAL,
                      gl_adc_ctx->mic_dma_id,
                      RB_DMA_TYPE_WRITE);
 
