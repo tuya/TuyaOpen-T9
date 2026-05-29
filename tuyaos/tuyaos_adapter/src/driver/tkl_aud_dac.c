@@ -185,6 +185,7 @@ static bk_err_t __tkl_aud_dac_dma_config(void)
         goto exit;
     }
 
+    bk_dma_stop(gl_dac_ctx->spk_dma_id);
     bk_dma_set_transfer_len(gl_dac_ctx->spk_dma_id, frame_size);
 
 #if (CONFIG_SPE)
@@ -384,10 +385,47 @@ OPERATE_RET tkl_aud_dac_start(TUYA_AUDIO_DAC_PORT_E port)
         return OPRT_COM_ERROR;
     }
 
+    bk_err_t ret = BK_OK;
+
+    if (gl_dac_ctx->stat == TKL_AUD_DAC_STAT_STOP) {
+        /*
+         * Reinit DMA (reset read pointer) and DAC hardware (was fully
+         * deinitialized in stop). Going through deinit+init avoids the V2
+         * HAL bug where bk_aud_dac_stop→bk_aud_dac_start alone kills ADC.
+         */
+        __tkl_aud_dac_dma_deconfig();
+        ret = __tkl_aud_dac_dma_config();
+        if (ret != BK_OK) {
+            TKL_DAC_LOG("dma reconfig fail on restart\n");
+            return OPRT_COM_ERROR;
+        }
+
+        bk_aud_hardware_reset();
+        ret = bk_aud_dac_init(&aud_dac_cfg);
+        if (ret != BK_OK) {
+            TKL_DAC_LOG("bk_aud_dac_init fail on restart\n");
+            return OPRT_COM_ERROR;
+        }
+
+#if CONFIG_AUD_DRIVER_V2
+        ret = bk_aud_dac_set_sample_rate(TKL_AUD_DAC_DMA_SOURCE,
+                                         gl_dac_ctx->cfg.sample_rate);
+        if (ret != BK_OK) {
+            TKL_DAC_LOG("set sample rate fail on restart\n");
+        }
+#endif
+
+        if (gl_dac_ctx->cfg.volume == 0) {
+            bk_aud_dac_mute();
+        }
+    }
+
     /*
      * Pre-fill ring buffer with silence before starting DMA+DAC.
      * This prevents initial pop noise and ensures DMA has data to read.
      */
+    ring_buffer_clear(&gl_dac_ctx->spk_rb);
+
     uint32_t free_size = ring_buffer_get_free_size(&gl_dac_ctx->spk_rb);
     if (free_size > DMA_BUF_SAFE_INTERVAL) {
         uint32_t fill_cap = free_size - DMA_BUF_SAFE_INTERVAL;
@@ -402,8 +440,6 @@ OPERATE_RET tkl_aud_dac_start(TUYA_AUDIO_DAC_PORT_E port)
             tkl_system_free(silence);
         }
     }
-
-    bk_err_t ret = BK_OK;
 
 #if CONFIG_AUD_DRIVER_V2
     ret = bk_aud_dac_source_enable(TKL_AUD_DAC_DMA_CH, TKL_AUD_DAC_DMA_SOURCE, 1);
@@ -479,25 +515,13 @@ OPERATE_RET tkl_aud_dac_stop(TUYA_AUDIO_DAC_PORT_E port)
 
     bk_aud_dac_mute();
 
-    ret = BK_OK;
-#if CONFIG_AUD_DRIVER_V1
-    ret = bk_aud_dac_stop();
-#elif CONFIG_AUD_DRIVER_V2
-    ret = bk_aud_dac_stop(aud_dac_cfg.dac_chl);
-#endif
-    if (ret != BK_OK) {
-        TKL_DAC_LOG("dac stop fail\n");
-        return OPRT_COM_ERROR;
-    }
-
 #if CONFIG_AUD_DRIVER_V2
-    ret = bk_aud_dac_source_enable(TKL_AUD_DAC_DMA_CH, TKL_AUD_DAC_DMA_SOURCE, 0);
-    if (ret != BK_OK) {
-        TKL_DAC_LOG("source disable fail, ch=%d, source=%d\n",
-                    TKL_AUD_DAC_DMA_CH, TKL_AUD_DAC_DMA_SOURCE);
-        return OPRT_COM_ERROR;
-    }
+    (void)bk_aud_dac_source_enable(TKL_AUD_DAC_DMA_CH, TKL_AUD_DAC_DMA_SOURCE, 0);
+    (void)bk_aud_dac_stop(aud_dac_cfg.dac_chl);
+#elif CONFIG_AUD_DRIVER_V1
+    (void)bk_aud_dac_stop();
 #endif
+    bk_aud_dac_deinit();
 
     gl_dac_ctx->stat = TKL_AUD_DAC_STAT_STOP;
 
@@ -622,6 +646,9 @@ OPERATE_RET tkl_aud_dac_deinit(TUYA_AUDIO_DAC_PORT_E port)
     __tkl_aud_dac_dma_deconfig();
 #if CONFIG_AUD_DRIVER_V2
     (void)bk_aud_dac_source_enable(TKL_AUD_DAC_DMA_CH, TKL_AUD_DAC_DMA_SOURCE, 0);
+    (void)bk_aud_dac_stop(aud_dac_cfg.dac_chl);
+#elif CONFIG_AUD_DRIVER_V1
+    (void)bk_aud_dac_stop();
 #endif
     bk_aud_dac_deinit();
 
