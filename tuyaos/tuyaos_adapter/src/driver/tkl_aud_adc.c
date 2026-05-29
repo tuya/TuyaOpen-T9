@@ -18,7 +18,6 @@
 #include "tkl_aud_pm.h"
 
 extern void bk_printf(const char *fmt, ...);
-extern uint32_t dma_get_dest_write_addr(dma_id_t id);
 
 #define MODULE_LOG_HELPER(fmt, ...) \
     bk_printf(fmt, ##__VA_ARGS__)
@@ -27,6 +26,15 @@ extern uint32_t dma_get_dest_write_addr(dma_id_t id);
 // sr: sample rate, sb: sample bits, ch: channel num, t: frame time in ms
 #define AUD_ADC_FRAME_SIZE(sr, sb, t, ch)  (((sr) * ((sb) / 8) / 1000) * (ch) * (t))
 
+/*
+ * DMA_BUF_SAFE_INTERVAL works with ring_buffer_init / ring_buffer_read /
+ * ring_buffer_clear to manage dma_set_dst_pause_addr for DMA flow control:
+ *   - ring_buffer_init:  pause_addr = buf + capacity - 8
+ *   - ring_buffer_clear: pause_addr = buf + capacity - 4
+ *   - ring_buffer_read:  pause_addr = rp (or rp-4 boundary case)
+ * This prevents DMA from overwriting unread data.
+ */
+#define DMA_BUF_SAFE_INTERVAL    (8)
 #define DMA_BUF_FRAME_CNT        (8)
 
 #if CONFIG_AUD_DRIVER_V2
@@ -170,17 +178,13 @@ static void __tkl_aud_adc_flash_op_notify_handler(uint32_t param, void *args)
 
 /* ---------------------- DMA ISR -------------------------------------------- */
 
-static inline void __tkl_aud_adc_sync_rb_wp(void)
-{
-    gl_adc_ctx->mic_rb.wp = dma_get_dest_write_addr(gl_adc_ctx->mic_dma_id)
-                            - (uint32_t)gl_adc_ctx->mic_dma_buf;
-}
-
 /**
  * DMA finish ISR: one dma_frame_size chunk has been written into the ring buffer.
  *
- * __tkl_aud_adc_sync_rb_wp() syncs ring buffer wp from DMA hardware register,
- * then ring_buffer_read copies data out and advances rp.
+ * ring_buffer_read does three things atomically:
+ *   1. Gets DMA write position from hardware register (wp)
+ *   2. Copies data from ring buffer to read_buf
+ *   3. Updates dma_set_dst_pause_addr so DMA can continue writing
  *
  * For single channel: extract L from L+R interleaved read_buf into output_buf
  * For dual   channel: read_buf already contains the final PCM data
@@ -200,8 +204,6 @@ static void __tkl_aud_adc_dma_finish_isr(void)
     }
 
     uint32_t dma_frame_size = gl_adc_ctx->dma_frame_size;
-
-    __tkl_aud_adc_sync_rb_wp();
 
     uint32_t fill_size = ring_buffer_get_fill_size(&gl_adc_ctx->mic_rb);
     if (fill_size < dma_frame_size)
@@ -378,8 +380,9 @@ static bk_err_t __tkl_aud_adc_dma_config(void)
         goto exit;
     }
 
-    /* DMA_BUF_FRAME_CNT frames for DMA ring buffer (no pause address flow control) */
-    gl_adc_ctx->mic_dma_buf = (int8_t *)audio_dma_mem_calloc(DMA_BUF_FRAME_CNT, frame_size);
+    /* DMA_BUF_FRAME_CNT frames + safe interval for dma_set_dst_pause_addr flow control */
+    gl_adc_ctx->mic_dma_buf = (int8_t *)audio_dma_mem_calloc(DMA_BUF_FRAME_CNT,
+                                          frame_size + DMA_BUF_SAFE_INTERVAL / DMA_BUF_FRAME_CNT);
     if (gl_adc_ctx->mic_dma_buf == NULL)
     {
         TKL_AUD_ADC_LOG("malloc dma buffer fail\n");
@@ -427,7 +430,7 @@ static bk_err_t __tkl_aud_adc_dma_config(void)
     dma_config.dst.addr_loop_en = DMA_ADDR_LOOP_ENABLE;
     dma_config.dst.start_addr = (uint32_t)(uintptr_t)gl_adc_ctx->mic_dma_buf;
     dma_config.dst.end_addr = (uint32_t)(uintptr_t)gl_adc_ctx->mic_dma_buf
-                              + frame_size * DMA_BUF_FRAME_CNT;
+                              + frame_size * DMA_BUF_FRAME_CNT + DMA_BUF_SAFE_INTERVAL;
 
     ret = bk_dma_init(gl_adc_ctx->mic_dma_id, &dma_config);
     if (ret != BK_OK)
@@ -446,14 +449,11 @@ static bk_err_t __tkl_aud_adc_dma_config(void)
     bk_dma_set_src_sec_attr(gl_adc_ctx->mic_dma_id, DMA_ATTR_SEC);
 #endif
 
-    /*
-     * Pass DMA_ID_MAX to disable ring buffer's internal pause address management.
-     * We manually sync wp from DMA hardware register before each read in ISR.
-     */
+    /* ring_buffer_init sets dma_set_dst_pause_addr(dma_id, buf + capacity - 8) */
     ring_buffer_init(&gl_adc_ctx->mic_rb,
                      (uint8_t *)gl_adc_ctx->mic_dma_buf,
-                     frame_size * DMA_BUF_FRAME_CNT,
-                     DMA_ID_MAX,
+                     frame_size * DMA_BUF_FRAME_CNT + DMA_BUF_SAFE_INTERVAL,
+                     gl_adc_ctx->mic_dma_id,
                      RB_DMA_TYPE_WRITE);
 
     TKL_AUD_ADC_LOG("dma_config dma_id: %d, transfer_len: %d\n",
