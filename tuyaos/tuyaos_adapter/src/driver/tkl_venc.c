@@ -600,6 +600,16 @@ OPERATE_RET tkl_venc_stop(TUYA_VENC_HANDLE handle)
         return OPRT_OK;
     }
 
+    /*
+     * Tell the encoder to stop feeding the HW BEFORE detaching the bond. Combined
+     * with the backend's `stopping` guard this leaves the H264 HW idle, so the
+     * bond's SBI-disable teardown finds no in-flight frame to abort and avoids the
+     * "h264 irq exception 0x811 / enc hw reset" race. Must run while the backend is
+     * still open and the bond is still attached.
+     */
+    if (ctx->backend_handle != NULL) {
+        (void)bk_h264_encode_ioctl(ctx->backend_handle, BK_H264_ENCODE_IOCTL_STOP_ENCODE, NULL);
+    }
     tkl_venc_bond_stop(ctx);
     /*
      * Bond stop must run before backend close because the BK ISP->H264E bond stop

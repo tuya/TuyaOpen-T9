@@ -43,7 +43,7 @@ static void entry_app_main(void)
     // tkl_sleep_param_check_and_set();
 
     bk_printf("go to tuya\r\n");
-    // tuya_app_main();
+    tuya_app_main();
     // test_core_mark();
 
 #if (CONFIG_TUYA_TEST_CLI)

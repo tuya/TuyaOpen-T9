@@ -126,6 +126,13 @@ typedef struct
 	uint32_t encode_result;
 	beken_semaphore_t enc_done_sem;
 
+	// Modified by TUYA Start
+	/* Graceful-stop guard: once set, the encoder thread and the HW dispatch
+	 * callback stop submitting new frames to vcenc, so bond teardown finds the
+	 * H264 HW idle (no in-flight frame to abort -> no "h264 irq exception"). */
+	uint8_t stopping;
+	// Modified by TUYA End
+
 	bk_flexa_bond_t *bond;
 
 	bk_h264_encode_hw_flexa_config_t config;

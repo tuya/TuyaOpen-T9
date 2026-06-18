@@ -28,16 +28,29 @@
 #include <driver/sd_card.h>
 #include "sd_card_driver.h"
 
-/* Which physical SDIO host controller the SD card is wired to. The single
- * source of truth is CONFIG_SDCARD_HOST_ID (0 = SDIO0, 1 = SDIO1), an int
- * Kconfig that always has a value when SDCARD is enabled. The selection is
- * applied at runtime by passing SDCARD_HOST_ID to the generic bk_sdio_host_*()
- * API. */
+// Modified by TUYA Start
+/* Which physical SDIO host controller the SD card is wired to.
+ *
+ * Board-driven selection (matches the legacy usr_sdio design): the active pin
+ * group configured in the Tuya adapter (usr_sdio.c) is the single source of
+ * truth, exposed via sdio_board_use_sdio1() which derives 0/1 from that pin
+ * group. usr_sdio.c provides the STRONG (pin-derived) override; the weak default
+ * below only applies when usr_sdio is not linked, in which case it falls back to
+ * the compile-time CONFIG_SDCARD_HOST_ID.
+ *
+ * SDCARD_HOST_ID is therefore a RUNTIME expression (a function call), not a
+ * compile-time constant macro — it must never be used to initialize a file-scope
+ * static (C requires constant initializers). All uses here are inside functions. */
+uint8_t __attribute__((weak)) sdio_board_use_sdio1(void)
+{
 #if defined(CONFIG_SDCARD_HOST_ID)
-#define SDCARD_HOST_ID   ((sdio_host_id_t)CONFIG_SDCARD_HOST_ID)
+	return (CONFIG_SDCARD_HOST_ID == 1) ? 1 : 0;
 #else
-#define SDCARD_HOST_ID   SDIO_HOST_ID_0
+	return 0;
 #endif
+}
+#define SDCARD_HOST_ID   (sdio_board_use_sdio1() ? SDIO_HOST_ID_1 : SDIO_HOST_ID_0)
+// Modified by TUYA End
 
 #define SDIO_CARD_STABLE_TIMEOUT_MS  50
 /* Number of times we re-issue CMD0+CMD8 during sd_card_identify() before

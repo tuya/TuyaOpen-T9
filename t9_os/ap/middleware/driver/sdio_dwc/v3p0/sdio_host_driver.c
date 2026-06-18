@@ -734,11 +734,24 @@ bk_err_t adma2_receive_data (uintptr_t addr,uint32 SYS_ADDR,uint16 BLOCK_SIZE,ui
  *   1 -> SDIO1 group: GPIO14~23
  * Replaces the former compile-time SDIO0/SDIO1 selection so both BK7259
  * controllers can be brought up at runtime. */
+// Modified by TUYA Start
+extern void user_sdio_gpio_init(void) __attribute__((weak));
+extern void user_sdio_set_width(uint8_t width_sel) __attribute__((weak));
+
 void sdio_gpio_init(uint8_t io_pos, sdio_wire_width_sel_t width_sel)
 {
+	if (user_sdio_gpio_init) {
+		if (user_sdio_set_width) {
+			user_sdio_set_width((uint8_t)width_sel);
+		}
+		user_sdio_gpio_init();
+		return;
+	}
+
 	(void)io_pos;
 	(void)width_sel;
 }
+// Modified by TUYA End
 
 void tuning_cfg(uintptr_t addr,uint8 tuning_rx_sel0,uint8 tuning_rx_sel1,uint8 sample_rx_sel0,uint8 sample_rx_sel1,uint8 tuning_tx_sel0,uint8 tuning_tx_sel1,uint8 sample_tx_sel0,uint8 sample_tx_sel1,uint8 clk_drv_inv_sel)
 {
