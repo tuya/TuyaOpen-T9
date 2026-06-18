@@ -261,6 +261,7 @@ static int GC4653_Exit(ISP_PORT IspPort)
     if (GC4653_720P_CalibParam_dynamic != NULL)
     {
         os_free(GC4653_720P_CalibParam_dynamic);
+        GC4653_720P_CalibParam_dynamic = NULL;
     }
     return  BK_OK;
 }
@@ -1314,55 +1315,65 @@ static const bk_camera_sensor_format_t gc4653_format_array[] = {
         .width = 1280,
         .height = 720,
         .fps = 30,
+        .output_pixel_fmt = BK_PIXEL_FORMAT_GRBG10,
     },
     {
         .width = 1280,
         .height = 720,
         .fps = 25,
+        .output_pixel_fmt = BK_PIXEL_FORMAT_GRBG10,
     },
     {
         .width = 1280,
         .height = 720,
         .fps = 20,
+        .output_pixel_fmt = BK_PIXEL_FORMAT_GRBG10,
     },
     {
         .width = 1920,
         .height = 1080,
         .fps = 30,
+        .output_pixel_fmt = BK_PIXEL_FORMAT_GRBG10,
     },
     {
         .width = 1920,
         .height = 1080,
         .fps = 25,
+        .output_pixel_fmt = BK_PIXEL_FORMAT_GRBG10,
     },
     {
         .width = 1920,
         .height = 1080,
         .fps = 20,
+        .output_pixel_fmt = BK_PIXEL_FORMAT_GRBG10,
     },
 
     {
         .width = 1920,
         .height = 1080,
         .fps = 15,
+        .output_pixel_fmt = BK_PIXEL_FORMAT_GRBG10,
     },
 
     {
         .width = 640,
         .height = 480,
         .fps = 30,
+        .output_pixel_fmt = BK_PIXEL_FORMAT_GRBG10,
     },
 
     {
         .width = 1088,
         .height = 1088,
         .fps = 15,
+        .output_pixel_fmt = BK_PIXEL_FORMAT_GRBG10,
     },
 
     {
         .width = 2560,
         .height = 1440,
         .fps = 20,
+        .output_pixel_fmt = BK_PIXEL_FORMAT_GRBG10,
     },
 
 };
@@ -1394,7 +1405,6 @@ avdk_err_t gc4653_detect(bk_camera_sensor_handle_t *handle, bk_camera_sensor_con
     /* enable camera power */
     if (config->pin_pwdn != 0xFF)
     {
-        gpio_dev_unmap(config->pin_pwdn);
         BK_LOG_ON_ERR(bk_gpio_enable_output(config->pin_pwdn));
         bk_gpio_set_capacity(config->pin_pwdn, GPIO_DRIVER_CAPACITY_3);
         bk_gpio_set_output_high(config->pin_pwdn);
@@ -1403,7 +1413,6 @@ avdk_err_t gc4653_detect(bk_camera_sensor_handle_t *handle, bk_camera_sensor_con
 
     if (config->pin_reset != 0xFF)
     {
-        gpio_dev_unmap(config->pin_reset);
         BK_LOG_ON_ERR(bk_gpio_enable_output(config->pin_reset));
         bk_gpio_set_capacity(config->pin_reset, GPIO_DRIVER_CAPACITY_3);
         bk_gpio_set_output_high(config->pin_reset);
@@ -1439,7 +1448,6 @@ avdk_err_t gc4653_detect(bk_camera_sensor_handle_t *handle, bk_camera_sensor_con
     csi_sensor->ops.get_sensor_object = gc4653_get_sensor_object;
     csi_sensor->ops.get_sensor_cfg = gc4653_get_sensor_cfg;
     csi_sensor->ops.query_support_formats = gc4653_query_support_formats;
-    // csi_sensor->ops.get_sensor_pixelFormat = gc4653_get_sensor_pixelFormat;
     csi_sensor->isp_pub_attr = &gc4653_mipi_linear_attr;
     csi_sensor->sensor_config = &csi_sensor_gc4653;
     *handle = (bk_camera_sensor_handle_t)&csi_sensor->ops;

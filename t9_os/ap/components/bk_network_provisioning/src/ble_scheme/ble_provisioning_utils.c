@@ -123,7 +123,7 @@ static const bk_gatts_attr_db_t s_gatts_attr_db_service_boarding[] =
     {
         BK_GATT_CHAR_DECL(0xea02,
                           0, NULL,
-                          BK_GATT_CHAR_PROP_BIT_WRITE,
+                          BK_GATT_CHAR_PROP_BIT_WRITE | BK_GATT_CHAR_PROP_BIT_WRITE_NR,
                           BK_GATT_PERM_WRITE,
                           BK_GATT_RSP_BY_APP),
     },
@@ -854,7 +854,7 @@ int wifi_boarding_deinit(void)
     return BK_OK;
 }
 
-void dm_ble_gap_get_identity_addr(uint8_t *addr)
+static void dm_ble_gap_get_identity_addr(uint8_t *addr)
 {
     uint8_t *identity_addr = addr;
     bk_get_mac((uint8_t *)identity_addr, MAC_TYPE_BLUETOOTH);

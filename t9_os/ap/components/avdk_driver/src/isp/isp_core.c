@@ -129,6 +129,7 @@ int isp_set_port_attribute(ISP_PORT IspPort, ISP_PUB_ATTR_S *pPubAttr)
     portAttr.hdrMode                   = pPubAttr->hdrMode;
     portAttr.stichMode                 = pPubAttr->stichMode;
     portAttr.pixelFormat               = pPubAttr->pixelFormat;
+    portAttr.snsFps                    = pPubAttr->snsFps;
     portAttr.snsRect.width          = pPubAttr->snsRect.width;
     portAttr.snsRect.height         = pPubAttr->snsRect.height;
     portAttr.inFormRect.top         = pPubAttr->inFormRect.top;
@@ -193,7 +194,11 @@ static void isp_mi_isr_callback_handle(isp_control_t *control, uint8_t isr_type,
                     isp_isr_handler[isr_type][i].enable = true;
                 }
 
-                if (isp_isr_handler[isr_type][i].enable)
+                /* deregister race: bk_isp_deregister_isr_callback memsets the
+                 * slot under isp_mutex while ISR runs lock-free. NULL-check
+                 * isr_handler so we degrade to a no-op instead of jumping to 0. */
+                if (isp_isr_handler[isr_type][i].enable
+                    && isp_isr_handler[isr_type][i].isr_handler != NULL)
                 {
                     isp_isr_handler[isr_type][i].isr_handler(control->chn[chnl_id].sequence,
                         control->chn[chnl_id].line, chnl_id, ok,
@@ -356,9 +361,15 @@ bk_err_t bk_isp_clock_enable(uint32_t clk, uint8_t enable)
 
 bk_err_t bk_cis_auxs_clock_enable(uint32_t clk, uint32_t gpio, uint8_t enable)
 {
+    gpio_id_t pin = (gpio_id_t)gpio;
+
+    (void)clk;
+
     if (enable)
     {
-        *(volatile uint32_t*)(0x44000400 + 0x3b * 4) |= (129 << 24); // gpio 59 for csi clk
+        #if CONFIG_USR_GPIO_CFG_EN
+        gpio_dev_map_by_func(GPIO_DEV_CLK_AUXS_CIS);
+        #endif
 
         // sel 1, 240MHz, div 10
         sys_drv_cis_auxs_cksel_set(CKSEL_CIS_AUXS_240M);
@@ -371,17 +382,24 @@ bk_err_t bk_cis_auxs_clock_enable(uint32_t clk, uint32_t gpio, uint8_t enable)
     {
         // disable csi auxs clock
         bk_pm_clock_ctrl(PM_CLK_ID_CSI, PM_CLK_CTRL_PWR_DOWN);
+        #if CONFIG_USR_GPIO_CFG_EN
+        gpio_dev_unmap_by_func(GPIO_DEV_CLK_AUXS_CIS);
+        #endif
     }
     return BK_OK;
 }
 
 bk_err_t bk_cis_mclk_clock_enable(uint32_t clk, uint8_t gpio, uint8_t enable)
 {
+    gpio_id_t pin = (gpio_id_t)gpio;
+
+    (void)clk;
+
     if (enable)
     {
-        *(volatile uint32_t*)(0x44000400 + 0x1b * 4) |= (131 << 24); // gpio 27 for vsync
-        //gpio_dev_unmap(gpio);
-        //gpio_dev_map(GPIO_27, GPIO_DEV_CLK_AUXS_CIS);
+        #if CONFIG_USR_GPIO_CFG_EN
+        gpio_dev_map_by_func(GPIO_DEV_JPEG_MCLK);
+        #endif
 
         // csi mclk clock configuration, default 24MHz
         // default sel 1, 240MHz div 10
@@ -394,7 +412,9 @@ bk_err_t bk_cis_mclk_clock_enable(uint32_t clk, uint8_t gpio, uint8_t enable)
     {
         // disable csi mclk clock
         bk_pm_clock_ctrl(PM_CLK_ID_CSI, PM_CLK_CTRL_PWR_DOWN);
-        //gpio_dev_unmap(gpio);
+        #if CONFIG_USR_GPIO_CFG_EN
+        gpio_dev_unmap_by_func(GPIO_DEV_JPEG_MCLK);
+        #endif
     }
     return BK_OK;
 }
@@ -966,21 +986,21 @@ bk_err_t bk_isp_close(isp_handle_t *handle, uint8_t chnl)
 
     if (chnl_closed && control->state == ISP_FSM_CHN_ENABLE)
     {
-        isp_unregister_sensor_callbacks(control);
-
         ret = VSI_MPI_ISP_DisablePort(control->port);
         if (ret != BK_OK)
         {
-            LOGE("%s, %d, enable port fail, ret=%d\n", __func__, __LINE__, ret);
+            LOGE("%s, %d, disable port fail, ret=%d\n", __func__, __LINE__, ret);
             return ret;
         }
 
         ret = VSI_MPI_ISP_DisableDev(control->dev);
         if (ret != BK_OK)
         {
-            LOGE("%s, %d, enable dev fail, ret=%d\n", __func__, __LINE__, ret);
+            LOGE("%s, %d, disable dev fail, ret=%d\n", __func__, __LINE__, ret);
             return ret;
         }
+
+        isp_unregister_sensor_callbacks(control);
 
         control->state = ISP_FSM_INIT;
     }

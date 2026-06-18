@@ -14,6 +14,7 @@ set(incs
 	pwm
 	flash
 	uart
+	dbg_probe
 	sys_ctrl
 	gpio
 	general_dma
@@ -39,7 +40,9 @@ set(incs
 	pwr_clk
 	)
 
-
+list(APPEND incs
+	$ENV{PROJECT_DIR}/ap/config/${target}/
+)
 
 set(srcs
 	sys_ctrl/sys_driver.c
@@ -72,9 +75,7 @@ endif()
 
 	list(APPEND srcs
 		common/driver.c
-		common/drv_model.c
 		#timer/timer_driver.c
-		wdt/wdt_driver.c
 		#sys_ctrl/sys_ctrl.c
 		sys_ctrl/sys_wifi_driver.c
 		sys_ctrl/sys_bt_driver.c
@@ -91,24 +92,19 @@ if (CONFIG_RESET_REASON)
 	list(APPEND srcs reset_reason/reset_reason.c)
 endif()
 
-if (CONFIG_AON_WDT)
-	list(APPEND incs
-		aon_wdt
-	)
-
+if (CONFIG_DBG_PROBE)
 	list(APPEND srcs
-		aon_wdt/aon_wdt_driver.c
+		dbg_probe/dbg_probe.c
+		dbg_probe/dbg_sink_uart.c
+		dbg_probe/dbg_sink_ram.c
 	)
 endif()
-
 
 if (NOT CMAKE_BUILD_EARLY_EXPANSION)
 	add_subdirectory(common)
 	add_subdirectory(rtc)
-	add_subdirectory(trng)
 	add_subdirectory(timer)
 	add_subdirectory(gpio)
-	add_subdirectory(io_matrix)
 	add_subdirectory(flash)
 	add_subdirectory(uart)
 	add_subdirectory(general_dma)
@@ -122,6 +118,7 @@ if (NOT CMAKE_BUILD_EARLY_EXPANSION)
 	#add_subdirectory(i2s)
 	add_subdirectory(psram)
 	add_subdirectory(irda)
+	add_subdirectory(wdt)
 	add_subdirectory(wwdt)
 	add_subdirectory(mailbox)
 	add_subdirectory(multicore)
@@ -175,42 +172,51 @@ if (CONFIG_CALENDAR)
 		)
 endif() #if (CONFIG_CALENDAR)
 
-if (CONFIG_SDIO_V1P0)
-	list(APPEND incs
-		"sdio/v1p0"
-	)
-
-	list(APPEND srcs
-		"sdio/v1p0/sdio.c"
-		"sdio/v1p0/sdma.c"
-		"sdio/v1p0/sutil.c"
-		)
-endif() #if (CONFIG_SDIO_V1P0)
-
-if (CONFIG_SDIO_V2P0 AND CONFIG_SDIO_SLAVE)
-	list(APPEND incs
-		"sdio/v2p0"
-	)
-
-	list(APPEND srcs
-		"sdio/v2p0/sdio_slave_driver.c"
-		"sdio/v2p0/sdio_utils.c"
-		"sdio/v2p0/sdio_test.c"
-		)
-endif() #if (CONFIG_SDIO_V2P0)
-
 if (CONFIG_SDIO_V3P0)
 	list(APPEND incs
 		"sdio_dwc/v3p0"
 		"sdio_dwc/v3p0/include"
 	)
+	# sdio_dwc: SDIO host controller (DesignWare MSHC) driver
 	list(APPEND srcs
 		"sdio_dwc/v3p0/sdio_host_driver.c"
-		"sdio_dwc/v3p0/sd_card_driver.c"
-		"sdio_dwc/v3p0/sdcard_test.c"
-		"sdio_dwc/v3p0/sdio_dwc_test.c"
 		)
-endif() #if (CONFIG_SDIO_HOST)
+
+	# sd_card: SD memory card protocol (depends only on the generic host API)
+	if (CONFIG_SDCARD)
+		list(APPEND srcs
+			"sd_card/sd_card_driver.c"
+			)
+	endif() #if (CONFIG_SDCARD)
+
+	# emmc: eMMC protocol (depends only on the generic host API)
+	if (CONFIG_EMMC)
+		list(APPEND incs "emmc")
+		list(APPEND srcs
+			"emmc/emmc_driver.c"
+			)
+	endif() #if (CONFIG_EMMC)
+
+	# sdio_func: SDIO peripheral (CMD52/53) core
+	if (CONFIG_SDIO_FUNC)
+		list(APPEND incs "sdio_func")
+		list(APPEND srcs
+			"sdio_func/sdio_func_core.c"
+			)
+	endif() #if (CONFIG_SDIO_FUNC)
+
+	# Test/CLI code is only built when explicitly enabled
+	if (CONFIG_SDIO_DWC_TEST)
+		list(APPEND srcs
+			"sdio_dwc/v3p0/sdio_dwc_test.c"
+			)
+		if (CONFIG_SDCARD)
+			list(APPEND srcs
+				"sd_card/sdcard_test.c"
+				)
+		endif() #if (CONFIG_SDCARD)
+	endif() #if (CONFIG_SDIO_DWC_TEST)
+endif() #if (CONFIG_SDIO_V3P0)
 
 if (CONFIG_AUDIO)
 
@@ -357,5 +363,5 @@ endif()
 armino_component_register(SRCS "${srcs}"
 	INCLUDE_DIRS "${incs}"
 	REQUIRES core cortex-m mpu
-	PRIV_REQUIRES bk_log easy_flash cmsis os_source bk_usb part_table unity avdk_utils bk_wifi console
+	PRIV_REQUIRES bk_log easy_flash cmsis os_source bk_usb part_table unity avdk_utils bk_wifi console psa_mbedtls
 )

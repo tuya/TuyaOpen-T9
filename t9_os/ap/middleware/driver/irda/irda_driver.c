@@ -38,13 +38,16 @@ static void irda_isr(void);
 
 static void irda_init_gpio(void)
 {
-	gpio_dev_unmap(IRDA_PIN);
-	gpio_dev_map(IRDA_PIN, GPIO_DEV_IRDA);
+#if CONFIG_USR_GPIO_CFG_EN
+	gpio_dev_map_by_func(GPIO_DEV_IRDA);
+#endif
 }
 
 static void irda_deinit_gpio(void)
 {
-	gpio_dev_unmap(IRDA_PIN);
+#if CONFIG_USR_GPIO_CFG_EN
+	gpio_dev_unmap_by_func(GPIO_DEV_IRDA);
+#endif
 }
 
 /* 1) power up irda

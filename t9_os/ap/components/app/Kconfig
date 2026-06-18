@@ -9,11 +9,6 @@ menu "App"
 		bool "Enable Ftpd Upgrade"
 		default n
 
-	config OTA_HTTP
-		bool "Enable Ota Http"
-		default y if NO_HOSTED
-		default n if !NO_HOSTED
-
 	#TODO what's the relationship between HTTP and TFTP OTA, exculsive?
 	config OTA_TFTP
 		bool "Enable Ota Tftp"
@@ -50,4 +45,9 @@ menu "App"
 	config FTP_SERVER
 		bool "Enable FTP server"
 		default n
+
+	config FTP_USE_PSARM_MEM
+		bool "FTP use psram memory"
+		depends on PSRAM
+		default y
 endmenu

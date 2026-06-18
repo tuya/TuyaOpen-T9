@@ -6,8 +6,7 @@
 #include <os/mem.h>
 #include "ff.h"
 
-#if (CONFIG_INT_WDT || CONFIG_TASK_WDT)
-#include <driver/wdt.h>
+#if CONFIG_TASK_WDT
 #include <bk_wdt.h>
 #endif
 
@@ -144,10 +143,19 @@ void test_getfree(DISK_NUMBER number)
     }
     else
     {
-        DWORD total_MB = (pfs->n_fatent - 2) * (pfs->csize) * (pfs->ssize) / 1024 /1024;  //1024 convert to MB
-        DWORD free_MB = getnclst*(pfs->csize)*(pfs->ssize)/1024 /1024;
-        os_printf("total size: %lu MB.\r\n", total_MB);
-        os_printf("test_getfree getnclst:DEC %d free space: %dMB\r\n", getnclst, free_MB);
+        uint64_t cluster_bytes = (uint64_t)(pfs->csize) * (pfs->ssize);
+        uint64_t total_bytes   = (uint64_t)(pfs->n_fatent - 2) * cluster_bytes;
+        uint64_t free_bytes    = (uint64_t)getnclst * cluster_bytes;
+        uint64_t used_bytes    = total_bytes - free_bytes;
+
+        os_printf("total size: %llu.%llu GB (%llu bytes)\r\n",
+                  total_bytes / (1024*1024*1024), (total_bytes % (1024*1024*1024)) * 100 / (1024*1024*1024), total_bytes);
+        os_printf("free space: %llu.%llu GB (%llu bytes)\r\n",
+                  free_bytes / (1024*1024*1024), (free_bytes % (1024*1024*1024)) * 100 / (1024*1024*1024), free_bytes);
+        os_printf("used space: %llu.%llu MB (%llu bytes)\r\n",
+                  used_bytes / (1024*1024), (used_bytes % (1024*1024)) * 100 / (1024*1024), used_bytes);
+        os_printf("clusters: total=%lu, free=%lu, csize=%u(sectors), ssize=%u(bytes/sector)\r\n",
+                  pfs->n_fatent - 2, getnclst, pfs->csize, pfs->ssize);
         BK_LOGD(NULL, "f_getfree OK!\r\n");
     }
     BK_LOGD(NULL, "----- test_getfree %d over  -----\r\n\r\n", number);
@@ -459,6 +467,7 @@ void test_fatfs_auto_test(DISK_NUMBER number, char *filename, uint32_t len, uint
 	uint32_t packet_cnt = 0, bytes_cnt = 0;
 	FATFS *checkspace_pfs = NULL;
 	DWORD freenclst;
+	bool content_allocated = false;
 
 	FATFS_LOGV("\r\n----- %s %d start -----\r\n", __func__, number);
 	FATFS_LOGV("file_name=%s,len=%d,test_cnt=%d \r\n", filename, len, test_count);
@@ -473,10 +482,24 @@ void test_fatfs_auto_test(DISK_NUMBER number, char *filename, uint32_t len, uint
 	packet_cnt = len / TEST_FATFS_PACKET_LEN;
 	bytes_cnt = len % TEST_FATFS_PACKET_LEN;
 
+	if (content_p == NULL) {
+		content_p = os_malloc(len);
+		if (content_p == NULL) {
+			FATFS_LOGE("content malloc fail \r\n");
+			return;
+		}
+		content_allocated = true;
+		for (j = 0; j < len; j++) {
+			content_p[j] = (uint8_t)j;
+		}
+	}
+
 	buf_p = os_malloc(TEST_FATFS_PACKET_LEN);
 	if (buf_p == NULL)
 	{
 		FATFS_LOGE("malloc fail \r\n");
+		if (content_allocated)
+			os_free(content_p);
 		return;
 	}
 
@@ -621,6 +644,10 @@ void test_fatfs_auto_test(DISK_NUMBER number, char *filename, uint32_t len, uint
 exit:
 	os_free(buf_p);
 	buf_p = NULL;
+	if (content_allocated) {
+		os_free(content_p);
+		content_p = NULL;
+	}
 }
 
 void test_fatfs_format(DISK_NUMBER number)
@@ -722,11 +749,8 @@ static void fatfs_test_concurrency_task(beken_thread_arg_t arg)
 			continue;
 		}
 
-#if CONFIG_WDT
-		bk_wdt_feed();
 #if CONFIG_TASK_WDT
 		bk_task_wdt_feed();
-#endif
 #endif
 
 		//read from SDCARD and compare
@@ -770,11 +794,8 @@ static void fatfs_test_concurrency_task(beken_thread_arg_t arg)
             continue;
         }
 
-#if CONFIG_WDT
-		bk_wdt_feed();
 #if CONFIG_TASK_WDT
 		bk_task_wdt_feed();
-#endif
 #endif
 
 		rtos_delay_milliseconds(20);

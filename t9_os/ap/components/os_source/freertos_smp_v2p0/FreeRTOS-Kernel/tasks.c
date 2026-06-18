@@ -166,6 +166,7 @@
     #define taskIS_CORE_ACTIVE( xCore )    ( pdTRUE )
     #define taskIS_AFFINITY_COMPATIBLE( xCore, pxTCB )    ( ( ( ( pxTCB )->xCoreID == xCore ) || ( ( pxTCB )->xCoreID == tskNO_AFFINITY ) ) ? pdTRUE : pdFALSE )
 #endif
+    #define taskIS_AFFINITY_COREX( xCore, pxTCB )    ( ( ( pxTCB )->xCoreID == xCore) ? pdTRUE : pdFALSE )
 
 /*-----------------------------------------------------------*/
 
@@ -463,11 +464,20 @@ PRIVILEGED_DATA static TaskHandle_t xIdleTaskHandle[ configNUMBER_OF_CORES ] = {
 #if ( configUSE_CPUHOTPLUG == 1 )
 PRIVILEGED_DATA static volatile BaseType_t xCoreOnline[ configNUMBER_OF_CORES ] = {
     [ 0 ] = pdTRUE,
+#if configCPUHOTPLUG_BOOT_SECONDARY_OFFLINE
+    /* AP CPU3 starts offline; it joins SMP only after bk_cpu_hp_online(). */
+    [ 1 ] = pdFALSE
+#else
     [ 1 ] = pdTRUE
+#endif
 };
 PRIVILEGED_DATA static volatile BaseType_t xCoreActive[ configNUMBER_OF_CORES ] = {
     [ 0 ] = pdTRUE,
+#if configCPUHOTPLUG_BOOT_SECONDARY_OFFLINE
+    [ 1 ] = pdFALSE
+#else
     [ 1 ] = pdTRUE
+#endif
 };
 #endif
 
@@ -1438,6 +1448,14 @@ static void prvAddNewTaskToReadyList( TCB_t * pxNewTCB )
              * are in the suspended state - make this the current task. */
             pxCurrentTCBs[ 0 ] = pxNewTCB;
         }
+#if configCPUHOTPLUG_BOOT_SECONDARY_OFFLINE
+        else if ((pxCurrentTCBs[ 1 ] == NULL) &&
+                 ( xSchedulerRunning == pdFALSE ) &&
+                 (taskIS_AFFINITY_COREX( 1, pxNewTCB ) == pdTRUE))
+        {
+            pxCurrentTCBs[ 1 ] = pxNewTCB;
+        }
+#endif
         else if( ( pxCurrentTCBs[ 1 ] == NULL ) && ( taskIS_AFFINITY_COMPATIBLE( 1, pxNewTCB ) == pdTRUE ) )
         {
             /* On core 1, there are no other tasks, or all the other tasks
@@ -3897,6 +3915,27 @@ get_next_task:
         } while( pxTCBCur != pxTCBFirst ); /* Check to see if we've walked the entire list */
     }
 
+    #if ( configUSE_CPUHOTPLUG == 1 )
+    {
+        /* If no task could be scheduled while the current core is marked
+         * inactive (e.g., the primary core has just initiated a CPU hot-unplug
+         * on this core but the stop IPI has not been fully processed yet),
+         * fall back to running this core's IDLE task. The IDLE task is always
+         * the safe last-resort task to keep this core executing until the
+         * stop ISR fully quiesces it. Without this fallback, taskIS_AFFINITY_
+         * COMPATIBLE() rejects every task (including IDLE) the moment
+         * xCoreActive[xCurCoreID] becomes pdFALSE, which races with PendSV /
+         * SysTick on the dying core and triggers configASSERT below. */
+        if( ( xTaskScheduled == pdFALSE ) &&
+            ( taskIS_CORE_ACTIVE( xCurCoreID ) == pdFALSE ) &&
+            ( xIdleTaskHandle[ xCurCoreID ] != NULL ) )
+        {
+            pxCurrentTCBs[ xCurCoreID ] = ( TCB_t * ) xIdleTaskHandle[ xCurCoreID ];
+            xTaskScheduled = pdTRUE;
+        }
+    }
+    #endif /* configUSE_CPUHOTPLUG */
+
     configASSERT( xTaskScheduled == pdTRUE ); /* At this point, a task MUST have been scheduled */
 }
 
@@ -3906,7 +3945,7 @@ typedef struct  task_list_recorder
 {
     uint32_t tick;        /*os tick */
 
-    uint32_t time;        /*aon tick */
+    uint32_t time;        /*aon rtc time in us, low 32 bits */
 
     TCB_t * TCB_ptr;     /*task TCB pointer*/
 
@@ -3921,11 +3960,13 @@ typedef struct  task_list_recorder
 __attribute__((__used__)) static volatile  uint32_t s_task_cnt_core0 = 0;
 __attribute__((__used__)) static volatile  uint32_t s_task_cnt_core1 = 0;
 
- __attribute__((__used__)) static volatile  task_list_recorder_t  s_task_recorder_core0[FREERTOS_TASK_RECORDER_CNT];
-  __attribute__((__used__)) static volatile  task_list_recorder_t  s_task_recorder_core1[FREERTOS_TASK_RECORDER_CNT];
+__attribute__((__used__)) static volatile  task_list_recorder_t  s_task_recorder_core0[FREERTOS_TASK_RECORDER_CNT];
+__attribute__((__used__)) static volatile  task_list_recorder_t  s_task_recorder_core1[FREERTOS_TASK_RECORDER_CNT];
 
- #define GET_AON_RTC_TIME    (REG_READ(SOC_AON_RTC_REG_BASE + (0x3 << 2)))
- #endif
+extern uint64_t bk_aon_rtc_get_us(void);
+
+#define GET_AON_RTC_TIME_US    ((uint32_t)bk_aon_rtc_get_us())
+#endif
 
 void vTaskSwitchContext( void )
 {
@@ -4000,7 +4041,7 @@ void vTaskSwitchContext( void )
              if (xCurCoreID == 0)
              {  
                 s_task_recorder_core0[s_task_cnt_core0].tick = xTickCount;
-                s_task_recorder_core0[s_task_cnt_core0].time = GET_AON_RTC_TIME;  
+                s_task_recorder_core0[s_task_cnt_core0].time = GET_AON_RTC_TIME_US;  
                 s_task_recorder_core0[s_task_cnt_core0].TCB_ptr = pxCurrentTCBs[0];           
                 s_task_recorder_core0[s_task_cnt_core0].stack_top = (uint32_t) pxCurrentTCBs[0]->pxTopOfStack;
                 s_task_recorder_core0[s_task_cnt_core0].stack_bottom = (uint32_t)(pxCurrentTCBs[0]->pxStack + pxCurrentTCBs[0]->ulStackSize);    
@@ -4009,7 +4050,7 @@ void vTaskSwitchContext( void )
                 s_task_cnt_core0 = s_task_cnt_core0 % FREERTOS_TASK_RECORDER_CNT;
             } else {
                 s_task_recorder_core1[s_task_cnt_core1].tick = xTickCount;
-                s_task_recorder_core1[s_task_cnt_core1].time = GET_AON_RTC_TIME;  
+                s_task_recorder_core1[s_task_cnt_core1].time = GET_AON_RTC_TIME_US;  
                 s_task_recorder_core1[s_task_cnt_core1].TCB_ptr = pxCurrentTCBs[1];           
                 s_task_recorder_core1[s_task_cnt_core1].stack_top = (uint32_t) pxCurrentTCBs[1]->pxTopOfStack;
                 s_task_recorder_core1[s_task_cnt_core1].stack_bottom = (uint32_t)(pxCurrentTCBs[1]->pxStack + pxCurrentTCBs[1]->ulStackSize);    
@@ -4562,6 +4603,13 @@ static portTASK_FUNCTION( prvIdleTask, pvParameters )
             vApplicationIdleHook();
         }
         #endif /* configUSE_IDLE_HOOK */
+
+        #if (CONFIG_CPU_HOTPLUG)
+        {
+            extern void bk_cpu_hp_idle_handler(void);
+            bk_cpu_hp_idle_handler();
+        }
+        #endif /* CONFIG_CPU_HOTPLUG */
 
         /* This conditional compilation should use inequality to 0, not equality
          * to 1.  This is to ensure portSUPPRESS_TICKS_AND_SLEEP() is called when

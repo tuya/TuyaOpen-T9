@@ -31,6 +31,7 @@
 #include "bignum_core.h"
 #include "mbedtls/bignum_wrap.h"
 #include "rsa_alt_helpers.h"
+#include "mbedtls/asn1write.h"
 #include "mbedtls/oid.h"
 #include "mbedtls/platform_util.h"
 #include "mbedtls/error.h"
@@ -598,6 +599,120 @@ int mbedtls_rsa_export_crt(const mbedtls_rsa_context *ctx,
     return 0;
 }
 
+int mbedtls_rsa_write_key(const mbedtls_rsa_context *rsa, unsigned char *start,
+                          unsigned char **p)
+{
+    size_t len = 0;
+    int ret;
+    mbedtls_mpi T;
+
+    mbedtls_mpi_init(&T);
+
+    if ((ret = mbedtls_rsa_export_crt(rsa, NULL, NULL, &T)) != 0 ||
+        (ret = mbedtls_asn1_write_mpi(p, start, &T)) < 0) {
+        goto end_of_export;
+    }
+    len += ret;
+
+    if ((ret = mbedtls_rsa_export_crt(rsa, NULL, &T, NULL)) != 0 ||
+        (ret = mbedtls_asn1_write_mpi(p, start, &T)) < 0) {
+        goto end_of_export;
+    }
+    len += ret;
+
+    if ((ret = mbedtls_rsa_export_crt(rsa, &T, NULL, NULL)) != 0 ||
+        (ret = mbedtls_asn1_write_mpi(p, start, &T)) < 0) {
+        goto end_of_export;
+    }
+    len += ret;
+
+    if ((ret = mbedtls_rsa_export(rsa, NULL, NULL, &T, NULL, NULL)) != 0 ||
+        (ret = mbedtls_asn1_write_mpi(p, start, &T)) < 0) {
+        goto end_of_export;
+    }
+    len += ret;
+
+    if ((ret = mbedtls_rsa_export(rsa, NULL, &T, NULL, NULL, NULL)) != 0 ||
+        (ret = mbedtls_asn1_write_mpi(p, start, &T)) < 0) {
+        goto end_of_export;
+    }
+    len += ret;
+
+    if ((ret = mbedtls_rsa_export(rsa, NULL, NULL, NULL, &T, NULL)) != 0 ||
+        (ret = mbedtls_asn1_write_mpi(p, start, &T)) < 0) {
+        goto end_of_export;
+    }
+    len += ret;
+
+    if ((ret = mbedtls_rsa_export(rsa, NULL, NULL, NULL, NULL, &T)) != 0 ||
+        (ret = mbedtls_asn1_write_mpi(p, start, &T)) < 0) {
+        goto end_of_export;
+    }
+    len += ret;
+
+    if ((ret = mbedtls_rsa_export(rsa, &T, NULL, NULL, NULL, NULL)) != 0 ||
+        (ret = mbedtls_asn1_write_mpi(p, start, &T)) < 0) {
+        goto end_of_export;
+    }
+    len += ret;
+
+end_of_export:
+
+    mbedtls_mpi_free(&T);
+    if (ret < 0) {
+        return ret;
+    }
+
+    MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_int(p, start, 0));
+    MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_len(p, start, len));
+    MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_tag(p, start,
+                                                     MBEDTLS_ASN1_CONSTRUCTED |
+                                                     MBEDTLS_ASN1_SEQUENCE));
+
+    return (int) len;
+}
+
+/*
+ *  RSAPublicKey ::= SEQUENCE {
+ *      modulus           INTEGER,  -- n
+ *      publicExponent    INTEGER   -- e
+ *  }
+ */
+int mbedtls_rsa_write_pubkey(const mbedtls_rsa_context *rsa, unsigned char *start,
+                             unsigned char **p)
+{
+    int ret = MBEDTLS_ERR_ERROR_CORRUPTION_DETECTED;
+    size_t len = 0;
+    mbedtls_mpi T;
+
+    mbedtls_mpi_init(&T);
+
+    if ((ret = mbedtls_rsa_export(rsa, NULL, NULL, NULL, NULL, &T)) != 0 ||
+        (ret = mbedtls_asn1_write_mpi(p, start, &T)) < 0) {
+        goto end_of_export;
+    }
+    len += ret;
+
+    if ((ret = mbedtls_rsa_export(rsa, &T, NULL, NULL, NULL, NULL)) != 0 ||
+        (ret = mbedtls_asn1_write_mpi(p, start, &T)) < 0) {
+        goto end_of_export;
+    }
+    len += ret;
+
+end_of_export:
+
+    mbedtls_mpi_free(&T);
+    if (ret < 0) {
+        return ret;
+    }
+
+    MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_len(p, start, len));
+    MBEDTLS_ASN1_CHK_ADD(len, mbedtls_asn1_write_tag(p, start, MBEDTLS_ASN1_CONSTRUCTED |
+                                                     MBEDTLS_ASN1_SEQUENCE));
+
+    return (int) len;
+}
+
 /*
  * Initialize an RSA context
  */
@@ -674,6 +789,14 @@ int mbedtls_rsa_get_padding_mode(const mbedtls_rsa_context *ctx)
 int mbedtls_rsa_get_md_alg(const mbedtls_rsa_context *ctx)
 {
     return ctx->hash_id;
+}
+
+/*
+ * Get length in bits of RSA modulus
+ */
+size_t mbedtls_rsa_get_bitlen(const mbedtls_rsa_context *ctx)
+{
+    return mbedtls_mpi_bitlen(&ctx->N);
 }
 
 /*
@@ -2521,6 +2644,22 @@ void mbedtls_rsa_free(mbedtls_rsa_context *ctx)
 #define RSA_PT  "\xAA\xBB\xCC\x03\x02\x01\x00\xFF\xFF\xFF\xFF\xFF" \
                 "\x11\x22\x33\x0A\x0B\x0C\xCC\xDD\xDD\xDD\xDD\xDD"
 
+#if 0//defined(MBEDTLS_PKCS1_V15)
+static int myrand(void *rng_state, unsigned char *output, size_t len)
+{
+#if !defined(__OpenBSD__) && !defined(__NetBSD__)
+    size_t i;
+
+    for (i = 0; i < len; ++i) {
+        output[i] = rand();
+    }
+#else
+    arc4random_buf(output, len);
+#endif /* !OpenBSD && !NetBSD */
+
+    return 0;
+}
+#endif /* MBEDTLS_PKCS1_V15 */
 
 /*
  * Checkup routine

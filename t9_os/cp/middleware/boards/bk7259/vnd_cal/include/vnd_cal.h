@@ -16,6 +16,7 @@ typedef struct tmp_pwr_st {
     signed p_index_delta : 7;
     signed p_index_delta_g : 7;
     signed p_index_delta_ble : 7;
+    signed p_index_delta_thread: 7;
     signed xtal_c_dlta : 10; //8bits xtalh_ctune on BK7236
 } TMP_PWR_ST, *TMP_PWR_PTR;
 
@@ -62,7 +63,7 @@ extern void vnd_cal_pwr_gain_base_ble_overlay(uint32 pwr_gain_base_ble_value);
 extern void vnd_cal_set_ble_pwr_level(uint8 level);
 extern void vnd_cal_set_auto_pwr_flag(uint8 flag);
 extern void vnd_cal_set_auto_pwr_thred(AUTO_PWR_CALI_CONTEXT auto_pwr);
-extern void vnd_cal_set_epa_config(UINT8 epa_flag, UINT16 rx_gpio, UINT16 tx_gpio, UINT32 gainbase_b, UINT32 gainbase_g);
+extern void vnd_cal_set_epa_config(UINT8 epa_flag, UINT16 rx_gpio, UINT16 tx_gpio, UINT16 lna_gpio);
 extern void vnd_cal_version_log(char *version);
 extern void vnd_cal_set_cca_level(UINT8 offset);
 #endif

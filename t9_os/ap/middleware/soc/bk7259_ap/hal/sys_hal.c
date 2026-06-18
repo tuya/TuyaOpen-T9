@@ -237,6 +237,11 @@ void sys_hal_set_cpu2_reset(uint32_t reset_value)
 	sys_ahbp_ll_set_reg4_cpu0_sw_rstn(reset_value);
 }
 
+void sys_hal_set_npu_reset(uint32_t reset_value)
+{
+	sys_ahbp_ll_set_reg6_npu_sw_rstn(reset_value);
+}
+
 void sys_hal_set_cpu1_pwr_dw(uint32_t is_pwr_down)
 {
 	sys_ll_set_cpu1_int_halt_clk_op_cpu1_pwr_dw(is_pwr_down);
@@ -554,6 +559,12 @@ bk_err_t sys_hal_switch_cpu_bus_freq_low_to_high(pm_cpu_freq_e cpu_bus_freq)
 }
 
 static pm_cpu_freq_e s_pre_cpu_freq = PM_CPU_FRQ_XTAL;
+
+pm_cpu_freq_e sys_hal_get_cpu_bus_freq(void)
+{
+	return s_pre_cpu_freq;
+}
+
 bk_err_t sys_hal_switch_cpu_bus_freq(pm_cpu_freq_e cpu_bus_freq)
 {
 	bk_err_t ret = BK_OK;

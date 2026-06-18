@@ -599,7 +599,6 @@ bk_err_t bk_modem_uart_init(uint32_t baud_rate)
         
         /* Configure MASTER_MRDY_GPIO pin (host ready signal) */
         gpio_config_t cfg;
-        gpio_dev_unmap(MASTER_MRDY_GPIO);
         cfg.func_mode = GPIO_SECOND_FUNC_DISABLE;
         cfg.io_mode = GPIO_OUTPUT_ENABLE;
         cfg.pull_mode = GPIO_PULL_DOWN_EN;
@@ -612,7 +611,7 @@ bk_err_t bk_modem_uart_init(uint32_t baud_rate)
         /* Configure MASTER_SRDY_GPIO pin (slave ready signal) */
         cfg.func_mode = GPIO_SECOND_FUNC_DISABLE;
         cfg.io_mode = GPIO_INPUT_ENABLE;
-        cfg.pull_mode = GPIO_PULL_UP_EN;     
+        cfg.pull_mode = GPIO_PULL_UP_EN;
         bk_gpio_set_config(MASTER_SRDY_GPIO, &cfg);
         bk_gpio_set_interrupt_type(MASTER_SRDY_GPIO, GPIO_INT_TYPE_FALLING_EDGE);
         /* Register SRDY pin interrupt handler */

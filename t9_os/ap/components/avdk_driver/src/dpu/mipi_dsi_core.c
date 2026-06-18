@@ -3,7 +3,7 @@
 #include <os/mem.h>
 #include "sys_driver.h"
 #include "mipi_dsi_host_reg.h"
-#include <mipi_dsi_types.h>
+#include <driver/mipi_dsi_types.h>
 #include <driver/dpu_types.h>
 #include <mipi_dsi_hal.h>
 #include <driver/mipi_dsi.h>
@@ -179,6 +179,7 @@ bk_err_t mipi_dsi_panel_set_pattern(mipi_dsi_pattern_type_t pattern)
 #define DSI_VID_HLINE_OVERHEAD_PERMILLE   300u
 #define DSI_LINK_BANDWIDTH_OVERHEAD_PERMILLE  DSI_VID_HBLANK_OVERHEAD_PERMILLE
 
+#if ((SFT_VERSION == FPGA_7259_CM55) || (SFT_VERSION == FPGA_7259_A35))
 static inline uint16_t dsi_time_round(float t)
 {
     if (t <= 0.f) {
@@ -187,6 +188,7 @@ static inline uint16_t dsi_time_round(float t)
     t += 0.5f;
     return (t > 65535.f) ? 65535 : (uint16_t)t;
 }
+#endif
 
 static uint64_t mipi_dsi_panel_pclk_hz(const bk_panel_clock_config_t *dsi)
 {
@@ -200,21 +202,6 @@ static uint64_t mipi_dsi_panel_pclk_hz(const bk_panel_clock_config_t *dsi)
     }
 
     return 60000000ULL;
-}
-
-static uint16_t dsi_host_vid_byte_cycles(uint32_t dpi_pixels, uint32_t lane_bitrate_mbps,
-                                         uint64_t pclk_hz, uint32_t overhead_permille)
-{
-    if (dpi_pixels == 0U || lane_bitrate_mbps == 0U || pclk_hz == 0ULL) {
-        return 0;
-    }
-
-    uint64_t num = (uint64_t)dpi_pixels * (uint64_t)lane_bitrate_mbps * 1000000ULL
-        * (1000ULL + (uint64_t)overhead_permille);
-    uint64_t den = 8ULL * pclk_hz * 1000ULL;
-    uint64_t q = (num + den / 2ULL) / den;
-
-    return (q > 65535ULL) ? 65535U : (uint16_t)q;
 }
 
 typedef struct {
@@ -234,6 +221,21 @@ static void mipi_dsi_host_vid_hparams_fpga(const bk_display_timing_t *t, mipi_ds
                                  + (float)t->hsync_front_porch + (float)t->h_size) * byte_hs_per_pclk * 1.1f);
 }
 #else
+static uint16_t dsi_host_vid_byte_cycles(uint32_t dpi_pixels, uint32_t lane_bitrate_mbps,
+                                         uint64_t pclk_hz, uint32_t overhead_permille)
+{
+    if (dpi_pixels == 0U || lane_bitrate_mbps == 0U || pclk_hz == 0ULL) {
+        return 0;
+    }
+
+    uint64_t num = (uint64_t)dpi_pixels * (uint64_t)lane_bitrate_mbps * 1000000ULL
+        * (1000ULL + (uint64_t)overhead_permille);
+    uint64_t den = 8ULL * pclk_hz * 1000ULL;
+    uint64_t q = (num + den / 2ULL) / den;
+
+    return (q > 65535ULL) ? 65535U : (uint16_t)q;
+}
+
 static void mipi_dsi_host_vid_hparams_asic(const bk_panel_clock_config_t *dsi, uint32_t lane_bitrate_mbps,
                                            uint64_t pclk_hz, mipi_dsi_host_vid_hparams_t *out)
 {
@@ -251,37 +253,85 @@ static void mipi_dsi_host_vid_hparams_asic(const bk_panel_clock_config_t *dsi, u
 }
 #endif
 
-/** Naneng internal PLL path: hal_dsi_dphy_init_for_panel + byte-accurate VID timing (default for UNKNOWN / NANENG). */
-static bk_err_t mipi_dsi_clock_set_internal_pll_path(bk_panel_clock_config_t *dsi)
+/**
+ * Unified DSI PHY + host bring-up.
+ *
+ * The Naneng D-PHY register layout is the same regardless of where the
+ * DPU register clock comes from; only the @c R5c value differs:
+ *
+ *   - First, try @c hal_dsi_dphy_init_for_panel(): build @c R5c so the
+ *     PHY's internal divider emits DPI pclk == panel pclk exactly. This
+ *     is the precise path used when @c dsi->clk_src is
+ *     ::DPU_CLK_SRC_DPHY_DPLL (the default).
+ *   - If the panel's required lane:pclk ratio exceeds the PHY's 4-bit
+ *     @c pixdiv field (max = 17), the precise path returns BK_FAIL.
+ *     We then transparently fall back to the SYSCLK ladder, pick a lane
+ *     rate via hal_dsi_sysclk_lane_mbps_select(), log a warning, and write
+ *     ::DPU_CLK_SRC_SYSCLK back into @c dsi->clk_src so the caller's
+ *     bus/panel/DPU state stay synchronised. A caller that explicitly
+ *     passed ::DPU_CLK_SRC_SYSCLK takes the same SYSCLK path silently.
+ *
+ * VID_HSA / VID_HBP / VID_HLINE byte cycles are computed from the
+ * achieved lane bitrate in both branches (no more float scaling).
+ */
+bk_err_t mipi_dsi_clock_set(bk_panel_clock_config_t *dsi)
 {
-    uint32_t lane_bitrate_mbps;
-    mipi_dsi_host_vid_hparams_t hp;
-    uint64_t pclk_hz = mipi_dsi_panel_pclk_hz(dsi);
+    if (dsi == NULL) {
+        return BK_ERR_NULL_PARAM;
+    }
 
+    uint64_t pclk_hz = mipi_dsi_panel_pclk_hz(dsi);
     if (pclk_hz == 0ULL) {
-        LOGE("%s invalid pixel clock (clk/fps/timing)\n", __func__);
+        LOGE("%s invalid pixel clock (fps/timing)\n", __func__);
         return BK_FAIL;
     }
+
+    uint32_t lane_bitrate_mbps = 0u;
+    mipi_dsi_host_vid_hparams_t hp;
 
 #if ((SFT_VERSION == FPGA_7259_CM55) || (SFT_VERSION == FPGA_7259_A35))
     lane_bitrate_mbps = DPHY_BR_800M;
     mipi_dsi_host_vid_hparams_fpga(&dsi->timing, &hp);
+    hal_dsi_wait_fpga_dphy_done();
 #else
-    if (hal_dsi_dphy_init_for_panel(pclk_hz, dsi->n_lanes, 24u, DSI_LINK_BANDWIDTH_OVERHEAD_PERMILLE,
-                                    &lane_bitrate_mbps) != BK_OK) {
-        LOGE("%s hal_dsi_dphy_init_for_panel failed\n", __func__);
-        return BK_FAIL;
+    /* DPHY_DPLL is the default when caller doesn't pin anything else. */
+    if (dsi->clk_src != DPU_CLK_SRC_SYSCLK) {
+        dsi->clk_src = DPU_CLK_SRC_DPHY_DPLL;
+    }
+
+    bool tried_dphy_dpll = (dsi->clk_src == DPU_CLK_SRC_DPHY_DPLL);
+    bool dphy_dpll_ok = false;
+
+    if (tried_dphy_dpll) {
+        dphy_dpll_ok = (hal_dsi_dphy_init_for_panel(pclk_hz, dsi->n_lanes, 24u,
+                                                   DSI_LINK_BANDWIDTH_OVERHEAD_PERMILLE,
+                                                   &lane_bitrate_mbps) == BK_OK);
+        if (!dphy_dpll_ok) {
+            uint32_t lane_cnt   = (uint32_t)dsi->n_lanes + 1u;
+            uint32_t need_ratio = (24u * 1300u + (lane_cnt * 1000u - 1u)) / (lane_cnt * 1000u);
+            LOGW("%s PHY PLL miss for pclk=%llu Hz lanes=%u (need lane:pclk >= %u, "
+                 "PHY pixdiv max = 17); auto-fallback to DPU_CLK_SRC_SYSCLK\n",
+                 __func__, (unsigned long long)pclk_hz, (unsigned)lane_cnt,
+                 (unsigned)need_ratio);
+            dsi->clk_src = DPU_CLK_SRC_SYSCLK;
+        }
+    }
+
+    if (!dphy_dpll_ok) {
+        uint32_t bitrate = hal_dsi_sysclk_lane_mbps_select(pclk_hz, dsi->n_lanes, 24u,
+                                                           DSI_LINK_BANDWIDTH_OVERHEAD_PERMILLE);
+        hal_dsi_dphy_init(bitrate);
+        lane_bitrate_mbps = bitrate;
     }
     mipi_dsi_host_vid_hparams_asic(dsi, lane_bitrate_mbps, pclk_hz, &hp);
 #endif
 
-    LOGI("%s (internal_pll) n_lanes:%u lane:%u Mbps pclk:%llu Hz -> VID_HSA:%u VID_HBP:%u VID_HLINE:%u\n", __func__,
-         (unsigned)(dsi->n_lanes + 1U), (unsigned)lane_bitrate_mbps, (unsigned long long)pclk_hz,
+    LOGI("%s using %s n_lanes:%u lane:%u Mbps pclk:%llu Hz -> VID_HSA:%u VID_HBP:%u VID_HLINE:%u\n",
+         __func__,
+         (dsi->clk_src == DPU_CLK_SRC_DPHY_DPLL) ? "DPU_CLK_SRC_DPHY_DPLL" : "DPU_CLK_SRC_SYSCLK",
+         (unsigned)(dsi->n_lanes + 1U),
+         (unsigned)lane_bitrate_mbps, (unsigned long long)pclk_hz,
          (unsigned)hp.hsa, (unsigned)hp.hbp, (unsigned)hp.hline);
-
-#if ((SFT_VERSION == FPGA_7259_CM55) || (SFT_VERSION == FPGA_7259_A35))
-    hal_dsi_wait_fpga_dphy_done();
-#endif
 
     hal_dsi_config(dsi->n_lanes,
                    dsi->timing.h_size,
@@ -295,68 +345,6 @@ static bk_err_t mipi_dsi_clock_set_internal_pll_path(bk_panel_clock_config_t *ds
 
     hal_dsi_operation_mode_set(0);
     return BK_OK;
-}
-
-/** Legacy 320M/480M root: dsi_dphy_bitrate_calc + hal_dsi_dphy_init + float-scaled VID timing. */
-static bk_err_t mipi_dsi_clock_set_legacy_ext_dphy_path(bk_panel_clock_config_t *dsi)
-{
-    float hsa_time = 0;
-    float hbp_time = 0;
-    float hline_time = 0;
-    float scale1 = 1.3f;
-    float scale2 = 1.3f;
-    float clk_coefficient = 0;
-    uint32_t bitrate = 0;
-
-    bitrate = dsi_dphy_bitrate_calc(dsi->clk, dsi->n_lanes);
-    clk_coefficient = ((float)bitrate) / (8.f * ((float)dsi->clk));
-
-#if ((SFT_VERSION == FPGA_7259_CM55) || (SFT_VERSION == FPGA_7259_A35))
-    clk_coefficient = ((float)DPHY_BR_800M) / (8.f * ((float)15.0f));
-    scale1 = 1.0f;
-    scale2 = 1.1f;
-#endif
-
-    hsa_time   = (float)dsi->timing.hsync_pulse_width * clk_coefficient * scale1;
-    hbp_time   = (float)dsi->timing.hsync_back_porch * clk_coefficient * scale1;
-    hline_time = ((float)dsi->timing.hsync_pulse_width + (float)dsi->timing.hsync_back_porch
-                  + (float)dsi->timing.hsync_front_porch + (float)dsi->timing.h_size) * clk_coefficient * scale2;
-
-    LOGI("%s (320m_480m) bitrate:%u clk_coefficient:%.2f n_lanes:%u hsa:%.2f hbp:%.2f hline:%.2f\n", __func__,
-         (unsigned)bitrate, clk_coefficient, (unsigned)(dsi->n_lanes + 1U), hsa_time, hbp_time, hline_time);
-
-#if ((SFT_VERSION == FPGA_7259_CM55) || (SFT_VERSION == FPGA_7259_A35))
-    hal_dsi_wait_fpga_dphy_done();
-#else
-    hal_dsi_dphy_init(bitrate);
-#endif
-
-    hal_dsi_config(dsi->n_lanes,
-                   dsi->timing.h_size,
-                   dsi->timing.v_size,
-                   (uint16_t)hsa_time,
-                   (uint16_t)hbp_time,
-                   (uint16_t)hline_time,
-                   dsi->timing.vsync_pulse_width,
-                   dsi->timing.vsync_back_porch,
-                   dsi->timing.vsync_front_porch);
-
-    hal_dsi_operation_mode_set(0);
-    return BK_OK;
-}
-
-bk_err_t mipi_dsi_clock_set(bk_panel_clock_config_t *dsi)
-{
-    if (dsi == NULL) {
-        return BK_ERR_NULL_PARAM;
-    }
-
-    if (dsi->clk_src == DPU_CLK_SRC_SYSCLK) {
-        return mipi_dsi_clock_set_legacy_ext_dphy_path(dsi);
-    }
-
-    /* DPU_CLK_SRC_UNKNOWN (default) and DPU_CLK_SRC_DPHY_DPLL */
-    return mipi_dsi_clock_set_internal_pll_path(dsi);
 }
 
 bk_err_t mipi_dsi_init(void)

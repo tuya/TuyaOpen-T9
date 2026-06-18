@@ -30,12 +30,12 @@
 #include "mmgmt.h"
 #endif
 
-#if CONFIG_WDT_EN
-#include <driver/wdt.h>
+#if CONFIG_TASK_WDT
 #include "bk_wdt.h"
 #endif
 
 #include "reset_reason.h"
+#include <driver/pwr_clk.h>
 
 #if CONFIG_EASY_FLASH
 #include "easyflash.h"
@@ -44,7 +44,6 @@
 
 #include <components/log.h>
 #include <components/sensor.h>
-#include <driver/trng.h>
 
 #include "bk_arch.h"
 #include "bk_private/bk_driver.h"
@@ -105,35 +104,26 @@ int bandgap_init(void)
 
 int random_init(void)
 {
-#if (CONFIG_TRNG_SUPPORT)
 	BK_LOGV(TAG, "create srand seed\r\n");
-	srand(bk_rand());
-#endif
+	srand((unsigned)rand());
 	return BK_OK;
 }
 
 __IRAM_SEC int wdt_init(void)
 {
-#if CONFIG_WDT_EN
-
-#if (CONFIG_FREERTOS)
-#if CONFIG_INT_WDT
-	BK_LOGV(TAG, "int watchdog enabled, period=%u\r\n", CONFIG_INT_WDT_PERIOD_MS);
-	bk_wdt_start(CONFIG_INT_WDT_PERIOD_MS);
-#else
-	BK_LOGD(TAG, "watchdog disabled\r\n");
-	bk_wdt_start(CONFIG_INT_WDT_PERIOD_MS);
-	bk_wdt_feed();
-	bk_wdt_stop();
-#endif //CONFIG_INT_WDT
-#endif //CONFIG_FREERTOS
-
 #if CONFIG_TASK_WDT
 	bk_task_wdt_start();
 	BK_LOGV(TAG, "task watchdog enabled, period=%u\r\n", CONFIG_TASK_WDT_PERIOD_MS);
 #endif
 
-#endif //CONFIG_WDT_EN
+#if CONFIG_SUPPORT_WWDT
+	/*
+	 * Start the boot core WWDT before the scheduler starts. The other cores
+	 * start/feed their own WWDT from their per-core SysTick after scheduling.
+	 */
+	BK_LOG_ON_ERR(bk_wwdt_start(CONFIG_INT_WWDT_PERIOD_MS, false, 0));
+	BK_LOGV(TAG, "boot core wwdt enabled, period=%u\r\n", CONFIG_INT_WWDT_PERIOD_MS);
+#endif
 	return BK_OK;
 }
 
@@ -195,9 +185,11 @@ void *__stack_chk_guard = NULL;
 void bk_stack_guard_setup(void)
 {
     BK_LOGD(TAG, "Intialize random stack guard.\r\n");
-#if CONFIG_TRNG_SUPPORT
-    __stack_chk_guard = (void *)bk_rand();
-#endif
+    /*
+     * Use the software pseudo-random rand() here. A pseudo-random stack canary is
+     * acceptable and does not weaken overall system security.
+     */
+    __stack_chk_guard = (void *)rand();
 }
 
 #if CONFIG_UT_REG
@@ -239,9 +231,7 @@ int components_early_init(void)
 	bandgap_init();
 	random_init();
 
-#if (!CONFIG_SOC_BK7259) ///TODO: BK7259_BringUP
 	bk_pm_mailbox_init();
-#endif //#if (!CONFIG_SOC_BK7259) ///TODO: BK7259_BringUP
 
 	bk_stack_guard_setup();
     set_ap_startup_index(AP_EXIT_COMPONTENT_EARLY_INIT);
@@ -258,10 +248,16 @@ int components_init(void)
 	if(driver_init())
 		return BK_FAIL;
 
+	if(wdt_init())
+		return BK_FAIL;
+
 #if CONFIG_SUPPORT_WWDT
-	bk_wwdt_driver_init();
-	// bk_wwdt_start(CONFIG_INT_WWDT_PERIOD_MS, false, 0);
-	BK_LOGV(TAG, "wwdt enabled, period=%u\r\n", CONFIG_INT_WWDT_PERIOD_MS);
+	/*
+	 * Start the AP boot core WWDT before the scheduler starts. The other AP
+	 * core starts/feeds its own WWDT from per-core SysTick after scheduling.
+	 */
+	BK_LOG_ON_ERR(bk_wwdt_start(CONFIG_INT_WWDT_PERIOD_MS, false, 0));
+	BK_LOGI(TAG, "boot core wwdt enabled, period=%u\r\n", CONFIG_INT_WWDT_PERIOD_MS);
 #endif
 #if CONFIG_UT_REG
 	ut_reg_init();

@@ -20,8 +20,9 @@
 #include <os/os.h>
 #include "sys_driver.h"
 #include "gpio_driver.h"
-#include <driver/wdt.h>
+#if CONFIG_TASK_WDT
 #include <bk_wdt.h>
+#endif
 #include "driver/pm_ap_core.h"
 #include "bk_rtos_debug.h"
 #include <driver/flash_partition.h>
@@ -307,9 +308,6 @@ void bk_set_jtag_mode(uint32_t cpu_id, uint32_t group_id) {
 	bk_pm_module_vote_cpu_freq(PM_DEV_ID_DEFAULT,PM_CPU_FRQ_120M);
 
 	/*close watchdog*/
-#if CONFIG_INT_WDT
-	bk_wdt_stop();
-#endif
 #if CONFIG_TASK_WDT
 	bk_task_wdt_stop();
 #endif
@@ -397,9 +395,8 @@ static void app_main_thread(void *arg)
 #if CONFIG_TFM_FWU
 	bk_ota_accept_image();
 #endif
-#if !CONFIG_SOC_BK7259 ///TODO:
-    bk_pm_ap_core_init();
-#endif //!CONFIG_SOC_BK7259 ///TODO:
+	bk_pm_ap_thread_main();
+
 	main();
 
 #if CONFIG_MATTER_START && CONFIG_SUPPORT_MATTER
@@ -474,6 +471,11 @@ void entry_main(void)
 #if CONFIG_SLAVE_HEART_BEAT
 	extern bk_err_t mb_ipc_heartbeat_init(void);
 	mb_ipc_heartbeat_init();
+#endif
+
+#if CONFIG_CP_HANG_DUMP_BY_AP
+	extern bk_err_t bk_cp_hang_dump_by_ap_init(void);
+	bk_cp_hang_dump_by_ap_init();
 #endif
     set_ap_startup_index(AP_ENTER_RTOS_START_SCHEDULER);
 	rtos_start_scheduler();

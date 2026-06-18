@@ -7,7 +7,10 @@
 
 #include <os/os.h>
 #include <os/mem.h>
-#include <driver/int.h>
+#include <soc/soc.h>
+#include "driver/int.h"
+#include "driver/int_types.h"
+#include "sys_driver.h"
 #include <ethosu_driver.h>
 #include <components/log.h>
 #include "modules/pm.h"
@@ -20,12 +23,135 @@ extern int arch_dcache_invd_range(void *addr, size_t size);
 
 static struct ethosu_driver ethosu0_driver = {0};
 
-extern void sys_drv_int_enable_temp(uint32 param);
 extern void bk_delay_us(UINT32 us);
 
 static char TAG[] = "ethosu";
 #define LOGI(...) BK_LOGI(TAG, ##__VA_ARGS__)
 #define LOGE(...) BK_LOGE(TAG, ##__VA_ARGS__)
+
+#define BK_ETHOSU_SEMAPHORE_MAX_COUNT 1
+
+static uint32_t bk_ethosu_timeout_to_ms(uint64_t timeout)
+{
+    if (timeout == ETHOSU_SEMAPHORE_WAIT_FOREVER)
+    {
+        return BEKEN_WAIT_FOREVER;
+    }
+
+    if (timeout > UINT32_MAX)
+    {
+        return BEKEN_WAIT_FOREVER;
+    }
+
+    return (uint32_t)timeout;
+}
+
+void *ethosu_mutex_create(void)
+{
+    beken_mutex_t mutex = NULL;
+
+    if (rtos_init_mutex(&mutex) != kNoErr)
+    {
+        LOGE("Failed to create Ethos-U mutex\r\n");
+        return NULL;
+    }
+
+    return mutex;
+}
+
+void ethosu_mutex_destroy(void *mutex)
+{
+    beken_mutex_t handle = (beken_mutex_t)mutex;
+
+    if (mutex == NULL)
+    {
+        return;
+    }
+
+    rtos_deinit_mutex(&handle);
+}
+
+int ethosu_mutex_lock(void *mutex)
+{
+    beken_mutex_t handle = (beken_mutex_t)mutex;
+
+    if (mutex == NULL)
+    {
+        return -1;
+    }
+
+    return rtos_lock_mutex(&handle) == kNoErr ? 0 : -1;
+}
+
+int ethosu_mutex_unlock(void *mutex)
+{
+    beken_mutex_t handle = (beken_mutex_t)mutex;
+
+    if (mutex == NULL)
+    {
+        return -1;
+    }
+
+    return rtos_unlock_mutex(&handle) == kNoErr ? 0 : -1;
+}
+
+void *ethosu_semaphore_create(void)
+{
+    beken_semaphore_t semaphore = NULL;
+
+    if (rtos_init_semaphore(&semaphore, BK_ETHOSU_SEMAPHORE_MAX_COUNT) != kNoErr)
+    {
+        LOGE("Failed to create Ethos-U semaphore\r\n");
+        return NULL;
+    }
+
+    return semaphore;
+}
+
+void ethosu_semaphore_destroy(void *sem)
+{
+    beken_semaphore_t handle = (beken_semaphore_t)sem;
+
+    if (sem == NULL)
+    {
+        return;
+    }
+
+    rtos_deinit_semaphore(&handle);
+}
+
+int ethosu_semaphore_take(void *sem, uint64_t timeout)
+{
+    beken_semaphore_t handle = (beken_semaphore_t)sem;
+
+    if (sem == NULL)
+    {
+        return -1;
+    }
+
+    return rtos_get_semaphore(&handle, bk_ethosu_timeout_to_ms(timeout)) == kNoErr ? 0 : -1;
+}
+
+int ethosu_semaphore_give(void *sem)
+{
+    beken_semaphore_t handle = (beken_semaphore_t)sem;
+
+    if (sem == NULL)
+    {
+        return -1;
+    }
+
+    return rtos_set_semaphore(&handle) == kNoErr ? 0 : -1;
+}
+
+static void bk_ethosu_int_enable(uint32_t enable)
+{
+#if CONFIG_SOC_SMP
+    sys_drv_set_int_en(CPU2_CORE_ID, INT_SRC_NPU, enable);
+#else
+    sys_drv_set_int_en(rtos_get_core_id(), INT_SRC_NPU, enable);
+#endif
+}
 
 void bk_npu_int_isr(void)
 {
@@ -37,10 +163,6 @@ int bk_ethosu_init(void *fast_memory, uint32_t fast_memory_size)
 {
     int ret = 0;
 
-    // Enable NPU interrupts for m55a and m55b
-    (*(volatile unsigned int*)(0x48000000 + 0x10 * 4)) |= 1<<6;//Enable m55a NPU interrupt
-    (*(volatile unsigned int*)(0x48000000 + 0x12 * 4)) |= 1<<7;//Enable m55b NPU interrupt
-
     // Disable NPU power down (if needed)
     bk_pm_module_vote_power_ctrl(PM_POWER_SUB_DOMAIN_NPU, PM_POWER_MODULE_STATE_ON);
 
@@ -48,19 +170,29 @@ int bk_ethosu_init(void *fast_memory, uint32_t fast_memory_size)
     bk_pm_clock_ctrl(PM_CLK_ID_NPU, CLK_PWR_CTRL_PWR_UP);
 
     // npu memory not enter deep sleep
-    (*(volatile unsigned int*)(0x48000000 + 0x0D * 4)) |= 1<<16;
+    //todo use pm api to control npu memory sleep
 
     // Wait for clock to stabilize
     bk_delay_us(1000);
 
     // Release NPU nRESET
-    (*(volatile unsigned int*)(0x48000000 + 0x06 * 4)) |= 1;//Release NPU nRESET
+    sys_drv_set_npu_reset(1);
 
-    // Register NPU interrupt handler
-    bk_int_isr_register((icu_int_src_t)6, (int_group_isr_t)&bk_npu_int_isr, NULL);
+    // Keep the NPU IRQ masked until the Ethos-U driver handle is fully initialized.
+    bk_ethosu_int_enable(0);
+    bk_int_isr_register(INT_SRC_NPU, (int_group_isr_t)&bk_npu_int_isr, NULL);
 
-    ret = ethosu_init(&ethosu0_driver, (void*)0x48200000, fast_memory, fast_memory_size, 1, 1);
+    ret = ethosu_init(&ethosu0_driver, (void *)SOC_NPU_REG_BASE, fast_memory, fast_memory_size, 1, 1);
+    if (ret != 0)
+    {
+        LOGE("Ethos-U driver init failed, ret=%d\r\n", ret);
+        bk_int_isr_unregister(INT_SRC_NPU);
+        bk_pm_clock_ctrl(PM_CLK_ID_NPU, CLK_PWR_CTRL_PWR_DOWN);
+        bk_pm_module_vote_power_ctrl(PM_POWER_SUB_DOMAIN_NPU, PM_POWER_MODULE_STATE_OFF);
+        return ret;
+    }
 
+    bk_ethosu_int_enable(1);
     LOGI("Ethos-U driver initialized successfully, ret=%d\r\n", ret);
 
     return ret;
@@ -68,10 +200,12 @@ int bk_ethosu_init(void *fast_memory, uint32_t fast_memory_size)
 
 void bk_ethosu_deinit(void)
 {
+    // Prevent a late NPU IRQ from touching driver resources while they are being freed.
+    bk_ethosu_int_enable(0);
+    bk_int_isr_unregister(INT_SRC_NPU);
+
     ethosu_deinit(&ethosu0_driver);
-
     bk_pm_clock_ctrl(PM_CLK_ID_NPU, CLK_PWR_CTRL_PWR_DOWN);
-
     bk_pm_module_vote_power_ctrl(PM_POWER_SUB_DOMAIN_NPU, PM_POWER_MODULE_STATE_OFF);
 }
 

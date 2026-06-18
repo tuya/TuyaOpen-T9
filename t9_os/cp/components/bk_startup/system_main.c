@@ -23,7 +23,6 @@
 #include <driver/wdt.h>
 #include <bk_wdt.h>
 #include <partitions.h>
-#include "driver/low_pwr_core.h"
 
 #include <modules/pm.h>
 #include <modules/ota.h>
@@ -509,6 +508,11 @@ void entry_main(void)
 #if CONFIG_SLAVE_HEART_BEAT
 	extern bk_err_t mb_ipc_heartbeat_init(void);
 	mb_ipc_heartbeat_init();
+#endif
+
+#if CONFIG_CP_HANG_DUMP_BY_AP
+	extern bk_err_t bk_cp_hang_debug_heartbeat_init(void);
+	bk_cp_hang_debug_heartbeat_init();
 #endif
 
 	rtos_start_scheduler();

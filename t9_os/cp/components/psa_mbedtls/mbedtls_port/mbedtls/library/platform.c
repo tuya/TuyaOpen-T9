@@ -8,6 +8,9 @@
 #include <stdio.h>
 #include "common.h"
 
+#include <stdint.h>
+#include <stdlib.h>
+
 #if defined(MBEDTLS_PLATFORM_C)
 
 #include "mbedtls/platform.h"
@@ -402,45 +405,59 @@ void mbedtls_platform_teardown(mbedtls_platform_context *ctx)
 
 #endif /* MBEDTLS_PLATFORM_C */
 
-int myrand( void *rng_state, unsigned char *output, size_t len )
+/*
+ * Hardware entropy entry for mbedtls and system RNG (strong override of
+ * weak bk_rand/bk_fill_rand in bk_platform.c).
+ * Backend: CONFIG_TRUSTENGINE > CONFIG_OTP_V1 > software rand().
+ */
+int bk_rng_get(unsigned char *output, size_t len)
 {
-	if (output == NULL || len == 0) {
-		return -1;
-	}
+    if (output == NULL || len == 0) {
+        return -1;
+    }
 
 #if CONFIG_TRUSTENGINE
-	(void) rng_state;
-	extern int arm_ce_seed_read( unsigned char *buf, size_t buf_len );
-	arm_ce_seed_read(output, len);
+    extern int arm_ce_seed_read(unsigned char *buf, size_t buf_len);
+    arm_ce_seed_read(output, len);
 
 #elif CONFIG_OTP_V1
-	bk_err_t bk_otp_read_random_number(uint32_t* value, uint32_t size);
-	uint32_t rand_num = 0;
-	for (int i = 0; i < len; i++)
-	{
-		if ((i % 4) == 0)
-		{
-			bk_otp_read_random_number(&rand_num, 1);
-		}
-		output[i] = (rand_num >> (8 * (i % 4))) & 0xff;
-	}
-
-#elif CONFIG_TRNG_SUPPORT
-	uint32_t rand_num = 0;
-	for (int i = 0; i < len; i++)
-	{
-		if ((i % 4) == 0)
-		{
-			rand_num = ((rand()) & RAND_MAX); // FIXME: use bk_rand()
-		}
-		output[i] = (rand_num >> (8 * (i % 4))) & 0xff;
-	}
+    bk_err_t bk_otp_read_random_number(uint32_t *value, uint32_t size);
+    uint32_t rand_num = 0;
+    for (size_t i = 0; i < len; i++) {
+        if ((i % 4) == 0) {
+            bk_otp_read_random_number(&rand_num, 1);
+        }
+        output[i] = (rand_num >> (8 * (i % 4))) & 0xff;
+    }
 
 #else
-	for (int i = 0; i < len; i++) {
-		output[i] = ((rand()) & 0xff);
-	}
+    for (size_t i = 0; i < len; i++) {
+        output[i] = ((rand()) & 0xff);
+    }
 #endif
 
-	return( 0 );
+    return 0;
+}
+
+int bk_rand(void)
+{
+    int number = 0;
+
+    bk_rng_get((unsigned char *)&number, sizeof(number));
+    return (number & RAND_MAX);
+}
+
+int bk_fill_rand(void *buff, size_t len)
+{
+    if (buff == NULL || len == 0) {
+        return -1;
+    }
+
+    return bk_rng_get((unsigned char *)buff, len);
+}
+
+int myrand(void *rng_state, unsigned char *output, size_t len)
+{
+    (void) rng_state;
+    return bk_rng_get(output, len);
 }

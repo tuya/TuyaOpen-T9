@@ -194,6 +194,7 @@ typedef struct {
     int(*_bk_feature_phy_log_enable)(void);
     int(*_bk_feature_wifi_signal_cert_enable)(void);
     bool(*_me_is_connect_with_instrument)(void);
+    void(*_bk_epa_gpio_config)(UINT32 rx_gpio, UINT32 tx_gpio, UINT32 lna_gpio);
 } phy_os_funcs_t;
 
 
@@ -207,9 +208,8 @@ typedef struct {
     uint32_t _pm_cpu_frq_60m;
     uint32_t _pm_cpu_frq_80m;
     uint32_t _pm_cpu_frq_120m;
+    uint32_t _pm_cpu_frq_160m;
     uint32_t _pm_cpu_frq_240m;
-    uint32_t _pm_cpu_frq_320m;
-    uint32_t _pm_cpu_frq_480m;
     uint32_t _pm_cpu_frq_default;
     uint32_t _pm_dev_id_phy;
     uint32_t _pm_dev_id_phy_dpd_cali;
@@ -237,6 +237,7 @@ typedef struct {
     uint32_t _pm_power_module_state_on;
     uint32_t _pm_power_module_state_off;
     uint32_t _pm_power_module_state_none;
+    uint32_t _pm_power_domain_wrls;
     uint32_t _ADC_TEMP_SENSER_CHANNEL;
     uint32_t _ADC_VOLT_SENSER_CHANNEL;
     uint32_t _adc_temp_lsb_per_10degree;

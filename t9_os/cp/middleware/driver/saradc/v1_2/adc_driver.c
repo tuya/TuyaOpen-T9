@@ -26,7 +26,6 @@
 #include "icu_driver.h"
 #include "power_driver.h"
 #include "clock_driver.h"
-#include "bk_drv_model.h"
 #include "bk_sys_ctrl.h"
 #include "sys_driver.h"
 #include "iot_adc.h"
@@ -99,8 +98,6 @@ static bool adc_try_load_otp_cwt(uint32_t *otp_cwt_buf)
 
 #if CONFIG_SOC_BK7259
     result = BK_FAIL;//junpeng_bringup//bk_otp_ahb_read(OTP_GADC_CALIBRATION, data, otp_data_size);
-#elif CONFIG_SOC_BK7236XX
-    result = bk_otp_apb_read(OTP_GADC_CALIBRATION, data, otp_data_size);
 #else
     result = bk_otp_ahb_read(OTP_GADC_CALIBRATION, data, otp_data_size);
 #endif
@@ -146,10 +143,14 @@ static bk_err_t adc_init_gpio(adc_chan_t chan)
         return BK_OK;
     }
 
-    gpio_dev_map(adc_map->gpio_id, adc_map->gpio_dev);
+#if CONFIG_USR_GPIO_CFG_EN
+    gpio_dev_map_by_func(adc_map->gpio_dev);
     bk_gpio_disable_pull(adc_map->gpio_id);
     bk_gpio_disable_input(adc_map->gpio_id);
     bk_gpio_disable_output(adc_map->gpio_id);
+#else
+    (void)adc_map;
+#endif
 
     return BK_OK;
 }
@@ -162,13 +163,15 @@ static void adc_deinit_gpio(adc_chan_t chan)
     adc_gpio_map_t adc_map_table[] = ADC_DEV_MAP;
     adc_gpio_map_t *adc_map = &adc_map_table[chan];
 
-    gpio_dev_unmap(adc_map->gpio_id);
+#if CONFIG_USR_GPIO_CFG_EN
+    gpio_dev_unmap_by_func(adc_map->gpio_dev);
+#else
+    (void)adc_map;
+#endif
 }
 
 static void adc_enable_block(void)
 {
-    uint32_t param = BLK_BIT_SARADC;
-    sddev_control(DD_DEV_TYPE_SCTRL, CMD_SCTRL_BLK_ENABLE, &param);
 }
 
 static bk_err_t adc_chan_init_common(struct sadc_device *dev, adc_chan_t chan)

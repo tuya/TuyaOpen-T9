@@ -40,6 +40,7 @@ typedef struct {
 
 /** Platform Misc Start **/
 bk_err_t sys_hal_init(void);
+void sys_hal_enable_swd(void);
 /** Platform Misc End **/
 
 /** Platform USB Start **/
@@ -249,6 +250,12 @@ uint32_t sys_hal_get_gadc_vref_sel(void);
 void     sys_hal_set_gadc_inbuf_isel(uint32_t value);
 uint32_t sys_hal_get_gadc_inbuf_isel(void);
 /** GADC Config (ana_reg22) End **/
+
+/** Analog Comparator Config (ana_reg43) Start **/
+uint32_t sys_hal_get_ana_reg43_config(void);
+void     sys_hal_set_ana_reg43_config(uint32_t value);
+void     sys_hal_anacomp_charge_release_pulse(void);
+/** Analog Comparator Config (ana_reg43) End **/
 
 /** Audio Bias & Mic Control (ana_reg20/ana_reg27) **/
 void     sys_hal_set_micbias_enable(uint32_t value);
@@ -648,6 +655,8 @@ void sys_hal_psram_psldo_vsel(uint32_t value);
 void sys_hal_psram_psldo_vset(uint32_t output_voltage, uint32_t is_add_200mv);
 void sys_hal_psram_psram0_disckg(uint32_t value);
 void sys_hal_psram_psram1_disckg(uint32_t value);
+/* PSRAM bus-clock enable (rega.pramX_cken) routed by id. */
+void sys_hal_psram_disckg_with_id(uint32_t id, uint32_t value);
 
 /**  psram End **/
 

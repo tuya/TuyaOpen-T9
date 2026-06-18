@@ -13,7 +13,6 @@
 // limitations under the License.
 
 #include <common/bk_include.h>
-#include "bk_drv_model.h"
 #include "bk_sys_ctrl.h"
 #include "sys_driver.h"
 #include <driver/int.h>
@@ -22,9 +21,7 @@
 #include <driver/gpio.h>
 #include <driver/dma.h>
 #include <driver/uart.h>
-#include <driver/wdt.h>
-#include <driver/aon_wdt.h>
-#include <driver/trng.h>
+#include <driver/wwdt.h>
 #include <driver/efuse.h>
 #include <driver/ckmn.h>
 #include <os/mem.h>
@@ -38,6 +35,7 @@
 #include <driver/ipi_driver.h>
 #include "bk_driver.h"
 #include "interrupt_base.h"
+#include "bk_wdt.h"
 #include <driver/otp.h>
 #include <driver/pwr_clk.h>
 #include "bk_rtos_debug.h"
@@ -89,10 +87,6 @@ static bk_err_t wait_for_cp_flash_init_done(void)
 
 	return BK_OK;
 }
-#endif
-
-#if ((CONFIG_SDIO_HOST) || (CONFIG_SDCARD))
-#include "driver/sdio_host.h"
 #endif
 
 #if CONFIG_SDCARD
@@ -248,12 +242,12 @@ int driver_early_init(void)
 	power_clk_rf_init();
 #endif
 
-#if CONFIG_TRNG_SUPPORT
-	bk_trng_driver_init();
-#endif
-
 #if CONFIG_HSPL
 	bk_hspl_driver_init();
+#endif
+
+#if CONFIG_IPI
+	bk_ipi_driver_init();
 #endif
 
     set_ap_startup_index(AP_EXIT_DRIVER_EARLY_INIT);
@@ -262,6 +256,14 @@ int driver_early_init(void)
 
 int driver_init(void) {
 	sys_drv_init();
+
+#if CONFIG_FLASH && CONFIG_AP_EMUBOOT
+	/* CP programs flash / mux first; AP must not touch UART/IPC/flash until CP sets
+	 * flash_init_done. A blind long delay used to mask this race; wait explicitly here. */
+	if (wait_for_cp_flash_init_done() != BK_OK) {
+		return BK_FAIL;
+	}
+#endif
 
 	bk_gpio_driver_init();
 
@@ -284,14 +286,8 @@ int driver_init(void) {
 	}
 #endif
 
-	drv_model_init();
-
 #if CONFIG_TIMER
 	bk_timer_driver_init();
-#endif
-
-#if CONFIG_IPI
-	bk_ipi_driver_init();
 #endif
 
 #if CONFIG_GENERAL_DMA
@@ -302,12 +298,12 @@ int driver_init(void) {
 	bk_hpdma_driver_init();
 #endif
 
-#if (CONFIG_INT_WDT || CONFIG_TASK_WDT)
-	bk_wdt_driver_init();
+#if (CONFIG_TASK_WDT)
+	bk_task_wdt_driver_init();
 #endif
 
-#if CONFIG_AON_WDT && !CONFIG_INT_AON_WDT
-	bk_aon_wdt_stop();
+#if CONFIG_SUPPORT_WWDT
+	bk_wwdt_driver_init();
 #endif
 
 #if CONFIG_MAILBOX
@@ -324,10 +320,6 @@ int driver_init(void) {
 
 #if CONFIG_FLASH
 #if CONFIG_AP_EMUBOOT
-	if (wait_for_cp_flash_init_done() != BK_OK) {
-		return BK_FAIL;
-	}
-
 	if (bk_flash_driver_init() != BK_OK) {
 		BK_LOGE(NULL, "ap flash driver init failed\r\n");
 		return BK_FAIL;
@@ -374,14 +366,9 @@ extern void aon_rtc_update_boot_time();
 	aon_rtc_update_boot_time();
 #endif
 
-#if ((CONFIG_SDIO_HOST) || (CONFIG_SDCARD))
-	bk_sdio_host_driver_init();
-#endif
-
 #if ((CONFIG_SDCARD))
 {
-	extern bk_err_t bk_sdio_storage_driver_init(void);
-	bk_sdio_storage_driver_init();
+	sdio_dwc_interrupt_init();
 }
 #endif
 

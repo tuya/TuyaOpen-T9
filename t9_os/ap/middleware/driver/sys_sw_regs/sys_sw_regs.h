@@ -50,22 +50,6 @@ extern "C" {
 #define SSPL_SIZE (CPU_CNT_MAX + 1)
 typedef uint32_t sspl_data_t[SSPL_SIZE];
 
-/** Must match sys_sw_regs_shared.h / RISC-V firmware */
-#define RISCV_USB_PROBE_PIPE_NUM 16U
-
-typedef struct {
-    volatile uint32_t magic;
-    volatile uint32_t owner;
-    volatile uint32_t irq_seq;
-    volatile uint32_t event;
-    volatile uint32_t event_data;
-    volatile uint32_t g_musb_hcd_addr;
-    volatile uint32_t usb_ep0_state_addr;
-    volatile uint32_t pending_ep0;
-    volatile uint32_t pending_pipe_tx[RISCV_USB_PROBE_PIPE_NUM];
-    volatile uint32_t pending_pipe_rx[RISCV_USB_PROBE_PIPE_NUM];
-} riscv_usb_probe_t;
-
 #define BK_SYS_SW_REGS_AP_HEAP_DUMP_VALID 0x41504844U
 #define BK_SYS_SW_REGS_AP_EXTRA_DUMP_VALID_MASK 0xFFFF0000U
 #define BK_SYS_SW_REGS_AP_EXTRA_DUMP_VALID      0x41500000U
@@ -118,12 +102,14 @@ typedef union {
         volatile uint32_t psram_power_down; /**< PSRAM power-down flag */
         volatile uint32_t cp_reset_reason;  /**< CP reset reason code  */
         volatile uint32_t ap_reset_reason;  /**< AP reset reason code  */
-        volatile riscv_usb_probe_t riscv_usb_probe; /**< AP/RISC-V USB host probe context */
+        volatile void* riscv_swap; /**< AP/RISC-V USB host probe context */
         volatile ap_heap_dump_info_t ap_heap_dump[BK_SYS_SW_REGS_AP_HEAP_MAX]; /**< AP heap dump windows */
         volatile ap_extra_dump_info_t ap_extra_dump[BK_SYS_SW_REGS_AP_EXTRA_DUMP_MAX]; /**< AP extra dump windows */
 		volatile pm_shared_info_t pm_shared_info;
         volatile adc_key_sample_info_t adc_key_sample; /**< CP ADC key latest sample */
         volatile uint32_t flash_init_done;  /**< CP flash init completion flag */
+        volatile uint32_t hspl_owner_pc[32]; /**< HSPL owner caller PC shadow, 0 means free */
+        volatile uint8_t hspl_owner_core[32]; /**< HSPL owner core shadow */
     };
     volatile uint32_t reserved[256];        /**< Reserved for future use */
 } sys_sw_regs_t;
@@ -163,6 +149,7 @@ uint32_t bk_sys_sw_regs_get_ap_reset_reason(void);
  */
 uint32_t bk_sys_sw_regs_get_ap_heap_dump(bk_sys_sw_regs_ap_heap_id_t id, ap_heap_dump_info_t *info);
 uint32_t bk_sys_sw_regs_get_ap_extra_dump(uint32_t index, ap_extra_dump_info_t *info);
+uint32_t bk_sys_sw_regs_get_hspl_owner(uint8_t res, uint8_t *core, uint32_t *pc);
 
 /**
  * @brief Read PM info snapshot from shared registers.
@@ -217,6 +204,8 @@ void bk_sys_sw_regs_set_flash_init_done(uint32_t value);
 void bk_sys_sw_regs_update_ap_heap_dump(bk_sys_sw_regs_ap_heap_id_t id, uint32_t pool_base, uint32_t max_alloc_end);
 void bk_sys_sw_regs_update_ap_extra_dump(uint32_t index, uint32_t start_addr, uint32_t size);
 void bk_sys_sw_regs_set_adc_key_sample(uint16_t raw, uint16_t mv, uint8_t status, uint8_t channel, uint32_t sample_period_ms, uint32_t sample_tick);
+void bk_sys_sw_regs_set_hspl_owner(uint8_t res, uint8_t core, uint32_t pc);
+void bk_sys_sw_regs_clear_hspl_owner(uint8_t res);
 
 /**
  * @brief Get the SSPL list.

@@ -7,7 +7,9 @@
 #include <modules/pm.h>
 #include <driver/pwr_clk.h>
 #include "sys_driver.h"
+#include <common/avdk_pixel_types.h>
 #include "modules/vcdec/vcdec_h264_api.h"
+#include "modules/vcdec/vcdec_common.h"
 #include "vcdec_h264_driver_test.h"
 #include "h264_decode_stream_1280x720.h"
 #include "h264_decode_stream_256x128.h"
@@ -47,9 +49,6 @@
 #ifndef VCDEC_H264_TEST_DUMP_FLEXA_SEGMENT
 #define VCDEC_H264_TEST_DUMP_FLEXA_SEGMENT   1
 #endif
-
-extern void vcdec_h264_isr(void);
-extern void vcdec_h264_pp_isr(void);
 
 typedef struct {
     uint32_t id;
@@ -171,7 +170,7 @@ static void vcdec_h264_test_dump_nv12_frame(const char *tag, uint8_t *y, uint32_
         return;
     }
 
-    vcdec_h264_test_dump_buffer(tag, y, width * height * 3U / 2U);
+    vcdec_h264_test_dump_buffer(tag, y, bk_image_size_get((uint16_t)width, (uint16_t)height, BK_PIXEL_FORMAT_NV12));
 }
 
 static void vcdec_h264_test_copy_flexa_segment(vcdec_h264_test_ctx_t *ctx, uint32_t wr_ptr)
@@ -188,7 +187,7 @@ static void vcdec_h264_test_copy_flexa_segment(vcdec_h264_test_ctx_t *ctx, uint3
         return;
     }
 
-    frame_size = ctx->width * ctx->height * 3U / 2U;
+    frame_size = bk_image_size_get((uint16_t)ctx->width, (uint16_t)ctx->height, BK_PIXEL_FORMAT_NV12);
     if (ctx->flexa_frame_size < frame_size) {
         return;
     }
@@ -256,14 +255,14 @@ static void vcdec_h264_test_power_off(void)
 
 static bk_err_t vcdec_h264_test_int_register(void)
 {
-    bk_int_isr_register(INT_SRC_H264D, (int_group_isr_t)&vcdec_h264_isr, NULL);
+    bk_int_isr_register(INT_SRC_H264D, (int_group_isr_t)&vcdec_isr, NULL);
 #if CONFIG_SOC_SMP
     sys_drv_set_int_en(CPU2_CORE_ID, INT_SRC_H264D, 1);
 #else
     sys_drv_set_int_en(rtos_get_core_id(), INT_SRC_H264D, 1);
 #endif
 
-    bk_int_isr_register(INT_SRC_H264D_PP, (int_group_isr_t)&vcdec_h264_pp_isr, NULL);
+    bk_int_isr_register(INT_SRC_H264D_PP, (int_group_isr_t)&vcdec_pp_isr, NULL);
 #if CONFIG_SOC_SMP
     sys_drv_set_int_en(CPU2_CORE_ID, INT_SRC_H264D_PP, 1);
 #else
@@ -305,12 +304,14 @@ static void vcdec_h264_test_cli_write_rsp(char *pcWriteBuffer, int xWriteBufferL
 
 static uint32_t vcdec_h264_test_frame_size(uint32_t width, uint32_t height)
 {
-    return width * height * 3U / 2U;
+    return bk_image_size_get((uint16_t)width, (uint16_t)height, BK_PIXEL_FORMAT_NV12);
 }
 
 static uint32_t vcdec_h264_test_flexa_out_size(uint32_t width)
 {
-    return width * 16U * VCDEC_H264_TEST_FLEXA_SEG_HEIGHT_MB * VCDEC_H264_TEST_FLEXA_SEG_NUM * 3U / 2U;
+    return bk_image_size_get((uint16_t)width,
+                             16U * VCDEC_H264_TEST_FLEXA_SEG_HEIGHT_MB * VCDEC_H264_TEST_FLEXA_SEG_NUM,
+                             BK_PIXEL_FORMAT_NV12);
 }
 
 static const vcdec_h264_test_stream_t *vcdec_h264_test_get_stream_cfg(uint32_t stream_id)
@@ -767,7 +768,9 @@ static bk_err_t vcdec_h264_test_run(vcdec_h264_test_mode_t mode, const vcdec_h26
     ctx.height = stream_cfg->height;
     ctx.flexa_out_buf = out_buf;
     ctx.flexa_seg_height = VCDEC_H264_TEST_FLEXA_SEG_HEIGHT_MB;
-    ctx.flexa_seg_size = stream_cfg->width * 16U * VCDEC_H264_TEST_FLEXA_SEG_HEIGHT_MB * 3U / 2U;
+    ctx.flexa_seg_size = bk_image_size_get((uint16_t)stream_cfg->width,
+                                           16U * VCDEC_H264_TEST_FLEXA_SEG_HEIGHT_MB,
+                                           BK_PIXEL_FORMAT_NV12);
     ctx.flexa_seg_num = VCDEC_H264_TEST_FLEXA_SEG_NUM;
     ctx.flexa_frame_buf = flexa_frame_buf;
     ctx.flexa_frame_size = frame_out_size;

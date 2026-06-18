@@ -110,6 +110,16 @@ if [ "${need_build_properties_lib}" == "1" ]; then
 	rm -rf ${PROPERTIES_LIB_BUILD_DIR}/sdkconfig
 	# echo "${ARMINO_TOOL} -B ${PROPERTIES_LIB_BUILD_DIR} -P ${PROPERTIES_LIB_DIR} set-target ${ARMINO_SOC}"
 	${ARMINO_TOOL} -B ${PROPERTIES_LIB_BUILD_DIR} -P ${PROPERTIES_LIB_DIR} set-target ${ARMINO_SOC}
+	SPID_GEN_SCRIPT="${ARMINO_TOOLS_DIR}/build_tools/spid_gen.py"
+	PRODUCT_ID_FILE="${ARMINO_DIR}/properties/soc/${ARMINO_SOC}/spid.txt"
+	SDKCONFIG_FILE="${PROPERTIES_LIB_BUILD_DIR}/sdkconfig"
+	if [ -f "${SPID_GEN_SCRIPT}" ] && [ -f "${PRODUCT_ID_FILE}" ] && grep -q "^CONFIG_PRODUCT_ID=y" "${SDKCONFIG_FILE}" 2>/dev/null; then
+		SPID_HEADER_DIR="${PROPERTIES_LIB_BUILD_DIR}/generated"
+		mkdir -p "${SPID_HEADER_DIR}"
+		SOC_NAME=$(echo "${ARMINO_SOC}" | tr '[:lower:]' '[:upper:]')
+		echo "Generating ${SPID_HEADER_DIR}/spid.h for ${SOC_NAME}..."
+		python3 "${SPID_GEN_SCRIPT}" "${PRODUCT_ID_FILE}" -o "${SPID_HEADER_DIR}/spid.h" --soc "${SOC_NAME}"
+	fi
 	# echo "${ARMINO_TOOL} -B ${PROPERTIES_LIB_BUILD_DIR} -P ${PROPERTIES_LIB_DIR} ${ARMINO_TARGET}"
 	${ARMINO_TOOL} -B ${PROPERTIES_LIB_BUILD_DIR} -P ${PROPERTIES_LIB_DIR} ${ARMINO_TARGET}
 	# echo "${ARMINO_TOOLS_DIR}/build_tools/copy_internal_libs.sh ${ARMINO_SOC} ${ARMINO_DIR} ${PROPERTIES_LIB_BUILD_DIR} ${PROJECT}"

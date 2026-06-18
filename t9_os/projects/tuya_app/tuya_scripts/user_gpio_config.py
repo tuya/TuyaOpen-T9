@@ -145,20 +145,28 @@ def generate_header_file(gpio_configs: Dict[str, Dict], output_path: str):
         gpio_configs: GPIO配置字典
         output_path: 输出文件路径
     """
-    # GPIO配置字段顺序（必须与结构体定义一致）
+    # GPIO配置字段顺序（必须与 gpio_default_map_t 结构体定义一致，bk7259 新版 10 字段）
     field_order = [
         'gpio_id',
         'second_func_en',
         'second_func_dev',
-        'io_mode',
+        'time_sharing_func_dev',
         'pull_mode',
         'int_en',
         'int_type',
         'low_power_io_ctrl',
         'driver_capacity',
-        'gpio_init',
-        'gpio_time_sharing_multiplex'
+        'gpio_skip'
     ]
+
+    def format_row(item):
+        """将单个GPIO配置项格式化为 C 结构体初始化片段 {GPIO_x, ...}"""
+        try:
+            values = [item[field] for field in field_order]
+        except KeyError as e:
+            raise KeyError(f"字段 {e} 在GPIO配置项 {item['gpio_id']} 中缺失")
+        return "{" + ", ".join(f"{v: <2}" if i == 0 else v
+                               for i, v in enumerate(values)) + "}"
 
     # 按GPIO编号排序
     sorted_items = sorted(
@@ -166,18 +174,32 @@ def generate_header_file(gpio_configs: Dict[str, Dict], output_path: str):
         key=lambda x: int(x['gpio_id'].replace('GPIO_', ''))
     )
 
-    # 生成每个GPIO配置行
+    # 带条件编译(condition)的GPIO通过 GPIO_x_DEFAULT_MAP 宏间接展开，
+    # 这样在该宏条件不成立时该 GPIO 不被配置（保持上电默认态）。
+    cond_groups = {}  # condition(str) -> [item, ...]，保持顺序
+    for item in sorted_items:
+        cond = item.get('condition')
+        if cond:
+            cond_groups.setdefault(cond, []).append(item)
+
+    cond_lines = []
+    for cond, items in cond_groups.items():
+        cond_lines.append(f"#if {cond}")
+        for it in items:
+            cond_lines.append(f"#define {it['gpio_id']}_DEFAULT_MAP {format_row(it)},")
+        cond_lines.append("#else")
+        for it in items:
+            cond_lines.append(f"#define {it['gpio_id']}_DEFAULT_MAP")
+        cond_lines.append("#endif")
+    conditional_section = ("\n".join(cond_lines) + "\n\n") if cond_lines else ""
+
+    # 生成每个GPIO配置行（条件项引用其宏，普通项直接写出结构体）
     config_lines = []
     for item in sorted_items:
-        try:
-            # 提取字段值
-            values = [item[field] for field in field_order]
-            # 格式化为C语言数组初始化格式
-            line = "\t{" + ", ".join(f"{v: <2}" if i == 0 else v
-                                     for i, v in enumerate(values)) + "},\\"
-            config_lines.append(line)
-        except KeyError as e:
-            raise KeyError(f"字段 {e} 在GPIO配置项 {item['gpio_id']} 中缺失")
+        if item.get('condition'):
+            config_lines.append(f"\t{item['gpio_id']}_DEFAULT_MAP \\")
+        else:
+            config_lines.append(f"\t{format_row(item)},\\")
 
     # 生成头文件内容
     header_content = f"""// Copyright 2020-2021 Beken
@@ -203,6 +225,7 @@ def generate_header_file(gpio_configs: Dict[str, Dict], output_path: str):
 extern "C" {{
 #endif
 
+{conditional_section}/*	 gpio_id  second_func_en  second_func_dev  time_sharing_func_dev  pull_mode  int_en  int_type  low_power_io_ctrl  driver_capacity  gpio_skip */
 #define GPIO_DEFAULT_DEV_CONFIG  \\
 {{\\
 {chr(10).join(config_lines)}

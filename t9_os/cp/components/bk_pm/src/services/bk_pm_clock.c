@@ -18,9 +18,10 @@
 
 
 #define PM_HIGHEST_CPU_FREQ                     (CONFIG_PM_CPU_FRQ_HIGHEST)
+#define PM_CPU_FRQ_NONE                         (-1)
 
-static uint8_t s_pm_cpu_freq[PM_DEV_ID_MAX];
-static pm_cpu_freq_e s_pm_current_cpu_freq;
+static int8_t s_pm_cpu_freq[PM_DEV_ID_MAX] = {0};
+static pm_cpu_freq_e s_pm_current_cpu_freq = PM_CPU_FRQ_DEFAULT;
 
 #if CONFIG_PM_CLOCK_VOTE_RECORD
 #define PM_CLOCK_VOTE_RECORD_NUM             (64)
@@ -49,6 +50,8 @@ typedef struct
 static pm_cb_module_cfg_t s_pm_cb_module_cfg;
 static beken_semaphore_t s_sync_sema = NULL;
 
+bk_err_t bk_pm_cpu_freq_dump(void);
+
 #if CONFIG_PM_CLOCK_VOTE_RECORD
 static void pm_clock_vote_record(uint32_t module, uint32_t clock_state, uint32_t return_address,
 	uint32_t module_start, uint32_t module_end)
@@ -73,6 +76,38 @@ static void pm_clock_vote_record(uint32_t module, uint32_t clock_state, uint32_t
 }
 #endif
 
+
+static const char *pm_dev_id_to_string(uint32_t dev_id)
+{
+	static const char *dev_id_strings[] = {
+		"TIMER_0", "I2C1", "SPI_1", "UART1", "AIRPLAY", "TIMER_1", "SARADC", "IRDA",
+		"EFUSE", "I2C2", "SPI_2", "UART2", "UART3", "PWM_2", "TIMER_2", "TIMER_3",
+		"TOUCH", "I2S_1", "USB_1", "CAN", "PSRAM", "QSPI_1", "QSPI_2", "SDIO",
+		"AUXS", "BTDM", "WPAS", "MAC", "PHY", "JPEG", "DISP", "AUDIO", "RTC",
+		"GPIO", "DECODER", "LIN", "PWM_1", "SECURE_WORLD", "UART4", "TRNG",
+		"CPU1", "PHY_DPD_CALI", "KEY", "CIF", "MAILBOX", "HPDMA", "DEFAULT",
+	};
+
+	if (dev_id >= PM_DEV_ID_MAX) {
+		return "UNKNOWN";
+	}
+
+	return dev_id_strings[dev_id];
+}
+
+static const char *pm_cpu_freq_to_string(uint32_t cpu_freq)
+{
+	static const char *cpu_freq_strings[] = {
+		"XTAL", "60M", "80M", "120M", "160M", "240M",
+		"HIGHEST", "DEFAULT",
+	};
+
+	if (cpu_freq > PM_CPU_FRQ_DEFAULT) {
+		return "UNKNOWN";
+	}
+
+	return cpu_freq_strings[cpu_freq];
+}
 
 /*=========================CLK/FREQ CTRL START========================*/
 bk_err_t pm_core_bus_clock_ctrl(uint32_t cksel_core, uint32_t ckdiv_core, uint32_t ckdiv_bus, uint32_t ckdiv_cpu0, uint32_t ckdiv_cpu1)
@@ -105,30 +140,31 @@ bk_err_t bk_pm_module_vote_cpu_freq(pm_dev_id_e module, pm_cpu_freq_e cpu_freq)
 	}
 	bk_err_t ret            = BK_OK;
 	uint32_t i              = 0;
-	uint32_t freq_max       = 0;
-	uint32_t freq_max_index = 0;
+	int32_t freq_max        = 0;
+	int32_t freq_max_index  = 0;
 	bool bcpu_freq_highest  = false;
+	int32_t vote_freq       = cpu_freq;
 
 	GLOBAL_INT_DECLARATION();
 	GLOBAL_INT_DISABLE();
 
 	/*save the cpu freq first*/
-	if (PM_CPU_FRQ_DEFAULT == cpu_freq)
+	if (PM_CPU_FRQ_DEFAULT == vote_freq)
 	{
-		cpu_freq = PM_CPU_FRQ_XTAL; // it will use the PM_DEV_ID_DEFAULT vote cpu frequency
+		vote_freq = PM_CPU_FRQ_NONE; // it will use the PM_DEV_ID_DEFAULT vote cpu frequency
 	}
 
 	/*Appli do not need to be concerned with the specific CPU frequency*/
-	if(cpu_freq == PM_CPU_FRQ_HIGHEST)
+	if(vote_freq == PM_CPU_FRQ_HIGHEST)
 	{
-		cpu_freq = PM_HIGHEST_CPU_FREQ;
+		vote_freq = PM_HIGHEST_CPU_FREQ;
 		bcpu_freq_highest = true;
 	}
 	else
 	{
 		bcpu_freq_highest = false;
 	}
-	s_pm_cpu_freq[module] = (uint8_t)cpu_freq;
+	s_pm_cpu_freq[module] = vote_freq;
 
 	/*get the max cpu freq*/
 	freq_max = s_pm_cpu_freq[0];
@@ -142,13 +178,13 @@ bk_err_t bk_pm_module_vote_cpu_freq(pm_dev_id_e module, pm_cpu_freq_e cpu_freq)
 	}
 	if(bcpu_freq_highest == true)
 	{
-		s_pm_cpu_freq[module] = (uint8_t)PM_CPU_FRQ_HIGHEST;
+		s_pm_cpu_freq[module] = PM_CPU_FRQ_HIGHEST;
 	}
 
 	/*dpd need cpu freq 120M, when dpd calibration, it force dpd need cpu freq, if dpd cali finish, restore it*/
-	if((module == PM_DEV_ID_PHY_DPD_CALI)&&(cpu_freq != PM_CPU_FRQ_XTAL))
+	if(((module == PM_DEV_ID_PHY_DPD_CALI)&&(vote_freq != PM_CPU_FRQ_NONE))||((module == PM_DEV_ID_BTDM)&&(vote_freq != PM_CPU_FRQ_NONE)))
 	{
-		freq_max = cpu_freq;
+		freq_max = vote_freq;
 	}
 	else
 	{
@@ -166,7 +202,7 @@ bk_err_t bk_pm_module_vote_cpu_freq(pm_dev_id_e module, pm_cpu_freq_e cpu_freq)
 	}
 	else
 	{
-		ret = sys_drv_switch_cpu_bus_freq(freq_max);
+		ret = sys_drv_switch_cpu_bus_freq_unlocked(freq_max);
 	}
 	if (ret == BK_OK)
 	{
@@ -184,17 +220,37 @@ bk_err_t bk_pm_module_vote_cpu_freq(pm_dev_id_e module, pm_cpu_freq_e cpu_freq)
 
 	if (ret != BK_OK)
 	{
-		LOGI("switch cpu freq error\r\n");
+		LOGI("switch cpu freq[%d] error\r\n", freq_max);
 		return ret;
 	}
 
 	if (pm_debug_mode() & 0x2)
 	{
-		LOGI("Switch cpu freq %d %d\r\n", freq_max, freq_max_index);
+		LOGI("Switch cpu freq %u(%s) %u(%s)\r\n", freq_max, pm_cpu_freq_to_string(freq_max),
+			freq_max_index, pm_dev_id_to_string(freq_max_index));
 	}
 	return BK_OK;
 }
 
+bk_err_t bk_pm_cpu_freq_dump(void)
+{
+	uint32_t i = 0;
+	int32_t freq_max = 0;
+	int32_t freq_max_index = 0;
+	freq_max = s_pm_cpu_freq[0];
+	for (i = 1; i < PM_DEV_ID_MAX; i++)
+	{
+		if (freq_max < s_pm_cpu_freq[i])
+		{
+			freq_max = s_pm_cpu_freq[i];
+			freq_max_index = i;
+		}
+	}
+	LOGI("pm vote freq:%d(%s),%d(%s)\r\n", freq_max_index,
+		pm_dev_id_to_string(freq_max_index), freq_max, pm_cpu_freq_to_string(freq_max));
+	sys_hal_cpu_freq_dump();
+	return BK_OK;
+}
 bk_err_t bk_pm_clock_ctrl(pm_dev_clk_e module, pm_dev_clk_pwr_e clock_state)
 {
 	GLOBAL_INT_DECLARATION();

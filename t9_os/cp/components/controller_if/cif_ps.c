@@ -85,7 +85,7 @@ bk_err_t cif_power_up_host(void)
         return BK_FAIL;
     }
     //cif_power_up_host_by_gpio();
-    bk_pm_module_vote_cpu_freq(PM_DEV_ID_CIF, PM_CPU_FRQ_480M);
+    bk_pm_module_vote_cpu_freq(PM_DEV_ID_CIF, PM_CPU_FRQ_240M);
     ret = cif_exit_sleep();
     cif_env.host_powerup = true;
 

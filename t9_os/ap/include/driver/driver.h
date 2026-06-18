@@ -16,7 +16,6 @@
 
 #include "adc.h"
 #include "aon_rtc.h"
-#include "aon_wdt.h"
 #include "aud.h"
 #include "bk_queue.h"
 #include "calendar.h"
@@ -34,7 +33,6 @@
 #include "int.h"
 #include "jpeg_dec.h"
 #include "jpeg_enc.h"
-#include "lcd.h"
 #include "lcd_spi.h"
 #include "mailbox_channel.h"
 #include "mailbox.h"

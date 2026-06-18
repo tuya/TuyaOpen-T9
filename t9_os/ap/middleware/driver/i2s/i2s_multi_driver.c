@@ -189,60 +189,36 @@ bk_err_t bk_i2s_multi_driver_deinit(void)
 
 static void i2s_init_gpio(i2s_gpio_group_id_t id)
 {
+#if CONFIG_USR_GPIO_CFG_EN
 	switch (id) {
 		case I2S_GPIO_GROUP_0:
-			gpio_dev_unmap(GPIO_6);
-			gpio_dev_map(GPIO_6, GPIO_DEV_I2S1_CLK);
-			gpio_dev_unmap(GPIO_7);
-			gpio_dev_map(GPIO_7, GPIO_DEV_I2S1_SYNC);
-			gpio_dev_unmap(GPIO_8);
-			gpio_dev_map(GPIO_8, GPIO_DEV_I2S1_DIN);
-			gpio_dev_unmap(GPIO_9);
-			gpio_dev_map(GPIO_9, GPIO_DEV_I2S1_DOUT);
-			gpio_dev_unmap(GPIO_28);
-			gpio_dev_map(GPIO_28, GPIO_DEV_I2S1_MCLK);
-			//bk_gpio_disable_output(GPIO_28);
+			gpio_dev_map_by_func(GPIO_DEV_I2S0_CLK);
+			gpio_dev_map_by_func(GPIO_DEV_I2S0_SYNC);
+			gpio_dev_map_by_func(GPIO_DEV_I2S0_DIN);
+			gpio_dev_map_by_func(GPIO_DEV_I2S0_DOUT);
+			gpio_dev_map_by_func(GPIO_DEV_I2S0_MCLK);
 			break;
 
 		case I2S_GPIO_GROUP_1:
-			gpio_dev_unmap(GPIO_40);
-			gpio_dev_map(GPIO_40, GPIO_DEV_I2S2_CLK);
-			//bk_gpio_disable_output(GPIO_40);
-			gpio_dev_unmap(GPIO_41);
-			gpio_dev_map(GPIO_41, GPIO_DEV_I2S2_SYNC);
-			//bk_gpio_disable_output(GPIO_41);
-			gpio_dev_unmap(GPIO_42);
-			gpio_dev_map(GPIO_42, GPIO_DEV_I2S2_DIN);
-			//bk_gpio_disable_output(GPIO_42);
-			gpio_dev_unmap(GPIO_43);
-			gpio_dev_map(GPIO_43, GPIO_DEV_I2S2_DOUT);
-			//bk_gpio_disable_output(GPIO_43);
-			gpio_dev_unmap(GPIO_28);
-			gpio_dev_map(GPIO_28, GPIO_DEV_I2S1_MCLK);
-			//bk_gpio_disable_output(GPIO_28);
+			gpio_dev_map_by_func(GPIO_DEV_I2S1_CLK);
+			gpio_dev_map_by_func(GPIO_DEV_I2S1_SYNC);
+			gpio_dev_map_by_func(GPIO_DEV_I2S1_DIN);
+			gpio_dev_map_by_func(GPIO_DEV_I2S1_DOUT);
+			gpio_dev_map_by_func(GPIO_DEV_I2S0_MCLK);
 			break;
 
 		case I2S_GPIO_GROUP_2:
-			gpio_dev_unmap(GPIO_44);
-			gpio_dev_map(GPIO_44, GPIO_DEV_I2S3_CLK);
-			//bk_gpio_disable_output(GPIO_44);
-			gpio_dev_unmap(GPIO_45);
-			gpio_dev_map(GPIO_45, GPIO_DEV_I2S3_SYNC);
-			//bk_gpio_disable_output(GPIO_45);
-			gpio_dev_unmap(GPIO_46);
-			gpio_dev_map(GPIO_46, GPIO_DEV_I2S3_DIN);
-			//bk_gpio_disable_output(GPIO_46);
-			gpio_dev_unmap(GPIO_47);
-			gpio_dev_map(GPIO_47, GPIO_DEV_I2S3_DOUT);
-			//bk_gpio_disable_output(GPIO_47);
-			gpio_dev_unmap(GPIO_28);
-			gpio_dev_map(GPIO_28, GPIO_DEV_I2S1_MCLK);
-			//bk_gpio_disable_output(GPIO_28);
+			gpio_dev_map_by_func(GPIO_DEV_I2S2_CLK);
+			gpio_dev_map_by_func(GPIO_DEV_I2S2_SYNC);
+			gpio_dev_map_by_func(GPIO_DEV_I2S2_DIN);
+			gpio_dev_map_by_func(GPIO_DEV_I2S2_DOUT);
+			gpio_dev_map_by_func(GPIO_DEV_I2S0_MCLK);
 			break;
 
 		default:
 			break;
 	}
+#endif
 }
 
 bk_err_t bk_i2s_enable_by_id(i2s_gpio_group_id_t id, i2s_en_t en_value)

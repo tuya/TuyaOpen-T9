@@ -179,6 +179,22 @@ bk_err_t bk_aon_rtc_open_rtc_wakeup(rtc_tick_t period);
 #endif
 
 /**
+ * @brief  Get AON RTC upper value with 64 bits
+ * @id: register to which aon_rtc id
+ * @return
+ *    - AON RTC upper value with 64 bits
+ */
+uint64_t bk_aon_rtc_get_upper_val(aon_rtc_id_t id);
+
+/**
+ * @brief  Get AON RTC configured max value with 64 bits
+ * @id: register to which aon_rtc id
+ * @return
+ *    - AON RTC configured max value with 64 bits
+ */
+uint64_t bk_aon_rtc_get_max_value(aon_rtc_id_t id);
+
+/**
  * @brief  Get AON RTC current tick with 64 bits
  *	       AON RTC uses 32 Bits counter with 32K clock, the max time is about 36.4 hours.
  *         The 32K clock really frequency is 32768 HZ(External 32K XTL) or 32000 HZ(Internel ROSC).
@@ -216,7 +232,7 @@ uint64_t bk_aon_rtc_get_current_tick_with_compensation(aon_rtc_id_t id);
  * @return
  *    - BK_OK: succeed
  */
-bk_err_t bk_rtc_ana_register_wakeup_source(rtc_tick_t period);
+bk_err_t bk_rtc_ana_register_wakeup_source(uint32_t period);
 #endif
 
 #if CONFIG_AON_RTC_DEBUG
@@ -304,6 +320,20 @@ float bk_rtc_get_ms_tick_count(void);
 uint32_t bk_rtc_get_clock_freq(void);
 
 /**
+ * @brief  Update AON RTC base time reference
+ *
+ * This API accumulates the elapsed time since the last base tick into
+ * the internal base time (s_time_base_us), and resets the base tick
+ * (s_time_base_tick) to the current RTC tick. It should be called before
+ * changing the RTC clock frequency or after sleep/wakeup to keep the
+ * monotonic time (bk_aon_rtc_get_us) continuous.
+ *
+ * @return
+ *    NA
+ */
+void bk_rtc_update_base_time(void);
+
+/**
  * @brief  Set aon rtc ticks of per ms while dynamic swith clock
  *
  * @ms_tick_cnt: aon rtc clock freq
@@ -362,9 +392,24 @@ uint64_t rtc_tick_to_us(uint64_t tick);
  */
 uint64_t rtc_us_to_tick(uint64_t us);
 
+
 /**
- * @}
+ * @brief  Get the name of the first alarm node in the RTC alarm list
+ *
+ * This function returns the name of the first alarm node (earliest expired time)
+ * in the RTC alarm list. The alarm list is sorted by expired_tick in ascending order.
+ * This is useful for identifying which application (e.g., "BK_BLE", "BK_WIFI")
+ * will wake up the system next.
+ *
+ * @return
+ *    - Pointer to the alarm name string (e.g., "BK_BLE", "BK_WIFI")
+ *    - NULL if no alarm is registered or list is empty
+ *
+ * @note The returned pointer points to the internal alarm node structure.
+ *       The caller should not modify the content, and the pointer may become
+ *       invalid if the alarm is unregistered.
  */
+uint8_t *bk_rtc_get_first_alarm_name(void);
 
 #ifdef __cplusplus
 }

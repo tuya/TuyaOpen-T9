@@ -21,7 +21,13 @@
 12. [现有 panel 一览（可参考）](#12-现有-panel-一览可参考)
 13. [应用代码模板（拷贝即用）](#13-应用代码模板拷贝即用)
 14. [验证清单](#14-验证清单)
-15. [常见问题速查](#15-常见问题速查)
+15. [DPU 时钟源（`clk_src`）选择 与 DPHY PLL 工作区间](#15-dpu-时钟源clk_src选择-与-dphy-pll-工作区间)
+    - 15.1 90 秒结论（小白看这一段就够）
+    - 15.2 边界提醒
+    - 15.3 想自己算一下（公式 + 例子，进阶）
+    - 15.4 DPHY PLL 物理参数（参考）
+    - 15.5 注意事项
+16. [常见问题速查](#16-常见问题速查)
 
 ---
 
@@ -171,8 +177,9 @@ const bk_display_dsi_panel_t lcd_device_<vendor>_mipi_<WxH> = {
     .init_cmds     = <vendor>_mipi_<WxH>_init_cmds,
     .read_id_regs  = <vendor>_mipi_<WxH>_read_id_regs,
     .read_id_bytes = 2,                       /* 实际读多少字节，0~3 */
-    .custom_reset  = NULL,                    /* 一般留 NULL，使用通用 reset */
-    .custom_init   = NULL,                    /* 一般留 NULL，特殊场景见 §10 */
+    .reset_active_level = false,              /* RST 引脚有效电平：false=低有效 */
+    .reset         = bk_lcd_mipi_default_reset, /* 默认 GPIO H/L/H；NULL=跳过；见 §10 */
+    .init          = bk_lcd_mipi_default_init,  /* 默认下发 init_cmds；NULL=跳过；见 §10 */
 };
 
 /* ---- 4) 段注册（必须）：让 bk_display 自动发现 ---- */
@@ -287,12 +294,13 @@ for (uint32_t i = 0; i < n; i++) {
 | `timing.vsync_pulse_width` | `uint16_t` | **必填** | vsync 脉宽，单位 line |
 | `timing.vsync_back_porch` | `uint16_t` | **必填** | vsync 后沿 |
 | `timing.vsync_front_porch` | `uint16_t` | **必填** | vsync 前沿 |
-| `timing.clk` | `uint32_t` | 留 0 | DSI 屏不需要填，DPI 时钟由 fps × 总像素自动算；只对 RGB 屏有效 |
 | `init_cmds` | `const lcd_mipi_init_cmd_t *` | **必填** | 初始化命令序列，必须以 `{0x00, NULL, 0}` 结尾 |
 | `read_id_regs` | `const uint8_t *` | 可选 | ID 寄存器地址数组，以 `0` 结尾。NULL 则 `bk_lcd_panel_read_id` 返回错 |
 | `read_id_bytes` | `uint8_t` | 与 `read_id_regs` 配套 | 1~3，表示读几个字节拼成 ID |
-| `custom_reset` | 函数指针 | 可选 | NULL 用通用 reset；特殊屏需要自定义时见 §10 |
-| `custom_init` | 函数指针 | 可选 | NULL 用通用 init；bridge IC、需要 I2C 配置的屏见 §10/§11 |
+| `reset_active_level` | `bool` | **必填** | RST 引脚有效电平：`false` = active-low（绝大多数屏），`true` = active-high |
+| `reset_timing.idle_ms` / `.active_ms` / `.release_ms` | `uint16_t` | 可选 | 自定义复位三段时序，0 = 用 `BK_DISPLAY_RESET_*_MS_DEFAULT` |
+| `reset` | 函数指针 | **必填** | 标准屏填 `bk_lcd_mipi_default_reset`；不需要复位填 `NULL`；自定义见 §10 |
+| `init` | 函数指针 | **必填** | 标准屏填 `bk_lcd_mipi_default_init`；不需要 init 填 `NULL`；bridge IC 见 §10/§11 |
 
 ---
 
@@ -345,45 +353,48 @@ static const lcd_mipi_init_cmd_t st7701sn_mipi_480x640_init_cmds[] = {
 
 ---
 
-## 10. `custom_reset` 与 `custom_init` 用法
+## 10. `reset` 与 `init` 用法
 
 ### 10.1 通用流程
 
-`bk_lcd_panel_init()` 内部按以下顺序执行：
+`bk_display_init(ctlr)` 在 DPU 控制器拉起前会按以下顺序驱动 panel 钩子：
 
 ```
-custom_reset (NULL 时用通用 reset：reset_pin H→L→H + 120ms)
-        ↓
-DSI clock / PHY 拉起（按 timing + n_lanes 自动计算）
-        ↓
-逐条下发 init_cmds（含其中的 delay）
-        ↓
-custom_init (NULL 时跳过)
+bk_display_init(ctlr) → descriptor.reset            （NULL 时跳过）
+                     → 框架 set_clock（含 DPHY_DPLL→SYSCLK 自动回退）
+                     → descriptor.init              （NULL 时跳过）
+                     → DPU build_core_config + dpu_core_init
 ```
 
-### 10.2 何时用 `custom_reset`
+> ⚠ `reset` / `init` 为 `NULL` **明确表示"跳过"**，不再隐式使用默认实现。
+> 标准屏请显式赋 `bk_lcd_mipi_default_reset` / `bk_lcd_mipi_default_init`。
+> 应用层不再单独调用 `bk_lcd_panel_reset/init`，bring-up 与销毁全程由 `bk_display_init/deinit` 负责。
 
-只有当屏厂的 reset 时序与默认（H/120ms → L/10ms → H/120ms）不一致时才需要：
+### 10.2 自定义 `reset`
+
+屏厂复位时序如果就是 H→delay→L→delay→H→delay 这种三段式，**不要写自定义函数**，
+直接填 `.reset = bk_lcd_mipi_default_reset` 并通过 `reset_timing` / `reset_active_level`
+调节三段时长和有效电平即可。只有真正需要更复杂时序（如多次脉冲、I2C 触发等）
+才需要自己写：
 
 ```c
-static bk_err_t my_reset(bk_avdk_lcd_panel_t *panel, void *priv)
+static bk_err_t my_reset(bk_avdk_lcd_panel_t *panel)
 {
-    bk_gpio_set_output_high(MY_RST_PIN);
-    rtos_delay_milliseconds(50);
-    bk_gpio_set_output_low(MY_RST_PIN);
-    rtos_delay_milliseconds(20);
-    bk_gpio_set_output_high(MY_RST_PIN);
-    rtos_delay_milliseconds(200);
-    return BK_OK;
+    /* 先复用默认 GPIO 复位 */
+    bk_err_t ret = bk_lcd_mipi_default_reset(panel);
+    if (ret != BK_OK) return ret;
+    /* 再做一些额外动作，比如通过 DSI 发个 stub 命令 */
+    return bk_lcd_panel_tx_param(panel, 0x00, NULL, 0);
 }
 
 const bk_display_dsi_panel_t lcd_device_xxx = {
     /* ... */
-    .custom_reset = my_reset,
+    .reset_active_level = false,
+    .reset              = my_reset,
 };
 ```
 
-### 10.3 何时用 `custom_init`
+### 10.3 自定义 `init`
 
 适用场景：
 - 通过 I2C/SPI 配置 bridge IC（如 LT8912B、TC358775）
@@ -391,15 +402,19 @@ const bk_display_dsi_panel_t lcd_device_xxx = {
 - 切分辨率、切扫描方向等需要外部配合的逻辑
 
 ```c
-static bk_err_t my_extra_init(bk_avdk_lcd_panel_t *panel, void *priv)
+static bk_err_t my_init(bk_avdk_lcd_panel_t *panel)
 {
-    /* priv 即应用层通过 panel_dev_config.vendor_config 传进来的指针，
-       通常是另一条 bus（如 I2C bus）的 handle。详见 §11。*/
-    bk_display_bus_handle_t i2c_bus = *(bk_display_bus_handle_t *)priv;
-    /* ... 用 i2c_bus 配 bridge IC 寄存器 ... */
-    return BK_OK;
+    /* 先把 descriptor.init_cmds 跑完 */
+    bk_err_t ret = bk_lcd_mipi_default_init(panel);
+    if (ret != BK_OK) return ret;
+    /* 再追加一两条特殊命令 */
+    return bk_lcd_panel_tx_param(panel, 0x35, NULL, 0); /* TE on, e.g. */
 }
 ```
+
+> 自定义函数从 `bk_avdk_lcd_panel_t *panel` 只能访问公共能力：
+> `bk_lcd_panel_tx_param() / bk_lcd_panel_rx_param()` 用来发送总线命令。
+> 板级 GPIO 用 `bk_gpio_*` 直接操作即可。
 
 ---
 
@@ -441,7 +456,11 @@ bk_lcd_mipi_panel_new(dsi_bus, &panel_cfg,
                       &panel);
 ```
 
-`custom_init` 内通过 `priv` 参数拿到 `cfg_bus`，再调 `bk_display_bus_send_command()` 配 bridge 寄存器即可。
+`init` 钩子在新设计里只接收 `bk_avdk_lcd_panel_t *panel`，因此 bridge IC
+所需的额外 bus 句柄通常通过 **文件静态变量**（参考 `lcd_mipi_lt8912b_bridge.c`
+的 `s_lt8912b_i2c` 模式）或独立的 setter（`bk_lcd_lt8912b_set_io_pins()`）
+向 panel 驱动注入，应用层在 `bk_lcd_mipi_panel_new()` 之前调用一次即可。
+panel 自身的命令通道一律用 `bk_lcd_panel_tx_param(panel, ...)`。
 
 ---
 
@@ -493,24 +512,31 @@ int my_lcd_open(void)
     bk_display_dsi_bus_new(&ctx.dis_bus_handle, NULL);
     bk_display_bus_enable(ctx.dis_bus_handle);
 
-    /* 2. 建 panel 句柄 */
+    /* 2. （可选）需要强制时钟源时，在 panel_new 之前调用：
+     *      bk_display_bus_set_clock_src(ctx.dis_bus_handle, DPU_CLK_SRC_SYSCLK);
+     *    不调用 = 默认走 DPU_CLK_SRC_DPHY_DPLL，PHY PLL 反推不出来时
+     *    驱动自动回退到 SYSCLK（详见 §15）。 */
+
+    /* 3. 建 panel 句柄。reset_active_level 与 reset_timing 都来自 panel
+     *    描述符，应用层只需告诉框架 RST 引脚是哪一根。 */
     bk_lcd_panel_dev_config_t panel_cfg = {
-        .reset_pin     = GPIO_60,                /* 改成你板子上的实际 GPIO */
-        .vendor_config = NULL,                    /* 没 bridge 时 NULL */
+        .reset_pin = GPIO_60,                  /* 改成你板子上的实际 GPIO */
     };
     bk_lcd_mipi_panel_new(ctx.dis_bus_handle, &panel_cfg,
                           &lcd_device_<vendor>_mipi_<WxH>,
                           &ctx.panel_handle);
 
-    bk_lcd_panel_reset(ctx.panel_handle);
-    bk_lcd_panel_init(ctx.panel_handle);
+    /* 3. DPU 控制器：timing / pixel_clock_hz / clk_src 都已缓存在
+     *    panel 句柄上，DPU 控制器内部直接读取，dpu_cfg 只承载层
+     *    与像素格式意图。 */
+    bk_display_dpu_config_t dpu_cfg = {
+        .video.enable = true,
+        /* video.format / video.decompress 按工程约定填 */
+    };
 
-    /* 3. 拿 panel timing 喂给 DPU */
-    bk_display_dpu_config_t dpu_cfg = { /* clk_src / video 按工程约定填 */ };
-    bk_lcd_panel_get_disp_timing(ctx.panel_handle, &dpu_cfg.timing);
-
-    /* 4. 建 DPU 控制器并启动 */
-    bk_display_dpu_ctlr_new(&ctx.dpu_ctlr_handle, &dpu_cfg);
+    /* 4. 建 DPU 控制器并启动。bk_display_init 会顺次驱动
+     *    descriptor.reset / set_clock / descriptor.init，再做 DPU 拉起。 */
+    bk_display_dpu_ctlr_new(&ctx.dpu_ctlr_handle, ctx.panel_handle, &dpu_cfg);
     bk_display_init(ctx.dpu_ctlr_handle);
     bk_display_open(ctx.dpu_ctlr_handle);
     return 0;
@@ -521,7 +547,7 @@ void my_lcd_close(void)
     bk_display_close (ctx.dpu_ctlr_handle);
     bk_display_deinit(ctx.dpu_ctlr_handle);
     bk_display_delete(ctx.dpu_ctlr_handle);
-    bk_lcd_panel_del (ctx.panel_handle);
+    bk_lcd_panel_delete (ctx.panel_handle);
     bk_display_bus_disable(ctx.dis_bus_handle);
     bk_display_bus_delete (ctx.dis_bus_handle);
 }
@@ -553,9 +579,9 @@ if (panel == NULL) { LOGE(TAG, "panel not found"); return; }
 
 - [ ] 编译通过：`ninja` 无 warning（`unused-variable` 之类除外）
 - [ ] `bk_lcd_get_mipi_panel_list()` 返回的列表中能看到你的 `name`
-- [ ] `bk_lcd_panel_reset()` 后用示波器测 RESET 引脚有干净的 H/L/H 时序
-- [ ] `bk_lcd_panel_init()` 返回 BK_OK，无 `AVDK_ERR_TIMEOUT/IO_ERROR`
-- [ ] （若 `read_id_regs` 已配）`bk_lcd_panel_read_id()` 返回值与 `panel.id` 一致
+- [ ] `bk_display_init()` 期间用示波器测 RESET 引脚有干净的 H/L/H 时序
+- [ ] `bk_display_init()` 返回 BK_OK；若失败串口会按 `panel reset err / panel init err / dpu core init err` 分阶段定位
+- [ ] （若 `read_id_regs` 已配）`bk_display_init()` 之后调用 `bk_lcd_panel_read_id()` 与 `panel.id` 一致
 - [ ] `bk_display_open()` 后送一帧纯红 / 纯绿 / 纯蓝 frame，整屏单色稳定无横纹
 - [ ] 送渐变 / 测试图，无明显条纹、撕裂、颜色错位
 - [ ] `BK_DISPLAY_IOCTL_DPU_PIXEL_FORMAT` 切换 RGB565/RGB888/NV12/ARGB8888 都正常
@@ -563,7 +589,122 @@ if (panel == NULL) { LOGE(TAG, "panel not found"); return; }
 
 ---
 
-## 15. 常见问题速查
+## 15. DPU 时钟源 与 DPHY PLL 工作区间
+
+DSI 总线创建时默认 `DPU_CLK_SRC_DPHY_DPLL`（精确求解 PHY PLL，让其内部
+dpi_clk 等于 panel pclk）。当 panel 的 lane:pclk 比超过 PHY `pixdiv`
+能给出的最大分频比（4-bit 字段，上限 17）时，`mipi_dsi_clock_set()`
+**自动回退**到 SYSCLK 路径，串口打印 `WARN`，并把实际选择写回 bus 与
+panel 句柄，DPU 控制器后续读到正确的 mux 源。
+
+应用层无需关心，所以 `bk_lcd_panel_dev_config_t` 不再有 `clk_src`
+字段。如需强制（比如出于 EMI 考虑想固定走 SYSCLK），在
+`bk_display_dsi_bus_new()` 之后、`bk_lcd_mipi_panel_new()` 之前调一次：
+
+```c
+bk_display_dsi_bus_new(&bus, NULL);
+bk_display_bus_set_clock_src(bus, DPU_CLK_SRC_SYSCLK);
+bk_lcd_mipi_panel_new(bus, &panel_cfg, panel_desc, &panel);
+```
+
+### 15.1 90 秒结论
+
+24bpp DSI 屏（绝大多数 panel）：
+
+| panel `.n_lanes` | 框架选择 | 说明 |
+|---|---|---|
+| `DSI_ACTIVE_LANES_1`（1 lane） | 自动落 SYSCLK | DPHY_DPLL 反推无解（`lane:pclk` 需 > 17），打印一行 WARN |
+| `DSI_ACTIVE_LANES_2/3/4`（≥ 2 lane） | DPHY_DPLL | 精度更高，PLL 路径可用 |
+
+> **以前**：客户需要手填 `clk_src`，填错就硬失败。
+> **现在**：默认就行，1 lane 屏（如 `lcd_mipi_jd9855_360x390.c`）开机会看到：
+>
+> ```
+> dsi_core: PHY PLL miss for pclk=... lanes=1 ...
+>           auto-fallback to DPU_CLK_SRC_SYSCLK
+> dsi_core: using DPU_CLK_SRC_SYSCLK ...
+> ```
+
+### 15.2 边界提醒（30 秒）
+
+**单 lane 屏的物理上限**：PHY 单 lane 最高 1600 Mbps，SYSCLK 兜底固定 800 Mbps。24bpp 24 × pclk_MHz ≤ 800 ⇒ **1 lane × 24bpp 实际可驱 pclk ≤ ~33 MHz**，对应 60fps 下大约 **480×854** 上限。再大的分辨率屏，**屏厂规格本身就会要求 ≥ 2 lane**，不会给到你 1 lane × 720p 的 datasheet。
+
+**所以高分辨率 1-lane 这条路径不存在**，规则表 §15.1 已覆盖所有"屏厂真实可能给的组合"。
+
+### 15.3 想自己算一下（公式 + 例子，进阶）
+
+如果你对屏的参数不放心，或者屏比较奇葩（30fps、低 bpp、超高刷新率），按下面两步算一下：
+
+**关卡 A：路径能不能走 PLL（lane:pclk 比例）**
+
+```
+ratio = bpp × (1 + overhead) / n_lanes      // bpp=24, overhead≈0.30
+ratio ≤ 16  → 可以走 DPU_CLK_SRC_DPHY_DPLL  （PHY 把 pclk 精确锁到 panel 要求）
+ratio > 16  → 必须走 DPU_CLK_SRC_SYSCLK     （DPU 自己分 sysclk，PHY 锁固定档）
+```
+
+24bpp 屏 ratio 表（前面 §15.1 推出的同一张）：
+
+| n_lanes | ratio (24×1.3/n) | 走哪条路 |
+|---|---|---|
+| 1 | 31.2 | SYSCLK |
+| 2 | 15.6 | DPHY_DPLL |
+| 3 | 10.4 | DPHY_DPLL |
+| 4 |  7.8 | DPHY_DPLL |
+
+**关卡 B：物理带宽够不够（链路总速率）**
+
+```
+pclk_hz            = (h_size + h_porch_sum) × (v_size + v_porch_sum) × fps
+need_per_lane_mbps = pclk_hz × bpp × (1 + overhead) / n_lanes / 1e6
+
+要求：
+  走 DPHY_DPLL → need_per_lane_mbps ≤ 1600
+  走 SYSCLK    → need_per_lane_mbps ≤ 800
+```
+
+公式里的 `1e6` 就是 **10⁶ = 1,000,000**，作用是把 `bit/s` 换算成 `Mbit/s`（驱动里也是这么写的，见 `mipi_dsi_hal.c` 的 `den = lane_cnt * 1000000ULL * 1000ULL`，前者把 bps 转 Mbps，后者把 `overhead_permille` 千分比转倍数）。
+
+**Worked example：ST7701S 412×960 / 2 lane / 60fps / 24bpp**
+
+```
+h_total = 412 + (10 + 28 + 50)  ≈ 500          // 实际查 datasheet 填
+v_total = 960 + ( 2 +  8 + 10)  ≈ 980
+pclk_hz = 500 × 980 × 60       ≈ 29.4 MHz
+ratio   = 24 × 1.3 / 2          = 15.6  ≤ 16   → 可走 DPHY_DPLL ✓
+need    = 29.4e6 × 24 × 1.3 / 2 / 1e6 ≈ 459 Mbps ≤ 1600 → 带宽 ✓
+结论    : .clk_src = DPU_CLK_SRC_DPHY_DPLL
+```
+
+**Worked example：JD9855 360×390 / 1 lane / 60fps / 24bpp**
+
+```
+pclk_hz ≈ 360 × 390 × 60 × 1.x (porch) ≈ 13.3 MHz   // 实测打印为 13307520 Hz
+ratio   = 24 × 1.3 / 1 = 31.2  > 16   → DPHY_DPLL 解不出，必须 SYSCLK
+need    = 13.3e6 × 24 × 1.3 / 1 / 1e6 ≈ 415 Mbps ≤ 800  → SYSCLK 800 Mbps 带宽够 ✓
+结论    : .clk_src = DPU_CLK_SRC_SYSCLK
+```
+
+### 15.4 DPHY PLL 物理参数（参考）
+
+```
+FVCO ∈ [1.2 GHz, 3.2 GHz]
+lane_hs_bitrate = FVCO / 2^rate          (rate ∈ 0..7)
+pclk            = lane_hs_bitrate / (pixdiv + 2)    (pixdiv ∈ 0..14 ⇒ 分频比 [2, 16])
+工程有效区间    : 100 Mbps ~ 1600 Mbps（analog timing 查表覆盖范围）
+SYSCLK 兜底     : 单 lane 固定 800 Mbps；其余分辨率走查表挡位
+```
+
+### 15.5 注意事项
+
+- **不要**自己往 `dpu_cfg` 里塞 `.timing` / `.pixel_clock_hz` / `.clk_src`——这三者都在 panel 句柄里，DPU 控制器内部直接读取。
+- 改 `clk_src` **不需要**改 panel 描述符；同一份 panel 描述符可同时支持两条时钟路径，应用层只需切 `panel_dev_config.clk_src`。
+- DSI 命令模式（low-power）发 `init_cmds` 时由 byteclk 驱动，与 `clk_src` 选择无关；这一段只影响进 video 模式之后的 HS 链路。
+- 看到串口 `internal PLL cannot satisfy pclk=…` 报错，直接切 SYSCLK；看到 `no table entry for clk=… defaulting to 800 Mbps`，是 SYSCLK 兜底没在查表挡位里——一般无害，但若 EMI 敏感可让屏厂调 `fps` / 改 2 lane。
+
+---
+
+## 16. 常见问题速查
 
 | 现象 | 排查首项 | 排查次项 |
 |---|---|---|
@@ -571,6 +712,7 @@ if (panel == NULL) { LOGE(TAG, "panel not found"); return; }
 | 整屏黑、电流异常 | VCC_LCD / 屏背光 | AUXLDO 2.8V/3V vote 是否打开 |
 | `read_id` 返回全 0 / 0xFF | VCC_LCD 是否上电 | `read_id_regs` 与 `read_id_bytes` 是否填错 |
 | 闪屏 / 帧率不稳 | DSI lane bit-rate 偏离屏 spec 推荐范围 | 调 `fps` 或 `n_lanes` 重新算 |
+| 启动报 `no PLL: pclk:... min_lane_mbps:...` | `panel_dev_config.clk_src=DPHY_DPLL` 但 panel 超出 PLL 求解范围 | 改 `DPU_CLK_SRC_SYSCLK`，详见 §15.1 |
 | 整屏黄/绿/蓝条带 | DPU FIFO underflow（PSRAM 带宽不够） | 确认 dpu QoS=3；其它高带宽模块（camera/h264）是否同时跑 |
 | 撕裂 | flush 频率高于 panel 实际帧率 | 降低 flush 频率或 fps |
 | 切像素格式后花屏 | 切换瞬间仍有 inflight flush | 切换前先停 flush 线程 → ioctl → 再启 flush |

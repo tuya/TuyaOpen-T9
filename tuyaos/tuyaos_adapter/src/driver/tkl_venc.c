@@ -603,9 +603,12 @@ OPERATE_RET tkl_venc_stop(TUYA_VENC_HANDLE handle)
     tkl_venc_bond_stop(ctx);
     /*
      * Bond stop must run before backend close because the BK ISP->H264E bond stop
-     * path waits for one final frame-end handshake to release its semaphore.
-     * After the bond is detached, leave a short drain window for any in-flight
-     * encode callback before closing the backend handle.
+     * path waits for one final frame-end handshake (driven by the still-live encoder
+     * frame_done callback) to disable ISP flexa SBI and release its semaphore. If the
+     * encoder is closed first, that handshake never completes -> ISP floods
+     * "isp_isr_callback error state" until wait_sbi_disabled times out and the next
+     * start crashes. After the bond is detached, leave a short drain window for any
+     * in-flight encode callback before closing the backend handle.
      */
     if (ctx->backend_handle != NULL) {
         tkl_system_sleep(TKL_VENC_STOP_DRAIN_MS);

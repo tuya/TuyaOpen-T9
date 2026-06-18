@@ -31,6 +31,7 @@ typedef enum {
 	HW_DECODER_MSG_DECODE,
 	HW_DECODER_MSG_CONFIG,
 	HW_DECODER_MSG_RESET,
+	HW_DECODER_MSG_EXIT,
 } hw_decoder_msg_type_t;
 
 typedef avdk_err_t (*hw_decoder_msg_cb_t)(void *param);
@@ -46,7 +47,6 @@ typedef struct {
 avdk_err_t hw_decoder_register(hw_decoder_type_t type, void *decoder_id);
 avdk_err_t hw_decoder_unregister(void *decoder_id);
 avdk_err_t hw_decoder_send_msg(hw_decoder_msg_t *msg, uintptr_t timeout);
-hw_decoder_type_t hw_decoder_get_active_decoder_type(void);
 
 #ifdef __cplusplus
 }

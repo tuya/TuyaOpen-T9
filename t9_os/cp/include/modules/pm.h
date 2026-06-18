@@ -22,6 +22,18 @@ extern "C" {
  *   - Post-sleep callback: Called after waking up from sleep
  */
 typedef void (*sleep_callback_t)(void *arg);
+typedef void (*ap_ctrl_callback_t)(void *arg);
+
+typedef enum {
+	PM_AP_CTRL_CB_TYPE_POWER_ON = 0,  /**< Execute after AP power-on */
+	PM_AP_CTRL_CB_TYPE_POWER_OFF = 1, /**< Execute after AP power-off */
+} pm_ap_ctrl_cb_type_t;
+
+
+#define PM_WIFI_RTC_ALARM_NAME    "bk_wifi"
+#define PM_BT_RTC_ALARM_NAME      "bk_bt"
+#define PM_APP_RTC_ALARM_NAME     "bk_app"
+#define PM_MM_RTC_ALARM_NAME      "mm_rtc"
 
 /* Standard priority definitions for callback execution order
  * Lower value = Higher priority = Executes first
@@ -49,6 +61,7 @@ typedef void (*sleep_callback_t)(void *arg);
 #define PM_WAKEUP_SOURCE_INT_WIFI        (WAKEUP_SOURCE_INT_WIFI)
 #define PM_WAKEUP_SOURCE_INT_BT          (WAKEUP_SOURCE_INT_BT)
 #define PM_WAKEUP_SOURCE_INT_USBPLUG     (WAKEUP_SOURCE_INT_USBPLUG)
+#define PM_WAKEUP_SOURCE_INT_VAD         (WAKEUP_SOURCE_INT_VAD)
 #define PM_WAKEUP_SOURCE_INT_NONE        (WAKEUP_SOURCE_INT_NONE)
 /*--------------------------WAKEUP SOURCE DEFINE  END--------------------------------*/
 
@@ -273,7 +286,7 @@ typedef enum
 	PM_SLEEP_MODULE_NAME_UART2,    // 25
 	PM_SLEEP_MODULE_NAME_UART3,    // 26
 	PM_SLEEP_MODULE_NAME_WDG,      // 27
-	PM_SLEEP_MODULE_NAME_TIMER_3,  // 28
+	PM_SLEEP_MODULE_NAME_AUDIO_ASR,// 28
 	PM_SLEEP_MODULE_NAME_APP1,     // 29
 	PM_SLEEP_MODULE_NAME_CPU1,     // 30
 	PM_SLEEP_MODULE_NAME_ROSC_PROG,// 31
@@ -357,8 +370,17 @@ typedef enum
 	PM_DEV_ID_KEY,          //42
 	PM_DEV_ID_CIF,          //43
 	PM_DEV_ID_MAILBOX,      //44
+	/*
+	 * S2 (HPDMA review):
+	 *   Keep CP-side PM device id table in lock-step with the AP side.
+	 *   PM_DEV_ID_HPDMA is consumed only by the AP HPDMA driver (CP has
+	 *   no HPDMA presence today), but the enum is part of the cross-
+	 *   core PM ABI: shifting PM_DEV_ID_DEFAULT to a different ordinal
+	 *   on one core would silently misalign any cross-core PM tables.
+	 */
+	PM_DEV_ID_HPDMA,        //45
 
-	PM_DEV_ID_DEFAULT,      //45  it is used by pm module set default cpu frequency
+	PM_DEV_ID_DEFAULT,      //46  it is used by pm module set default cpu frequency
 
 	PM_DEV_ID_MAX
 }pm_dev_id_e;
@@ -370,10 +392,8 @@ typedef enum
 	PM_CPU_FRQ_120M,     // 3:CPU0:120M,BUS:120M
 	PM_CPU_FRQ_160M,     // 4:CPU0:160M,BUS:160M
 	PM_CPU_FRQ_240M,     // 5:CPU0:240M,BUS:240M
-	PM_CPU_FRQ_320M,     // 6:CPU0:160m,CPU1:320M,BUS:160M
-	PM_CPU_FRQ_480M,     // 7:CPU0:240m,CPU1:480M,BUS:240M
 
-	PM_CPU_FRQ_HIGHEST,  // 8:(Appli do not need to be concerned with the specific CPU frequency)
+	PM_CPU_FRQ_HIGHEST,  // 6:(Appli do not need to be concerned with the specific CPU frequency)
 	PM_CPU_FRQ_DEFAULT   // default cpu frequency which control by pm module
 }pm_cpu_freq_e;
 typedef enum
@@ -481,7 +501,7 @@ typedef enum
 	PM_SLEEP_MODULE_NAME_UART2,\
 	PM_SLEEP_MODULE_NAME_UART3,\
 	PM_SLEEP_MODULE_NAME_WDG,\
-	PM_SLEEP_MODULE_NAME_TIMER_3,\
+	PM_SLEEP_MODULE_NAME_AUDIO_ASR,\
 	PM_SLEEP_MODULE_NAME_APP1,\
 	PM_SLEEP_MODULE_NAME_CPU1,\
 	PM_SLEEP_MODULE_NAME_ROSC_PROG,\
@@ -523,7 +543,7 @@ typedef enum
 	PM_SLEEP_MODULE_NAME_UART2,\
 	PM_SLEEP_MODULE_NAME_UART3,\
 	PM_SLEEP_MODULE_NAME_WDG,\
-	PM_SLEEP_MODULE_NAME_TIMER_3,\
+	PM_SLEEP_MODULE_NAME_AUDIO_ASR,\
 	PM_SLEEP_MODULE_NAME_APP1,\
 	PM_SLEEP_MODULE_NAME_CPU1,\
 	PM_SLEEP_MODULE_NAME_ROSC_PROG,\
@@ -550,33 +570,61 @@ typedef enum {
 	BK_PM_WAKEUP_SRC_COUNT,     /* 7:Source Count */
 } bk_pm_wakeup_reason_e;
 
+typedef enum {
+	PM_AP_WORK_STATE_FIRST_BOOT   = (1U << 0), /**< first AP boot */
+	PM_AP_WORK_STATE_BOOT_SUCCESS = (1U << 1), /**< AP boot success */
+	PM_AP_WORK_STATE_RESERVED2    = (1U << 2), /**< reserved for extension */
+	PM_AP_WORK_STATE_RESERVED3    = (1U << 3), /**< reserved for extension */
+} pm_ap_work_state_e;
+
 typedef struct {
-    volatile uint8_t pm_ap0_sleep_state;
-    volatile uint8_t pm_ap1_sleep_state;
-    volatile uint8_t pm_cp0_sleep_state;
-    volatile uint8_t pm_cp1_sleep_state;
-    volatile pm_wakeup_source_e wakeup_source;
-    volatile uint8_t wakeup_alarm_name[ALARM_NAME_MAX_LEN+1];
-    volatile uint8_t gpio_id;
-    volatile uint32_t param0;
-    volatile uint32_t param1;
-    volatile uint32_t param2;
+	volatile uint8_t pm_ap0_sleep_state;
+	volatile uint8_t pm_ap1_sleep_state;
+	volatile uint8_t pm_cp0_sleep_state;
+	volatile uint8_t pm_cp1_sleep_state;
+	volatile uint8_t pm_ap_work_state;
+	volatile pm_wakeup_source_e wakeup_source;
+	volatile uint8_t wakeup_alarm_name[ALARM_NAME_MAX_LEN+1];
+	volatile uint8_t gpio_id;
+	volatile uint32_t param0;
+	volatile uint32_t param1;
+	volatile uint32_t param2;
 } pm_shared_info_t;
 
 typedef enum {
-    BK_SYS_SW_REGS_PM_SHARED_INFO_FIELD_AP0_SLEEP_STATE = (1U << 0),
-    BK_SYS_SW_REGS_PM_SHARED_INFO_FIELD_AP1_SLEEP_STATE = (1U << 1),
-    BK_SYS_SW_REGS_PM_SHARED_INFO_FIELD_CP0_SLEEP_STATE = (1U << 2),
-    BK_SYS_SW_REGS_PM_SHARED_INFO_FIELD_CP1_SLEEP_STATE = (1U << 3),
-    BK_SYS_SW_REGS_PM_SHARED_INFO_FIELD_WAKEUP_SOURCE   = (1U << 4),
-    BK_SYS_SW_REGS_PM_SHARED_INFO_FIELD_WAKEUP_ALARM_NAME = (1U << 5),
-    BK_SYS_SW_REGS_PM_SHARED_INFO_FIELD_GPIO_ID         = (1U << 6),
-    BK_SYS_SW_REGS_PM_SHARED_INFO_FIELD_PARAM0          = (1U << 7),
-    BK_SYS_SW_REGS_PM_SHARED_INFO_FIELD_PARAM1          = (1U << 8),
-    BK_SYS_SW_REGS_PM_SHARED_INFO_FIELD_PARAM2          = (1U << 9),
-    BK_SYS_SW_REGS_PM_SHARED_INFO_FIELD_ALL             = (1U << 10) - 1U,
+	BK_SYS_SW_REGS_PM_SHARED_INFO_FIELD_AP0_SLEEP_STATE = (1U << 0),
+	BK_SYS_SW_REGS_PM_SHARED_INFO_FIELD_AP1_SLEEP_STATE = (1U << 1),
+	BK_SYS_SW_REGS_PM_SHARED_INFO_FIELD_CP0_SLEEP_STATE = (1U << 2),
+	BK_SYS_SW_REGS_PM_SHARED_INFO_FIELD_CP1_SLEEP_STATE = (1U << 3),
+	BK_SYS_SW_REGS_PM_SHARED_INFO_FIELD_AP_WORK_STATE   = (1U << 4),
+	BK_SYS_SW_REGS_PM_SHARED_INFO_FIELD_WAKEUP_SOURCE   = (1U << 5),
+	BK_SYS_SW_REGS_PM_SHARED_INFO_FIELD_WAKEUP_ALARM_NAME = (1U << 6),
+	BK_SYS_SW_REGS_PM_SHARED_INFO_FIELD_GPIO_ID         = (1U << 7),
+	BK_SYS_SW_REGS_PM_SHARED_INFO_FIELD_PARAM0          = (1U << 8),
+	BK_SYS_SW_REGS_PM_SHARED_INFO_FIELD_PARAM1          = (1U << 9),
+	BK_SYS_SW_REGS_PM_SHARED_INFO_FIELD_PARAM2          = (1U << 10),
+	BK_SYS_SW_REGS_PM_SHARED_INFO_FIELD_ALL             = (1U << 11) - 1U,
 } bk_sys_sw_regs_pm_shared_info_field_t;
 
+typedef enum
+{
+	/* Use a dedicated range to avoid clashing with PM thread local events (0~2). */
+	PM_CP_CORE_STATE_ENTER_DEEPSLEEP = 0x100,
+	PM_CP_CORE_CTRL_AP_STATE,
+	PM_CP_CORE_AP_RECOVERY,
+	PM_CP_CORE_RTC_DEEPSLEEP,
+	PM_CP_CORE_GET_CP_DATA,
+	PM_CP_CORE_POWER_CTRL,
+	PM_CP_CORE_CLK_CTRL,
+	PM_CP_CORE_SLEEP_CTRL,
+	PM_CP_CORE_FREQ_CTRL,
+	PM_CP_CORE_EXTERNAL_LDO,
+	PM_CP_CORE_PSRAM_POWER,
+	PM_CP_CORE_WAKEUP_SRC_CFG,
+	PM_CP_CORE_RTC_WAKEUPED,
+	PM_CP_CORE_GPIO_WAKEUPED,
+	PM_CP_CORE_STATE_MAX
+}pm_cp_core_state_e;
 /*config the voltage at low vol*/
 #define PM_VOLTAGE_OF_LOW_VOL            (PM_LOW_VOL_VOLTAGE_0_6)
 
@@ -590,6 +638,7 @@ typedef enum {
 #define PM_CP1_AUTO_POWER_DOWN_CTRL      (PM_CP1_AUTO_POWER_DOWN_ENABLE)
 
 /*=====================CONFIG  SECTION  END=======================*/
+
 /**
  * @brief send message to pm thread for enter deepsleep or low voltage
  *
@@ -743,6 +792,83 @@ bk_err_t bk_pm_post_sleep_callback_unregister(sleep_callback_t callback);
  * Time complexity: O(n)
  */
 bk_err_t bk_pm_post_sleep_callback_execute(void);
+
+/**
+ * @brief Register AP power control callback
+ *
+ * Register callback for AP power-on or power-off notification.
+ * Call this API twice if you need both power-on and power-off callbacks.
+ *
+ * @param callback  Callback function to register
+ * @param arg       User data passed to callback
+ * @param type      Callback trigger type:
+ *                  - PM_AP_CTRL_CB_TYPE_POWER_ON
+ *                  - PM_AP_CTRL_CB_TYPE_POWER_OFF
+ *
+ * @return  0  Success
+ *         -1  Invalid callback
+ *         -2  Out of memory
+ */
+bk_err_t bk_pm_ap_ctrl_callback_register(ap_ctrl_callback_t callback, void *arg, pm_ap_ctrl_cb_type_t type);
+
+/**
+ * @brief Unregister AP power control callback
+ *
+ * @param callback  Callback function to unregister
+ * @param type      Callback type used at registration
+ *
+ * @return  0  Success
+ *         -1  Invalid callback
+ *         -2  Callback not found
+ */
+bk_err_t bk_pm_ap_ctrl_callback_unregister(ap_ctrl_callback_t callback, pm_ap_ctrl_cb_type_t type);
+
+/**
+ * @brief Execute AP power control callbacks by type
+ *
+ * This function is called internally by PM flow.
+ *
+ * @param type  Callback type to execute
+ *
+ * @return BK_OK on success
+ */
+bk_err_t bk_pm_ap_ctrl_callback_execute(pm_ap_ctrl_cb_type_t type);
+
+/**
+ * @brief set whether AP boot completed successfully
+ *
+ * @param boot_success true to set PM_AP_WORK_STATE_BOOT_SUCCESS, false to clear
+ * @return BK_OK on success
+ */
+bk_err_t bk_pm_ap_boot_success_set(bool boot_success);
+
+/**
+ * @brief get whether AP boot completed successfully
+ *
+ * @return true if AP boot success (PM_AP_WORK_STATE_BOOT_SUCCESS), false otherwise
+ */
+bool bk_pm_ap_boot_success_get(void);
+
+/**
+ * @brief set whether this is the first AP boot
+ *
+ * @param is_first_boot true for first boot, false otherwise
+ * @return BK_OK on success
+ */
+bk_err_t bk_pm_ap_first_boot_set(bool is_first_boot);
+
+/**
+ * @brief get whether this is the first AP boot since cold power-on
+ *
+ * Mirrors the AP-side getter so CP services can branch on it. The
+ * underlying flag (PM_AP_WORK_STATE_FIRST_BOOT) is asserted by
+ * reset_reason.c on RESET_SOURCE_POWERON and cleared by
+ * pm_module_shutdown_cpu1() after the first successful AP power-off.
+ *
+ * @return true if PM_AP_WORK_STATE_FIRST_BOOT is set, false otherwise
+ */
+bool bk_pm_ap_first_boot_get(void);
+
 /**
  * @brief set and save wakeup source of exiting  sleep
  *
@@ -759,6 +885,26 @@ bk_err_t bk_pm_post_sleep_callback_execute(void);
  *
  */
 bk_err_t bk_pm_sleep_wakeup_reason_set(uint64_t wakeup_irq);
+/**
+ * @brief parse RTC wakeup reason from alarm name
+ *
+ * When normal sleep is woken by RTC interrupt, multiple modules (WiFi, BLE,
+ * application timer, etc.) may share the same RTC interrupt source. This API
+ * inspects the first triggered RTC alarm name and maps it to a specific
+ * bk_pm_wakeup_reason_e value (e.g. BK_PM_WAKEUP_WIFI, BK_PM_WAKEUP_BLE,
+ * BK_PM_WAKEUP_HW_TIMER).
+ *
+ * @attention
+ * - Call this API after bk_pm_sleep_wakeup_reason_set() when the wakeup
+ *   interrupt source is INT_SRC_RTC or INT_SRC_ANA_RTC.
+ * - The parsed result is saved internally for subsequent wakeup reason query.
+ * - MM RTC alarm is ignored because it is not a valid wakeup source.
+ *
+ * @return
+ * - BK_OK: succeed
+ * - others: other errors.
+ */
+bk_err_t bk_pm_rtc_wakeup_reason_parse();
 /**
  * @brief clear wakeup source of exiting  sleep process
  *
@@ -940,7 +1086,7 @@ uint64_t bk_pm_module_lv_sleep_state_get(pm_dev_id_e module);
  * @param
  * -void
  * @return
- * - wakeup source(0x0:WAKEUP SOURCE OF GPIO;0x1:WAKEUP SOURCE OF RTC;0x2:WAKEUP SOURCE OF WIFI OR BT;0x4:WAKEUP SOURCE OF TOUCHED;0x5:NONE WAKEUP_SOURCE)
+ * - wakeup source(0:GPIO;1:RTC;2:WIFI;3:BT;4:USBPLUG;5:TOUCHED;6:VAD;7:NONE)
  */
 pm_wakeup_source_e bk_pm_deep_sleep_wakeup_source_get(void);
 /**
@@ -986,7 +1132,7 @@ bk_err_t bk_pm_exit_low_vol_wakeup_source_set(void);
  * @param
  * -void
  * @return
- * - wakeup source(0x0:WAKEUP SOURCE OF GPIO;0x1:WAKEUP SOURCE OF RTC;0x2:WAKEUP SOURCE OF WIFI OR BT;0x4:WAKEUP SOURCE OF TOUCHED;0x5:NONE WAKEUP_SOURCE)
+ * - wakeup source(0:GPIO;1:RTC;2:WIFI;3:BT;4:USBPLUG;5:TOUCHED;6:VAD;7:NONE)
  */
 pm_wakeup_source_e bk_pm_exit_low_vol_wakeup_source_get(void);
 /**
@@ -1352,7 +1498,7 @@ pm_cpu_freq_e bk_pm_current_max_cpu_freq_get(void);
  * - This API is used to vote ,then select the cpu frequency
  *
  * @param
- * -module:module id;cpu_freq:cpu frequency(320M,240M,120M,26M)
+ * -module:module id;cpu_freq:cpu frequency(240M,160M,120M,26M)
  * @return
  *  - BK_OK: succeed
  *  - others: other errors.

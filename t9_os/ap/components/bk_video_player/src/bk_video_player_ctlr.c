@@ -37,6 +37,23 @@
 // Returning error is preferred over silently clamping to avoid hiding misconfiguration.
 #define BK_VP_AV_SYNC_OFFSET_MS_MAX  (5000)
 
+static avdk_err_t video_player_init_h264_preview_out(video_player_buffer_t *out)
+{
+    AVDK_RETURN_ON_FALSE(out, AVDK_ERR_INVAL, TAG, "out is NULL");
+
+    /*
+     * H264 preview uses the GPU/Flexa decoder path. The decoder does not
+     * consume an engine-owned output frame buffer at all: it submits the AU
+     * to the H264 IP, waits for GPU/Flexa to finish, then writes the GPU-owned
+     * compressed output pointer back to out->data / out->length.
+     */
+    out->data = NULL;
+    out->frame_buffer = NULL;
+    out->length = 0;
+    out->pts = 0;
+    out->user_data = NULL;
+    return AVDK_ERR_OK;
+}
 typedef enum
 {
     VIDEO_PLAYER_EVT_NONE = 0,
@@ -275,6 +292,7 @@ static void deinit_active_decoders(private_video_player_ctlr_t *controller)
     controller->active_container_parser = NULL;
     controller->active_audio_decoder = NULL;
     controller->active_video_decoder = NULL;
+    controller->video_predecode_gop_drop_enable = false;
     controller->audio_track_enabled = false;
     controller->video_track_enabled = false;
     os_memset(&controller->current_media_info, 0, sizeof(controller->current_media_info));
@@ -414,6 +432,7 @@ static avdk_err_t select_decoders_try_opened_parser_locked(private_video_player_
 
     controller->audio_track_enabled = false;
     controller->video_track_enabled = false;
+    controller->video_predecode_gop_drop_enable = false;
 
     const bool audio_present = !(media_info.audio.channels == 0 || media_info.audio.sample_rate == 0);
     const bool video_present = !(media_info.video.width == 0 || media_info.video.height == 0);
@@ -507,6 +526,7 @@ static avdk_err_t select_decoders_try_opened_parser_locked(private_video_player_
             if (ret == AVDK_ERR_OK)
             {
                 controller->active_video_decoder = video_decoder_ops;
+                controller->video_predecode_gop_drop_enable = video_node->enable_predecode_gop_drop;
                 video_decoder_found = true;
                 controller->video_track_enabled = true;
                 break;
@@ -523,6 +543,7 @@ static avdk_err_t select_decoders_try_opened_parser_locked(private_video_player_
         {
             // Keep playing without video.
             controller->active_video_decoder = NULL;
+            controller->video_predecode_gop_drop_enable = false;
             controller->video_track_enabled = false;
             LOGW("%s: No suitable video decoder, disable video for file: %s\n", __func__, file_path);
         }
@@ -791,6 +812,7 @@ static avdk_err_t select_decoders(private_video_player_ctlr_t *controller, const
 
                 controller->audio_track_enabled = false;
                 controller->video_track_enabled = false;
+                controller->video_predecode_gop_drop_enable = false;
                 const bool audio_present = !(media_info.audio.channels == 0 || media_info.audio.sample_rate == 0);
 
                 // PCM does not require an audio decoder: deliver parser output directly to upper layer.
@@ -886,6 +908,7 @@ static avdk_err_t select_decoders(private_video_player_ctlr_t *controller, const
                     if (ret == AVDK_ERR_OK)
                     {
                         controller->active_video_decoder = video_decoder_ops;
+                        controller->video_predecode_gop_drop_enable = video_node->enable_predecode_gop_drop;
                         video_decoder_found = true;
                         controller->video_track_enabled = true;
                         break;
@@ -903,6 +926,7 @@ static avdk_err_t select_decoders(private_video_player_ctlr_t *controller, const
                 {
                     // Keep playing without video.
                     controller->active_video_decoder = NULL;
+                    controller->video_predecode_gop_drop_enable = false;
                     controller->video_track_enabled = false;
                     LOGW("%s: No suitable video decoder, disable video for file: %s\n", __func__, file_path);
                 }
@@ -1633,8 +1657,6 @@ static avdk_err_t video_player_ctlr_stop(bk_video_player_ctlr_handle_t handler)
 
     rtos_delay_milliseconds(50);
 
-    deinit_active_decoders(controller);
-
     controller->video_eof_reached = false;
     controller->audio_eof_reached = false;
     controller->eof_notified_session_id = 0;
@@ -1743,8 +1765,7 @@ static avdk_err_t video_player_ctlr_seek_preview(bk_video_player_ctlr_handle_t h
                          AVDK_ERR_UNSUPPORTED, TAG, "active video parser is invalid");
     AVDK_RETURN_ON_FALSE(decoder && decoder->decode, AVDK_ERR_UNSUPPORTED, TAG, "active video decoder is invalid");
     AVDK_RETURN_ON_FALSE(controller->config.video.packet_buffer_alloc_cb &&
-                         controller->config.video.packet_buffer_free_cb &&
-                         controller->config.video.buffer_alloc_cb,
+                         controller->config.video.packet_buffer_free_cb,
                          AVDK_ERR_UNSUPPORTED, TAG, "video buffer callbacks are invalid");
 
     uint64_t target_pts = video_player_get_current_time_ms(controller);
@@ -1790,24 +1811,38 @@ static avdk_err_t video_player_ctlr_seek_preview(bk_video_player_ctlr_handle_t h
         }
 
         video_player_buffer_t out = {0};
-        uint32_t bytes_per_pixel = 2;
-        if (controller->config.video.output_format == PIXEL_FMT_RGB888)
-        {
-            bytes_per_pixel = 3;
-        }
-        out.length = controller->current_media_info.video.width * controller->current_media_info.video.height * bytes_per_pixel;
-        ret = controller->config.video.buffer_alloc_cb(controller->config.user_data, &out);
-        if (ret != AVDK_ERR_OK)
-        {
-            controller->config.video.packet_buffer_free_cb(controller->config.user_data, &pkt);
-            LOGE("%s: buffer_alloc_cb failed, ret=%d\n", __func__, ret);
-            return ret;
-        }
+        const bool h264_preview_out_meta_only =
+            (controller->current_media_info.video.format == VIDEO_PLAYER_VIDEO_FORMAT_H264);
 
-        if (out.frame_buffer != NULL)
+        if (h264_preview_out_meta_only)
         {
-            frame_buffer_t *fb = (frame_buffer_t *)out.frame_buffer;
-            fb->fmt = controller->config.video.output_format;
+            ret = video_player_init_h264_preview_out(&out);
+            if (ret != AVDK_ERR_OK)
+            {
+                controller->config.video.packet_buffer_free_cb(controller->config.user_data, &pkt);
+                LOGE("%s: init H264 preview output failed, ret=%d\n", __func__, ret);
+                return ret;
+            }
+        }
+        else
+        {
+            if (controller->config.video.buffer_alloc_cb == NULL)
+            {
+                controller->config.video.packet_buffer_free_cb(controller->config.user_data, &pkt);
+                LOGE("%s: video output buffer_alloc_cb is NULL\n", __func__);
+                return AVDK_ERR_UNSUPPORTED;
+            }
+
+            out.length = video_player_calc_output_buffer_size(controller->current_media_info.video.width,
+                                                              controller->current_media_info.video.height,
+                                                              controller->config.video.output_format);
+            ret = controller->config.video.buffer_alloc_cb(controller->config.user_data, &out);
+            if (ret != AVDK_ERR_OK)
+            {
+                controller->config.video.packet_buffer_free_cb(controller->config.user_data, &pkt);
+                LOGE("%s: buffer_alloc_cb failed, ret=%d\n", __func__, ret);
+                return ret;
+            }
         }
 
         rtos_lock_mutex(&controller->active_mutex);
@@ -1819,7 +1854,7 @@ static avdk_err_t video_player_ctlr_seek_preview(bk_video_player_ctlr_handle_t h
 
         if (ret != AVDK_ERR_OK)
         {
-            if (controller->config.video.buffer_free_cb != NULL)
+            if (out.data != NULL && controller->config.video.buffer_free_cb != NULL)
             {
                 controller->config.video.buffer_free_cb(controller->config.user_data, &out);
             }
@@ -1849,9 +1884,8 @@ static avdk_err_t video_player_ctlr_seek_preview(bk_video_player_ctlr_handle_t h
         {
             video_player_video_frame_meta_t meta;
             os_memset(&meta, 0, sizeof(meta));
-            meta.video = controller->current_media_info.video;
             meta.frame_index = 0; // Seek preview frame is not part of normal playback sequence.
-            meta.pts_ms = out.pts;
+            video_player_fill_video_frame_meta(controller, decoder, &out, &meta);
 
             controller->config.video.decode_complete_cb(controller->config.user_data, &meta, &out);
         }

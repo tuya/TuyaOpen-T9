@@ -17,8 +17,6 @@
 
 #define BASEADDR_CSI            0x4c050000
 #define BASEADDR_CSI_EXT        0x4c058000
-#define GPIO_DEBUG_FUNC_VALUE   0x7F // 127
-#define GPIO_DVP_FUNC_VALUE     0x81 // 129
 
 static void bk_csi_isr(void)
 {
@@ -28,7 +26,7 @@ static void bk_csi_isr(void)
 
 bk_err_t bk_mipi_csi_controller_init(uint16_t width, uint16_t height, uint8_t data_type)
 {
-    data_type = 0x2B; // default raw10
+    uint8_t type = data_type; // default raw10
 
     // CSI PHY
     LOGI("%s %d %d format[0x%x] \r\n", __func__, width, height, data_type);
@@ -45,7 +43,7 @@ bk_err_t bk_mipi_csi_controller_init(uint16_t width, uint16_t height, uint8_t da
     *((volatile unsigned int *)(BASEADDR_CSI + 0x000000ac)) = 0x0 << 24 | /*0x1f*/0x00 << 17 | 0x00<<16;
     *((volatile unsigned int *)(BASEADDR_CSI + 0x00000080)) = 0x01<<24 | 0x01<<16 | 0x01<<8 | 0x00<<0;
     *((volatile unsigned int *)(BASEADDR_CSI + 0x00000084)) = 0x0; // ipi vc = 0x00
-    *((volatile unsigned int *)(BASEADDR_CSI + 0x00000088)) = data_type; // embedded data() | data type(0x2c)
+    *((volatile unsigned int *)(BASEADDR_CSI + 0x00000088)) = type; // embedded data() | data type(0x2c)
     *((volatile unsigned int *)(BASEADDR_CSI + 0x0000008c)) = 0x01<<8; // autoAttr flush
 #if 0 // test pattern enable
     uint16_t ipi_hsa = 0x08; // h sync pulse width(clock cycles of pixclk)
@@ -135,22 +133,30 @@ void bk_mipi_csi_ext_set_enable(uint8_t mode)
 
 void bk_dvp_io_config(void)
 {
-    /* dvp pins function config */
-    for (int i = GPIO_29; i <= GPIO_39; i++) {
-        gpio_dev_unmap(i);
-        //gpio_dev_map(i, GPIO_DVP_FUNC_VALUE);
-        *(volatile uint32_t*)(SOC_AON_GPIO_REG_BASE + i * 4) |= (GPIO_DVP_FUNC_VALUE << 24); // gpio dvp function map
+#if CONFIG_USR_GPIO_CFG_EN
+    static const gpio_dev_t dvp_funcs[] = {
+        CAMERA_DVP_PCLK_FUNC,
+        CAMERA_DVP_HSYNC_FUNC,
+        CAMERA_DVP_VSYNC_FUNC,
+        CAMERA_DVP_PXDATA0_FUNC,
+        CAMERA_DVP_PXDATA1_FUNC,
+        CAMERA_DVP_PXDATA2_FUNC,
+        CAMERA_DVP_PXDATA3_FUNC,
+        CAMERA_DVP_PXDATA4_FUNC,
+        CAMERA_DVP_PXDATA5_FUNC,
+        CAMERA_DVP_PXDATA6_FUNC,
+        CAMERA_DVP_PXDATA7_FUNC,
+    };
+
+    for (uint32_t i = 0; i < sizeof(dvp_funcs) / sizeof(dvp_funcs[0]); i++) {
+        gpio_dev_map_by_func(dvp_funcs[i]);
     }
+#endif
 }
 
 void bk_mipi_csi_enable_debug_pin(void)
 {
     LOGI("%s\r\n", __func__);
-    for (int i = GPIO_2; i <= GPIO_4; i++) {
-        gpio_dev_unmap(i);
-        //gpio_dev_map(i, GPIO_DEBUG_FUNC_VALUE);
-        *(volatile uint32_t*)(SOC_AON_GPIO_REG_BASE + i * 4) |= (GPIO_DEBUG_FUNC_VALUE << 24); // gpio debug function map
-    }
 
     uint32_t reg = REG_READ(BASEADDR_CSI_EXT + 0x00000000);
     reg |= 0x40;// debug for 0x40

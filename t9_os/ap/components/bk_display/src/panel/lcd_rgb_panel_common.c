@@ -12,15 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Common RGB panel driver.
-//
-// Implements the panel ops table (reset/init/del/disp_on_off) for any
-// panel described by ::bk_display_rgb_panel_t. Two GPIO domains are
-// managed:
-//   * 24-bit parallel RGB pixel lanes muxed through bk_lcd_rgb_pixel_pinmux().
-//   * private SW SPI (CLK/CS/SDA) for panel register-init - owned by the
-//     SPI bus in ::BK_DISPLAY_SPI_BUS_MODE_SW and accessed through the
-//     bus' tx_param op via ::bk_display_bus_tx_param().
+// Common RGB panel driver. See the MIPI counterpart for the .init / .reset
+// dispatch model; RGB additionally muxes the 24-bit parallel pixel lanes
+// and uses the SW-SPI bus' tx_param channel for register init.
 
 #include <os/os.h>
 #include <os/mem.h>
@@ -35,51 +29,54 @@
 
 #define TAG "lcd_rgb_panel_common"
 
-#define RGB_PIN_MUX(pin, func)                              \
-    do {                                                    \
-        gpio_dev_unmap(pin);                                \
-        gpio_dev_map(pin, func);                            \
-        bk_gpio_set_capacity(pin, GPIO_DRIVER_CAPACITY_3);  \
-    } while (0)
+#if CONFIG_USR_GPIO_CFG_EN
+#define RGB_PIN_MUX(func) do { \
+	gpio_dev_map_by_func(func); \
+	gpio_id_t pin = gpio_get_id_by_func(func); \
+	if (pin < SOC_GPIO_NUM) { \
+		bk_gpio_set_capacity(pin, GPIO_DRIVER_CAPACITY_3); \
+	} \
+} while (0)
+#endif
 
 static void lcd_rgb_panel_pinmux_init(void)
 {
-    RGB_PIN_MUX(LCD_RGB_R0_PIN, LCD_RGB_R0_FUNC);
-    RGB_PIN_MUX(LCD_RGB_R1_PIN, LCD_RGB_R1_FUNC);
-    RGB_PIN_MUX(LCD_RGB_R2_PIN, LCD_RGB_R2_FUNC);
-    RGB_PIN_MUX(LCD_RGB_R3_PIN, LCD_RGB_R3_FUNC);
-    RGB_PIN_MUX(LCD_RGB_R4_PIN, LCD_RGB_R4_FUNC);
-    RGB_PIN_MUX(LCD_RGB_R5_PIN, LCD_RGB_R5_FUNC);
-    RGB_PIN_MUX(LCD_RGB_R6_PIN, LCD_RGB_R6_FUNC);
-    RGB_PIN_MUX(LCD_RGB_R7_PIN, LCD_RGB_R7_FUNC);
+#if CONFIG_USR_GPIO_CFG_EN
+	RGB_PIN_MUX(GPIO_DEV_LCD_R0);
+	RGB_PIN_MUX(GPIO_DEV_LCD_R1);
+	RGB_PIN_MUX(GPIO_DEV_LCD_R2);
+	RGB_PIN_MUX(GPIO_DEV_LCD_R3);
+	RGB_PIN_MUX(GPIO_DEV_LCD_R4);
+	RGB_PIN_MUX(GPIO_DEV_LCD_R5);
+	RGB_PIN_MUX(GPIO_DEV_LCD_R6);
+	RGB_PIN_MUX(GPIO_DEV_LCD_R7);
+	RGB_PIN_MUX(GPIO_DEV_LCD_G0);
+	RGB_PIN_MUX(GPIO_DEV_LCD_G1);
+	RGB_PIN_MUX(GPIO_DEV_LCD_G2);
+	RGB_PIN_MUX(GPIO_DEV_LCD_G3);
+	RGB_PIN_MUX(GPIO_DEV_LCD_G4);
+	RGB_PIN_MUX(GPIO_DEV_LCD_G5);
+	RGB_PIN_MUX(GPIO_DEV_LCD_G6);
+	RGB_PIN_MUX(GPIO_DEV_LCD_G7);
+	RGB_PIN_MUX(GPIO_DEV_LCD_B0);
+	RGB_PIN_MUX(GPIO_DEV_LCD_B1);
+	RGB_PIN_MUX(GPIO_DEV_LCD_B2);
+	RGB_PIN_MUX(GPIO_DEV_LCD_B3);
+	RGB_PIN_MUX(GPIO_DEV_LCD_B4);
+	RGB_PIN_MUX(GPIO_DEV_LCD_B5);
+	RGB_PIN_MUX(GPIO_DEV_LCD_B6);
+	RGB_PIN_MUX(GPIO_DEV_LCD_B7);
+	RGB_PIN_MUX(GPIO_DEV_LCD_CLK);
+	RGB_PIN_MUX(GPIO_DEV_LCD_HSYNC);
+	RGB_PIN_MUX(GPIO_DEV_LCD_VSYNC);
+	RGB_PIN_MUX(GPIO_DEV_LCD_DE);
 
-    RGB_PIN_MUX(LCD_RGB_G0_PIN, LCD_RGB_G0_FUNC);
-    RGB_PIN_MUX(LCD_RGB_G1_PIN, LCD_RGB_G1_FUNC);
-    RGB_PIN_MUX(LCD_RGB_G2_PIN, LCD_RGB_G2_FUNC);
-    RGB_PIN_MUX(LCD_RGB_G3_PIN, LCD_RGB_G3_FUNC);
-    RGB_PIN_MUX(LCD_RGB_G4_PIN, LCD_RGB_G4_FUNC);
-    RGB_PIN_MUX(LCD_RGB_G5_PIN, LCD_RGB_G5_FUNC);
-    RGB_PIN_MUX(LCD_RGB_G6_PIN, LCD_RGB_G6_FUNC);
-    RGB_PIN_MUX(LCD_RGB_G7_PIN, LCD_RGB_G7_FUNC);
-
-    RGB_PIN_MUX(LCD_RGB_B0_PIN, LCD_RGB_B0_FUNC);
-    RGB_PIN_MUX(LCD_RGB_B1_PIN, LCD_RGB_B1_FUNC);
-    RGB_PIN_MUX(LCD_RGB_B2_PIN, LCD_RGB_B2_FUNC);
-    RGB_PIN_MUX(LCD_RGB_B3_PIN, LCD_RGB_B3_FUNC);
-    RGB_PIN_MUX(LCD_RGB_B4_PIN, LCD_RGB_B4_FUNC);
-    RGB_PIN_MUX(LCD_RGB_B5_PIN, LCD_RGB_B5_FUNC);
-    RGB_PIN_MUX(LCD_RGB_B6_PIN, LCD_RGB_B6_FUNC);
-    RGB_PIN_MUX(LCD_RGB_B7_PIN, LCD_RGB_B7_FUNC);
-
-    RGB_PIN_MUX(LCD_RGB_CLK_PIN, LCD_RGB_CLK_FUNC);
-
-    gpio_dev_unmap(LCD_RGB_DISP_PIN);
-    BK_LOG_ON_ERR(bk_gpio_enable_output(LCD_RGB_DISP_PIN));
-    bk_gpio_set_output_high(LCD_RGB_DISP_PIN);
-
-    RGB_PIN_MUX(LCD_RGB_HSYNC_PIN, LCD_RGB_HSYNC_FUNC);
-    RGB_PIN_MUX(LCD_RGB_VSYNC_PIN, LCD_RGB_VSYNC_FUNC);
-    RGB_PIN_MUX(LCD_RGB_DE_PIN, LCD_RGB_DE_FUNC);
+	gpio_id_t disp_pin = gpio_get_id_by_func(GPIO_DEV_LCD_DISP);
+	if (disp_pin < SOC_GPIO_NUM) {
+		BK_LOG_ON_ERR(bk_gpio_enable_output(disp_pin));
+		bk_gpio_set_output_high(disp_pin);
+	}
+#endif
 }
 
 typedef struct {
@@ -87,9 +84,8 @@ typedef struct {
     bk_display_bus_handle_t bus_handle;
     const bk_display_rgb_panel_t *panel;
     int reset_gpio;
-    uint8_t reset_active_level;
+    bool reset_active_level;
     bk_display_reset_timing_t reset_timing;
-    bk_err_t (*custom_reset)(bk_avdk_lcd_panel_t *panel, void *priv);
 } lcd_rgb_panel_common_t;
 
 static inline uint16_t lcd_rgb_panel_pick_ms(uint16_t value, uint16_t fallback)
@@ -97,7 +93,7 @@ static inline uint16_t lcd_rgb_panel_pick_ms(uint16_t value, uint16_t fallback)
     return value != 0u ? value : fallback;
 }
 
-static bk_err_t lcd_rgb_panel_common_init(bk_avdk_lcd_panel_t *panel)
+bk_err_t bk_lcd_rgb_default_init(bk_avdk_lcd_panel_t *panel)
 {
     lcd_rgb_panel_common_t *priv = (lcd_rgb_panel_common_t *)panel;
     AVDK_RETURN_ON_FALSE(priv && priv->panel, BK_ERR_NULL_PARAM, TAG, "invalid panel");
@@ -130,20 +126,15 @@ static bk_err_t lcd_rgb_panel_common_init(bk_avdk_lcd_panel_t *panel)
     return BK_OK;
 }
 
-static bk_err_t lcd_rgb_panel_common_reset(bk_avdk_lcd_panel_t *panel)
+bk_err_t bk_lcd_rgb_default_reset(bk_avdk_lcd_panel_t *panel)
 {
     lcd_rgb_panel_common_t *priv = (lcd_rgb_panel_common_t *)panel;
     AVDK_RETURN_ON_FALSE(priv, BK_ERR_NULL_PARAM, TAG, "invalid panel");
-
-    if (priv->custom_reset != NULL) {
-        return priv->custom_reset(panel, priv);
-    }
 
     if (priv->reset_gpio < 0) {
         return BK_OK;
     }
 
-    gpio_dev_unmap(priv->reset_gpio);
     BK_LOG_ON_ERR(bk_gpio_enable_output(priv->reset_gpio));
     bk_gpio_set_capacity(priv->reset_gpio, GPIO_DRIVER_CAPACITY_3);
 
@@ -165,7 +156,32 @@ static bk_err_t lcd_rgb_panel_common_reset(bk_avdk_lcd_panel_t *panel)
         bk_gpio_set_output_low(priv->reset_gpio);
     }
     rtos_delay_milliseconds(release_ms);
+    BK_LOGI(TAG, "reset done %x %d", priv->reset_gpio, priv->reset_active_level);
     return BK_OK;
+}
+
+static bk_err_t lcd_rgb_panel_common_init(bk_avdk_lcd_panel_t *panel)
+{
+    lcd_rgb_panel_common_t *priv = (lcd_rgb_panel_common_t *)panel;
+    AVDK_RETURN_ON_FALSE(priv && priv->panel, BK_ERR_NULL_PARAM, TAG, "invalid panel");
+
+    if (priv->panel->init == NULL) {
+        BK_LOGI(TAG, "%s %s: init is NULL, skip", __func__, priv->panel->name);
+        return BK_OK;
+    }
+    return priv->panel->init(panel);
+}
+
+static bk_err_t lcd_rgb_panel_common_reset(bk_avdk_lcd_panel_t *panel)
+{
+    lcd_rgb_panel_common_t *priv = (lcd_rgb_panel_common_t *)panel;
+    AVDK_RETURN_ON_FALSE(priv && priv->panel, BK_ERR_NULL_PARAM, TAG, "invalid panel");
+
+    if (priv->panel->reset == NULL) {
+        BK_LOGI(TAG, "%s %s: reset is NULL, skip", __func__, priv->panel->name);
+        return BK_OK;
+    }
+    return priv->panel->reset(panel);
 }
 
 static bk_err_t lcd_rgb_panel_common_read_id(bk_avdk_lcd_panel_t *panel, uint32_t *id)
@@ -233,11 +249,11 @@ static bk_err_t lcd_rgb_panel_common_rx_param(bk_avdk_lcd_panel_t *panel,
 }
 
 bk_err_t bk_lcd_new_rgb_panel_common(bk_display_bus_handle_t bus_handle,
-                                     const bk_lcd_panel_dev_config_t *panel_dev_config,
+                                     const bk_lcd_panel_config_t *panel_config,
                                      const bk_display_rgb_panel_t *panel_desc,
                                      bk_avdk_lcd_panel_handle_t *ret_panel)
 {
-    AVDK_RETURN_ON_FALSE(bus_handle && panel_dev_config && panel_desc && ret_panel,
+    AVDK_RETURN_ON_FALSE(bus_handle && panel_config && panel_desc && ret_panel,
                          BK_ERR_NULL_PARAM, TAG, "invalid arguments");
     AVDK_RETURN_ON_FALSE(panel_desc->name != NULL, BK_ERR_NULL_PARAM, TAG, "panel name is NULL");
 
@@ -248,24 +264,28 @@ bk_err_t bk_lcd_new_rgb_panel_common(bk_display_bus_handle_t bus_handle,
 
     panel->bus_handle = bus_handle;
     panel->panel = panel_desc;
-    panel->reset_gpio = panel_dev_config->reset_pin;
-    panel->reset_active_level = panel_dev_config->reset_active_level;
+    panel->reset_gpio = panel_config->reset_pin;
+    panel->reset_active_level = panel_desc->reset_active_level;
     panel->reset_timing.idle_ms    = lcd_rgb_panel_pick_ms(panel_desc->reset_timing.idle_ms,
                                                            BK_DISPLAY_RESET_IDLE_MS_RGB_DEFAULT);
     panel->reset_timing.active_ms  = lcd_rgb_panel_pick_ms(panel_desc->reset_timing.active_ms,
                                                            BK_DISPLAY_RESET_ACTIVE_MS_RGB_DEFAULT);
     panel->reset_timing.release_ms = lcd_rgb_panel_pick_ms(panel_desc->reset_timing.release_ms,
                                                            BK_DISPLAY_RESET_RELEASE_MS_RGB_DEFAULT);
-    panel->custom_reset = panel_desc->custom_reset;
 
     lcd_rgb_panel_pinmux_init();
 
-    panel->base.init = lcd_rgb_panel_common_init;
-    panel->base.reset = lcd_rgb_panel_common_reset;
-    panel->base.read_id = lcd_rgb_panel_common_read_id;
-    panel->base.del = lcd_rgb_panel_common_del;
-    panel->base.tx_param = lcd_rgb_panel_common_tx_param;
-    panel->base.rx_param = lcd_rgb_panel_common_rx_param;
+    panel->base.bus                = bus_handle;
+    panel->base.timing             = panel_desc->timing;
+    panel->base.pixel_clock_hz     = panel_desc->pixel_clock_hz;
+    panel->base.clk_src            = DPU_CLK_SRC_SYSCLK;
+
+    panel->base.init               = lcd_rgb_panel_common_init;
+    panel->base.reset              = lcd_rgb_panel_common_reset;
+    panel->base.read_id            = lcd_rgb_panel_common_read_id;
+    panel->base.del                = lcd_rgb_panel_common_del;
+    panel->base.tx_param           = lcd_rgb_panel_common_tx_param;
+    panel->base.rx_param           = lcd_rgb_panel_common_rx_param;
 
     *ret_panel = (bk_avdk_lcd_panel_handle_t)&panel->base;
     return BK_OK;

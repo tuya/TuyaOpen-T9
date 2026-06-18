@@ -1022,49 +1022,58 @@ static const bk_camera_sensor_format_t gc2053_format_array[] = {
         .width = 1280,
         .height = 720,
         .fps = 30,
+        .output_pixel_fmt = BK_PIXEL_FORMAT_RGGB10,
     },
     {
         .width = 1280,
         .height = 720,
         .fps = 25,
+        .output_pixel_fmt = BK_PIXEL_FORMAT_RGGB10,
     },
     {
         .width = 1280,
         .height = 720,
         .fps = 20,
+        .output_pixel_fmt = BK_PIXEL_FORMAT_RGGB10,
     },
     {
         .width = 1920,
         .height = 1080,
         .fps = 30,
+        .output_pixel_fmt = BK_PIXEL_FORMAT_RGGB10,
     },
     {
         .width = 1920,
         .height = 1080,
         .fps = 25,
+        .output_pixel_fmt = BK_PIXEL_FORMAT_RGGB10,
     },
     {
         .width = 1920,
         .height = 1080,
         .fps = 20,
+        .output_pixel_fmt = BK_PIXEL_FORMAT_RGGB10,
     },
 
     {
         .width = 1920,
         .height = 1080,
         .fps = 15,
+        .output_pixel_fmt = BK_PIXEL_FORMAT_RGGB10,
     },
 
     {
         .width = 640,
         .height = 480,
         .fps = 30,
+        .output_pixel_fmt = BK_PIXEL_FORMAT_RGGB10,
     },
 
     {
         .width = 1088,
         .height = 1088,
         .fps = 15,
+        .output_pixel_fmt = BK_PIXEL_FORMAT_RGGB10,
     },
 
 };
@@ -1102,7 +1111,6 @@ avdk_err_t gc2053_detect(bk_camera_sensor_handle_t *handle, bk_camera_sensor_con
     /* enable camera power */
     if (config->pin_pwdn != 0xFF)
     {
-        gpio_dev_unmap(config->pin_pwdn);
         BK_LOG_ON_ERR(bk_gpio_enable_output(config->pin_pwdn));
         bk_gpio_set_capacity(config->pin_pwdn, GPIO_DRIVER_CAPACITY_3);
         bk_gpio_set_output_high(config->pin_pwdn);
@@ -1111,7 +1119,6 @@ avdk_err_t gc2053_detect(bk_camera_sensor_handle_t *handle, bk_camera_sensor_con
 
     if (config->pin_reset != 0xFF)
     {
-        gpio_dev_unmap(config->pin_reset);
         BK_LOG_ON_ERR(bk_gpio_enable_output(config->pin_reset));
         bk_gpio_set_capacity(config->pin_reset, GPIO_DRIVER_CAPACITY_3);
         bk_gpio_set_output_high(config->pin_reset);

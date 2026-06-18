@@ -28,6 +28,7 @@
 #define HSPL_TEST_LOGD(...) BK_LOGD(HSPL_TEST_TAG, ##__VA_ARGS__)
 #define HSPL_TEST_LOGE(...) BK_LOGE(HSPL_TEST_TAG, ##__VA_ARGS__)
 
+#if CONFIG_HSPL_TEST
 static void hspl_timeout_cb(uint8_t channel, void *param)
 {
 	HSPL_TEST_LOGI("timeout irq: ch=%u param=0x%p\r\n", channel, param);
@@ -52,11 +53,21 @@ typedef struct {
 static hspl_stress_test_t s_stress_test_cpu0 = {0};
 static hspl_stress_test_t s_stress_test_cpu2 = {0};
 
-/* IPI commands for stress test coordination */
-#define IPI_CMD_STRESS_START   (0x53545254)  /* 'STRT' */
-#define IPI_CMD_STRESS_STOP    (0x53544F50)  /* 'STOP' */
-#define IPI_CMD_STRESS_DONE    (0x444F4E45)  /* 'DONE' */
-#define IPI_CMD_STRESS_AUTO    (0x4155544F)  /* 'AUTO' - Auto start stress test */
+/* TEST-domain IPI events for stress test coordination */
+typedef enum {
+	HSPL_STRESS_IPI_EVENT_START = 1,
+	HSPL_STRESS_IPI_EVENT_STOP,
+	HSPL_STRESS_IPI_EVENT_DONE,
+	HSPL_STRESS_IPI_EVENT_AUTO,
+} hspl_stress_ipi_event_t;
+
+#define HSPL_STRESS_IPI_PAYLOAD_NONE 0
+
+static bk_err_t hspl_stress_ipi_send(ipi_core_id_t target_core, hspl_stress_ipi_event_t event)
+{
+	return bk_ipi_send_domain(target_core, IPI_DOMAIN_TEST, (uint8_t)event,
+		HSPL_STRESS_IPI_PAYLOAD_NONE);
+}
 
 static void hspl_stress_test_worker(void *param)
 {
@@ -112,9 +123,9 @@ static void hspl_stress_test_worker(void *param)
 
 	/* Send done signal via IPI */
 	if (core_id == CPU0_CORE_ID) {
-		bk_ipi_send(IPI_AP_CORE0, IPI_CMD_STRESS_DONE);
+		hspl_stress_ipi_send(IPI_AP_CORE0, HSPL_STRESS_IPI_EVENT_DONE);
 	} else if (core_id == CPU2_CORE_ID) {
-		bk_ipi_send(IPI_CP_CORE0, IPI_CMD_STRESS_DONE);
+		hspl_stress_ipi_send(IPI_CP_CORE0, HSPL_STRESS_IPI_EVENT_DONE);
 	}
 
 	test->running = false;
@@ -124,8 +135,13 @@ static void hspl_stress_test_worker(void *param)
 	rtos_delete_thread(NULL);
 }
 
-static void hspl_stress_ipi_callback(ipi_core_id_t core_id, uint32_t value, void *param)
+static void hspl_stress_ipi_callback(ipi_core_id_t core_id, uint32_t value,
+	uint8_t src_cpu, uint8_t event, uint16_t payload, void *param)
 {
+	(void)core_id;
+	(void)value;
+	(void)src_cpu;
+	(void)payload;
 	(void)param;
 	hspl_stress_test_t *test = NULL;
 	uint32_t my_core_id = rtos_get_core_id();
@@ -138,17 +154,19 @@ static void hspl_stress_ipi_callback(ipi_core_id_t core_id, uint32_t value, void
 		return;
 	}
 
-	if (value == IPI_CMD_STRESS_START) {
+	if (event == HSPL_STRESS_IPI_EVENT_START) {
 		HSPL_TEST_LOGI("Core %u: Received START signal\r\n", my_core_id);
 		test->start_flag = true;
-	} else if (value == IPI_CMD_STRESS_STOP) {
+	} else if (event == HSPL_STRESS_IPI_EVENT_STOP) {
 		HSPL_TEST_LOGI("Core %u: Received STOP signal\r\n", my_core_id);
 		test->running = false;
-	} else if (value == IPI_CMD_STRESS_AUTO) {
+	} else if (event == HSPL_STRESS_IPI_EVENT_AUTO) {
 		HSPL_TEST_LOGI("Core %u: Received AUTO signal, starting test\r\n", my_core_id);
 		if (test->running) {
 			test->start_flag = true;
 		}
+	} else if (event == HSPL_STRESS_IPI_EVENT_DONE) {
+		HSPL_TEST_LOGI("Core %u: Received DONE signal\r\n", my_core_id);
 	}
 }
 
@@ -163,12 +181,31 @@ static void cli_hspl_help(void)
 	CLI_LOGD("hspl timeout_irq {hspl_id} {enable|disable|clear}\r\n");
 	CLI_LOGD("hspl raw_sta {hspl_id} {ch}      - Read STA raw\r\n");
 	CLI_LOGD("hspl raw_lock {ch}               - Read LOCK raw on HSPL_ID_0 (NOTE: reading LOCK triggers lock attempt)\r\n");
-	CLI_LOGD("hspl res_lock {flash|clock|os|user0..user2} {timeout_us}\r\n");
-	CLI_LOGD("hspl res_unlock {flash|clock|os|user0..user2}\r\n");
+	CLI_LOGD("hspl res_lock {flash|clock|sys_sw_regs|uart_log|os|user1|user2} {timeout_us}\r\n");
+	CLI_LOGD("hspl res_must_lock {flash|clock|sys_sw_regs|uart_log|os|user1|user2}\r\n");
+	CLI_LOGD("hspl res_unlock {flash|clock|sys_sw_regs|uart_log|os|user1|user2}\r\n");
 	CLI_LOGD("hspl stress {hspl_id} {ch} {iter} {hold_ms} - Parallel stress test (CPU0 vs CPU2)\r\n");
 	CLI_LOGD("hspl stress_auto {hspl_id} {ch} {iter} {hold_ms} - Auto parallel stress test (auto start on CPU0 & CPU2)\r\n");
 	CLI_LOGD("hspl stress_stop                  - Stop stress test\r\n");
 	CLI_LOGD("hspl stress_stat                  - Show stress test statistics\r\n");
+}
+
+static bool cli_hspl_parse_res(const char *name, bk_hspl_res_t *res)
+{
+	if (!name || !res) {
+		return false;
+	}
+
+	if (os_strcmp(name, "flash") == 0) *res = BK_HSPL_RES_FLASH;
+	else if (os_strcmp(name, "clock") == 0) *res = BK_HSPL_RES_CLOCK;
+	else if (os_strcmp(name, "sys_sw_regs") == 0) *res = BK_HSPL_RES_SYS_SW_REGS;
+	else if (os_strcmp(name, "uart_log") == 0) *res = BK_HSPL_RES_UART_LOG;
+	else if (os_strcmp(name, "os") == 0) *res = BK_HSPL_RES_OS;
+	else if (os_strcmp(name, "user1") == 0) *res = BK_HSPL_RES_USER1;
+	else if (os_strcmp(name, "user2") == 0) *res = BK_HSPL_RES_USER2;
+	else return false;
+
+	return true;
 }
 
 static void cli_hspl_driver_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv)
@@ -351,16 +388,11 @@ static void cli_hspl_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, cha
 		CLI_LOGD("LOCK[%u]=0x%08X\r\n", ch, v);
 	} else if (os_strcmp(argv[1], "res_lock") == 0) {
 		if (argc < 4) {
-			CLI_LOGE("Usage: hspl res_lock {flash|clock|os|user1|user2} {timeout_us}\r\n");
+			CLI_LOGE("Usage: hspl res_lock {flash|clock|sys_sw_regs|uart_log|os|user1|user2} {timeout_us}\r\n");
 			return;
 		}
 		bk_hspl_res_t res = BK_HSPL_RES_MAX;
-		if (os_strcmp(argv[2], "flash") == 0) res = BK_HSPL_RES_FLASH;
-		else if (os_strcmp(argv[2], "clock") == 0) res = BK_HSPL_RES_CLOCK;
-		else if (os_strcmp(argv[2], "os") == 0) res = BK_HSPL_RES_OS;
-		else if (os_strcmp(argv[2], "user1") == 0) res = BK_HSPL_RES_USER1;
-		else if (os_strcmp(argv[2], "user2") == 0) res = BK_HSPL_RES_USER2;
-		if (res == BK_HSPL_RES_MAX) {
+		if (!cli_hspl_parse_res(argv[2], &res)) {
 			CLI_LOGE("unknown res\r\n");
 			return;
 		}
@@ -373,18 +405,31 @@ static void cli_hspl_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, cha
 		} else {
 			CLI_LOGE("res_lock fail: %d\r\n", ret);
 		}
-	} else if (os_strcmp(argv[1], "res_unlock") == 0) {
+	} else if (os_strcmp(argv[1], "res_must_lock") == 0) {
 		if (argc < 3) {
-			CLI_LOGE("Usage: hspl res_unlock {flash|clock|os|user1|user2}\r\n");
+			CLI_LOGE("Usage: hspl res_must_lock {flash|clock|sys_sw_regs|uart_log|os|user1|user2}\r\n");
 			return;
 		}
 		bk_hspl_res_t res = BK_HSPL_RES_MAX;
-		if (os_strcmp(argv[2], "flash") == 0) res = BK_HSPL_RES_FLASH;
-		else if (os_strcmp(argv[2], "clock") == 0) res = BK_HSPL_RES_CLOCK;
-		else if (os_strcmp(argv[2], "os") == 0) res = BK_HSPL_RES_OS;
-		else if (os_strcmp(argv[2], "user1") == 0) res = BK_HSPL_RES_USER1;
-		else if (os_strcmp(argv[2], "user2") == 0) res = BK_HSPL_RES_USER2;
-		if (res == BK_HSPL_RES_MAX) {
+		if (!cli_hspl_parse_res(argv[2], &res)) {
+			CLI_LOGE("unknown res\r\n");
+			return;
+		}
+		bk_err_t ret = bk_hspl_res_must_lock(res);
+		if (ret == BK_OK) {
+			uint8_t hspl_id, ch;
+			bk_hspl_res_get_map(res, &hspl_id, &ch);
+			CLI_LOGD("res_must_lock ok: %s (hspl_id=%u ch=%u)\r\n", argv[2], hspl_id, ch);
+		} else {
+			CLI_LOGE("res_must_lock fail: %d\r\n", ret);
+		}
+	} else if (os_strcmp(argv[1], "res_unlock") == 0) {
+		if (argc < 3) {
+			CLI_LOGE("Usage: hspl res_unlock {flash|clock|sys_sw_regs|uart_log|os|user1|user2}\r\n");
+			return;
+		}
+		bk_hspl_res_t res = BK_HSPL_RES_MAX;
+		if (!cli_hspl_parse_res(argv[2], &res)) {
 			CLI_LOGE("unknown res\r\n");
 			return;
 		}
@@ -419,12 +464,12 @@ static void cli_hspl_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, cha
 		if (my_core_id == CPU0_CORE_ID) {
 			test = &s_stress_test_cpu0;
 			target_core = IPI_AP_CORE0;
-			bk_ipi_register_callback(IPI_CP_CORE0, hspl_stress_ipi_callback, NULL);
+			bk_ipi_register_domain_callback(IPI_DOMAIN_TEST, hspl_stress_ipi_callback, NULL);
 			bk_ipi_enable(IPI_CP_CORE0);
 		} else if (my_core_id == CPU2_CORE_ID) {
 			test = &s_stress_test_cpu2;
 			target_core = IPI_CP_CORE0;
-			bk_ipi_register_callback(IPI_AP_CORE0, hspl_stress_ipi_callback, NULL);
+			bk_ipi_register_domain_callback(IPI_DOMAIN_TEST, hspl_stress_ipi_callback, NULL);
 			bk_ipi_enable(IPI_AP_CORE0);
 		} else {
 			CLI_LOGE("Stress test only supports CPU0 or CPU2\r\n");
@@ -465,7 +510,7 @@ static void cli_hspl_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, cha
 		rtos_delay_milliseconds(50);
 
 		/* Send start signal to other core */
-		bk_ipi_send(target_core, IPI_CMD_STRESS_START);
+		hspl_stress_ipi_send(target_core, HSPL_STRESS_IPI_EVENT_START);
 		test->start_flag = true;
 
 		CLI_LOGD("Stress test started. Use 'hspl stress_stat' to check progress.\r\n");
@@ -536,9 +581,8 @@ static void cli_hspl_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, cha
 		test_cpu2->start_flag = false;
 
 		/* Register IPI callbacks on both CPUs */
-		bk_ipi_register_callback(IPI_CP_CORE0, hspl_stress_ipi_callback, NULL);
+		bk_ipi_register_domain_callback(IPI_DOMAIN_TEST, hspl_stress_ipi_callback, NULL);
 		bk_ipi_enable(IPI_CP_CORE0);
-		bk_ipi_register_callback(IPI_AP_CORE0, hspl_stress_ipi_callback, NULL);
 		bk_ipi_enable(IPI_AP_CORE0);
 
 		/* Create worker threads on both CPUs */
@@ -555,7 +599,7 @@ static void cli_hspl_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, cha
 		} else {
 			/* Send IPI to CPU0 to start its worker */
 			CLI_LOGD("Sending IPI to CPU0 to start stress test...\r\n");
-			bk_ipi_send(IPI_CP_CORE0, IPI_CMD_STRESS_AUTO);
+			hspl_stress_ipi_send(IPI_CP_CORE0, HSPL_STRESS_IPI_EVENT_AUTO);
 		}
 
 		/* Start CPU2 worker (if we're on CPU2 or can create thread on CPU2) */
@@ -570,7 +614,7 @@ static void cli_hspl_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, cha
 		} else {
 			/* Send IPI to CPU2 to start its worker */
 			CLI_LOGD("Sending IPI to CPU2 to start stress test...\r\n");
-			bk_ipi_send(IPI_AP_CORE0, IPI_CMD_STRESS_AUTO);
+			hspl_stress_ipi_send(IPI_AP_CORE0, HSPL_STRESS_IPI_EVENT_AUTO);
 		}
 
 		/* Wait a bit for threads to start */
@@ -578,8 +622,8 @@ static void cli_hspl_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, cha
 
 		/* Send start signals to both CPUs */
 		CLI_LOGD("Sending START signals to both CPUs...\r\n");
-		bk_ipi_send(IPI_CP_CORE0, IPI_CMD_STRESS_START);
-		bk_ipi_send(IPI_AP_CORE0, IPI_CMD_STRESS_START);
+		hspl_stress_ipi_send(IPI_CP_CORE0, HSPL_STRESS_IPI_EVENT_START);
+		hspl_stress_ipi_send(IPI_AP_CORE0, HSPL_STRESS_IPI_EVENT_START);
 		
 		/* Also set start flag locally if we're on CPU0 or CPU2 */
 		if (my_core_id == CPU0_CORE_ID) {
@@ -609,7 +653,7 @@ static void cli_hspl_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, cha
 
 		if (test->running) {
 			test->running = false;
-			bk_ipi_send(target_core, IPI_CMD_STRESS_STOP);
+			hspl_stress_ipi_send(target_core, HSPL_STRESS_IPI_EVENT_STOP);
 			CLI_LOGD("Stop signal sent. Waiting for threads to finish...\r\n");
 			rtos_delay_milliseconds(500);
 		} else {
@@ -665,11 +709,239 @@ static void cli_hspl_time_cmd(char *pcWriteBuffer, int xWriteBufferLen,
                    HSPL_TIME_TEST_COUNT, t_end - t_start);
 }
 
-#if CONFIG_HSPL_TEST
 DRV_CLI_CMD_EXPORT static const struct cli_command s_hspl_commands[] = {
 	{"hspl_driver", "{init|deinit}", cli_hspl_driver_cmd},
 	{"hspl", "hspl {lock|unlock|state|timeout_cfg|timeout_irq|raw_sta|raw_lock|res_lock|res_unlock|stress|stress_auto|stress_stop|stress_stat} [...]", cli_hspl_cmd},
 	{"hspl_time", "hspl_time", cli_hspl_time_cmd},
 };
-#endif
+#endif /* CONFIG_HSPL_TEST */
+
+#if CONFIG_HSPL_LEAK_DEBUG
+/*
+ * HSPL leak-detection positive-test helpers: acquire an ASPL lock and
+ * deliberately do NOT release it, so that the CP-side leak check can catch it
+ * when the AP powers down. Moved here from the doorbell_lp project.
+ */
+static uint8_t s_hspl_leak_flash_held;
+static uint8_t s_hspl_leak_sys_held;
+static uint8_t s_hspl_leak_uart_log_held;
+
+/*
+ * Acquire an HSPL resource lock and deliberately keep it held (no release),
+ * recording the owner into shared memory so the CP-side power-down check
+ * (pm_check_ap_hspl_leak) can detect the leak. Unlike bk_aspl_*_enter_critical(),
+ * this path does NOT leave interrupts disabled, so the AP RTOS keeps running and
+ * can reach the normal power-down flow where the CP performs the leak check.
+ */
+static bk_err_t hspl_leak_hold(bk_hspl_res_t res, uint32_t pc)
+{
+	bk_err_t ret = bk_hspl_res_must_lock(res);
+
+	if (ret != BK_OK) {
+		return ret;
+	}
+
+	bk_hspl_res_dbg_set_owner(res, (uint8_t)rtos_get_core_id(), pc);
+	return BK_OK;
+}
+
+static void hspl_leak_release(bk_hspl_res_t res)
+{
+	bk_hspl_res_dbg_clear_owner(res);
+	bk_hspl_res_unlock(res);
+}
+
+static const char *hspl_res3_trace_action_name(uint32_t action)
+{
+	switch ((bk_hspl_res3_trace_action_t)action) {
+	case BK_HSPL_RES3_TRACE_ENTER_REQ:
+		return "enter_req";
+	case BK_HSPL_RES3_TRACE_ENTER_GOT:
+		return "enter_got";
+	case BK_HSPL_RES3_TRACE_OWNER_SET:
+		return "owner_set";
+	case BK_HSPL_RES3_TRACE_EXIT_REQ:
+		return "exit_req";
+	case BK_HSPL_RES3_TRACE_OWNER_CLEAR:
+		return "owner_clear";
+	case BK_HSPL_RES3_TRACE_EXIT_DONE:
+		return "exit_done";
+	case BK_HSPL_RES3_TRACE_RECUR_ENTER:
+		return "recur_enter";
+	case BK_HSPL_RES3_TRACE_RECUR_EXIT:
+		return "recur_exit";
+	case BK_HSPL_RES3_TRACE_TIMEOUT:
+		return "timeout";
+	default:
+		return "unknown";
+	}
+}
+
+static void cli_hspl_res3_trace(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv)
+{
+	const volatile bk_hspl_res3_trace_buffer_t *trace;
+	uint32_t write_index;
+	uint32_t count;
+	uint32_t start;
+
+	(void)pcWriteBuffer;
+	(void)xWriteBufferLen;
+
+	if ((argc > 1) && (os_strcmp(argv[1], "clear") == 0)) {
+		bk_hspl_res3_trace_clear();
+		CLI_LOGD("hspl_res3_trace cleared\r\n");
+		return;
+	}
+
+	trace = bk_hspl_res3_trace_get();
+	write_index = trace->write_index;
+	count = (write_index > trace->depth) ? trace->depth : write_index;
+	start = (write_index > trace->depth) ? (write_index - trace->depth) : 0U;
+
+	CLI_LOGD("hspl_res3_trace magic=0x%08x ver=%u depth=%u write=%u wrapped=%u registered=%u addr=%p size=%u\r\n",
+		trace->magic, trace->version, trace->depth, write_index, trace->wrapped,
+		trace->registered, trace, (unsigned int)sizeof(*trace));
+	CLI_LOGD("seq tick action core pc rec_before rec_after ret\r\n");
+	for (uint32_t i = 0; i < count; i++) {
+		uint32_t slot = (start + i) % trace->depth;
+		const volatile bk_hspl_res3_trace_entry_t *entry = &trace->entries[slot];
+
+		if (entry->seq == 0U) {
+			continue;
+		}
+
+		CLI_LOGD("%u %u %s(%u) %u 0x%08x %u %u 0x%08x\r\n",
+			entry->seq, entry->tick_ms, hspl_res3_trace_action_name(entry->action),
+			entry->action, entry->core, entry->pc, entry->rec_before,
+			entry->rec_after, entry->ret);
+	}
+}
+
+static void cli_hspl_leak_flash(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv)
+{
+	uint32_t pc = (uint32_t)(uintptr_t)__builtin_return_address(0);
+
+	(void)pcWriteBuffer;
+	(void)xWriteBufferLen;
+	(void)argc;
+	(void)argv;
+
+	if (s_hspl_leak_flash_held != 0U) {
+		CLI_LOGD("hspl_leak_flash already held\r\n");
+		return;
+	}
+
+	if (hspl_leak_hold(BK_HSPL_RES_FLASH, pc) != BK_OK) {
+		CLI_LOGD("hspl_leak_flash acquire failed\r\n");
+		return;
+	}
+	s_hspl_leak_flash_held = 1U;
+	CLI_LOGD("hspl_leak_flash held without release\r\n");
+}
+
+static void cli_hspl_leak_flash_release(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv)
+{
+	(void)pcWriteBuffer;
+	(void)xWriteBufferLen;
+	(void)argc;
+	(void)argv;
+
+	if (s_hspl_leak_flash_held == 0U) {
+		CLI_LOGD("hspl_leak_flash not held\r\n");
+		return;
+	}
+
+	hspl_leak_release(BK_HSPL_RES_FLASH);
+	s_hspl_leak_flash_held = 0U;
+	CLI_LOGD("hspl_leak_flash released\r\n");
+}
+
+static void cli_hspl_leak_sys(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv)
+{
+	uint32_t pc = (uint32_t)(uintptr_t)__builtin_return_address(0);
+
+	(void)pcWriteBuffer;
+	(void)xWriteBufferLen;
+	(void)argc;
+	(void)argv;
+
+	if (s_hspl_leak_sys_held != 0U) {
+		CLI_LOGD("hspl_leak_sys already held\r\n");
+		return;
+	}
+
+	if (hspl_leak_hold(BK_HSPL_RES_SYS, pc) != BK_OK) {
+		CLI_LOGD("hspl_leak_sys acquire failed\r\n");
+		return;
+	}
+	s_hspl_leak_sys_held = 1U;
+	CLI_LOGD("hspl_leak_sys held without release\r\n");
+}
+
+static void cli_hspl_leak_sys_release(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv)
+{
+	(void)pcWriteBuffer;
+	(void)xWriteBufferLen;
+	(void)argc;
+	(void)argv;
+
+	if (s_hspl_leak_sys_held == 0U) {
+		CLI_LOGD("hspl_leak_sys not held\r\n");
+		return;
+	}
+
+	hspl_leak_release(BK_HSPL_RES_SYS);
+	s_hspl_leak_sys_held = 0U;
+	CLI_LOGD("hspl_leak_sys released\r\n");
+}
+
+static void cli_hspl_leak_uart_log(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv)
+{
+	uint32_t pc = (uint32_t)(uintptr_t)__builtin_return_address(0);
+
+	(void)pcWriteBuffer;
+	(void)xWriteBufferLen;
+	(void)argc;
+	(void)argv;
+
+	if (s_hspl_leak_uart_log_held != 0U) {
+		CLI_LOGD("hspl_leak_uart_log already held\r\n");
+		return;
+	}
+
+	if (hspl_leak_hold(BK_HSPL_RES_UART_LOG, pc) != BK_OK) {
+		CLI_LOGD("hspl_leak_uart_log acquire failed\r\n");
+		return;
+	}
+	s_hspl_leak_uart_log_held = 1U;
+	CLI_LOGD("hspl_leak_uart_log held without release\r\n");
+}
+
+static void cli_hspl_leak_uart_log_release(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv)
+{
+	(void)pcWriteBuffer;
+	(void)xWriteBufferLen;
+	(void)argc;
+	(void)argv;
+
+	if (s_hspl_leak_uart_log_held == 0U) {
+		CLI_LOGD("hspl_leak_uart_log not held\r\n");
+		return;
+	}
+
+	hspl_leak_release(BK_HSPL_RES_UART_LOG);
+	s_hspl_leak_uart_log_held = 0U;
+	CLI_LOGD("hspl_leak_uart_log released\r\n");
+}
+
+DRV_CLI_CMD_EXPORT static const struct cli_command s_hspl_leak_commands[] = {
+	{"hspl_leak_flash", "hold FLASH ASPL lock without release", cli_hspl_leak_flash},
+	{"hspl_leak_flash_release", "release FLASH ASPL leak lock", cli_hspl_leak_flash_release},
+	{"hspl_leak_sys", "hold SYS ASPL lock without release", cli_hspl_leak_sys},
+	{"hspl_leak_sys_release", "release SYS ASPL leak lock", cli_hspl_leak_sys_release},
+	{"hspl_leak_uart_log", "hold UART_LOG ASPL lock without release", cli_hspl_leak_uart_log},
+	{"hspl_leak_uart_log_release", "release UART_LOG ASPL leak lock", cli_hspl_leak_uart_log_release},
+	{"hspl_res3_trace", "dump/clear SYS HSPL acquire-release trace", cli_hspl_res3_trace},
+};
+#endif /* CONFIG_HSPL_LEAK_DEBUG */
 

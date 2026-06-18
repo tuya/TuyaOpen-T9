@@ -73,6 +73,10 @@ typedef struct {
 	dma_id_t rx_dma_id;
 	bool tx_dma_enable;
 	dma_id_t tx_dma_id;
+	bool rx_dma_stopped;
+	bool rx_hw_stopped;
+	uint32_t last_dma_len;
+	uint32_t last_dma_processed_len;
 #endif
 } uart_driver_t;
 
@@ -91,6 +95,7 @@ typedef struct
 
 /* uart reg0x04 [23:8], UART_CLK_DIVID >= 4, uart_src_clk/baudrate >= 5*/
 #define CONFIG_UART_MAX_BAUD_RATE (UART_CLOCK / (4 + 1))
+#define UART_RX_DMA_RESUME_THRESHOLD(id) (s_uart_rx_kfifo[(id)]->size / 4)
 
 #ifndef CONFIG_PRINTF_BUF_SIZE
 #define CONFIG_PRINTF_BUF_SIZE    (128)
@@ -374,14 +379,54 @@ static void uart_interrupt_disable(uart_id_t id)
 	}
 }
 
+/* Resolve a UART RX pin.
+ *
+ * When CONFIG_USR_GPIO_CFG_EN is set the pin assignment lives in
+ * GPIO_DEFAULT_DEV_CONFIG (usr_gpio_cfg.h) and is the single source of truth,
+ * so the pin is looked up by its UART RXD function. Otherwise it falls back to
+ * the Kconfig-based CONFIG_UARTx_RX_PIN value. */
+static gpio_id_t uart_cfg_rx_pin(uart_id_t id)
+{
+#if CONFIG_USR_GPIO_CFG_EN
+	gpio_dev_t func = GPIO_DEV_NONE;
+
+	switch (id) {
+	case UART_ID_0: func = GPIO_DEV_UART0_RXD; break;
+	case UART_ID_1: func = GPIO_DEV_UART1_RXD; break;
+	case UART_ID_2: func = GPIO_DEV_UART2_RXD; break;
+#if (SOC_UART_ID_NUM_PER_UNIT >= 6)
+	case UART_ID_5: func = GPIO_DEV_UART5_RXD; break;
+#endif
+	default: break;
+	}
+
+	if (func != GPIO_DEV_NONE) {
+		gpio_id_t pin = gpio_get_id_by_func(func);
+		if (pin < SOC_GPIO_NUM) {
+			return pin;
+		}
+	}
+#endif
+	return uart_hal_get_rx_pin(id);
+}
+
 static void uart_init_gpio(uart_id_t id)
 {
+#if CONFIG_USR_GPIO_CFG_EN
+	/* UART pin muxing is fully owned by GPIO_DEFAULT_DEV_CONFIG in
+	 * usr_gpio_cfg.h and applied once at boot by gpio_default_map_init().
+	 * The UART driver no longer maps/pulls UART GPIOs in this mode; only the
+	 * UART-controller-side hardware-flow-control setting remains here. */
+#if CONFIG_UART0_FLOW_CTRL
+	if (id == UART_ID_0) {
+		bk_uart_set_hw_flow_ctrl(id, UART0_FLOW_CTRL_CNT);
+	}
+#endif
+#else /* !CONFIG_USR_GPIO_CFG_EN: legacy Kconfig-driven pin muxing */
 	switch (id)
 	{
 		case UART_ID_0:
 		{
-			gpio_dev_unmap(uart_hal_get_tx_pin(id));
-			gpio_dev_unmap(uart_hal_get_rx_pin(id));
 			gpio_dev_map(uart_hal_get_tx_pin(id), GPIO_DEV_UART0_TXD);
 			gpio_dev_map(uart_hal_get_rx_pin(id), GPIO_DEV_UART0_RXD);
 			bk_gpio_pull_up(uart_hal_get_tx_pin(id));
@@ -399,8 +444,6 @@ static void uart_init_gpio(uart_id_t id)
 		}
 		case UART_ID_1:
 		{
-			gpio_dev_unmap(uart_hal_get_tx_pin(id));
-			gpio_dev_unmap(uart_hal_get_rx_pin(id));
 			gpio_dev_map(uart_hal_get_tx_pin(id), GPIO_DEV_UART1_TXD);
 			gpio_dev_map(uart_hal_get_rx_pin(id), GPIO_DEV_UART1_RXD);
 			bk_gpio_pull_up(uart_hal_get_tx_pin(id));
@@ -409,8 +452,6 @@ static void uart_init_gpio(uart_id_t id)
 		}
 		case UART_ID_2:
 		{
-			gpio_dev_unmap(uart_hal_get_tx_pin(id));
-			gpio_dev_unmap(uart_hal_get_rx_pin(id));
 			gpio_dev_map(uart_hal_get_tx_pin(id), GPIO_DEV_UART2_TXD);
 			gpio_dev_map(uart_hal_get_rx_pin(id), GPIO_DEV_UART2_RXD);
 			bk_gpio_pull_up(uart_hal_get_tx_pin(id));
@@ -420,8 +461,6 @@ static void uart_init_gpio(uart_id_t id)
 #if (SOC_UART_ID_NUM_PER_UNIT  >= 4)
 		case UART_ID_3:
 		{
-			gpio_dev_unmap(uart_hal_get_tx_pin(id));
-			gpio_dev_unmap(uart_hal_get_rx_pin(id));
 			gpio_dev_map(uart_hal_get_tx_pin(id), GPIO_DEV_UART3_TXD);
 			gpio_dev_map(uart_hal_get_rx_pin(id), GPIO_DEV_UART3_RXD);
 			bk_gpio_pull_up(uart_hal_get_tx_pin(id));
@@ -432,8 +471,6 @@ static void uart_init_gpio(uart_id_t id)
 #if (SOC_UART_ID_NUM_PER_UNIT  >= 5)
 		case UART_ID_4:
 		{
-			gpio_dev_unmap(uart_hal_get_tx_pin(id));
-			gpio_dev_unmap(uart_hal_get_rx_pin(id));
 			gpio_dev_map(uart_hal_get_tx_pin(id), GPIO_DEV_UART4_TXD);
 			gpio_dev_map(uart_hal_get_rx_pin(id), GPIO_DEV_UART4_RXD);
 			bk_gpio_pull_up(uart_hal_get_tx_pin(id));
@@ -444,8 +481,6 @@ static void uart_init_gpio(uart_id_t id)
 #if (SOC_UART_ID_NUM_PER_UNIT  >= 6)
 		case UART_ID_5:
 		{
-			gpio_dev_unmap(uart_hal_get_tx_pin(id));
-			gpio_dev_unmap(uart_hal_get_rx_pin(id));
 			gpio_dev_map(uart_hal_get_tx_pin(id), GPIO_DEV_UART5_TXD);
 			gpio_dev_map(uart_hal_get_rx_pin(id), GPIO_DEV_UART5_RXD);
 			bk_gpio_pull_up(uart_hal_get_tx_pin(id));
@@ -457,18 +492,29 @@ static void uart_init_gpio(uart_id_t id)
 		default:
 			break;
 	}
+#endif /* CONFIG_USR_GPIO_CFG_EN */
+	(void)id;
 }
 
 static void uart_deinit_tx_gpio(uart_id_t id)
 {
+#if !CONFIG_USR_GPIO_CFG_EN
+	/* In USR_GPIO_CFG mode the pad is owned by the boot-time config table and
+	 * must stay mapped so a later re-init keeps working, so only unmap in the
+	 * legacy Kconfig-driven mode. */
 	gpio_dev_unmap(uart_hal_get_tx_pin(id));
 	bk_gpio_pull_up(uart_hal_get_tx_pin(id));
+#endif
+	(void)id;
 }
 
 static void uart_deinit_rx_gpio(uart_id_t id)
 {
+#if !CONFIG_USR_GPIO_CFG_EN
 	gpio_dev_unmap(uart_hal_get_rx_pin(id));
 	bk_gpio_pull_up(uart_hal_get_rx_pin(id));
+#endif
+	(void)id;
 }
 
 static bk_err_t uart_id_init_kfifo(uart_id_t id)
@@ -1009,13 +1055,72 @@ static inline dma_dev_t uart_id_to_dma_dev(uart_id_t id, bool rx)
 #endif
 
 #if (CONFIG_UART_RX_DMA)
-static void uart_rx_dma_fifo_full(dma_id_t dma_id)
+static inline uart_id_t uart_rx_dma_id_to_uart_id(dma_id_t dma_id)
 {
-	bk_dma_stop(dma_id);
-	BK_LOGD(NULL,"WARN:%s:dma_id=%d\r\n", __func__, dma_id);
+	for (uart_id_t id = UART_ID_0; id < SOC_UART_ID_NUM_PER_UNIT; id++) {
+		if (s_uart[id].rx_dma_enable && s_uart[id].rx_dma_id == dma_id) {
+			return id;
+		}
+	}
+
+	return UART_ID_MAX;
 }
 
+static void uart_rx_dma_fifo_full(dma_id_t dma_id)
+{
+	uart_id_t id = uart_rx_dma_id_to_uart_id(dma_id);
 
+	if (id >= SOC_UART_ID_NUM_PER_UNIT) {
+		UART_LOGE("FATAL: Unknown DMA ID %d in RX ISR\n", dma_id);
+		return;
+	}
+
+	uint32_t completed_len = s_uart[id].last_dma_len;
+	uint32_t processed_len = s_uart[id].last_dma_processed_len;
+	uint32_t unprocessed_len = completed_len - processed_len;
+
+	if (s_uart_rx_kfifo[id]->in == s_uart_rx_kfifo[id]->out) {
+		s_uart_rx_kfifo[id]->in = 0;
+		s_uart_rx_kfifo[id]->out = 0;
+	}
+
+	s_uart_rx_kfifo[id]->in += unprocessed_len;
+	s_uart[id].last_dma_processed_len = 0;
+
+	uint32_t unused = kfifo_unused(s_uart_rx_kfifo[id]);
+
+	if (unused > 0) {
+		uint32_t in = s_uart_rx_kfifo[id]->in;
+		uint32_t write_pos = in & s_uart_rx_kfifo[id]->mask;
+		uint32_t space_to_end = s_uart_rx_kfifo[id]->size - write_pos;
+		uint32_t next_dma_len = min(unused, space_to_end);
+		uint32_t dma_dest_addr = (uint32_t)s_uart_rx_kfifo[id]->buffer + write_pos;
+
+		bk_dma_set_dest_start_addr(s_uart[id].rx_dma_id, dma_dest_addr);
+		bk_dma_set_transfer_len(s_uart[id].rx_dma_id, next_dma_len);
+		bk_dma_start(s_uart[id].rx_dma_id);
+
+		s_uart[id].rx_dma_stopped = false;
+		s_uart[id].last_dma_len = next_dma_len;
+	} else {
+		bk_uart_set_enable_rx(id, 0);
+		bk_uart_disable_rx_interrupt(id);
+
+		s_uart[id].rx_hw_stopped = true;
+		s_uart[id].rx_dma_stopped = true;
+
+		if (s_uart_sema[id].rx_int_sema && s_uart_sema[id].rx_blocked) {
+			rtos_set_semaphore(&(s_uart_sema[id].rx_int_sema));
+			s_uart_sema[id].rx_blocked = false;
+		}
+
+		if (s_uart_rx_isr[id].callback) {
+			s_uart_rx_isr[id].callback(id, s_uart_rx_isr[id].param);
+		}
+
+		UART_LOGW("UART%d: DMA stopped, RX disabled\n", id);
+	}
+}
 
 static void uart_rx_dma_reset_dst_addr(uart_id_t id, uint32_t dma_start_addr, uint32_t len)
 {
@@ -1088,6 +1193,12 @@ static bk_err_t uart_rx_dma_init(uart_id_t id)
 #endif
 		bk_dma_register_isr(dma_id, NULL, uart_rx_dma_fifo_full);
 		BK_LOG_ON_ERR(bk_dma_enable_finish_interrupt(dma_id));
+
+		s_uart[id].rx_dma_stopped = false;
+		s_uart[id].rx_hw_stopped = false;
+		s_uart[id].last_dma_len = s_uart_rx_kfifo[id]->size;
+		s_uart[id].last_dma_processed_len = 0;
+
 		BK_LOG_ON_ERR(bk_dma_start(dma_id));
 	}
 	else
@@ -1107,6 +1218,10 @@ static bk_err_t uart_rx_dma_deinit(uart_id_t id)
 	dma_id_t dma_id = s_uart[id].rx_dma_id;
 	s_uart[id].rx_dma_id = 0;
 	s_uart[id].rx_dma_enable = 0;
+	s_uart[id].rx_dma_stopped = false;
+	s_uart[id].rx_hw_stopped = false;
+	s_uart[id].last_dma_len = 0;
+	s_uart[id].last_dma_processed_len = 0;
 	return bk_dma_free(uart_id_to_dma_dev(id, 1), dma_id);
 }
 #endif
@@ -1588,30 +1703,58 @@ bk_err_t bk_uart_read_bytes(uart_id_t id, void *data, uint32_t size, uint32_t ti
 			GLOBAL_INT_RESTORE();
 		}
 
-		kfifo_data_len = kfifo_data_size(s_uart_rx_kfifo[id]); /* updata kfifo data size */
-		UART_LOGV("kfifo data length is %d.\n", kfifo_data_len);
-		if (size >= kfifo_data_len) {
-#if CONFIG_UART_RX_DMA
-			uint32_t dma_start_addr = (uint32_t)s_uart_rx_kfifo[id]->buffer;
-			uart_rx_dma_reset_dst_addr(id, dma_start_addr, s_uart_rx_kfifo[id]->size);
-			bk_uart_set_enable_rx(id, 1);
-#endif
-			if (kfifo_data_len) {
-				kfifo_get(s_uart_rx_kfifo[id], (uint8_t *)data, kfifo_data_len);
-			} else {
-				UART_LOGW("kfifo data is empty\n");
-				UART_STATIS_INC(uart_statis->kfifo_status.empty_cnt);
-			}
-			UART_STATIS_SET(uart_statis->kfifo_status.in, s_uart_rx_kfifo[id]->in);
-			UART_STATIS_SET(uart_statis->kfifo_status.out, s_uart_rx_kfifo[id]->out);
+		kfifo_data_len = kfifo_data_size(s_uart_rx_kfifo[id]);
+		uint32_t read_len = min(size, kfifo_data_len);
+		kfifo_get(s_uart_rx_kfifo[id], (uint8_t *)data, read_len);
 
-			return kfifo_data_len;
+#if CONFIG_UART_RX_DMA
+		if (s_uart[id].rx_dma_stopped || s_uart[id].rx_hw_stopped) {
+			uint32_t unused = kfifo_unused(s_uart_rx_kfifo[id]);
+
+			if (unused >= UART_RX_DMA_RESUME_THRESHOLD(id)) {
+				GLOBAL_INT_DISABLE();
+
+				if (s_uart[id].rx_dma_stopped && unused > 0) {
+					uint32_t write_pos = s_uart_rx_kfifo[id]->in & s_uart_rx_kfifo[id]->mask;
+					uint32_t space_to_end = s_uart_rx_kfifo[id]->size - write_pos;
+					uint32_t dma_len = min(unused, space_to_end);
+					uint32_t dma_addr = (uint32_t)s_uart_rx_kfifo[id]->buffer + write_pos;
+
+					bk_dma_set_dest_start_addr(s_uart[id].rx_dma_id, dma_addr);
+					bk_dma_set_transfer_len(s_uart[id].rx_dma_id, dma_len);
+					bk_dma_start(s_uart[id].rx_dma_id);
+
+					s_uart[id].rx_dma_stopped = false;
+					s_uart[id].last_dma_len = dma_len;
+					s_uart[id].last_dma_processed_len = 0;
+
+					UART_LOGD("UART%d: DMA resumed - pos=%u, len=%u\n", id, write_pos, dma_len);
+				}
+
+				if (s_uart[id].rx_hw_stopped) {
+					bk_uart_enable_rx_interrupt(id);
+					bk_uart_set_enable_rx(id, 1);
+					s_uart[id].rx_hw_stopped = false;
+
+					UART_LOGD("UART%d: UART RX resumed! Buffer unused=%d bytes\n", id, unused);
+				}
+
+				GLOBAL_INT_RESTORE();
+			} else {
+				UART_LOGW("UART%d: DMA not resumed, Buffer unused=%d bytes\n", id, unused);
+			}
 		}
-		kfifo_get(s_uart_rx_kfifo[id], (uint8_t *)data, size);
+#endif
+
+		if (read_len == 0) {
+			UART_LOGW("kfifo data is empty\n");
+			UART_STATIS_INC(uart_statis->kfifo_status.empty_cnt);
+		}
+
 		UART_STATIS_SET(uart_statis->kfifo_status.in, s_uart_rx_kfifo[id]->in);
 		UART_STATIS_SET(uart_statis->kfifo_status.out, s_uart_rx_kfifo[id]->out);
 
-		return size;
+		return read_len;
 	}else {
 		int ret = 0;
 		uint8_t rx_data;
@@ -1744,7 +1887,7 @@ uint32_t bk_uart_get_ate_detect_gpio(void)
 
 gpio_id_t bk_uart_get_rx_gpio(uart_id_t id)
 {
-	return uart_hal_get_rx_pin(id);
+	return uart_cfg_rx_pin(id);
 }
 
 bool bk_uart_is_tx_over(uart_id_t id)
@@ -1789,6 +1932,32 @@ void uart_clear_interrupt_status(uart_id_t id, uint32_t int_status)
 {
 	uart_hal_clear_interrupt_status(&s_uart[id].hal, id, int_status);
 }
+
+#if CONFIG_UART_RX_DMA
+static void uart_rx_idle_isr(uart_id_t id)
+{
+	uint32_t dma_remain_len = bk_dma_get_remain_len(s_uart[id].rx_dma_id);
+	uint32_t last_dma_len = s_uart[id].last_dma_len;
+	uint32_t processed_len = s_uart[id].last_dma_processed_len;
+	uint32_t current_transferred = last_dma_len - dma_remain_len;
+	uint32_t new_data_len = current_transferred - processed_len;
+
+	UART_LOGV("UART%d: Idle ISR - total=%u, remain=%u, processed=%u, new=%u\n",
+		id, last_dma_len, dma_remain_len, processed_len, new_data_len);
+
+	s_uart_rx_kfifo[id]->in += new_data_len;
+	s_uart[id].last_dma_processed_len = current_transferred;
+
+	if (s_uart_sema[id].rx_int_sema && s_uart_sema[id].rx_blocked) {
+		rtos_set_semaphore(&(s_uart_sema[id].rx_int_sema));
+		s_uart_sema[id].rx_blocked = false;
+	}
+
+	if (s_uart_rx_isr[id].callback) {
+		s_uart_rx_isr[id].callback(id, s_uart_rx_isr[id].param);
+	}
+}
+#endif
 
 /* read int enable status
  * read int status
@@ -1851,9 +2020,17 @@ static void uart_isr_common(uart_id_t id)
 #if CONFIG_UART_RX_DMA
 			if(s_uart[id].rx_dma_enable)
 			{
-				//force all of the UART RX FIFO data to DMA RAM space
-				bk_dma_flush_src_buffer(s_uart[id].rx_dma_id);
-				if (uart_id_dma_read_fifo_frame(id, s_uart_rx_kfifo[id]) > 0)
+				if (s_uart[id].rx_dma_stopped) {
+					UART_LOGW("UART%d: Unexpected RX INT while DMA stopped\n", id);
+				} else {
+					bk_dma_flush_src_buffer(s_uart[id].rx_dma_id);
+					uart_rx_idle_isr(id);
+				}
+			}
+			else
+			{
+#endif
+				if (uart_id_read_fifo_frame(id, s_uart_rx_kfifo[id]) > 0)
 				{
 					if (s_uart_sema[id].rx_int_sema && s_uart_sema[id].rx_blocked)
 					{
@@ -1861,22 +2038,14 @@ static void uart_isr_common(uart_id_t id)
 						s_uart_sema[id].rx_blocked = false;
 					}
 				}
-			}
-			else
-#endif
-			if (uart_id_read_fifo_frame(id, s_uart_rx_kfifo[id]) > 0)
-			{
-				if (s_uart_sema[id].rx_int_sema && s_uart_sema[id].rx_blocked)
-				{
-					rtos_set_semaphore(&(s_uart_sema[id].rx_int_sema));
-					s_uart_sema[id].rx_blocked = false;
-				}
-			}
 
-			if (s_uart_rx_isr[id].callback)
-			{
+				if (s_uart_rx_isr[id].callback)
+				{
 					s_uart_rx_isr[id].callback(id, s_uart_rx_isr[id].param);
+				}
+#if CONFIG_UART_RX_DMA
 			}
+#endif
 		}
 		else if (s_uart_rx_isr[id].callback)
 		{

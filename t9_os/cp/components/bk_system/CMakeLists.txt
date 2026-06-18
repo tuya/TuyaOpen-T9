@@ -1,6 +1,8 @@
 armino_build_get_property(target ARMINO_SOC)
 
-set(incs)
+set(incs
+	.
+)
 
 if(CONFIG_FREERTOS)
 	set(priv_incs os/freertos)
@@ -14,6 +16,7 @@ set(srcs
 	mac.c
 	reboot.c
 	delay.c
+	bk_platform.c
 )
 if(CONFIG_AT)
 set(components ../../components)

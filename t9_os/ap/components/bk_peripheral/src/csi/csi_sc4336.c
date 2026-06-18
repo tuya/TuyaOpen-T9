@@ -388,6 +388,7 @@ static int SC4336_Exit(ISP_PORT IspPort)
     if (SC4336_720P_CalibParam_dynamic != NULL)
     {
         os_free(SC4336_720P_CalibParam_dynamic);
+        SC4336_720P_CalibParam_dynamic = NULL;
     }
     return  BK_OK;
 }
@@ -709,24 +710,28 @@ static const bk_camera_sensor_format_t sc4336_format_array[] = {
         .width = 2560,
         .height = 1440,
         .fps = 30,
+        .output_pixel_fmt = BK_PIXEL_FORMAT_BGGR10,
     },
 
     {
         .width = 2560,
         .height = 1440,
         .fps = 15,
+        .output_pixel_fmt = BK_PIXEL_FORMAT_BGGR10,
     },
 
     {
         .width = 1280,
         .height = 720,
         .fps = 30,
+        .output_pixel_fmt = BK_PIXEL_FORMAT_BGGR10,
     },
 
     {
         .width = 1088,
         .height = 1088,
         .fps = 15,
+        .output_pixel_fmt = BK_PIXEL_FORMAT_BGGR10,
     },
 };
 
@@ -904,7 +909,6 @@ avdk_err_t sc4336_detect(bk_camera_sensor_handle_t *handle, bk_camera_sensor_con
     /* enable camera power */
     if (config->pin_pwdn != 0xFF)
     {
-        gpio_dev_unmap(config->pin_pwdn);
         BK_LOG_ON_ERR(bk_gpio_enable_output(config->pin_pwdn));
         bk_gpio_set_capacity(config->pin_pwdn, GPIO_DRIVER_CAPACITY_3);
         bk_gpio_set_output_high(config->pin_pwdn);
@@ -913,7 +917,6 @@ avdk_err_t sc4336_detect(bk_camera_sensor_handle_t *handle, bk_camera_sensor_con
 
     if (config->pin_reset != 0xFF)
     {
-        gpio_dev_unmap(config->pin_reset);
         BK_LOG_ON_ERR(bk_gpio_enable_output(config->pin_reset));
         bk_gpio_set_capacity(config->pin_reset, GPIO_DRIVER_CAPACITY_3);
         bk_gpio_set_output_high(config->pin_reset);

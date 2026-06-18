@@ -1,13 +1,11 @@
 list(APPEND incs wdt)
-list(APPEND srcs wdt/wdt_driver.c)
+list(APPEND srcs wdt/task_wdt.c)
 
-if (CONFIG_WDT_EN)
-	if (CONFIG_CLI AND CONFIG_WDT_TEST)
-		list(APPEND srcs wdt/wdt_test.c)
-	endif()
-	if (CONFIG_CLI AND CONFIG_WDT_API_TEST)
-		list(APPEND srcs wdt/cli_wdt_api.c)
+if (CONFIG_TASK_WDT)
+	if (CONFIG_CLI AND CONFIG_TASK_WDT_TEST)
+		list(APPEND srcs wdt/task_wdt_test.c)
 	endif()
 endif()
+
 set(incs ${incs} PARENT_SCOPE)
 set(srcs ${srcs} PARENT_SCOPE)

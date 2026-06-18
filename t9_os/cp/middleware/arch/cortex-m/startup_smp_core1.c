@@ -17,6 +17,7 @@
 #include "soc/reg_base.h"
 #include "soc/soc.h"
 #include "bk_arch.h"
+#include "dbg_probe.h"
 #include <stdint.h>
 
 
@@ -97,17 +98,26 @@ uint32_t get_core1_vtor_addr(void)
 
 #define ENTRY_SECTION __attribute__((naked, section(".fix.reset_entry")))
 
+/* Records that the core1 reset handler was entered, for postmortem/hang
+ * debugging (e.g. when a reboot stalls before the system is re-initialized). */
+volatile uint32_t g_reset_entry_state_core1 = 0;
+
 /*----------------------------------------------------------------------------
   Reset Handler called on controller reset
  *----------------------------------------------------------------------------*/
 __NO_RETURN ENTRY_SECTION void Reset_Handler_Core1(void)
 {
+    g_reset_entry_state_core1 = 1;
     __set_MSPLIM((uint32_t)(&__STACK_LIMIT_CORE1));
 
     __disable_irq();
 
     b_system_base_init();
     b_prep_entry_main();
+    /* Ver4 SMP: core1 runs after core0 already initialized RAM, so the runtime
+     * path is safe here. Brings up core1's own debug port (UART2/GPIO22) and
+     * emits a per-core marker (0x52A6). */
+    dbg_probe_runtime_init_core1();
     b_program_start();
 }
 // eof

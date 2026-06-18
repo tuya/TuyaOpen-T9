@@ -114,11 +114,15 @@ extern "C" {
 #define LOW_POWER_RESTORE_DELAY_TIME_HARDWARE            (0.65) //0.6ms,cpu 60M 0.51ms
 #define LOW_POWER_XTAL_DPLL_STABILITY_DELAY_TIME  ((LOW_POWER_DPLL_STABILITY_DELAY_TIME+LOW_POWER_RESTORE_DELAY_TIME_HARDWARE)*1000)
 
-#define LOW_POWER_26M_STABILITY_DELAY_TIME_HARDWARE      (1300)
+#define LOW_POWER_26M_STABILITY_DELAY_TIME_HARDWARE      0//(1300)
 #define LOW_POWER_DELAY_TIME_HARDWARE                    (500)
 #define LOW_POWER_EXTERN_32K_HARDWARE                    (1300)
 
-#define LOW_POWER_BOOTUP_RESTORE_TIME                    (1500+1200)//cpu 120Mhz
+#define LOW_POWER_BOOTUP_RESTORE_TIME                    0//(1500+1200)//cpu 120Mhz
+
+#define PM_SLEEP_WAKEUP_BOOT_TIME_HARDWARE_TO_BOOTLOADER (3400)//3.4ms
+#define PM_SLEEP_WAKEUP_RESTORE_BACKUP_DATE_TIME         (4380)//4.38ms
+#define PM_SLEEP_WAKEUP_COMSUME_ALL_TIME_TICKS           (((PM_SLEEP_WAKEUP_BOOT_TIME_HARDWARE_TO_BOOTLOADER + PM_SLEEP_WAKEUP_RESTORE_BACKUP_DATE_TIME) * RTC_CLOCK_FREQ + 500000) / 1000000)//unit: rtc tick, round from us
 
 #define PM_POWER_ON_ROSC_STABILITY_TIME                  (TIMER_CLOCK_FREQ_XTAL*2)//about 2ms
 
@@ -142,7 +146,7 @@ extern "C" {
                                                     PM_DEFAULT_LOW_VOLTAGE_WAKEUP3_DELAY)
 
 //ceil()
-#define PM_LOW_VOLTAGE_DELTA_WAKEUP_DELAY_IN_US ((PM_LOW_VOLTAGE_DELTA_WAKEUP_DELAY*1000000+RTC_CLOCK_FREQ-1)/RTC_CLOCK_FREQ)
+#define PM_LOW_VOLTAGE_DELTA_WAKEUP_DELAY_IN_US PM_SLEEP_WAKEUP_BOOT_TIME_HARDWARE_TO_BOOTLOADER//((PM_LOW_VOLTAGE_DELTA_WAKEUP_DELAY*1000000+RTC_CLOCK_FREQ-1)/RTC_CLOCK_FREQ)
 
 #define PM_CHIP_ID_HIGH_POS                              (16)
 #define PM_CHIP_ID_MASK                                  (0xFFFF0000)
@@ -159,7 +163,12 @@ extern "C" {
 #define PM_FREQUNCY_DIV_CPU_MAX                          (1)
 
 #define PM_MODULE_SUB_POWER_DOMAIN_MAX                   (32)
-#define WAKEUP_SOURCE_MARK                               (0x3F)
+#define WAKEUP_SOURCE_MARK                               (0x7F)
+
+#define PM_CLKSEL_CORE_26M                               (0)
+#define PM_CLKSEL_CORE_DCO                               (1)
+#define PM_CLKSEL_CORE_320M                              (2)
+#define PM_CLKSEL_CORE_480M                              (3)
 
 typedef struct {
 	uint8_t enum_name;
@@ -708,12 +717,13 @@ typedef enum
 typedef enum
 {
 	WAKEUP_SOURCE_INT_GPIO = 0,
-	WAKEUP_SOURCE_INT_RTC ,
-	WAKEUP_SOURCE_INT_WIFI ,
-	WAKEUP_SOURCE_INT_BT ,
-	WAKEUP_SOURCE_INT_TOUCHED ,
-	WAKEUP_SOURCE_INT_USBPLUG ,
-	WAKEUP_SOURCE_INT_NONE ,
+	WAKEUP_SOURCE_INT_RTC,
+	WAKEUP_SOURCE_INT_WIFI,
+	WAKEUP_SOURCE_INT_BT,
+	WAKEUP_SOURCE_INT_USBPLUG,
+	WAKEUP_SOURCE_INT_TOUCHED,
+	WAKEUP_SOURCE_INT_VAD,
+	WAKEUP_SOURCE_INT_NONE,
 }wakeup_source_t;
 
 typedef enum
@@ -797,9 +807,10 @@ typedef struct {
 typedef enum
 {
 	PMU_REG0 = 0,
-	PMU_REG1,
 	PMU_REG2,
 	PMU_REG3,
+	PMU_REG4,
+	PMU_REG5,
 	PMU_REG0x25,
 	PMU_REG0x40,
 	PMU_REG0x41,
@@ -807,6 +818,10 @@ typedef enum
 	PMU_REG0x43,
 	PMU_REG0x70,
 	PMU_REG0x71,
+	PMU_REG0x74,
+	PMU_REG0x75,
+	PMU_REG0x78,
+	PMU_REG0x79,
 	PMU_REG0x7c,
 	PMU_NONE
 } pmu_reg_e;
@@ -815,6 +830,8 @@ typedef enum
 	{PMU_REG0, AON_PMU_R0_ADDR, }, \
 	{PMU_REG2, AON_PMU_R2_ADDR, }, \
 	{PMU_REG3, AON_PMU_R3_ADDR, }, \
+	{PMU_REG4, AON_PMU_R4_ADDR, }, \
+	{PMU_REG5, AON_PMU_R5_ADDR, }, \
 	{PMU_REG0x25, AON_PMU_R25_ADDR, }, \
 	{PMU_REG0x40, AON_PMU_R40_ADDR, }, \
 	{PMU_REG0x41, AON_PMU_R41_ADDR, }, \
@@ -822,6 +839,10 @@ typedef enum
 	{PMU_REG0x43, AON_PMU_R43_ADDR, }, \
 	{PMU_REG0x70, AON_PMU_R70_ADDR, }, \
 	{PMU_REG0x71, AON_PMU_R71_ADDR, }, \
+	{PMU_REG0x74, AON_PMU_R74_ADDR, }, \
+	{PMU_REG0x75, AON_PMU_R75_ADDR, }, \
+	{PMU_REG0x78, AON_PMU_R78_ADDR, }, \
+	{PMU_REG0x79, AON_PMU_R79_ADDR, }, \
 	{PMU_REG0x7c, AON_PMU_R7C_ADDR, }, \
 }
 typedef struct {

@@ -16,24 +16,10 @@ set(srcs
 
 
 	
-if (CONFIG_AON_GPIO)
-	list(APPEND srcs
-		hal/gpio_hal.c
-	)
-endif()
-
 if (CONFIG_AON_WDT)
 	list(APPEND srcs
 		hal/aon_wdt_hal.c
 	)
-endif()
-
-if (CONFIG_PWM)
-if (CONFIG_PWM_V1PX)
-	list(APPEND srcs
-		hal/pwm_hal_v1px.c
-		)
-endif()
 endif()
 
 if (CONFIG_FLASH)
@@ -62,12 +48,6 @@ if(CONFIG_EFUSE)
 	)
 endif()
 
-if(CONFIG_TRNG_SUPPORT)
-	list(APPEND srcs
-		"hal/trng_hal.c"
-	)
-endif()
-
 if(CONFIG_MAILBOX)
 	if (NOT CONFIG_MAILBOX_V2_0)
 	list(APPEND srcs
@@ -84,15 +64,9 @@ endif()
 
 
 if(CONFIG_AON_RTC)
-if(CONFIG_AON_RTC_64BIT)
 	list(APPEND srcs
 		"hal/aon_rtc_hal_64bit.c"
 	)
-else()
-	list(APPEND srcs
-		"hal/aon_rtc_hal.c"
-	)
-endif()
 endif()
 
 if (CONFIG_SDIO_V2P0 OR CONFIG_SDIO_V2P1)
@@ -161,12 +135,6 @@ endif()
 if(CONFIG_SLCD)
 	list(APPEND srcs
 		"hal/slcd_hal.c"
-	)
-endif()
-
-if(CONFIG_IO_MATRIX_VER2_0)
-	list(APPEND srcs
-		"hal/iomx_hal.c"
 	)
 endif()
 

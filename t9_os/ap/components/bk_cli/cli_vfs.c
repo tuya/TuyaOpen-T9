@@ -15,6 +15,9 @@
 #include "bk_posix.h"
 
 #include "driver/flash_partition.h"
+#if CONFIG_TASK_WDT
+#include "bk_wdt.h"
+#endif
 
 #if defined(BK_PARTITION_LITTLEFS)
 #define BK_PARTITION_FS_ID BK_PARTITION_LITTLEFS
@@ -516,7 +519,6 @@ static void vfs_test_concurrency_task(beken_thread_arg_t arg)
 //avoid file too large cause watchdog timeout
 #if (CONFIG_TASK_WDT)
 {
-           extern void bk_task_wdt_feed(void);
            bk_task_wdt_feed();
 }
 #endif
@@ -535,11 +537,8 @@ static void vfs_test_concurrency_task(beken_thread_arg_t arg)
 			continue;
 		}
 
-#if CONFIG_WDT
-		bk_wdt_feed();
 #if CONFIG_TASK_WDT
 		bk_task_wdt_feed();
-#endif
 #endif
 
 		//read from SDCARD and compare
@@ -584,11 +583,8 @@ static void vfs_test_concurrency_task(beken_thread_arg_t arg)
             continue;
         }
 
-#if CONFIG_WDT
-		bk_wdt_feed();
 #if CONFIG_TASK_WDT
 		bk_task_wdt_feed();
-#endif
 #endif
 
 		rtos_delay_milliseconds(20);

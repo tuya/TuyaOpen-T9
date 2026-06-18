@@ -1494,7 +1494,7 @@ int bk_cli_init(void)
 	cli_os_init();
 #endif
 
-#if CONFIG_SOC_SMP
+#if (CONFIG_SOC_SMP && CONFIG_CPU_HOTPLUG)
 	cli_ap_hotplug_init();
 #endif
 
@@ -1599,12 +1599,6 @@ int bk_cli_init(void)
 #endif
 
 #endif// CONFIG_CODE_SIZE_OPTIMIZE
-
-
-#if (CLI_CFG_OTA == 1)
-	cli_ota_init();
-#endif
-
 
 #if (CONFIG_PSA_MBEDTLS_TEST && CONFIG_PSA_MBEDTLS)
 	cli_psa_crypto_init();

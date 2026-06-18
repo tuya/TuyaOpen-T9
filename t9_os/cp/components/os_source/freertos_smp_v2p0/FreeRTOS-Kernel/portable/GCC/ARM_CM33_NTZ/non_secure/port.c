@@ -94,7 +94,7 @@
 #define portNVIC_PEND_SYSTICK_SET_BIT         ( 1UL << 26UL )
 #define portMIN_INTERRUPT_PRIORITY            ( 255UL )
 #define portNVIC_PENDSV_PRI                   ( portMIN_INTERRUPT_PRIORITY << 16UL )
-#define portNVIC_SYSTICK_PRI                  ( 0x80 << 24UL )
+#define portNVIC_SYSTICK_PRI                  ( portMIN_INTERRUPT_PRIORITY << 24UL )
 
 #if CONFIG_SYSTICK_32K
 #define configSYSTICK_CLOCK_HZ                32000
@@ -689,6 +689,10 @@ void SysTick_Handler( void ) /* PRIVILEGED_FUNCTION */
     //main core
     ulPreviousMask = portSET_INTERRUPT_MASK_FROM_ISR();
     {
+#if CONFIG_TASK_WDT
+        bk_task_wdt_systick_check();
+#endif
+
 #if ( configUSE_TICKLESS_IDLE >= 1 )
         /* OS tick aligned with AON timer */
         int tick_diff = rtos_get_time_diff();

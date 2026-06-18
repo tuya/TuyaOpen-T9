@@ -155,23 +155,6 @@ typedef struct {
 #define SPI_CHECK_SECURE(id)
 #endif
 
-#define SPI_SET_PIN(id) do {\
-	gpio_dev_unmap(SPI##id##_LL_CSN_PIN);\
-	gpio_dev_unmap(SPI##id##_LL_SCK_PIN);\
-	gpio_dev_unmap(SPI##id##_LL_MOSI_PIN);\
-	gpio_dev_unmap(SPI##id##_LL_MISO_PIN);\
-	gpio_dev_map(SPI##id##_LL_CSN_PIN, GPIO_DEV_SPI##id##_CSN);\
-	gpio_dev_map(SPI##id##_LL_SCK_PIN, GPIO_DEV_SPI##id##_SCK);\
-	gpio_dev_map(SPI##id##_LL_MOSI_PIN, GPIO_DEV_SPI##id##_MOSI);\
-	gpio_dev_map(SPI##id##_LL_MISO_PIN, GPIO_DEV_SPI##id##_MISO);\
-	bk_gpio_pull_up(SPI##id##_LL_CSN_PIN);\
-	bk_gpio_pull_up(SPI##id##_LL_SCK_PIN);\
-	bk_gpio_set_capacity(SPI##id##_LL_CSN_PIN, 0);\
-	bk_gpio_set_capacity(SPI##id##_LL_SCK_PIN, 1);\
-	bk_gpio_set_capacity(SPI##id##_LL_MOSI_PIN, 0);\
-	bk_gpio_set_capacity(SPI##id##_LL_MISO_PIN, 0);\
-} while(0)
-
 static spi_driver_t s_spi[SOC_SPI_UNIT_NUM] = {
 	{
 		.hal.hw = (spi_hw_t *)(SOC_SPI_REG_BASE),
@@ -228,33 +211,6 @@ static inline void spi_exit_critical(uint32_t flags)
 #endif // CONFIG_FREERTOS_SMP
 
        rtos_enable_int(flags);
-}
-
-static void spi_init_gpio(spi_id_t id)
-{
-	switch (id) {
-	case SPI_ID_0:
-		SPI_SET_PIN(0);
-		break;
-#if (SOC_SPI_UNIT_NUM > 1)
-	case SPI_ID_1:
-		SPI_SET_PIN(1);
-		break;
-#endif
-#if (SOC_SPI_UNIT_NUM > 2)
-	case SPI_ID_2:
-		SPI_SET_PIN(2);
-		break;
-#endif
-#if (SOC_SPI_UNIT_NUM > 3)
-	case SPI_ID_3:
-		SPI_SET_PIN(3);
-		break;
-#endif
-	default:
-		break;
-	}
-
 }
 
 bk_err_t bk_spi_set_role(spi_id_t id, spi_role_t role)
@@ -383,6 +339,43 @@ static void spi_interrupt_disable(spi_id_t id)
 #endif
 }
 #endif
+
+#if CONFIG_USR_GPIO_CFG_EN
+#define SPI_SET_PIN(id) do {\
+	gpio_dev_map_by_func(GPIO_DEV_SPI##id##_CSN);\
+	gpio_dev_map_by_func(GPIO_DEV_SPI##id##_SCK);\
+	gpio_dev_map_by_func(GPIO_DEV_SPI##id##_MOSI);\
+	gpio_dev_map_by_func(GPIO_DEV_SPI##id##_MISO);\
+} while(0)
+#endif
+
+static void spi_init_gpio(spi_id_t id)
+{
+#if CONFIG_USR_GPIO_CFG_EN
+	switch (id) {
+	case SPI_ID_0:
+		SPI_SET_PIN(0);
+		break;
+#if (SOC_SPI_UNIT_NUM > 1)
+	case SPI_ID_1:
+		SPI_SET_PIN(1);
+		break;
+#endif
+#if (SOC_SPI_UNIT_NUM > 2)
+	case SPI_ID_2:
+		SPI_SET_PIN(2);
+		break;
+#endif
+#if (SOC_SPI_UNIT_NUM > 3)
+	case SPI_ID_3:
+		SPI_SET_PIN(3);
+		break;
+#endif
+	default:
+		break;
+	}
+#endif
+}
 
 /* 1. power up spi
  * 2. set clk

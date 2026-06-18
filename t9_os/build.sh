@@ -97,7 +97,7 @@ echo "APP_DIR:"$APP_DIR
 
 boot_file=cp/components/bk_libs/bk7259/bootloader/normal_bootloader/bootloader.bin
 check_value=$(md5sum ${boot_file} | awk '{print $1}')
-ori_value=5144e0bcded88867631e5a296680ff69
+ori_value=e136dec4d57f208cdf2c88ab01e32fb0
 if [ "x${check_value}" != "x${ori_value}" ]; then
     echo -e "\033[1;31m bootloader.bin check failed, the file had been changed, please update md5 value in build.sh \033[0m"
     exit

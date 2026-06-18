@@ -3,11 +3,11 @@
 // LT8912B MIPI-DSI to HDMI bridge driver.
 //
 // The bridge is registered as an avdk MIPI-DSI panel
-// (::lcd_device_lt8912b_mipi). custom_init() programs the LT8912B
-// over a private SW I2C bus owned by this driver - it is NEVER
-// shared with other components, NEVER routed through the public
-// ::bk_display_dsi_bus_t panel-IO channel, and NEVER carried in the
-// generic vendor_config slot.
+// (::lcd_device_lt8912b_mipi). The panel descriptor's .init hook
+// (lt8912b_custom_init) programs the LT8912B over a private SW I2C
+// bus owned by this driver - it is NEVER shared with other components,
+// NEVER routed through the public ::bk_display_dsi_bus_t panel-IO
+// channel, and NEVER carried in the generic vendor_config slot.
 //
 // Pin assignment can be overridden at runtime via
 // ::bk_lcd_lt8912b_set_io_pins(); otherwise the driver falls back to
@@ -952,7 +952,7 @@ static bk_err_t lt8912b_init_sequence(void)
     return BK_OK;
 }
 
-static bk_err_t lt8912b_custom_init(bk_avdk_lcd_panel_t *panel, void *priv)
+static bk_err_t lt8912b_custom_init(bk_avdk_lcd_panel_t *panel)
 {
     AVDK_RETURN_ON_FALSE(panel, AVDK_ERR_INVAL, TAG, AVDK_ERR_INVAL_NULL_TEXT);
 
@@ -993,8 +993,11 @@ static bk_err_t lt8912b_custom_init(bk_avdk_lcd_panel_t *panel, void *priv)
     return BK_OK;
 }
 
-static bk_err_t lt8912b_custom_reset(bk_avdk_lcd_panel_t *panel, void *priv)
+static bk_err_t lt8912b_custom_reset(bk_avdk_lcd_panel_t *panel)
 {
+    AVDK_RETURN_ON_FALSE(panel, AVDK_ERR_INVAL, TAG, AVDK_ERR_INVAL_NULL_TEXT);
+    /* LT8912B has no panel RST pin; only nudge the DSI link with a
+     * stub command. The bus access uses the public panel dispatcher. */
     return BK_OK;
 }
 
@@ -1004,22 +1007,23 @@ const bk_display_dsi_panel_t lcd_device_lt8912b_mipi = {
     .id = 0x8912600,
     .name = "lt8912b_mipi_800x600",
     .n_lanes = DSI_ACTIVE_LANES_2,
+    .fps = 60,
     .timing = {
-        .clk = LCD_40M,
         .h_size = 800,
         .v_size = 600,
-        .hsync_pulse_width = 128,
+        .hsync_pulse_width = 32,
         .vsync_pulse_width = 4,
         .hsync_back_porch = 88,
         .hsync_front_porch = 48,
         .vsync_back_porch = 23,
-        .vsync_front_porch = 1,
+        .vsync_front_porch = 4,
     },
     .init_cmds = NULL,
     .read_id_regs = NULL,
     .read_id_bytes = 0,
-    .custom_reset = lt8912b_custom_reset,
-    .custom_init = lt8912b_custom_init,
+    .reset_active_level = false,
+    .reset = lt8912b_custom_reset,
+    .init  = lt8912b_custom_init,
 };
 BK_LCD_PANEL_DEVICE_SECTION(lcd_device_lt8912b_mipi, "lt8912b_mipi_800x600", BK_LCD_PANEL_BUS_DSI);
 
@@ -1028,8 +1032,8 @@ const bk_display_dsi_panel_t lcd_device_lt8912b_mipi = {
     .id = 0x8912768,
     .name = "lt8912b_mipi_1024x768",
     .n_lanes = DSI_ACTIVE_LANES_2,
+    .fps = 60,
     .timing = {
-        .clk = LCD_60M,
         .h_size = 1024,
         .v_size = 768,
         .hsync_pulse_width = 32,
@@ -1042,8 +1046,9 @@ const bk_display_dsi_panel_t lcd_device_lt8912b_mipi = {
     .init_cmds = NULL,
     .read_id_regs = NULL,
     .read_id_bytes = 0,
-    .custom_reset = lt8912b_custom_reset,
-    .custom_init = lt8912b_custom_init,
+    .reset_active_level = false,
+    .reset = lt8912b_custom_reset,
+    .init  = lt8912b_custom_init,
 };
 BK_LCD_PANEL_DEVICE_SECTION(lcd_device_lt8912b_mipi, "lt8912b_mipi_1024x768", BK_LCD_PANEL_BUS_DSI);
 
@@ -1052,8 +1057,8 @@ const bk_display_dsi_panel_t lcd_device_lt8912b_mipi = {
     .id = 0x8912720,
     .name = "lt8912b_mipi_1280x720",
     .n_lanes = DSI_ACTIVE_LANES_2,
+    .fps = 60,
     .timing = {
-        .clk = LCD_64M,
         .h_size = 1280,
         .v_size = 720,
         .hsync_pulse_width = 32,
@@ -1066,8 +1071,9 @@ const bk_display_dsi_panel_t lcd_device_lt8912b_mipi = {
     .init_cmds = NULL,
     .read_id_regs = NULL,
     .read_id_bytes = 0,
-    .custom_reset = lt8912b_custom_reset,
-    .custom_init = lt8912b_custom_init,
+    .reset_active_level = false,
+    .reset = lt8912b_custom_reset,
+    .init  = lt8912b_custom_init,
 };
 BK_LCD_PANEL_DEVICE_SECTION(lcd_device_lt8912b_mipi, "lt8912b_mipi_1280x720", BK_LCD_PANEL_BUS_DSI);
 
@@ -1076,8 +1082,8 @@ const bk_display_dsi_panel_t lcd_device_lt8912b_mipi = {
     .id = 0x8912800,
     .name = "lt8912b_mipi_1280x800",
     .n_lanes = DSI_ACTIVE_LANES_2,
+    .fps = 60,
     .timing = {
-        .clk = LCD_80M,
         .h_size = 1280,
         .v_size = 800,
         .hsync_pulse_width = 32,
@@ -1090,8 +1096,9 @@ const bk_display_dsi_panel_t lcd_device_lt8912b_mipi = {
     .init_cmds = NULL,
     .read_id_regs = NULL,
     .read_id_bytes = 0,
-    .custom_reset = lt8912b_custom_reset,
-    .custom_init = lt8912b_custom_init,
+    .reset_active_level = false,
+    .reset = lt8912b_custom_reset,
+    .init  = lt8912b_custom_init,
 };
 BK_LCD_PANEL_DEVICE_SECTION(lcd_device_lt8912b_mipi, "lt8912b_mipi_1280x800", BK_LCD_PANEL_BUS_DSI);
 
@@ -1100,8 +1107,8 @@ const bk_display_dsi_panel_t lcd_device_lt8912b_mipi = {
     .id = 0x89121080,
     .name = "lt8912b_mipi_1920x1080",
     .n_lanes = DSI_ACTIVE_LANES_2,
+    .fps = 35,
     .timing = {
-        .clk = LCD_80M,
         .h_size = 1920,
         .v_size = 1080,
         .hsync_pulse_width = 32,
@@ -1114,8 +1121,9 @@ const bk_display_dsi_panel_t lcd_device_lt8912b_mipi = {
     .init_cmds = NULL,
     .read_id_regs = NULL,
     .read_id_bytes = 0,
-    .custom_reset = lt8912b_custom_reset,
-    .custom_init = lt8912b_custom_init,
+    .reset_active_level = false,
+    .reset = lt8912b_custom_reset,
+    .init  = lt8912b_custom_init,
 };
 BK_LCD_PANEL_DEVICE_SECTION(lcd_device_lt8912b_mipi, "lt8912b_mipi_1920x1080", BK_LCD_PANEL_BUS_DSI);
 
@@ -1124,7 +1132,7 @@ const bk_display_dsi_panel_t lcd_device_lt8912b_mipi = {
     .id = 0x8912720,
     .name = "lt8912b_mipi_1280x720",
     .n_lanes = DSI_ACTIVE_LANES_2,
-    .fps = 36,
+    .fps = 60,
     .timing = {
         .h_size = 1280,
         .v_size = 720,
@@ -1138,10 +1146,11 @@ const bk_display_dsi_panel_t lcd_device_lt8912b_mipi = {
     .init_cmds = NULL,
     .read_id_regs = NULL,
     .read_id_bytes = 0,
-    .custom_reset = lt8912b_custom_reset,
-    .custom_init = lt8912b_custom_init,
+    .reset_active_level = false,
+    .reset = lt8912b_custom_reset,
+    .init  = lt8912b_custom_init,
 };
 BK_LCD_PANEL_DEVICE_SECTION(lcd_device_lt8912b_mipi, "lt8912b_mipi_1280x720", BK_LCD_PANEL_BUS_DSI);
 #endif
 
-#endif /* CONFIG_LCD_LT8912B_MIPI_1920x1080 */
+#endif /* CONFIG_LCD_LT8912B_MIPI_BRIDGE */

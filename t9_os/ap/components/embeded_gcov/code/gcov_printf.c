@@ -36,8 +36,54 @@
  *
  * @return -1 if error, otherwise returns byte count written to UART
  */
-#include <stdio.h>
-#define write_bytes(fd, buf, n) putchar((int)(*(buf)))
+#include <driver/uart.h>
+#include <driver/hal/hal_uart_types.h>
+
+typedef int (*gcov_write_fn)(const char *buf, unsigned int len);
+
+static int s_gcov_inited = 0;
+static uart_id_t s_gcov_uart_id = 0;
+static gcov_write_fn s_gcov_write_cb = NULL;
+
+void gcov_output_init_uart(unsigned int uart_id, const void *cfg)
+{
+	s_gcov_uart_id = (uart_id_t)uart_id;
+	s_gcov_write_cb = NULL;
+	if (cfg) {
+		bk_uart_init(s_gcov_uart_id, (const uart_config_t *)cfg);
+	}
+	s_gcov_inited = 1;
+}
+
+void gcov_output_init_callback(gcov_write_fn write_cb)
+{
+	s_gcov_write_cb = write_cb;
+	s_gcov_inited = 1;
+}
+
+void gcov_output_deinit(void)
+{
+	if (s_gcov_inited && !s_gcov_write_cb) {
+		bk_uart_deinit(s_gcov_uart_id);
+	}
+	s_gcov_write_cb = NULL;
+	s_gcov_uart_id = 0;
+	s_gcov_inited = 0;
+}
+
+static inline int gcov_write_output(int fd, const char *buf, unsigned int n)
+{
+	(void)fd;
+	if (!s_gcov_inited) {
+		return -1;
+	}
+	if (s_gcov_write_cb) {
+		return s_gcov_write_cb(buf, n);
+	}
+	return bk_uart_write_bytes(s_gcov_uart_id, buf, n);
+}
+
+#define write_bytes(fd, buf, n) gcov_write_output((fd), (buf), (n))
 
 /***********************************************************************
  * The following functions support gcov_printf and are not meant to be

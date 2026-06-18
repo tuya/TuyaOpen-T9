@@ -108,7 +108,6 @@ bk_err_t bk_pm_external_ldo_ctrl(uint32_t value)
 	{
 		for (i = 0; i < sizeof(gpio_ctrl_ldo_output_high_map) / sizeof(uint32_t); i++)
 		{
-			bk_gpio_enable_output(gpio_ctrl_ldo_output_high_map[i]);
 			bk_gpio_set_output_high(gpio_ctrl_ldo_output_high_map[i]);
 		}
 	}
@@ -116,7 +115,6 @@ bk_err_t bk_pm_external_ldo_ctrl(uint32_t value)
 	{
 		for (i = 0; i < sizeof(gpio_ctrl_ldo_output_low_map) / sizeof(uint32_t); i++)
 		{
-			bk_gpio_enable_output(gpio_ctrl_ldo_output_high_map[i]);
 			bk_gpio_set_output_low(gpio_ctrl_ldo_output_low_map[i]);
 		}
 	}
@@ -129,11 +127,6 @@ bk_err_t bk_pm_external_ldo_ctrl(uint32_t value)
 /*=========================EXTERNAL LDO CTRL END========================*/
 
 /*=========================POWER/VOLTAGE CTRL START========================*/
-bk_err_t bk_pm_cpu_freq_dump(void)
-{
-	sys_hal_cpu_freq_dump();
-	return BK_OK;
-}
 // TODO: for debug use?
 uint32_t bk_pm_lp_vol_get(void)
 {
@@ -186,6 +179,55 @@ const char *pm_sleep_mode_to_string(pm_sleep_mode_e sleep_mode)
     }
 
     return sleep_mode_strings[sleep_mode];
+}
+
+const char *pm_sleep_module_name_to_string(pm_sleep_module_name_e module)
+{
+	static const char *module_name_strings[] = {
+		"I2C1",       // PM_SLEEP_MODULE_NAME_I2C1 = 0
+		"SPI_1",      // PM_SLEEP_MODULE_NAME_SPI_1
+		"UART1",      // PM_SLEEP_MODULE_NAME_UART1
+		"PWM_1",      // PM_SLEEP_MODULE_NAME_PWM_1
+		"TIMER_1",    // PM_SLEEP_MODULE_NAME_TIMER_1
+		"SARADC",     // PM_SLEEP_MODULE_NAME_SARADC
+		"AUDP",       // PM_SLEEP_MODULE_NAME_AUDP
+		"VIDP",       // PM_SLEEP_MODULE_NAME_VIDP
+		"BTSP",       // PM_SLEEP_MODULE_NAME_BTSP
+		"WIFIP_MAC",  // PM_SLEEP_MODULE_NAME_WIFIP_MAC
+		"WIFI_PHY",   // PM_SLEEP_MODULE_NAME_WIFI_PHY
+		"TIMER_2",    // PM_SLEEP_MODULE_NAME_TIMER_2
+		"APP",        // PM_SLEEP_MODULE_NAME_APP
+		"OTP",        // PM_SLEEP_MODULE_NAME_OTP
+		"I2S_1",      // PM_SLEEP_MODULE_NAME_I2S_1
+		"USB_1",      // PM_SLEEP_MODULE_NAME_USB_1
+		"CAN",        // PM_SLEEP_MODULE_NAME_CAN
+		"PSRAM",      // PM_SLEEP_MODULE_NAME_PSRAM
+		"QSPI_1",     // PM_SLEEP_MODULE_NAME_QSPI_1
+		"QSPI_2",     // PM_SLEEP_MODULE_NAME_QSPI_2
+		"SDIO",       // PM_SLEEP_MODULE_NAME_SDIO
+		"AUXS",       // PM_SLEEP_MODULE_NAME_AUXS
+		"LOG",        // PM_SLEEP_MODULE_NAME_LOG
+		"AT",         // PM_SLEEP_MODULE_NAME_AT
+		"I2C2",       // PM_SLEEP_MODULE_NAME_I2C2
+		"UART2",      // PM_SLEEP_MODULE_NAME_UART2
+		"UART3",      // PM_SLEEP_MODULE_NAME_UART3
+		"WDG",        // PM_SLEEP_MODULE_NAME_WDG
+		"AUDIO_ASR",  // PM_SLEEP_MODULE_NAME_AUDIO_ASR
+		"APP1",       // PM_SLEEP_MODULE_NAME_APP1
+		"CPU1",       // PM_SLEEP_MODULE_NAME_CPU1
+		"ROSC_PROG",  // PM_SLEEP_MODULE_NAME_ROSC_PROG
+		"ROSC",       // PM_SLEEP_MODULE_NAME_ROSC
+		"FLASH_OP",   // PM_SLEEP_MODULE_NAME_FLASH_OP
+		"LV_WAKEUP",  // PM_SLEEP_MODULE_NAME_LV_WAKEUP
+		"BK_MODEM",   // PM_SLEEP_MODULE_NAME_BK_MODEM
+		"ENCP",       // PM_SLEEP_MODULE_NAME_ENCP
+	};
+
+	if (module >= PM_SLEEP_MODULE_NAME_MAX) {
+		return "UNKNOWN";
+	}
+
+	return module_name_strings[module];
 }
 
 void pm_printf_current_temperature(void)
@@ -416,14 +458,6 @@ static bk_err_t gpio_ldo_configure_output(gpio_id_t gpio_id, bool output_level)
 		return BK_ERR_GPIO_CHAN_ID;
 	}
 
-	/* GPIO function unmap and initialization */
-	ret |= gpio_dev_unmap(gpio_id);
-	if(ret != BK_OK)
-	{
-		LOGE("Failed to unmap for GPIO %d ret:%d\r\n", gpio_id, ret);
-		return ret;
-	}
-	/* Configure GPIO as output mode */
 	ret |= bk_gpio_set_capacity(gpio_id, 0);
 	if(ret != BK_OK)
 	{

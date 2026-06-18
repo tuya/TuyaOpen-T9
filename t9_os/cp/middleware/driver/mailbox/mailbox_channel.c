@@ -158,7 +158,7 @@ static u8				mb_chnnl_init_ok = 0;
 #include "spinlock.h"
 static SPINLOCK_SECTION volatile spinlock_t mb_chnl_spin_lock = SPIN_LOCK_INIT;
 #endif // CONFIG_SOC_SMP
-static inline uint32_t mb_chnl_enter_critical()
+__IRAM_SEC static inline uint32_t mb_chnl_enter_critical()
 {
 	uint32_t flags = rtos_disable_int();
 
@@ -169,7 +169,7 @@ static inline uint32_t mb_chnl_enter_critical()
 	return flags;
 }
 
-static inline void mb_chnl_exit_critical(uint32_t flags)
+__IRAM_SEC static inline void mb_chnl_exit_critical(uint32_t flags)
 {
 #if CONFIG_SOC_SMP
 	spin_unlock(&mb_chnl_spin_lock);
@@ -188,7 +188,7 @@ static volatile uint32_t s_mailbox_tx_ack_cnt = 0;
 static volatile uint32_t s_mailbox_tx_compl_cnt = 0;
 static volatile uint32_t s_mailbox_tx_ack_fault_mask = 0;
 
-static inline bk_err_t bk_mailbox_send_safe(mailbox_data_t *data, mailbox_endpoint_t src, mailbox_endpoint_t dst, void *arg)
+__IRAM_SEC static inline bk_err_t bk_mailbox_send_safe(mailbox_data_t *data, mailbox_endpoint_t src, mailbox_endpoint_t dst, void *arg)
 {
 	bk_err_t		ret_code;
 	
@@ -199,7 +199,7 @@ static inline bk_err_t bk_mailbox_send_safe(mailbox_data_t *data, mailbox_endpoi
 	return ret_code;
 }
 
-static u8 mb_phy_chnl_tx_cmd(u8 log_chnl)
+__IRAM_SEC static u8 mb_phy_chnl_tx_cmd(u8 log_chnl)
 {
 	mb_phy_chnl_cmd_t	* cmd_ptr;
 	bk_err_t		ret_code;
@@ -271,7 +271,7 @@ static u8 mb_phy_chnl_tx_cmd(u8 log_chnl)
 	return 0;
 }
 
-static void mb_phy_chnl_rx_ack_isr(mb_phy_chnl_ack_t *ack_ptr)
+__IRAM_SEC static void mb_phy_chnl_rx_ack_isr(mb_phy_chnl_ack_t *ack_ptr)
 {
 	u8		log_chnl;
 	u8		ret_code;
@@ -448,7 +448,7 @@ static void mb_phy_chnl_rx_ack_isr(mb_phy_chnl_ack_t *ack_ptr)
 
 }
 
-static void mb_phy_chnl_rx_cmd_isr(mb_phy_chnl_cmd_t *cmd_ptr)
+__IRAM_SEC static void mb_phy_chnl_rx_cmd_isr(mb_phy_chnl_cmd_t *cmd_ptr)
 {
 	phy_chnnl_hdr_t  chnl_hdr;
 	u8			log_chnl = cmd_ptr->hdr.logical_chnl;
@@ -535,7 +535,7 @@ static void mb_phy_chnl_rx_cmd_isr(mb_phy_chnl_cmd_t *cmd_ptr)
 	return;
 }
 
-static void mb_phy_chnl_rx_isr(mailbox_data_t * mb_data)
+__IRAM_SEC static void mb_phy_chnl_rx_isr(mailbox_data_t * mb_data)
 {
 	mb_phy_chnl_union_t	rx_data;
 
@@ -562,7 +562,7 @@ static void mb_phy_chnl_rx_isr(mailbox_data_t * mb_data)
 	}
 }
 
-static void mb_phy_chnl_start_tx(u8 log_chnl)
+__IRAM_SEC static void mb_phy_chnl_start_tx(u8 log_chnl)
 {
 	u8		ret_code;
 
@@ -677,8 +677,40 @@ bk_err_t mb_chnl_init(void)
 
 	mb_log_chnl_cb_t * log_chnl_cb_x;
 
+	/*
+	 * mb_chnl_init() is reached from mb_chnl_open(), which is called by
+	 * many subsystems (shell log forwarding, ipc_init, mb_uart, ...).
+	 * Each one of those callers runs on its own FreeRTOS task and they
+	 * can race here:
+	 *
+	 *   Task A: enters mb_chnl_open(MB_CHNL_LOG), sees mb_chnnl_init_ok==0,
+	 *           enters mb_chnl_init(), runs all the memset's, sets
+	 *           mb_chnnl_init_ok=1, returns. Caller then sets
+	 *           log_chnl_cb2[15].in_used=1 and installs rx_isr.
+	 *   Task B (preempted in the middle of mb_chnl_open before the
+	 *           init_ok check finishes): comes back, sees init_ok still
+	 *           == 0 (because it sampled before A set it), enters
+	 *           mb_chnl_init() AGAIN, and the memset wipes the
+	 *           log_chnl_cb_x[] array that A just populated.
+	 *
+	 * DWT caught exactly this pattern (the second mb_chnl_init() called
+	 * from ipc_init() via mb_chnl_open(MB_CHNL_HW_CTRL) zeroing out
+	 * MB_CHNL_LOG's slot that shell_log_tx_init() had set up).
+	 *
+	 * Fix: serialize the body with the existing critical section so the
+	 * "if (init_ok) return; ... init_ok = 1;" sequence is atomic w.r.t.
+	 * other tasks. The double-check pattern still keeps the fast path
+	 * lock-free once init has completed.
+	 */
 	if(mb_chnnl_init_ok)
 	{
+		return BK_OK;
+	}
+
+	uint32_t init_int_mask = mb_chnl_enter_critical();
+	if(mb_chnnl_init_ok)
+	{
+		mb_chnl_exit_critical(init_int_mask);
 		return BK_OK;
 	}
 
@@ -700,6 +732,7 @@ bk_err_t mb_chnl_init(void)
 	ret_code = bk_mailbox_init();
 	if(ret_code != BK_OK)
 	{
+		mb_chnl_exit_critical(init_int_mask);
 		return ret_code;
 	}
 
@@ -713,6 +746,8 @@ bk_err_t mb_chnl_init(void)
 	}
 
 	mb_chnnl_init_ok = 1;
+
+	mb_chnl_exit_critical(init_int_mask);
 
 	return BK_OK;
 }
@@ -762,11 +797,18 @@ bk_err_t mb_chnl_open(u8 log_chnl, void * callback_param)
 	if(log_chnl_idx >= phy_chnl_log_chnl_num[phy_chnl_idx])
 		return BK_ERR_PARAM;
 
+	u32 int_mask = mb_chnl_enter_critical();
+
 	if(log_chnl_cb_x[log_chnl_idx].in_used)
+	{
+		mb_chnl_exit_critical(int_mask);
 		return BK_ERR_OPEN;
+	}
 
 	log_chnl_cb_x[log_chnl_idx].in_used = 1;		/* chnl in used. */
 	log_chnl_cb_x[log_chnl_idx].isr_param = callback_param;
+
+	mb_chnl_exit_critical(int_mask);
 
 	return BK_OK;
 }
@@ -803,11 +845,15 @@ bk_err_t mb_chnl_close(u8 log_chnl)
 	if(log_chnl_cb_x[log_chnl_idx].in_used == 0)
 		return BK_ERR_STATE;
 
+	u32 int_mask = mb_chnl_enter_critical();
+
 	log_chnl_cb_x[log_chnl_idx].in_used = 0;
 	log_chnl_cb_x[log_chnl_idx].tx_state = CHNL_STATE_IDLE;
 	log_chnl_cb_x[log_chnl_idx].rx_isr = NULL;
 	log_chnl_cb_x[log_chnl_idx].tx_isr = NULL;
 	log_chnl_cb_x[log_chnl_idx].tx_cmpl_isr = NULL;
+
+	mb_chnl_exit_critical(int_mask);
 
 	return BK_OK;
 }
@@ -837,7 +883,7 @@ bk_err_t mb_chnl_read(u8 log_chnl, mb_chnl_cmd_t * read_buf)
   *     failed  : fail code.
   *
   */
-bk_err_t mb_chnl_write(u8 log_chnl, mb_chnl_cmd_t * cmd_buf)
+__IRAM_SEC bk_err_t mb_chnl_write(u8 log_chnl, mb_chnl_cmd_t * cmd_buf)
 {
 	u16		write_len;
 
@@ -891,7 +937,7 @@ bk_err_t mb_chnl_write(u8 log_chnl, mb_chnl_cmd_t * cmd_buf)
 	if(log_chnl_cb_x[log_chnl_idx].tx_state != CHNL_STATE_IDLE)
 	{
 		mb_chnl_exit_critical(int_mask);
-		
+
 		return BK_ERR_BUSY;
 	}
 
@@ -952,25 +998,50 @@ bk_err_t mb_chnl_ctrl(u8 log_chnl, u8 cmd, void * param)
 	switch(cmd)
 	{
 		case MB_CHNL_GET_STATUS:
+		{
+			u32 int_mask = mb_chnl_enter_critical();
 
 			if(param == NULL)
+			{
+				mb_chnl_exit_critical(int_mask);
 				return BK_ERR_NULL_PARAM;
+			}
 
 			*((u8 *)param) = log_chnl_cb_x[log_chnl_idx].tx_state;
-			
+
+			mb_chnl_exit_critical(int_mask);
 			break;
+		}
 
 		case MB_CHNL_SET_RX_ISR:
+		{
+			u32 int_mask = mb_chnl_enter_critical();
+
 			log_chnl_cb_x[log_chnl_idx].rx_isr = (chnl_rx_isr_t)param;
+
+			mb_chnl_exit_critical(int_mask);
 			break;
+		}
 
 		case MB_CHNL_SET_TX_ISR:
+		{
+			u32 int_mask = mb_chnl_enter_critical();
+
 			log_chnl_cb_x[log_chnl_idx].tx_isr = (chnl_tx_isr_t)param;
+
+			mb_chnl_exit_critical(int_mask);
 			break;
+		}
 
 		case MB_CHNL_SET_TX_CMPL_ISR:
+		{
+			u32 int_mask = mb_chnl_enter_critical();
+
 			log_chnl_cb_x[log_chnl_idx].tx_cmpl_isr = (chnl_tx_cmpl_isr_t)param;
+
+			mb_chnl_exit_critical(int_mask);
 			break;
+		}
 
 		case MB_CHNL_WRITE_SYNC:
 			if(param == NULL)

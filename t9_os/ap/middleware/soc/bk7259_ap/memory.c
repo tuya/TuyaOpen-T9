@@ -94,6 +94,12 @@ extern unsigned char __psram_text_start__;
 extern unsigned char __psram_text_end__;
 #endif
 
+#if CONFIG_PSRAM
+extern unsigned char __psram_code_lma;
+extern unsigned char __psram_code_start__;
+extern unsigned char __psram_code_end__;
+#endif
+
 #define FLASH_CODE_REGION_START (uint32_t)&_stext
 #define FLASH_CODE_REGION_END (uint32_t)&__etext
 
@@ -157,8 +163,37 @@ const bk_dump_mem_info_t bk7259_peri_reg_info[] = {
     {"AON_RTC", (uint32_t)SOC_AON_RTC_REG_BASE, (0x0a*4)},
 #endif
 #if CONFIG_PSRAM
-    {"PSRAM", (uint32_t)SOC_PSRAM_REG_BASE, (0x17*4)},
+    {"PSRAM0", (uint32_t)SOC_PSRAM0_REG_BASE, (0x18*4)},
+    {"PSRAM1", (uint32_t)SOC_PSRAM1_REG_BASE, (0x18*4)},
 #endif
+    /* Bus-stall forensics (mirror of CP-side peri_reg_info[]).
+     * Sizes/offsets must stay in sync with cp/middleware/soc/bk7259/memory.c
+     * so AP self-dumps and CP-initiated AP dumps yield identical regions.
+     *
+     *   HPDMA  : 0x100*4 covers ctrl + status of all 16 channels.
+     *   ISP    : 0x80*4  covers ID + global control block.
+     *   ISP_MI : separate 0x10*4 window at offset 0x1070*4 captures
+     *            ISP_TIMEOUT_CFG_STREAMxx / ISP_STREAM_STATUS_STREAMxx.
+     *   H26E   : 0x80*4  covers encode engine status.
+     *   DPU    : 0x100*4 covers viv_dc chip-ID + interrupt regs.
+     *   GPU    : 0x100*4 covers AQHIIDLEREG / AQINTACK / AQINTREN.
+     *   PPHS   : 0x10*4  AHB access controller (M55 side), regs 0..7.
+     *            Reg0x4[31] ahbp_ahb_sresp gates bus-error response.
+     *   PPRO   : 0x24*4  AHB access controller (M52 side), regs 0..0x23.
+     *            Reg0x7/0x8/0x9 carry the AON/BAK sresp control bits.
+     *   SYS_AHBP: 0x60*4  M55 SYSTEM block @ 0x48000000 — PLL/clock/reset/
+     *            power-domain + per-master QoS + DPU sub-gates.  Without
+     *            this we can't tell whether a victim peripheral was
+     *            clock-gated or in reset at hang time. */
+    {"HPDMA",  (uint32_t)SOC_HPDMA_REG_BASE,            (0x100*4)},
+    {"ISP",    (uint32_t)SOC_ISP_REG_BASE,              (0x80*4)},
+    {"ISP_MI", (uint32_t)SOC_ISP_REG_BASE + (0x1070*4), (0x10*4)},
+    {"H26E",   (uint32_t)SOC_H26E_REG_BASE,             (0x80*4)},
+    {"DPU",    (uint32_t)SOC_DPU_REG_BASE,              (0x100*4)},
+    {"GPU",    (uint32_t)SOC_GPU_REG_BASE,              (0x100*4)},
+    {"PPHS",   (uint32_t)SOC_PPHS_REG_BASE,             (0x10*4)},
+    {"PPRO",   (uint32_t)SOC_PPRO_REG_BASE,             (0x24*4)},
+    {"SYS_AHBP", (uint32_t)SOC_SYS_AHBP_REG_BASE,       (0x60*4)},
 };
 
 const bk_dump_mem_info_t* bk_get_peri_reg_info_list(void)
@@ -209,6 +244,28 @@ void bk_get_psram_data_info(bk_dump_mem_info_t *info)
 #else
     info->start_addr = 0;
     info->size = 0;
+#endif
+}
+
+__attribute__((section(".iram"), noinline)) void bk_get_psram_code_info(bk_psram_code_info_t *info)
+{
+    if (info == NULL) {
+        return;
+    }
+
+    info->run_addr = 0;
+    info->load_addr = 0;
+    info->size = 0;
+
+#if CONFIG_PSRAM
+    uint32_t start = (uint32_t)&__psram_code_start__;
+    uint32_t end = (uint32_t)&__psram_code_end__;
+
+    if (end > start) {
+        info->run_addr = start;
+        info->load_addr = (uint32_t)&__psram_code_lma;
+        info->size = end - start;
+    }
 #endif
 }
 

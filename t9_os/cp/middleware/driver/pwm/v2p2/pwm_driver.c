@@ -148,9 +148,9 @@ static void pwm0_isr(void);
 
 static void pwm_chan_init_gpio(pwm_chan_t sw_ch)
 {
-	gpio_dev_unmap(s_pwm_pin_id_map[sw_ch].gpio_id);
-	gpio_dev_map(s_pwm_pin_id_map[sw_ch].gpio_id, s_pwm_pin_id_map[sw_ch].gpio_dev);
-	bk_gpio_pull_up(s_pwm_pin_id_map[sw_ch].gpio_id);
+#if CONFIG_USR_GPIO_CFG_EN
+	gpio_dev_map_by_func(s_pwm_pin_id_map[sw_ch].gpio_dev);
+#endif
 }
 
 static void pwm_chan_init_common(pwm_chan_t sw_ch)

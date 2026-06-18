@@ -15,6 +15,10 @@
 #include "sdkconfig.h"
 #include "ram_regions.h"
 
+#ifndef CONFIG_WIFI_IRAM_OPT_LEVEL
+#define CONFIG_WIFI_IRAM_OPT_LEVEL 2
+#endif
+
 
 OUTPUT_FORMAT("elf32-littlearm", "elf32-bigarm", "elf32-littlearm")
 
@@ -41,17 +45,26 @@ The follow four shared memory address area mapping to the same physical memory
     0x38000000 ~ 0x380a0000  ---- data area, recommend put sram data
 ******************************************************************************/
 
-__CP_APP_IRAM_OFFSET = 0x20000000;
+__CP_APP_IRAM_OFFSET = 0x00000000;
 
-__CP_APP_IRAM_BASE = CONFIG_CP_RAM_ADDR - __CP_APP_IRAM_OFFSET;  /*0x08000000 = 0x28000000 - __CP_APP_IRAM_OFFSET*/
+#if CONFIG_SRAM_DIRECT_ADDR
+__CP_APP_RAM_OFFSET = 0x04000000;
+#else
+__CP_APP_RAM_OFFSET = 0x0;
+#endif
+
+__CP_APP_RAM_BASE = CONFIG_CP_RAM_ADDR + __CP_APP_RAM_OFFSET; /* 0x28000000 + 0x04000000 = 0x2C000000 */
+__CP_SWAP_BASE = CONFIG_SWAP_ADDR + __CP_APP_RAM_OFFSET; /* 0x2805F000 + 0x04000000 = 0x2C05F000 */
+
+__CP_APP_IRAM_BASE = CONFIG_CP_RAM_ADDR + __CP_APP_RAM_OFFSET - __CP_APP_IRAM_OFFSET;  /*0x2C000000 = 0x2C000000 - __CP_APP_IRAM_OFFSET*/
 __CP_APP_IRAM_SIZE = CONFIG_CP_RAM_SIZE;
 
 MEMORY
 {
   FLASH (rx)            : ORIGIN = (SOC_FLASH_DATA_BASE + CONFIG_CP_VIRTUAL_PARTITION_OFFSET), LENGTH = CONFIG_CP_VIRTUAL_PARTITION_SIZE
   IRAM (rx)             : ORIGIN = __CP_APP_IRAM_BASE, LENGTH = __CP_APP_IRAM_SIZE
-  RAM (rwx)             : ORIGIN = CONFIG_CP_RAM_ADDR, LENGTH = CONFIG_CP_RAM_SIZE
-  SWAP (rwx)            : ORIGIN = CONFIG_SWAP_ADDR, LENGTH = CONFIG_SWAP_SIZE
+  RAM (rwx)             : ORIGIN = __CP_APP_RAM_BASE, LENGTH = CONFIG_CP_RAM_SIZE
+  SWAP (rwx)            : ORIGIN = __CP_SWAP_BASE, LENGTH = CONFIG_SWAP_SIZE
 
 #if CONFIG_PSRAM
 #if (CONFIG_PSRAM_AS_SYS_MEMORY)
@@ -122,66 +135,29 @@ SECTIONS
         KEEP(*(SORT(.app_init_fn*)))
         __app_init_end = .;
         . = ALIGN(8);
-#if CONFIG_SPE_TEST
-	EXCLUDE_FILE (
-        tasks.c.obj
-        queue.c.obj
-        list.c.obj
-        timers.c.obj
-        port.c.obj
-        rtos_pub.c.obj
-        heap_4.c.obj
-        mem_arch.c.obj
-        gpio_driver_base.c.obj
-        flash_driver.c.obj
-        ckmn_driver.c.obj
-        arch_interrupt.c.obj
-        hal_machw.c.obj
-        interrupts.c.obj
-        rw_task.c.obj
-        ke_event.c.obj
-        me_strategy.c.obj
-        chan.c.obj
-        vif_mgmt.c.obj
-        rxl_cntrl.c.obj
-        rxl_hwdesc.c.obj
-        mm_time.c.obj
-        rwnx.c.obj
-        rwnx_rx.c.obj
-        ps.c.obj
-        mm.c.obj
-        rf_cntrl.c.obj
-        mcc.c.obj
-        phy_karst_bk7236.c.obj
-        crm.c.obj
-        bk7236_cal.c.obj
-        manual_cal_bk7236.c.obj
-        bk_cal_common.c.obj
-        nv_parameters.c.obj
-        macif_fhost.c.obj
-        rc_driver.c.obj
-        sys_wifi_driver.c.obj
-        wifi_v2.c.obj
-        bk_feature.c.obj
-        pm.c.obj
-        sys_ps_driver.c.obj
-        sys_pm_hal.c.obj
-        bk_wifi_adapter.c.obj
-        net_param.c.obj
-        wifi_api_wrapper.c.obj
-        bk_rf_adapter.c.obj
-        bk_phy_adapter.c.obj
-        shell_task.c.obj
-        shell_uart.c.obj
-        uart_driver.c.obj
-        uart_hal.c.obj
-	) *(.text .text.* .rodata .rodata.*)
-#else
-        *(.text)
-        *(.text.*)
-        *(.rodata)
-        *(.rodata.*)
-#endif
+
+        EXCLUDE_FILE (
+            /* OS (FreeRTOS) */
+            *libos_source.a:tasks.c.obj
+            *libos_source.a:queue.c.obj
+            *libos_source.a:list.c.obj
+            *libos_source.a:timers.c.obj
+            *libos_source.a:port.c.obj
+            *rtos_pub.c.obj
+            *heap_4.c.obj
+            *mem_arch.c.obj
+            /* Interrupt handling */
+            *arch_interrupt.c.obj
+            *interrupts.c.obj
+            *rxl_hwdesc.c.obj
+            *rxl_cntrl.c.obj
+            *co_list.c.obj
+            *rf_cntrl.c.obj
+            /* lwIP (lib-qualified to avoid over-matching) */
+            *liblwip_intf_v2_1.a:wlanif.c.obj
+            *liblwip_intf_v2_1.a:pbuf.c.obj
+        ) *(.text .text.* .rodata .rodata.*)
+
         . = ALIGN(4);
         __devconfig_start = .;
         *(".devconfig.*")
@@ -192,18 +168,6 @@ SECTIONS
         __apps_start = .;
         KEEP (*(.apps_data))
         __apps_end = .;
-
-        . = ALIGN(4);
-        __wifi_dp_code_start = .;
-        *libcontroller_if.a:*(.text*)
-        *libbk_wifi.a:*(.text*)
-        *libwifi.a:*(.text*)
-        *liblwip_intf_v2_1.a:*(.text*)
-        __wifi_dp_code_end = .;
-        . = ALIGN(4);
-        *(.rodata)
-        *(.rodata.*)
-        . = ALIGN(4);
 
         _etext = .;
         . = ALIGN(4);
@@ -295,61 +259,38 @@ SECTIONS
         *(.itcm)
         *(.itcm_sec_code)
         *(.iram)
-        *(.interrupt)
-
-#if CONFIG_SPE_TEST
-        tasks.c.obj*(.text .text.* *.rodata *.rodata.*)
-        queue.c.obj*(.text .text.* *.rodata *.rodata.*)
-        list.c.obj*(.text .text.* *.rodata *.rodata.*)
-        timers.c.obj*(.text .text.* *.rodata *.rodata.*)
-        port.c.obj*(.text .text.* *.rodata *.rodata.*)
-        rtos_pub.c.obj*(.text .text.* *.rodata *.rodata.*)
-        heap_4.c.obj*(.text .text.* *.rodata *.rodata.*)
-        mem_arch.c.obj*(.text .text.* *.rodata *.rodata.*)
-        gpio_driver_base.c.obj*(.text .text.* *.rodata *.rodata.*)
-        flash_driver.c.obj*(.text .text.* *.rodata *.rodata.*)
-        ckmn_driver.c.obj*(.text .text.* *.rodata *.rodata.*)
-        arch_interrupt.c.obj*(.text .text.* *.rodata *.rodata.*)
-        hal_machw.c.obj*(.text .text.* *.rodata *.rodata.*)
-        interrupts.c.obj*(.text .text.* *.rodata *.rodata.*)
-        rw_task.c.obj*(.text .text.* *.rodata *.rodata.*)
-        ke_event.c.obj*(.text .text.* *.rodata *.rodata.*)
-        me_strategy.c.obj*(.text .text.* *.rodata *.rodata.*)
-        chan.c.obj*(.text .text.* *.rodata *.rodata.*)
-        vif_mgmt.c.obj*(.text .text.* *.rodata *.rodata.*)
-        rxl_cntrl.c.obj*(.text .text.* *.rodata *.rodata.*)
-        rxl_hwdesc.c.obj*(.text .text.* *.rodata *.rodata.*)
-        mm_time.c.obj*(.text .text.* *.rodata *.rodata.*)
-        rwnx.c.obj*(.text .text.* *.rodata *.rodata.*)
-        rwnx_rx.c.obj*(.text .text.* *.rodata *.rodata.*)
-        ps.c.obj*(.text .text.* *.rodata *.rodata.*)
-        mm.c.obj*(.text .text.* *.rodata *.rodata.*)
-        rf_cntrl.c.obj*(.text .text.* *.rodata *.rodata.*)
-        mcc.c.obj*(.text .text.* *.rodata *.rodata.*)
-        phy_karst_bk7236.c.obj*(.text .text.* *.rodata *.rodata.*)
-        crm.c.obj*(.text .text.* .rodata .rodata.*)
-        bk7236_cal.c.obj*(.text .text.* *.rodata *.rodata.*)
-        manual_cal_bk7236.c.obj*(.text .text.* *.rodata *.rodata.*)
-        bk_cal_common.c.obj*(.text .text.* *.rodata *.rodata.*)
-        nv_parameters.c.obj*(.text .text.* *.rodata *.rodata.*)
-        macif_fhost.c.obj*(.text .text.* *.rodata *.rodata.*)
-        rc_driver.c.obj*(.text .text.* *.rodata *.rodata.*)
-        sys_wifi_driver.c.obj*(.text .text.* *.rodata *.rodata.*)
-        wifi_v2.c.obj*(.text .text.* *.rodata *.rodata.*)
-        bk_feature.c.obj*(.text .text.* *.rodata *.rodata.*)
-        pm.c.obj*(.text .text.* *.rodata *.rodata.*)
-        sys_ps_driver.c.obj*(.text .text.* *.rodata *.rodata.*)
-        sys_pm_hal.c.obj*(.text .text.* *.rodata *.rodata.*)
-        bk_wifi_adapter.c.obj*(.text .text.* *.rodata *.rodata.*)
-        net_param.c.obj*(.text .text.* *.rodata *.rodata.*)
-        wifi_api_wrapper.c.obj*(.text .text.* *.rodata *.rodata.*)
-        bk_rf_adapter.c.obj*(.text .text.* *.rodata *.rodata.*)
-        bk_phy_adapter.c.obj*(.text .text.* *.rodata *.rodata.*)
-        shell_task.c.obj*(.text .text.* *.rodata *.rodata.*)
-        shell_uart.c.obj*(.text .text.* *.rodata *.rodata.*)
-        uart_driver.c.obj*(.text .text.* *.rodata *.rodata.*)
-        uart_hal.c.obj*(.text .text.* *.rodata *.rodata.*)
+#if (CONFIG_WIFI_IRAM_OPT_LEVEL >= 2)
+        *(.iram2)    /* WiFi Tier2: resident in SRAM when level >= 2 */
 #endif
+#if (CONFIG_WIFI_IRAM_OPT_LEVEL >= 3)
+        *(.iram3)    /* WiFi Tier3: resident in SRAM when level >= 3 */
+#endif
+        *(.interrupt)
+        KEEP(*(.interrupt.text*))
+
+       /* OS (FreeRTOS) */
+        *libos_source.a:tasks.c.obj*(.text .text.* .rodata .rodata.*)
+        *libos_source.a:queue.c.obj*(.text .text.* .rodata .rodata.*)
+        *libos_source.a:list.c.obj*(.text .text.* .rodata .rodata.*)
+        *libos_source.a:timers.c.obj*(.text .text.* .rodata .rodata.*)
+        *libos_source.a:port.c.obj*(.text .text.* .rodata .rodata.*)
+        *rtos_pub.c.obj*(.text .text.* .rodata .rodata.*)
+        *heap_4.c.obj*(.text .text.* .rodata .rodata.*)
+        *mem_arch.c.obj*(.text .text.* .rodata .rodata.*)
+        /* Interrupt handling */
+        *arch_interrupt.c.obj*(.text .text.* .rodata .rodata.*)
+        *interrupts.c.obj*(.text .text.* .rodata .rodata.*)
+        /* WiFi RX / list / RF */
+        *rxl_hwdesc.c.obj*(.text .text.* .rodata .rodata.*)
+        *rxl_cntrl.c.obj*(.text .text.* .rodata .rodata.*)
+        *co_list.c.obj*(.text .text.* .rodata .rodata.*)
+        *rf_cntrl.c.obj*(.text .text.* .rodata .rodata.*)
+        /* lwIP WLAN netif + pbuf (WiFi Tier3: resident in SRAM when level >= 3) */
+#if (CONFIG_WIFI_IRAM_OPT_LEVEL >= 3)
+        *liblwip_intf_v2_1.a:wlanif.c.obj*(.text .text.* .rodata .rodata.*)
+        *liblwip_intf_v2_1.a:pbuf.c.obj*(.text .text.* .rodata .rodata.*)
+#endif
+
         . = ALIGN(4);
         __iram_end__ = .;
     } > IRAM AT > FLASH
@@ -411,6 +352,8 @@ SECTIONS
         __uninitialized_start = .;
         *(.uninitialized)
         *(".uninitialized.*")
+        *(.noinit)
+        *(.noinit*)
         KEEP(*(.keep.uninitialized))
         . = ALIGN(32);
         __uninitialized_end = .;

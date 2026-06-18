@@ -76,8 +76,6 @@ bk_err_t bk_aud_dmic_init(aud_dmic_config_t *dmic_config)
     AUD_ADC_RETURN_ON_NULL(dmic_config);
     AUD_ADC_RETURN_ON_NOT_INIT();
 
-    uint32_t clk_gpio          = dmic_config->dmic_clk_gpio;
-    uint32_t data_gpio         = dmic_config->dmic_data_gpio;
     aud_dmic_mode_t dmic_mode  = dmic_config->dmic_mode;
     aud_dmic_channel_t channel = dmic_config->channel;
 
@@ -86,17 +84,17 @@ bk_err_t bk_aud_dmic_init(aud_dmic_config_t *dmic_config)
 
     switch (dmic_mode) {
         case AUD_DMIC_MODE_0:
-            gpio_dev_unmap(clk_gpio);
-            gpio_dev_map(clk_gpio, GPIO_DEV_DMIC1_CLK);
-            gpio_dev_unmap(data_gpio);
-            gpio_dev_map(data_gpio, GPIO_DEV_DMIC1_DAT);
+#if CONFIG_USR_GPIO_CFG_EN
+            gpio_dev_map_by_func(GPIO_DEV_DMIC0_CLK);
+            gpio_dev_map_by_func(GPIO_DEV_DMIC0_DAT);
+#endif
             bk_aud_dmic_en(0x1);  // '001
             break;
         case AUD_DMIC_MODE_1:
-            gpio_dev_unmap(clk_gpio);
-            gpio_dev_map(clk_gpio, GPIO_DEV_DMIC2_CLK);
-            gpio_dev_unmap(data_gpio);
-            gpio_dev_map(data_gpio, GPIO_DEV_DMIC2_DAT);
+#if CONFIG_USR_GPIO_CFG_EN
+            gpio_dev_map_by_func(GPIO_DEV_DMIC1_CLK);
+            gpio_dev_map_by_func(GPIO_DEV_DMIC1_DAT);
+#endif
             bk_aud_dmic_en(0x6);  // '110
             break;
         default:
@@ -133,6 +131,7 @@ bk_err_t bk_aud_adc_init(aud_adc_config_t *adc_config)
     //enable audio adc power
     sys_drv_aud_adcbias_en(1);
     sys_drv_aud_micbias_en(1);
+    sys_drv_aud_audbias_en(1);
 
     /* config mic analog gain in dB */
     bk_aud_adc_set_ana_gain_db(AUD_ADC_CHL_0, adc_config->chl_cfg[0].ana_gain);
@@ -154,14 +153,17 @@ bk_err_t bk_aud_adc_init(aud_adc_config_t *adc_config)
     bk_aud_adc_set_bits_width(AUD_ADC_CHL_1, adc_config->chl_cfg[1].bits);
     bk_aud_adc_set_bits_width(AUD_ADC_CHL_2, adc_config->chl_cfg[2].bits);
 
-    /* Configure AEC loopback when AEC is enabled */
-    if (adc_config->aec_en) {
-        audio_reg_hal_set_adc_cfg_aec_en(0x1);
-        audio_reg_hal_set_adc_cfg_aec_16b_sel(0x1);
-    } else
+    /* Configure AEC loopback: 0=off, 1/2/3=hardware loopback mode */
     {
-        audio_reg_hal_set_adc_cfg_aec_en(0x0);
-        audio_reg_hal_set_adc_cfg_aec_16b_sel(0x0);
+        uint8_t aec_en = adc_config->aec_en & 0x3;
+        if (aec_en) {
+            audio_reg_hal_set_adc_cfg_aec_en(1);//(aec_en);
+            audio_reg_hal_set_adc_cfg_aec_16b_sel(1);//(aec_en);
+        } else
+		{
+            audio_reg_hal_set_adc_cfg_aec_en(0);
+            audio_reg_hal_set_adc_cfg_aec_16b_sel(0);
+		}
     }
 
     audio_reg_hal_set_adc_cfg_clk_adc_inv(adc_config->adc_samp_edge);

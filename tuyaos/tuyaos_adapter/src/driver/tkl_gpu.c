@@ -313,10 +313,10 @@ static OPERATE_RET tkl_gpu_backend_create(void)
     gpu_cfg.flexa_lines = s_gpu_ctx.cfg.flexa_lines;
     gpu_cfg.flexa_buff_cnt = flexa->buf_cnt;
     gpu_cfg.src_buffer = flexa->src_buffer;
-    gpu_cfg.malloc = tkl_gpu_frame_malloc;
-    gpu_cfg.free = tkl_gpu_frame_free;
-    gpu_cfg.frame_display = tkl_gpu_frame_done;
-    gpu_cfg.frame_display_args = NULL;
+    gpu_cfg.frame_malloc = tkl_gpu_frame_malloc;
+    gpu_cfg.frame_free = tkl_gpu_frame_free;
+    gpu_cfg.frame_done = tkl_gpu_frame_done;
+    gpu_cfg.frame_done_args = NULL;
 
     tkl_log_output(
             "gpu open controller: src=%ux%u fmt=%u -> dst=%ux%u fmt=%u rotate=%u compress=%u scale=%u flexa_lines=%u\r\n",
