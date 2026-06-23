@@ -289,23 +289,30 @@ static void tkl_adc_test_print_all_maps(void)
 static OPERATE_RET tkl_adc_test_div(uint32_t pin, const char *state)
 {
     INT32_T chan = tkl_adc_test_pin_to_channel(pin);
-    UINT8_T ch_u8;
+    ADC_IOCTL_DIV_RESIS_T div_cfg = {0};
     OPERATE_RET ret;
 
     if ((chan < 0) || (state == NULL)) {
         return OPRT_INVALID_PARM;
     }
 
-    ch_u8 = (UINT8_T)chan;
+    /* tkl_adc_ioctl() expects an ADC_IOCTL_DIV_RESIS_T (port/channel/data), per
+     * tkl_adc.h. Passing a bare channel byte makes the adapter read garbage for
+     * port and reject with OPRT_INVALID_PARM. */
+    div_cfg.port = TKL_ADC_TEST_DEFAULT_PORT;
+    div_cfg.channel = (UINT8_T)chan;
+
     if (os_strcmp(state, "close") == 0) {
-        ret = tkl_adc_ioctl(ADC_DIV_RESIS_CLOSE, &ch_u8);
+        div_cfg.data = 0;
+        ret = tkl_adc_ioctl(ADC_DIV_RESIS_CLOSE, &div_cfg);
     } else if (os_strcmp(state, "open") == 0) {
-        ret = tkl_adc_ioctl(ADC_DIV_RESIS_OPEN, &ch_u8);
+        div_cfg.data = 1;
+        ret = tkl_adc_ioctl(ADC_DIV_RESIS_OPEN, &div_cfg);
     } else {
         return OPRT_INVALID_PARM;
     }
 
-    bk_printf("div pin=%u ch=%u state=%s ret=%d\r\n", pin, ch_u8, state, ret);
+    bk_printf("div pin=%u ch=%u state=%s ret=%d\r\n", pin, div_cfg.channel, state, ret);
     return ret;
 }
 

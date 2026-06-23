@@ -278,8 +278,8 @@
         },
         {
             "gpio_id": "GPIO_25",
-            "second_func_en": "GPIO_SECOND_FUNC_ENABLE",
-            "second_func_dev": "GPIO_DEV_IRDA",
+            "second_func_en": "GPIO_SECOND_FUNC_DISABLE",
+            "second_func_dev": "GPIO_DEV_INVALID",
             "time_sharing_func_dev": "GPIO_DEV_INVALID",
             "pull_mode": "GPIO_PULL_DISABLE",
             "int_en": "GPIO_INT_DISABLE",

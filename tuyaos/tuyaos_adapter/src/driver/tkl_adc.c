@@ -414,7 +414,9 @@ OPERATE_RET tkl_adc_read_single_channel(TUYA_ADC_NUM_E port_num, UINT8_T ch_id, 
 
     for (UINT8_T i = 0; i < g_adc_current_ch_num; i++) {
         if ((g_adc_init[i] == TRUE) && (g_config[i].chan == ch_id)) {
-            return tkl_adc_read_raw_config(&g_config[i], data);
+            adc_config_t single = g_config[i];   /* local copy: read exactly one sample */
+            single.output_buf_len = 1;
+            return tkl_adc_read_raw_config(&single, data);
         }
     }
 
@@ -467,26 +469,40 @@ OPERATE_RET tkl_adc_read_voltage(TUYA_ADC_NUM_E port_num, INT32_T *buff, UINT16_
 
 OPERATE_RET tkl_adc_ioctl(ADC_IOCTL_CMD_E cmd, VOID *args)
 {
+    ADC_IOCTL_DIV_RESIS_T *div_cfg;
     UINT8_T ch_id;
+    UINT8_T div;
 
     if (args == NULL) {
         return OPRT_INVALID_PARM;
     }
 
-    ch_id = *(UINT8_T *)args;
-    if (ch_id >= ADC_DEV_CHANNEL_SUM) {
+    div_cfg = (ADC_IOCTL_DIV_RESIS_T *)args;
+    ch_id = div_cfg->channel;
+    if (!tkl_adc_port_is_valid(div_cfg->port) ||
+        (ch_id >= ADC_DEV_CHANNEL_SUM)) {
         return OPRT_INVALID_PARM;
     }
 
     switch (cmd) {
     case ADC_DIV_RESIS_CLOSE:
-        g_channel_id_div[ch_id] = 1;
+        div = 1;
         break;
     case ADC_DIV_RESIS_OPEN:
-        g_channel_id_div[ch_id] = 0;
+        div = 0;
         break;
     default:
         return OPRT_NOT_SUPPORTED;
+    }
+
+    g_channel_id_div[ch_id] = div;
+
+    /* Apply to an already-configured channel so subsequent voltage reads take
+     * effect (vol_div is otherwise only baked into g_config at init time). */
+    for (UINT8_T i = 0; i < g_adc_current_ch_num; i++) {
+        if ((g_adc_init[i] == TRUE) && (g_config[i].chan == ch_id)) {
+            g_config[i].vol_div = div ? ADC_VOL_DIV_1 : ADC_VOL_DIV_NONE;
+        }
     }
 
     return OPRT_OK;

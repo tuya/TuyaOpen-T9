@@ -52,7 +52,7 @@ static bool tkl_gpio_is_valid_pin(TUYA_GPIO_NUM_E pin_id)
         return false;
     }
 
-    if ((pin_id == TUYA_GPIO_NUM_10) || (pin_id == TUYA_GPIO_NUM_11)) {
+    if ((pin_id == TUYA_GPIO_NUM_0) || (pin_id == TUYA_GPIO_NUM_1)) {
         return false;
     }
 
