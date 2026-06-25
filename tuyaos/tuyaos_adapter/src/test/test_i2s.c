@@ -9,7 +9,47 @@
 
 #include "cli_tuya_test.h"
 #include "tkl_i2s.h"
+#include "tkl_pinmux.h"
 #include "tkl_system.h"
+
+/*
+ * I2S pad routing. The multi-i2s driver maps pads via gpio_dev_map_by_func()
+ * (port0->group0=I2S0 funcs, port1->group1=I2S1 funcs), but those funcs are
+ * absent/incomplete in the board GPIO_DEFAULT_DEV_CONFIG, so the driver can't
+ * resolve the pins. I2S is a flexible-mux peripheral, so route the pads here
+ * with tkl_io_pinmux_config() before init (any pin can take any I2S function).
+ *
+ * NOTE: GPIO40/41 are also UART2 (TX/RX). If your serial console is on UART2,
+ * running this remaps the console pads. Confirmed not the console here, so
+ * port1 uses the documented I2S group1 pins GPIO40-43.
+ *
+ * Loopback wiring (port0 master -> port1 slave):
+ *   GPIO6 (port0 BCLK) -> GPIO40 (port1 BCLK)
+ *   GPIO7 (port0 LRCK) -> GPIO41 (port1 LRCK)
+ *   GPIO9 (port0 DOUT) -> GPIO42 (port1 DIN)
+ */
+#define I2S0_CLK_PIN   6
+#define I2S0_WS_PIN    7
+#define I2S0_DIN_PIN   8
+#define I2S0_DOUT_PIN  9
+#define I2S1_CLK_PIN   40
+#define I2S1_WS_PIN    41
+#define I2S1_DIN_PIN   42
+#define I2S1_DOUT_PIN  43
+
+static void test_i2s_pinmux_setup(void)
+{
+    /* port0 -> group0 = I2S0 functions */
+    (void)tkl_io_pinmux_config(I2S0_CLK_PIN,  TUYA_I2S0_SCK);
+    (void)tkl_io_pinmux_config(I2S0_WS_PIN,   TUYA_I2S0_WS);
+    (void)tkl_io_pinmux_config(I2S0_DIN_PIN,  TUYA_I2S0_SDI_0);
+    (void)tkl_io_pinmux_config(I2S0_DOUT_PIN, TUYA_I2S0_SDO_0);
+    /* port1 -> group1 = I2S1 functions */
+    (void)tkl_io_pinmux_config(I2S1_CLK_PIN,  TUYA_I2S1_SCK);
+    (void)tkl_io_pinmux_config(I2S1_WS_PIN,   TUYA_I2S1_WS);
+    (void)tkl_io_pinmux_config(I2S1_DIN_PIN,  TUYA_I2S1_SDI_0);
+    (void)tkl_io_pinmux_config(I2S1_DOUT_PIN, TUYA_I2S1_SDO_0);
+}
 
 #define I2S_TEST_DEFAULT_TX_PORT         TUYA_I2S_NUM_0
 #define I2S_TEST_DEFAULT_RX_PORT         TUYA_I2S_NUM_1
@@ -917,6 +957,9 @@ void cli_tuya_i2s_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char *
     if ((pcWriteBuffer == NULL) || (xWriteBufferLen <= 0)) {
         return;
     }
+
+    /* Route I2S pads before any init (board default table lacks I2S0/I2S1). */
+    test_i2s_pinmux_setup();
 
     if (argc < 2) {
         test_i2s_usage(pcWriteBuffer, xWriteBufferLen);

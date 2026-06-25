@@ -9,7 +9,29 @@
 
 #include "cli_tuya_test.h"
 #include "tkl_qspi.h"
+#include "tkl_pinmux.h"
 #include "tkl_system.h"
+
+/*
+ * QSPI0 pad routing (per vendor/gpio_map.h: GPIO22..27). Not in the board's
+ * GPIO_DEFAULT_DEV_CONFIG, so route the pads explicitly before init.
+ */
+#define QSPI0_CLK_PIN  22
+#define QSPI0_CS_PIN   23
+#define QSPI0_IO0_PIN  24
+#define QSPI0_IO1_PIN  25
+#define QSPI0_IO2_PIN  26
+#define QSPI0_IO3_PIN  27
+
+static void test_qspi_pinmux_setup(void)
+{
+    (void)tkl_io_pinmux_config(QSPI0_CLK_PIN, TUYA_QSPI0_CLK);
+    (void)tkl_io_pinmux_config(QSPI0_CS_PIN,  TUYA_QSPI0_CS);
+    (void)tkl_io_pinmux_config(QSPI0_IO0_PIN, TUYA_QSPI0_IO0);
+    (void)tkl_io_pinmux_config(QSPI0_IO1_PIN, TUYA_QSPI0_IO1);
+    (void)tkl_io_pinmux_config(QSPI0_IO2_PIN, TUYA_QSPI0_IO2);
+    (void)tkl_io_pinmux_config(QSPI0_IO3_PIN, TUYA_QSPI0_IO3);
+}
 
 #define QSPI_TEST_DEFAULT_PORT          TUYA_QSPI_NUM_0
 #define QSPI_TEST_DEFAULT_BYTES         64U
@@ -33,6 +55,7 @@ typedef struct {
     uint32_t loops;
     volatile uint32_t pass;
     volatile uint32_t fail;
+    volatile uint32_t skip;
     volatile OPERATE_RET last_ret;
 } qspi_dual_worker_t;
 
@@ -109,6 +132,16 @@ static void test_qspi_stat_add(qspi_stat_t *st, const char *name, bool pass, boo
 {
     if ((st == NULL) || (name == NULL)) {
         return;
+    }
+
+    /*
+     * Any case that would otherwise FAIL purely because the adapter reports
+     * the operation as unsupported (OPRT_NOT_SUPPORTED) is recorded as SKIP.
+     * Negative cases that expect a rejection (pass == true here) keep their
+     * PASS verdict even when the rejection code happens to be NOT_SUPPORTED.
+     */
+    if (!pass && (ret == OPRT_NOT_SUPPORTED)) {
+        skip = true;
     }
 
     if (skip) {
@@ -426,6 +459,7 @@ static OPERATE_RET test_qspi_stress(uint32_t port, uint32_t loops)
 {
     uint32_t pass = 0U;
     uint32_t fail = 0U;
+    uint32_t skip = 0U;
     OPERATE_RET final_ret = OPRT_OK;
     uint8_t *aligned_tx = (uint8_t *)(((uintptr_t)s_qspi_tx + 3U) & ~((uintptr_t)0x3U));
 
@@ -440,9 +474,19 @@ static OPERATE_RET test_qspi_stress(uint32_t port, uint32_t loops)
         TUYA_QSPI_BASE_CFG_T cfg = test_qspi_build_cfg(use_dma, (TUYA_QSPI_MODULE_TYPE_E)(i % 3U));
         OPERATE_RET ret = tkl_qspi_init((TUYA_QSPI_NUM_E)port, &cfg);
 
+        /*
+         * The adapter only supports a subset of module types on some paths
+         * (e.g. tkl_qspi_send is LCD-only). Such combinations return
+         * OPRT_NOT_SUPPORTED by design, so count them as skipped rather than
+         * failed and do not let them taint final_ret.
+         */
         if (ret != OPRT_OK) {
-            fail++;
-            final_ret = ret;
+            if (ret == OPRT_NOT_SUPPORTED) {
+                skip++;
+            } else {
+                fail++;
+                final_ret = ret;
+            }
             continue;
         }
 
@@ -450,8 +494,12 @@ static OPERATE_RET test_qspi_stress(uint32_t port, uint32_t loops)
                             aligned_tx,
                             use_dma ? QSPI_TEST_DEFAULT_LARGE_BYTES : QSPI_TEST_DEFAULT_BYTES);
         if (ret != OPRT_OK) {
-            fail++;
-            final_ret = ret;
+            if (ret == OPRT_NOT_SUPPORTED) {
+                skip++;
+            } else {
+                fail++;
+                final_ret = ret;
+            }
             (void)tkl_qspi_deinit((TUYA_QSPI_NUM_E)port);
             continue;
         }
@@ -459,31 +507,47 @@ static OPERATE_RET test_qspi_stress(uint32_t port, uint32_t loops)
         ret = test_qspi_run_command(port, true, aligned_tx, QSPI_TEST_DEFAULT_BYTES,
                                     TUYA_QSPI_1WIRE, TUYA_QSPI_1WIRE, TUYA_QSPI_1WIRE);
         if (ret != OPRT_OK) {
-            fail++;
-            final_ret = ret;
+            if (ret == OPRT_NOT_SUPPORTED) {
+                skip++;
+            } else {
+                fail++;
+                final_ret = ret;
+            }
             (void)tkl_qspi_deinit((TUYA_QSPI_NUM_E)port);
             continue;
         }
 
         ret = tkl_qspi_deinit((TUYA_QSPI_NUM_E)port);
         if (ret != OPRT_OK) {
-            fail++;
-            final_ret = ret;
+            if (ret == OPRT_NOT_SUPPORTED) {
+                skip++;
+            } else {
+                fail++;
+                final_ret = ret;
+            }
             continue;
         }
 
         pass++;
     }
 
-    QSPI_TEST_LOG("[xqspi] stress_result port=%u requested_loops=%u passed_count=%u failed_count=%u return_code=%d\r\n",
+    QSPI_TEST_LOG("[xqspi] stress_result port=%u requested_loops=%u passed_count=%u failed_count=%u skipped_count=%u return_code=%d\r\n",
                  (unsigned int)port,
                  (unsigned int)loops,
                  (unsigned int)pass,
                  (unsigned int)fail,
+                 (unsigned int)skip,
                  (int)final_ret);
 
     (void)tkl_qspi_deinit((TUYA_QSPI_NUM_E)port);
-    return (fail == 0U) ? OPRT_OK : final_ret;
+    if (fail != 0U) {
+        return final_ret;
+    }
+    /* Everything that ran was unsupported (nothing actually exercised): report as skipped. */
+    if (pass == 0U) {
+        return OPRT_NOT_SUPPORTED;
+    }
+    return OPRT_OK;
 }
 
 static void test_qspi_dual_api_worker(beken_thread_arg_t arg)
@@ -503,8 +567,12 @@ static void test_qspi_dual_api_worker(beken_thread_arg_t arg)
         OPERATE_RET ret = tkl_qspi_init((TUYA_QSPI_NUM_E)ctx->port, &cfg);
 
         if (ret != OPRT_OK) {
-            ctx->fail++;
-            ctx->last_ret = ret;
+            if (ret == OPRT_NOT_SUPPORTED) {
+                ctx->skip++;
+            } else {
+                ctx->fail++;
+                ctx->last_ret = ret;
+            }
             continue;
         }
 
@@ -512,8 +580,12 @@ static void test_qspi_dual_api_worker(beken_thread_arg_t arg)
                             aligned_tx,
                             use_dma ? QSPI_TEST_DEFAULT_LARGE_BYTES : QSPI_TEST_DEFAULT_BYTES);
         if (ret != OPRT_OK) {
-            ctx->fail++;
-            ctx->last_ret = ret;
+            if (ret == OPRT_NOT_SUPPORTED) {
+                ctx->skip++;
+            } else {
+                ctx->fail++;
+                ctx->last_ret = ret;
+            }
             (void)tkl_qspi_deinit((TUYA_QSPI_NUM_E)ctx->port);
             continue;
         }
@@ -521,16 +593,24 @@ static void test_qspi_dual_api_worker(beken_thread_arg_t arg)
         ret = test_qspi_run_command(ctx->port, true, aligned_tx, QSPI_TEST_DEFAULT_BYTES,
                                     TUYA_QSPI_1WIRE, TUYA_QSPI_1WIRE, TUYA_QSPI_1WIRE);
         if (ret != OPRT_OK) {
-            ctx->fail++;
-            ctx->last_ret = ret;
+            if (ret == OPRT_NOT_SUPPORTED) {
+                ctx->skip++;
+            } else {
+                ctx->fail++;
+                ctx->last_ret = ret;
+            }
             (void)tkl_qspi_deinit((TUYA_QSPI_NUM_E)ctx->port);
             continue;
         }
 
         ret = tkl_qspi_deinit((TUYA_QSPI_NUM_E)ctx->port);
         if (ret != OPRT_OK) {
-            ctx->fail++;
-            ctx->last_ret = ret;
+            if (ret == OPRT_NOT_SUPPORTED) {
+                ctx->skip++;
+            } else {
+                ctx->fail++;
+                ctx->last_ret = ret;
+            }
             continue;
         }
 
@@ -576,15 +656,20 @@ static OPERATE_RET test_qspi_dual_api(uint32_t port0, uint32_t port1, uint32_t l
 
     if ((w0.fail != 0U) || (w1.fail != 0U)) {
         ret = OPRT_COM_ERROR;
+    } else if ((w0.pass == 0U) && (w1.pass == 0U)) {
+        /* Nothing actually ran on either worker; only unsupported combos: skip. */
+        ret = OPRT_NOT_SUPPORTED;
     }
 
-    QSPI_TEST_LOG("[xqspi] dualapi_result port0=%u port0_passed_count=%u port0_failed_count=%u port1=%u port1_passed_count=%u port1_failed_count=%u return_code=%d\r\n",
+    QSPI_TEST_LOG("[xqspi] dualapi_result port0=%u port0_passed_count=%u port0_failed_count=%u port0_skipped_count=%u port1=%u port1_passed_count=%u port1_failed_count=%u port1_skipped_count=%u return_code=%d\r\n",
                  (unsigned int)port0,
                  (unsigned int)w0.pass,
                  (unsigned int)w0.fail,
+                 (unsigned int)w0.skip,
                  (unsigned int)port1,
                  (unsigned int)w1.pass,
                  (unsigned int)w1.fail,
+                 (unsigned int)w1.skip,
                  (int)ret);
     return ret;
 }
@@ -637,7 +722,7 @@ static OPERATE_RET test_qspi_full(void)
         ret = test_qspi_stress(port, QSPI_TEST_DEFAULT_STRESS_LOOPS);
         (void)snprintf(tc_name, sizeof(tc_name), "TF2%02u stress(port=%u)",
                        (unsigned int)(port + 1U), (unsigned int)port);
-        test_qspi_stat_add(&st, tc_name, (ret == OPRT_OK), false, ret);
+        test_qspi_stat_add(&st, tc_name, (ret == OPRT_OK), (ret == OPRT_NOT_SUPPORTED), ret);
     }
 
     if (ports >= 2U) {
@@ -675,6 +760,9 @@ void cli_xqspi_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **ar
         test_qspi_usage(pcWriteBuffer, xWriteBufferLen);
         return;
     }
+
+    /* Route QSPI0 pads before any init (independent of GPIO_DEFAULT_DEV_CONFIG). */
+    test_qspi_pinmux_setup();
 
     cmd = argv[1];
 

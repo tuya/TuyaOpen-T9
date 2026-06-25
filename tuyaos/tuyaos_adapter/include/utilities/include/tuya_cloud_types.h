@@ -601,6 +601,12 @@ typedef UINT16_T TUYA_PIN_FUNC_E;
 #define  TUYA_PWM3           0x303
 #define  TUYA_PWM4           0x304
 #define  TUYA_PWM5           0x305
+#define  TUYA_PWM6           0x306
+#define  TUYA_PWM7           0x307
+#define  TUYA_PWM8           0x308
+#define  TUYA_PWM9           0x309
+#define  TUYA_PWM10          0x30A
+#define  TUYA_PWM11          0x30B
 
 #define  TUYA_ADC0           0x400
 #define  TUYA_ADC1           0x401
@@ -633,6 +639,24 @@ typedef UINT16_T TUYA_PIN_FUNC_E;
 #define  TUYA_SDIO_DATA1     0x803
 #define  TUYA_SDIO_DATA2     0x804
 #define  TUYA_SDIO_DATA3     0x805
+
+#define  TUYA_QSPI0_CLK      0x900
+#define  TUYA_QSPI0_CS       0x901
+#define  TUYA_QSPI0_IO0      0x902
+#define  TUYA_QSPI0_IO1      0x903
+#define  TUYA_QSPI0_IO2      0x904
+#define  TUYA_QSPI0_IO3      0x905
+#define  TUYA_QSPI1_CLK      0x906
+#define  TUYA_QSPI1_CS       0x907
+#define  TUYA_QSPI1_IO0      0x908
+#define  TUYA_QSPI1_IO1      0x909
+#define  TUYA_QSPI1_IO2      0x90A
+#define  TUYA_QSPI1_IO3      0x90B
+
+#define  TUYA_DMIC0_CLK      0x910
+#define  TUYA_DMIC0_DAT      0x911
+#define  TUYA_DMIC1_CLK      0x912
+#define  TUYA_DMIC1_DAT      0x913
 
 #define  TUYA_PIN_FUNC_MAX   0xFFFF
 

@@ -40,7 +40,14 @@ static SPINLOCK_SECTION volatile spinlock_t tkl_spi_spin_lock = SPIN_LOCK_INIT;
 #define SOC_SPI_MAX_NUM  (2)
 #define SPI_DMA_HW_TRANS_LEN_MAX 0xFFFU
 #define SPI_DMA_WAIT_POLL_US 10U
-#define SPI_DMA_WAIT_TIMEOUT_US 10000000U
+/*
+ * Stall-detection bound for a single DMA transfer. A healthy transfer finishes
+ * in milliseconds; this is only the "give up" threshold for a transfer that
+ * never makes progress (e.g. a slave that is never clocked). Kept at 2s so a
+ * stalled transfer frees its DMA channel quickly instead of tying it up for
+ * 10s and bleeding "chN busy"/bus-error fallout into subsequent transfers.
+ */
+#define SPI_DMA_WAIT_TIMEOUT_US 2000000U
 #define SPI_DMA_RX_FLUSH_STABLE_US 2000U
 #define SPI_DMA_RX_FLUSH_REMAIN_MAX 4U
 #define TKL_SPI_DMA_DEBUG 0
@@ -364,6 +371,43 @@ static inline void spi_exit_critical(uint32_t flags)
 #endif // CONFIG_FREERTOS_SMP
 
        rtos_enable_int(flags);
+}
+
+/*
+ * Driver-level API mutex. Serializes the port lifecycle operations
+ * (init / deinit / abort) so that concurrent callers on different ports
+ * cannot race on the shared driver state, the per-port semaphores or the
+ * shared ISR tables. spi_enter_critical() above is a spinlock+IRQ-off section
+ * that must not wrap blocking calls such as semaphore create/delete, so a
+ * mutex is used for the (potentially blocking) lifecycle paths instead.
+ */
+static beken_mutex_t s_spi_api_lock = NULL;
+
+static OPERATE_RET tkl_spi_api_lock(void)
+{
+	if (s_spi_api_lock == NULL) {
+		if (rtos_init_mutex(&s_spi_api_lock) != BK_OK) {
+			return OPRT_COM_ERROR;
+		}
+	}
+	return (rtos_lock_mutex(&s_spi_api_lock) == BK_OK) ? OPRT_OK : OPRT_COM_ERROR;
+}
+
+static void tkl_spi_api_unlock(void)
+{
+	if (s_spi_api_lock != NULL) {
+		rtos_unlock_mutex(&s_spi_api_lock);
+	}
+}
+
+static bool spi_any_port_inited(void)
+{
+	for (int i = SPI_ID_0; i < SPI_ID_MAX; i++) {
+		if (spi[i].id_init_bits) {
+			return true;
+		}
+	}
+	return false;
 }
 
 static void spi_init_gpio(spi_id_t id)
@@ -841,6 +885,39 @@ static void spi_dma_rx_init(spi_id_t id, dma_id_t *spi_rx_dma_chan, dma_data_wid
 
 	BK_LOG_ON_ERR(tkl_dma_init(spi_rx_dma_chan, &dma_config));
 	BK_LOG_ON_ERR(tkl_dma_register_isr(*spi_rx_dma_chan, spi_dma_rx_finish_handler));
+}
+
+/*
+ * Fully reset a stalled / bus-errored SPI DMA channel.
+ *
+ * Clearing the enable bit alone (tkl_dma_stop) does not reliably recover a
+ * channel that bus-errored or is stuck mid peripheral-handshake: it can keep
+ * its enable latched and a stale destination address (e.g. 0), which then
+ * surfaces as "chN busy ... dst_addr=0" plus a bus_error on the next transfer.
+ * Deinit + re-init mirrors what spi_deinit()/spi_init() do for the channel and
+ * guarantees a clean channel for the next transfer.
+ *
+ * MUST be called outside spi_enter_critical()/exit_critical() (it may block).
+ */
+static void spi_dma_reset_channel(spi_id_t id, bool is_tx)
+{
+	if (is_tx) {
+		if (spi[id].spi_tx_dma_chan == DMA_ID_MAX) {
+			return;
+		}
+		(void)tkl_dma_deinit(spi[id].spi_tx_dma_chan);
+		spi[id].spi_tx_dma_chan = DMA_ID_MAX;
+		spi_dma_tx_init(id, &spi[id].spi_tx_dma_chan,
+		                spi_config[id].spi_tx_dma_width, DMA_WORK_MODE_SINGLE);
+	} else {
+		if (spi[id].spi_rx_dma_chan == DMA_ID_MAX) {
+			return;
+		}
+		(void)tkl_dma_deinit(spi[id].spi_rx_dma_chan);
+		spi[id].spi_rx_dma_chan = DMA_ID_MAX;
+		spi_dma_rx_init(id, &spi[id].spi_rx_dma_chan,
+		                spi_config[id].spi_rx_dma_width, DMA_WORK_MODE_SINGLE);
+	}
 }
 
 #endif /* CONFIG_SPI_DMA */
@@ -1370,6 +1447,11 @@ static OPERATE_RET spi_dma_write_bytes(spi_id_t id, const void *data, uint32_t s
 	}
 	spi_exit_critical(int_level);
 	SPI_DMA_DUMP_CHANNEL("tx_done", id, spi[id].spi_tx_dma_chan);
+	if ((ret != OPRT_OK) || dma_error) {
+		/* Stalled/errored transfer: hard-reset the channel so it does not stay
+		 * busy and corrupt the next transfer. */
+		spi_dma_reset_channel(id, true);
+	}
 	if (ret != OPRT_OK) {
 		return ret;
 	}
@@ -1470,6 +1552,11 @@ static OPERATE_RET spi_dma_read_bytes(spi_id_t id, void *data, uint32_t size)
 	}
 	spi_exit_critical(int_level);
 	SPI_DMA_DUMP_CHANNEL("rx_done", id, spi[id].spi_rx_dma_chan);
+	if ((ret != OPRT_OK) || dma_error) {
+		/* Stalled/errored transfer: hard-reset the channel so it does not stay
+		 * busy with a stale destination and corrupt the next transfer. */
+		spi_dma_reset_channel(id, false);
+	}
 	if (ret != OPRT_OK) {
 		return ret;
 	}
@@ -1794,8 +1881,15 @@ OPERATE_RET tkl_spi_init(TUYA_SPI_NUM_E port, const TUYA_SPI_BASE_CFG_T *cfg)
         return tkl_qspi_init((port - TUYA_SPI_NUM_2), &qspi_cfg);
     }
 
-    if(spi_driver_init() != OPRT_OK)
+    OPERATE_RET lock_ret = tkl_spi_api_lock();
+    if (lock_ret != OPRT_OK) {
+        return lock_ret;
+    }
+
+    if(spi_driver_init() != OPRT_OK) {
+        tkl_spi_api_unlock();
         return OPRT_COM_ERROR;
+    }
 
     spi_config[port].wire_mode = SPI_4WIRE_MODE;
     spi_config[port].baud_rate = cfg->freq_hz;
@@ -1851,12 +1945,18 @@ OPERATE_RET tkl_spi_init(TUYA_SPI_NUM_E port, const TUYA_SPI_BASE_CFG_T *cfg)
         spi_config[port].bit_order = SPI_MSB_FIRST;
     }
 
-    BK_RETURN_ON_ERR(spi_init((spi_id_t)port, &spi_config[port]));
+    lock_ret = spi_init((spi_id_t)port, &spi_config[port]);
+    tkl_spi_api_unlock();
+    if (lock_ret != BK_OK) {
+        return lock_ret;
+    }
     return OPRT_OK;
 }
 
 OPERATE_RET tkl_spi_deinit(TUYA_SPI_NUM_E port)
 {
+    OPERATE_RET op;
+
     if (port > TUYA_SPI_NUM_3) {
         return OPRT_INVALID_PARM;
     }
@@ -1864,10 +1964,25 @@ OPERATE_RET tkl_spi_deinit(TUYA_SPI_NUM_E port)
     if (port >= TUYA_SPI_NUM_2) {
         return tkl_qspi_deinit(port - TUYA_SPI_NUM_2);
     }
-    BK_RETURN_ON_ERR(spi_deinit((spi_id_t)port));
-    spi_driver_deinit();
-    memset(&spi_config[port], 0, sizeof(spi_config[port]));
-    return OPRT_OK;
+
+    op = tkl_spi_api_lock();
+    if (op != OPRT_OK) {
+        return op;
+    }
+
+    op = spi_deinit((spi_id_t)port);
+    if (op == OPRT_OK) {
+        memset(&spi_config[port], 0, sizeof(spi_config[port]));
+        /* Only tear down the shared driver (ISR unregister, etc.) once every
+         * port has been deinited. Otherwise deinit of one port would free the
+         * resources (semaphores) of another port still in use by another task. */
+        if (!spi_any_port_inited()) {
+            spi_driver_deinit();
+        }
+    }
+
+    tkl_spi_api_unlock();
+    return op;
 }
 
 OPERATE_RET tkl_spi_send(TUYA_SPI_NUM_E port, VOID_T *data, UINT32_T size)
@@ -2019,12 +2134,63 @@ OPERATE_RET tkl_spi_transfer_with_length(TUYA_SPI_NUM_E port, void* send_buf, ui
 
 OPERATE_RET tkl_spi_abort_transfer(TUYA_SPI_NUM_E port)
 {
+    OPERATE_RET op;
+    bool wake_tx = false;
+    bool wake_rx = false;
+
     if (port > TUYA_SPI_NUM_1) {
         return OPRT_INVALID_PARM;
     }
 
-    if (spi_deinit((spi_id_t)port) != OPRT_OK)
-        return OPRT_COM_ERROR;
+    op = tkl_spi_api_lock();
+    if (op != OPRT_OK) {
+        return op;
+    }
+
+    /* Abort only stops the in-flight transfer; it must NOT tear down the port
+     * or free its semaphores (that is tkl_spi_deinit's job). On an
+     * uninitialized port there is simply nothing to abort. */
+    if (!spi[port].id_init_bits) {
+        tkl_spi_api_unlock();
+        return OPRT_OK;
+    }
+
+    {
+        uint32_t int_level = spi_enter_critical();
+#if (CONFIG_SPI_DMA)
+        if (spi[port].spi_tx_dma_chan != DMA_ID_MAX) {
+            tkl_dma_stop(spi[port].spi_tx_dma_chan);
+        }
+        if (spi[port].spi_rx_dma_chan != DMA_ID_MAX) {
+            tkl_dma_stop(spi[port].spi_rx_dma_chan);
+        }
+#endif
+        spi_hal_stop_common(&spi[port].hal);
+        spi_hal_clear_tx_fifo(&spi[port].hal);
+        spi_hal_clear_rx_fifo(&spi[port].hal);
+
+        /* Latch which waiters need to be released, then signal them outside
+         * the critical section (rtos_set_semaphore must not run under the
+         * spinlock/IRQ-off section). */
+        if (spi[port].is_tx_blocked) {
+            spi[port].is_tx_blocked = false;
+            wake_tx = (spi[port].tx_sema != NULL);
+        }
+        if (spi[port].is_rx_blocked) {
+            spi[port].is_rx_blocked = false;
+            wake_rx = (spi[port].rx_sema != NULL);
+        }
+        spi_exit_critical(int_level);
+    }
+
+    if (wake_tx) {
+        rtos_set_semaphore(&spi[port].tx_sema);
+    }
+    if (wake_rx) {
+        rtos_set_semaphore(&spi[port].rx_sema);
+    }
+
+    tkl_spi_api_unlock();
     return OPRT_OK;
 }
 

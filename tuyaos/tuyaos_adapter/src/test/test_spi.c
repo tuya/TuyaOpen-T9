@@ -10,7 +10,39 @@
 
 #include "cli_tuya_test.h"
 #include "tkl_spi.h"
+#include "tkl_pinmux.h"
 #include "tkl_system.h"
+
+/*
+ * SPI pad routing. tkl_spi maps its pads in spi_init_gpio() from configurable
+ * pin getters; route SPI0 (master, GPIO14-17) and SPI1 (slave, GPIO2-5) here
+ * via tkl_io_pinmux_config() before init so the pins are explicit and the
+ * master/slave loopback wiring is well-defined.
+ *
+ * Loopback wiring (master SPI0 <-> slave SPI1):
+ *   GPIO14 SCK <-> GPIO2,  GPIO15 CS <-> GPIO3,
+ *   GPIO16 MOSI <-> GPIO4, GPIO17 MISO <-> GPIO5
+ */
+#define SPI0_CLK_PIN   14
+#define SPI0_CS_PIN    15
+#define SPI0_MOSI_PIN  16
+#define SPI0_MISO_PIN  17
+#define SPI1_CLK_PIN   2
+#define SPI1_CS_PIN    3
+#define SPI1_MOSI_PIN  4
+#define SPI1_MISO_PIN  5
+
+static void test_spi_pinmux_setup(void)
+{
+    (void)tkl_io_pinmux_config(SPI0_CLK_PIN,  TUYA_SPI0_CLK);
+    (void)tkl_io_pinmux_config(SPI0_CS_PIN,   TUYA_SPI0_CS);
+    (void)tkl_io_pinmux_config(SPI0_MOSI_PIN, TUYA_SPI0_MOSI);
+    (void)tkl_io_pinmux_config(SPI0_MISO_PIN, TUYA_SPI0_MISO);
+    (void)tkl_io_pinmux_config(SPI1_CLK_PIN,  TUYA_SPI1_CLK);
+    (void)tkl_io_pinmux_config(SPI1_CS_PIN,   TUYA_SPI1_CS);
+    (void)tkl_io_pinmux_config(SPI1_MOSI_PIN, TUYA_SPI1_MOSI);
+    (void)tkl_io_pinmux_config(SPI1_MISO_PIN, TUYA_SPI1_MISO);
+}
 
 #define SPI_TEST_DEFAULT_MASTER_PORT      TUYA_SPI_NUM_0
 #define SPI_TEST_DEFAULT_SLAVE_PORT       TUYA_SPI_NUM_1
@@ -1861,6 +1893,9 @@ void cli_tkl_spi_test(char *pcWriteBuffer, int xWriteBufferLen, int argc, char *
     if ((pcWriteBuffer == NULL) || (xWriteBufferLen <= 0)) {
         return;
     }
+
+    /* Route SPI pads before any init. */
+    test_spi_pinmux_setup();
 
     if (argc < 2) {
         test_spi_usage(pcWriteBuffer, xWriteBufferLen);

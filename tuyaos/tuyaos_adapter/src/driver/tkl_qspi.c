@@ -27,8 +27,6 @@
 #define TKL_QSPI_DMA_TIMEOUT_US 10000000U
 #define TKL_QSPI_LCD_WRITE_CMD  0x2CU
 
-extern void bk_delay_us(UINT32 us);
-
 typedef struct {
     qspi_hal_t hal;
     TUYA_QSPI_BASE_CFG_T cfg;
