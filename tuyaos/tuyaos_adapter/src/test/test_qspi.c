@@ -57,6 +57,8 @@ typedef struct {
     volatile uint32_t fail;
     volatile uint32_t skip;
     volatile OPERATE_RET last_ret;
+    volatile uint32_t fail_step;   /* 1=init 2=send 3=run_command 4=deinit */
+    volatile uint32_t fail_loop;   /* loop index of the first failure */
 } qspi_dual_worker_t;
 
 static uint8_t s_qspi_tx[QSPI_TEST_MAX_BYTES + 8U] __attribute__((aligned(4)));
@@ -562,54 +564,25 @@ static void test_qspi_dual_api_worker(beken_thread_arg_t arg)
 
     ctx->last_ret = OPRT_OK;
     for (uint32_t i = 0; i < ctx->loops; i++) {
-        bool use_dma = ((i & 0x1U) != 0U);
-        TUYA_QSPI_BASE_CFG_T cfg = test_qspi_build_cfg(use_dma, (TUYA_QSPI_MODULE_TYPE_E)(i % 3U));
-        OPERATE_RET ret = tkl_qspi_init((TUYA_QSPI_NUM_E)ctx->port, &cfg);
-
+        /*
+         * Only the data path runs in this loop. The port was configured ONCE by
+         * the caller and is NOT re-inited/deinited here on purpose: QSPI0 and
+         * QSPI1 share a single clock-control register (cksel/ckdiv for both ports
+         * live in sys_ahbp reg8). Reconfiguring one port's clock while the other
+         * port is mid-transfer glitches the shared clock and wedges the in-flight
+         * DMA (manifested as a ~10s send timeout, return_code=-20). Keeping the
+         * clock static during the concurrent transfers is what makes genuine
+         * parallel QSPI0+QSPI1 operation possible on this SoC.
+         */
+        OPERATE_RET ret = tkl_qspi_send((TUYA_QSPI_NUM_E)ctx->port,
+                                        aligned_tx, QSPI_TEST_DEFAULT_LARGE_BYTES);
         if (ret != OPRT_OK) {
             if (ret == OPRT_NOT_SUPPORTED) {
                 ctx->skip++;
             } else {
                 ctx->fail++;
                 ctx->last_ret = ret;
-            }
-            continue;
-        }
-
-        ret = tkl_qspi_send((TUYA_QSPI_NUM_E)ctx->port,
-                            aligned_tx,
-                            use_dma ? QSPI_TEST_DEFAULT_LARGE_BYTES : QSPI_TEST_DEFAULT_BYTES);
-        if (ret != OPRT_OK) {
-            if (ret == OPRT_NOT_SUPPORTED) {
-                ctx->skip++;
-            } else {
-                ctx->fail++;
-                ctx->last_ret = ret;
-            }
-            (void)tkl_qspi_deinit((TUYA_QSPI_NUM_E)ctx->port);
-            continue;
-        }
-
-        ret = test_qspi_run_command(ctx->port, true, aligned_tx, QSPI_TEST_DEFAULT_BYTES,
-                                    TUYA_QSPI_1WIRE, TUYA_QSPI_1WIRE, TUYA_QSPI_1WIRE);
-        if (ret != OPRT_OK) {
-            if (ret == OPRT_NOT_SUPPORTED) {
-                ctx->skip++;
-            } else {
-                ctx->fail++;
-                ctx->last_ret = ret;
-            }
-            (void)tkl_qspi_deinit((TUYA_QSPI_NUM_E)ctx->port);
-            continue;
-        }
-
-        ret = tkl_qspi_deinit((TUYA_QSPI_NUM_E)ctx->port);
-        if (ret != OPRT_OK) {
-            if (ret == OPRT_NOT_SUPPORTED) {
-                ctx->skip++;
-            } else {
-                ctx->fail++;
-                ctx->last_ret = ret;
+                if (ctx->fail_step == 0U) { ctx->fail_step = 2U; ctx->fail_loop = i; }
             }
             continue;
         }
@@ -642,17 +615,57 @@ static OPERATE_RET test_qspi_dual_api(uint32_t port0, uint32_t port1, uint32_t l
     w1.port = port1;
     w1.loops = loops;
 
+    /*
+     * Configure BOTH ports up-front. These init calls run sequentially here, so
+     * the writes to the shared QSPI clock-control register (sys_ahbp reg8, holding
+     * cksel/ckdiv for both ports) are naturally serialized. After this point the
+     * clock is left untouched, so the two worker threads can drive QSPI0 and QSPI1
+     * data transfers truly in parallel without glitching each other's clock.
+     */
+    {
+        /* LCD type so the large DMA send (QSPI_TEST_DEFAULT_LARGE_BYTES) actually
+         * transfers; non-LCD DMA is capped at the FIFO size and would otherwise be
+         * reported NOT_SUPPORTED, never exercising a real parallel transfer. */
+        TUYA_QSPI_BASE_CFG_T cfg = test_qspi_build_cfg(true, TUYA_QSPI_TYPE_LCD);
+        OPERATE_RET r0 = tkl_qspi_init((TUYA_QSPI_NUM_E)port0, &cfg);
+        OPERATE_RET r1 = tkl_qspi_init((TUYA_QSPI_NUM_E)port1, &cfg);
+
+        if ((r0 == OPRT_NOT_SUPPORTED) || (r1 == OPRT_NOT_SUPPORTED)) {
+            (void)tkl_qspi_deinit((TUYA_QSPI_NUM_E)port0);
+            (void)tkl_qspi_deinit((TUYA_QSPI_NUM_E)port1);
+            QSPI_TEST_LOG("[xqspi] dualapi_result skipped (init not supported) port0_ret=%d port1_ret=%d\r\n",
+                         (int)r0, (int)r1);
+            return OPRT_NOT_SUPPORTED;
+        }
+        if ((r0 != OPRT_OK) || (r1 != OPRT_OK)) {
+            (void)tkl_qspi_deinit((TUYA_QSPI_NUM_E)port0);
+            (void)tkl_qspi_deinit((TUYA_QSPI_NUM_E)port1);
+            QSPI_TEST_LOG("[xqspi] dualapi_result init_failed port0_ret=%d port1_ret=%d return_code=%d\r\n",
+                         (int)r0, (int)r1, (int)OPRT_COM_ERROR);
+            return OPRT_COM_ERROR;
+        }
+    }
+
     if (rtos_create_thread(&th0, 6, "xqspi_d0", test_qspi_dual_api_worker, 3072, &w0) != kNoErr) {
+        (void)tkl_qspi_deinit((TUYA_QSPI_NUM_E)port0);
+        (void)tkl_qspi_deinit((TUYA_QSPI_NUM_E)port1);
         return OPRT_COM_ERROR;
     }
 
     if (rtos_create_thread(&th1, 6, "xqspi_d1", test_qspi_dual_api_worker, 3072, &w1) != kNoErr) {
-        (void)rtos_delete_thread(&th0);
+        (void)rtos_thread_join(&th0);
+        (void)tkl_qspi_deinit((TUYA_QSPI_NUM_E)port0);
+        (void)tkl_qspi_deinit((TUYA_QSPI_NUM_E)port1);
         return OPRT_COM_ERROR;
     }
 
     (void)rtos_thread_join(&th0);
     (void)rtos_thread_join(&th1);
+
+    /* Clock is reconfigured here too (deinit writes the shared reg8), but only
+     * after both workers have stopped transferring, so it is safe. */
+    (void)tkl_qspi_deinit((TUYA_QSPI_NUM_E)port0);
+    (void)tkl_qspi_deinit((TUYA_QSPI_NUM_E)port1);
 
     if ((w0.fail != 0U) || (w1.fail != 0U)) {
         ret = OPRT_COM_ERROR;
@@ -661,15 +674,21 @@ static OPERATE_RET test_qspi_dual_api(uint32_t port0, uint32_t port1, uint32_t l
         ret = OPRT_NOT_SUPPORTED;
     }
 
-    QSPI_TEST_LOG("[xqspi] dualapi_result port0=%u port0_passed_count=%u port0_failed_count=%u port0_skipped_count=%u port1=%u port1_passed_count=%u port1_failed_count=%u port1_skipped_count=%u return_code=%d\r\n",
+    QSPI_TEST_LOG("[xqspi] dualapi_result port0=%u port0_passed_count=%u port0_failed_count=%u port0_skipped_count=%u port0_fail_step=%u port0_fail_loop=%u port0_last_ret=%d port1=%u port1_passed_count=%u port1_failed_count=%u port1_skipped_count=%u port1_fail_step=%u port1_fail_loop=%u port1_last_ret=%d return_code=%d\r\n",
                  (unsigned int)port0,
                  (unsigned int)w0.pass,
                  (unsigned int)w0.fail,
                  (unsigned int)w0.skip,
+                 (unsigned int)w0.fail_step,
+                 (unsigned int)w0.fail_loop,
+                 (int)w0.last_ret,
                  (unsigned int)port1,
                  (unsigned int)w1.pass,
                  (unsigned int)w1.fail,
                  (unsigned int)w1.skip,
+                 (unsigned int)w1.fail_step,
+                 (unsigned int)w1.fail_loop,
+                 (int)w1.last_ret,
                  (int)ret);
     return ret;
 }

@@ -19,6 +19,7 @@
 #include "qspi_hal.h"
 #include "sys_driver.h"
 #include "tuya_dma.h"
+#include "bk_misc.h"   /* bk_delay_us() prototype */
 
 #define TKL_QSPI_DIV_FACTOR_NUM 5U
 #define TKL_QSPI_SRC_DIV_MAX    15U
@@ -562,6 +563,25 @@ OPERATE_RET tkl_qspi_init(TUYA_QSPI_NUM_E port, const TUYA_QSPI_BASE_CFG_T *cfg)
     if (ret != OPRT_OK) {
         return ret;
     }
+
+    /*
+     * The hardware bring-up below touches registers SHARED across both QSPI
+     * ports: PMU/clock power, GPIO mux (tkl_qspi_map_gpio), QSPI common regs
+     * (qspi_hal_init_common) and the sys_drv clock source/divider. The per-port
+     * lock does NOT serialize these, so port0/port1 bring-up on the two SMP cores
+     * races on the shared registers and a port can come up half-configured.
+     * Serialize the whole bring-up with the cross-port global lock. The data path
+     * (tkl_qspi_send) still uses only the per-port lock, so the two ports keep
+     * transferring in parallel. Lock order is always port_lock -> driver_lock
+     * (tkl_qspi_driver_prepare took/released driver_lock alone, before the port
+     * lock), so this cannot deadlock.
+     */
+    ret = tkl_qspi_driver_lock();
+    if (ret != OPRT_OK) {
+        tkl_qspi_port_unlock(ctx);
+        return ret;
+    }
+
     tkl_qspi_dma_deinit_locked(ctx);
 
     tkl_qspi_clock_power_ctrl((qspi_id_t)port, TRUE);
@@ -581,11 +601,13 @@ OPERATE_RET tkl_qspi_init(TUYA_QSPI_NUM_E port, const TUYA_QSPI_BASE_CFG_T *cfg)
     if (ret != OPRT_OK) {
         tkl_qspi_clock_power_ctrl((qspi_id_t)port, FALSE);
         qspi_hal_deinit_common(&ctx->hal);
+        tkl_qspi_driver_unlock();
         tkl_qspi_port_unlock(ctx);
         return ret;
     }
     ctx->inited = TRUE;
 
+    tkl_qspi_driver_unlock();
     tkl_qspi_port_unlock(ctx);
     return OPRT_OK;
 }
@@ -613,6 +635,14 @@ OPERATE_RET tkl_qspi_deinit(TUYA_QSPI_NUM_E port)
         return OPRT_OK;
     }
 
+    /* Serialize shared-register teardown with the cross-port global lock; see
+     * tkl_qspi_init for the rationale and lock-ordering note. */
+    ret = tkl_qspi_driver_lock();
+    if (ret != OPRT_OK) {
+        tkl_qspi_port_unlock(ctx);
+        return ret;
+    }
+
     tkl_qspi_dma_deinit_locked(ctx);
     qspi_hal_deinit_common(&ctx->hal);
     tkl_qspi_clock_power_ctrl((qspi_id_t)port, FALSE);
@@ -620,6 +650,7 @@ OPERATE_RET tkl_qspi_deinit(TUYA_QSPI_NUM_E port)
     ctx->irq_enable = FALSE;
     os_memset(&ctx->cfg, 0, sizeof(ctx->cfg));
 
+    tkl_qspi_driver_unlock();
     tkl_qspi_port_unlock(ctx);
     return OPRT_OK;
 }
