@@ -59,24 +59,16 @@ static void irda_drain_rx_fifo(void);
 
 static void irda_init_gpio(void)
 {
-	gpio_dev_unmap(IRDA_PIN);
-	gpio_dev_map(IRDA_PIN, GPIO_DEV_IRDA);
+#if CONFIG_USR_GPIO_CFG_EN
+	gpio_dev_map_by_func(GPIO_DEV_IRDA);
+#endif
 }
 
 static void irda_deinit_gpio(void)
 {
-	gpio_dev_unmap(IRDA_PIN);
-}
-
-static void irda_gpio_config(bool active_level)
-{
-	BK_LOG_ON_ERR(bk_gpio_disable_output(IRDA_PIN));
-	BK_LOG_ON_ERR(bk_gpio_disable_input(IRDA_PIN));
-	BK_LOG_ON_ERR(bk_gpio_enable_pull(IRDA_PIN));
-	if(active_level)
-		BK_LOG_ON_ERR(bk_gpio_pull_up(IRDA_PIN));
-	else
-		BK_LOG_ON_ERR(bk_gpio_pull_down(IRDA_PIN));
+#if CONFIG_USR_GPIO_CFG_EN
+	gpio_dev_unmap_by_func(GPIO_DEV_IRDA);
+#endif
 }
 
 /* 1) power up irda
@@ -231,7 +223,6 @@ bk_err_t bk_irda_init_rx(const irda_rx_init_config_t *rx_config)
 		return BK_ERR_PARAM;
 	}
 
-	irda_gpio_config(rx_config->rx_initial_level);
 	irda_hal_init_rx(rx_config);
 	irda_hal_set_rx_int(true);
 	irda_hal_set_rx_enable(true);

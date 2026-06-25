@@ -1,10 +1,7 @@
 #pragma once
 
 #include <components/bk_gpu.h>
-
-#ifndef H264D_GPU_DISPLAY_ENABLE_MIPI_DISPLAY
-#define H264D_GPU_DISPLAY_ENABLE_MIPI_DISPLAY 1
-#endif
+#include "h264d_gpu_display_config.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -22,6 +19,7 @@ avdk_err_t h264d_gpu_display_gpu_open(uint8_t *src_buffer,
 				      h264d_gpu_display_gpu_frame_done_cb_t frame_done_cb,
 				      void *frame_done_args);
 void h264d_gpu_display_gpu_close(void);
+void h264d_gpu_display_gpu_frame_pool_deinit(void);
 bk_gpu_ctlr_handle_t h264d_gpu_display_gpu_handle_get(void);
 
 #ifdef __cplusplus

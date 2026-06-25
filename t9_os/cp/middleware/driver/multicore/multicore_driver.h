@@ -28,3 +28,41 @@ uint32_t bk_multicore_get_cpu_id(void);
 bk_err_t bk_multicore_start(uint32_t cpu_id);
 bk_err_t bk_multicore_reset(uint32_t cpu_id);
 bk_err_t bk_multicore_stop(uint32_t cpu_id);
+
+#if CONFIG_CPU_HOTPLUG
+typedef enum {
+	BK_CPU_HP_STATE_ONLINE = 0,
+	BK_CPU_HP_STATE_OFFLINE_REQUESTED,
+	BK_CPU_HP_STATE_SCHEDULER_DRAINING,
+	BK_CPU_HP_STATE_IRQ_MIGRATING,
+	BK_CPU_HP_STATE_QUIESCE,
+	BK_CPU_HP_STATE_RESET_HOLD,
+	BK_CPU_HP_STATE_POWER_OFF,
+	BK_CPU_HP_STATE_OFFLINE,
+	BK_CPU_HP_STATE_POWER_ON,
+	BK_CPU_HP_STATE_BOOT_PREPARE,
+	BK_CPU_HP_STATE_RESET_RELEASE,
+	BK_CPU_HP_STATE_SECONDARY_BOOT,
+	BK_CPU_HP_STATE_JOIN_SCHEDULER,
+} bk_cpu_hp_state_t;
+
+uint32_t bk_cpu_hp_is_online(uint32_t cpu_id);
+uint32_t bk_cpu_hp_is_active(uint32_t cpu_id);
+bk_cpu_hp_state_t bk_cpu_hp_get_state(uint32_t cpu_id);
+const char *bk_cpu_hp_get_state_name(uint32_t cpu_id);
+uint32_t bk_cpu_hp_get_domain_possible_mask(uint32_t cpu_id);
+uint32_t bk_cpu_hp_get_domain_online_mask(uint32_t cpu_id);
+uint32_t bk_cpu_hp_get_domain_active_mask(uint32_t cpu_id);
+uint32_t bk_cpu_hp_get_domain_dying_mask(uint32_t cpu_id);
+uint32_t bk_cpu_hp_get_domain_offline_mask(uint32_t cpu_id);
+
+bk_err_t bk_cpu_hp_offline(uint32_t cpu_id);
+bk_err_t bk_cpu_hp_online(uint32_t cpu_id);
+uint32_t bk_cpu_hp_enter_primary(void);
+void bk_cpu_hp_exit_primary(uint32_t old_core_id);
+
+void bk_cpu_hp_core_online(void);
+void bk_cpu_hp_core_stop_hmb_isr(void);
+void bk_cpu_hp_idle_handler(void);
+
+#endif /* CONFIG_CPU_HOTPLUG */

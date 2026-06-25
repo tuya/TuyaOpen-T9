@@ -14,7 +14,6 @@
 #include <os/os.h>
 #include <components/system.h>
 #include "reset_reason.h"
-#include <driver/trng.h>
 #include "tkl_memory.h"
 #include "atomic.h"
 #include <components/bk_uid.h>

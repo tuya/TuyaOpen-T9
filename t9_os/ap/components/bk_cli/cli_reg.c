@@ -17,7 +17,7 @@
 #include <os/str.h>
 #include "sys_hal.h"
 #include "icu_hal.h"
-#include "pwm_hal.h"
+#include "pwm_hal_v2p2.h"
 #include "timer_hal.h"
 #if CONFIG_SUPPORT_IO_MATRIX && CONFIG_IO_MATRIX_VER2_0
 #include "iomx_hal.h"
@@ -30,8 +30,6 @@
 #endif
 #include "dma_hal.h"
 #include "uart_hal.h"
-#include "wdt_hal.h"
-#include "trng_hal.h"
 #include "efuse_hal.h"
 #include "adc_hal.h"
 #include "spi_hal.h"
@@ -220,8 +218,6 @@ static void cli_reg_dump_help(void)
 	CLI_LOGD("        timer\n");
 	CLI_LOGD("        dma [channel]\n");
 	CLI_LOGD("        uart id\n");
-	CLI_LOGD("        wdt\n");
-	CLI_LOGD("        trng\n");
 	CLI_LOGD("        efuse\n");
 	CLI_LOGD("        adc\n");
 	CLI_LOGD("        sdmadc\n");
@@ -269,12 +265,6 @@ static void cli_reg_dump_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc,
 		dma_struct_dump(index);
 	} else if (os_strcmp(argv[1], "uart") == 0) {
 		uart_struct_dump(index);
-	} else if (os_strcmp(argv[1], "wdt") == 0) {
-		wdt_struct_dump();
-	} else if (os_strcmp(argv[1], "trng") == 0) {
-#if (CONFIG_TRNG_SUPPORT)
-		trng_struct_dump();
-#endif
 	} else if (os_strcmp(argv[1], "efuse") == 0) {
 #if (CONFIG_EFUSE)
 		efuse_struct_dump();

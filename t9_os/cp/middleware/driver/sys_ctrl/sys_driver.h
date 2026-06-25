@@ -174,6 +174,7 @@ int32 sys_drv_bandgap_cali_set(uint32_t value);//increase or decrease the dvdddi
 int sys_drv_rosc_test_mode(bool enabled);
 uint32_t sys_drv_bandgap_cali_get();
 bk_err_t sys_drv_switch_cpu_bus_freq(pm_cpu_freq_e cpu_bus_freq);
+bk_err_t sys_drv_switch_cpu_bus_freq_unlocked(pm_cpu_freq_e cpu_bus_freq);
 bk_err_t sys_drv_core_bus_clock_ctrl(uint32_t cksel_core, uint32_t ckdiv_core,uint32_t ckdiv_bus, uint32_t ckdiv_cpu0,uint32_t ckdiv_cpu1);
 
 /*for  low power  function end*/
@@ -506,6 +507,15 @@ uint32_t sys_drv_psram_psldo_vsel(uint32_t value);
 uint32_t sys_drv_psram_psldo_vset(uint32_t psldo_swb, uint32_t vpsramsel);
 uint32_t sys_drv_psram_psram0_disckg(uint32_t value);
 uint32_t sys_drv_psram_psram1_disckg(uint32_t value);
+/* Id-routed PSRAM bus-clock enable (rega.pram0_cken / pram1_cken).
+ * Equivalent to selecting sys_drv_psram_psram[01]_disckg() by id;
+ * lets callers drop the per-id if/else branch and keep retention /
+ * recovery code symmetric with sys_drv_psram_clk_sel_with_id(). */
+uint32_t sys_drv_psram_disckg_with_id(uint32_t id, uint32_t value);
+/* Latch / unlatch PSRAM I/O pads at 3V (ana_reg5.gpio_latch bit7).
+ * Used by PSRAM retention path to keep pad state valid while the
+ * M55 / AHBP sub-system is powered down. Covers PSRAM0 + PSRAM1. */
+uint32_t sys_drv_set_psram_pad_latch(uint32_t value);
 /**  psram End **/
 
 uint32_t sys_drv_cali_dpll(uint32_t param);
@@ -643,6 +653,12 @@ uint32_t sys_drv_get_gadc_config(void);
 void     sys_drv_set_gadc_enable(uint32_t v);
 uint32_t sys_drv_get_gadc_enable(void);
 /** GADC Config (ana_reg22) End **/
+
+/** Analog Comparator Config (ana_reg43) Start **/
+uint32_t sys_drv_get_ana_reg43_config(void);
+void     sys_drv_set_ana_reg43_config(uint32_t v);
+void     sys_drv_anacomp_charge_release_pulse(void);
+/** Analog Comparator Config (ana_reg43) End **/
 
 /** VAD Control (ana_reg23) Start **/
 void     sys_drv_set_vad_config(uint32_t v);

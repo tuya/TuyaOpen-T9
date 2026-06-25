@@ -25,7 +25,7 @@ avdk_err_t bk_gpu_init(bk_gpu_ctlr_handle_t handle);
 avdk_err_t bk_gpu_deinit(bk_gpu_ctlr_handle_t handle);
 avdk_err_t bk_gpu_open(bk_gpu_ctlr_handle_t handle);
 avdk_err_t bk_gpu_close(bk_gpu_ctlr_handle_t handle);
-avdk_err_t bk_gpu_ioctl(bk_gpu_ctlr_handle_t handle, uint32_t cmd, void *arg);
+avdk_err_t bk_gpu_ioctl(bk_gpu_ctlr_handle_t handle, uint32_t cmd, void *args);
 avdk_err_t bk_gpu_delete(bk_gpu_ctlr_handle_t handle);
 avdk_err_t bk_gpu_draw_path_clear(bk_gpu_ctlr_handle_t handle);
 avdk_err_t bk_gpu_draw_path_build(bk_gpu_ctlr_handle_t handle, bk_gpu_draw_path_set_t *path_set);

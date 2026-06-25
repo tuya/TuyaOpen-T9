@@ -8,6 +8,7 @@
 #include "cli_tuya_test.h"
 #include "tkl_output.h"
 #include "tkl_pwm.h"
+#include "tkl_pinmux.h"
 #include "tkl_system.h"
 
 #define PWM_TEST_DEFAULT_CH            TUYA_PWM_NUM_0
@@ -509,6 +510,21 @@ static OPERATE_RET test_pwm_param(uint32_t ch)
 /* GPIO that each PWM channel maps to (GPIO_PWM_MAP_TABLE), for the wiring hint. */
 static const uint8_t s_pwm_ch_gpio[12] = {47, 48, 49, 50, 51, 52, 53, 54, 55, 8, 28, 9};
 
+/*
+ * Route every PWM channel's pad before init (per vendor/gpio_map.h
+ * GPIO_PWM_MAP_TABLE). The PWM driver resolves pins via gpio_dev_map_by_func(),
+ * but PWM is not in the board's GPIO_DEFAULT_DEV_CONFIG, so pre-route the pads
+ * here; TUYA_PWM0..11 are contiguous so (TUYA_PWM0 + ch) selects the channel.
+ */
+static void test_pwm_pinmux_setup(void)
+{
+    uint32_t ch;
+    for (ch = 0U; ch < 12U; ch++) {
+        (void)tkl_io_pinmux_config((TUYA_PIN_NAME_E)s_pwm_ch_gpio[ch],
+                                   (TUYA_PIN_FUNC_E)(TUYA_PWM0 + ch));
+    }
+}
+
 typedef struct {
     volatile uint32_t irq_cnt;
     volatile uint32_t last_value;
@@ -670,6 +686,9 @@ void cli_pwm_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv
     if (pcWriteBuffer == NULL || xWriteBufferLen <= 0) {
         return;
     }
+
+    /* Route all PWM pads before any init (independent of GPIO_DEFAULT_DEV_CONFIG). */
+    test_pwm_pinmux_setup();
 
     if (argc < 2) {
         snprintf(pcWriteBuffer, xWriteBufferLen,

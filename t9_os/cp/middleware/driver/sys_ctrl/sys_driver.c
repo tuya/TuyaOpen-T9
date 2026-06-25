@@ -174,13 +174,6 @@ void sys_drv_set_ana_pwd_gadc_buf(uint32_t value)
 
 void sys_drv_set_ana_hres_sel0v9(void)
 {
-#if (CONFIG_SOC_BK7236XX)
-    uint32_t int_level = sys_drv_enter_critical();
-
-    sys_hal_set_ana_hres_sel0v9(0x0);
-    sys_hal_set_ana_hres_sel0v9(0x1);
-    sys_drv_exit_critical(int_level);
-#endif
 }
 
 void sys_drv_set_ana_vref_sel(uint32_t value)
@@ -200,12 +193,6 @@ void sys_drv_set_ana_cb_cal_manu(uint32_t value)
 
 void sys_drv_set_ana_adc_div(uint32_t value)
 {
-#if (CONFIG_SOC_BK7236XX)
-    uint32_t int_level = sys_drv_enter_critical();
-
-    sys_hal_set_ana_adc_div(value);
-    sys_drv_exit_critical(int_level);
-#endif
 }
 
 
@@ -608,6 +595,36 @@ uint32_t sys_drv_get_gadc_enable(void)
 }
 
 /** GADC Config (ana_reg22) End **/
+
+/** Analog Comparator Config (ana_reg43) Start **/
+
+uint32_t sys_drv_get_ana_reg43_config(void)
+{
+	uint32_t reg;
+	uint32_t int_level = sys_drv_enter_critical();
+
+	reg = sys_hal_get_ana_reg43_config();
+	sys_drv_exit_critical(int_level);
+	return reg;
+}
+
+void sys_drv_set_ana_reg43_config(uint32_t v)
+{
+	uint32_t int_level = sys_drv_enter_critical();
+
+	sys_hal_set_ana_reg43_config(v);
+	sys_drv_exit_critical(int_level);
+}
+
+void sys_drv_anacomp_charge_release_pulse(void)
+{
+	uint32_t int_level = sys_drv_enter_critical();
+
+	sys_hal_anacomp_charge_release_pulse();
+	sys_drv_exit_critical(int_level);
+}
+
+/** Analog Comparator Config (ana_reg43) End **/
 
 /** VAD Control (ana_reg23) Start **/
 

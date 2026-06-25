@@ -41,11 +41,16 @@
 
 #include "cmsis_gcc.h"
 #include "bk_wdt.h"
-#include "bk_aon_wdt.h"
+#if CONFIG_SUPPORT_WWDT
+#include "wwdt_driver.h"
+#endif
 #include "sys_ll.h"
 #include "driver/mailbox_types.h"
 #include "driver/mailbox.h"
 #include "bk_mailbox.h"
+#if defined(CONFIG_FREERTOS_SMP_CROSS_CORE_IPI)
+#include <driver/ipi_driver.h>
+#endif
 #include <modules/pm.h>
 
 #if ( configENABLE_TRUSTZONE == 1 )
@@ -94,7 +99,7 @@
 #define portNVIC_PEND_SYSTICK_SET_BIT         ( 1UL << 26UL )
 #define portMIN_INTERRUPT_PRIORITY            ( 255UL )
 #define portNVIC_PENDSV_PRI                   ( portMIN_INTERRUPT_PRIORITY << 16UL )
-#define portNVIC_SYSTICK_PRI                  ( 0x80 << 24UL )
+#define portNVIC_SYSTICK_PRI                  ( portMIN_INTERRUPT_PRIORITY << 24UL )
 
 #if CONFIG_SYSTICK_32K
 #define configSYSTICK_CLOCK_HZ                32000
@@ -354,8 +359,8 @@ void vSetCoreOnline( BaseType_t xCoreID, BaseType_t value );
 void vSetCoreActive( BaseType_t xCoreID, BaseType_t value );
 BaseType_t xTaskIsCoreOnline( BaseType_t xCoreID );
 BaseType_t xTaskIsCoreActive( BaseType_t xCoreID );
-extern void bk_ap_cpu_hotplug_core_stop_isr(void);
-extern void bk_ap_cpu_hotplug_core_online(void);
+extern void bk_cpu_hp_core_stop_hmb_isr(void);
+extern void bk_cpu_hp_core_online(void);
 
 #if ( configENABLE_MPU == 1 )
 
@@ -447,7 +452,7 @@ PRIVILEGED_DATA static volatile uint32_t ulCriticalNesting = 0xaaaaaaaaUL;
     /* The primary core number (the own which has the SysTick handler) */
     static uint8_t ucPrimaryCoreNum = INVALID_PRIMARY_CORE_NUM;
 extern uint32_t rtos_get_time_diff(void);
-#if ( configUSE_TICKLESS_IDLE == 1 )
+#if (configUSE_TICKLESS_IDLE == 1)
     __attribute__( ( weak ) ) void vPortSuppressTicksAndSleep( TickType_t xExpectedIdleTime )
     {
         TickType_t xModifiableIdleTime;
@@ -496,6 +501,223 @@ extern uint32_t rtos_get_time_diff(void);
             __asm volatile ( "cpsie i" ::: "memory" );
         }
     }
+
+#elif ( configUSE_TICKLESS_IDLE == 2 )
+
+#define CONFIG_UPDATE_TICK_THEN_ENABLE_INT 1
+
+static inline void systick_gated_update(TickType_t xExpectedIdleTime, uint32_t ulReloadValue)
+{
+#if CONFIG_AON_RTC || CONFIG_ANA_RTC
+    TickType_t slept_ticks = rtos_get_time_diff();
+
+    /* Remember current enabled SysTick per Core */
+    //ulNormalSysTickEnabled |= 1 << portGET_CORE_ID();
+
+    /* Restart SysTick so it runs from portNVIC_SYSTICK_LOAD_REG
+    * again, then set portNVIC_SYSTICK_LOAD_REG back to its standard
+    * value. */
+    portNVIC_SYSTICK_CURRENT_VALUE_REG = 0UL;
+    portNVIC_SYSTICK_LOAD_REG = ulTimerCountsForOneTick - 1;
+    portNVIC_SYSTICK_CTRL_REG |= portNVIC_SYSTICK_ENABLE_BIT;
+
+    if(slept_ticks > 1) {
+        vTaskStepTick(slept_ticks);
+#if CONFIG_SUPPORT_WWDT
+        bk_wwdt_feed_current_core();
+#endif
+#if CONFIG_TASK_WDT
+        bk_task_wdt_feed();
+#endif
+    }
+#endif
+}
+
+#if !CONFIG_UPDATE_TICK_THEN_ENABLE_INT
+static inline void systick_update(TickType_t xExpectedIdleTime, uint32_t ulReloadValue)
+{
+    uint32_t ulCompleteTickPeriods = 0, ulCompletedSysTickDecrements = 0;
+
+    /* Disable the SysTick clock without reading the
+    * portNVIC_SYSTICK_CTRL_REG register to ensure the
+    * portNVIC_SYSTICK_COUNT_FLAG_BIT is not cleared if it is set.
+    * Again, the time the SysTick is stopped for is accounted for as
+    * best it can be, but using the tickless mode will inevitably
+    * result in some tiny drift of the time maintained by the kernel
+    * with respect to calendar time*/
+    portNVIC_SYSTICK_CTRL_REG = ( portNVIC_SYSTICK_CLK_BIT | portNVIC_SYSTICK_INT_BIT );
+
+    /* Determine if the SysTick clock has already counted to zero and
+    * been set back to the current reload value (the reload back being
+    * correct for the entire expected idle time) or if the SysTick is
+    * yet to count to zero (in which case an interrupt other than the
+    * SysTick must have brought the system out of sleep mode). */
+    if( ( portNVIC_SYSTICK_CTRL_REG & portNVIC_SYSTICK_COUNT_FLAG_BIT ) != 0 ) {
+        uint32_t ulCalculatedLoadValue;
+        /* The tick interrupt is already pending, and the SysTick count
+        * reloaded with ulReloadValue.  Reset the
+        * portNVIC_SYSTICK_LOAD_REG with whatever remains of this tick
+        * period. */
+        ulCalculatedLoadValue = ( ulTimerCountsForOneTick - 1UL ) - ( ulReloadValue - portNVIC_SYSTICK_CURRENT_VALUE_REG );
+
+        /* Don't allow a tiny value, or values that have somehow
+        * underflowed because the post sleep hook did something
+        * that took too long. */
+        if( ( ulCalculatedLoadValue < ulStoppedTimerCompensation ) || ( ulCalculatedLoadValue > ulTimerCountsForOneTick ) ) {
+            ulCalculatedLoadValue = ( ulTimerCountsForOneTick - 1UL );
+        }
+
+        portNVIC_SYSTICK_LOAD_REG = ulCalculatedLoadValue;
+
+        /* As the pending tick will be processed as soon as this
+        * function exits, the tick value maintained by the tick is
+        * stepped forward by one less than the time spent waiting. */
+        ulCompleteTickPeriods = xExpectedIdleTime - 1UL;
+    } else {
+
+        /* Something other than the tick interrupt ended the sleep.
+        * Work out how long the sleep lasted rounded to complete tick
+        * periods (not the ulReload value which accounted for part
+        * ticks). */
+        ulCompletedSysTickDecrements = ( xExpectedIdleTime * ulTimerCountsForOneTick ) - portNVIC_SYSTICK_CURRENT_VALUE_REG;
+
+        /* How many complete tick periods passed while the processor
+        * was waiting? */
+        ulCompleteTickPeriods = ulCompletedSysTickDecrements / ulTimerCountsForOneTick;
+
+        /* The reload value is set to whatever fraction of a single tick
+        * period remains. */
+        portNVIC_SYSTICK_LOAD_REG = ( ( ulCompleteTickPeriods + 1UL ) * ulTimerCountsForOneTick ) - ulCompletedSysTickDecrements;
+    }
+
+    /* Restart SysTick so it runs from portNVIC_SYSTICK_LOAD_REG
+    * again, then set portNVIC_SYSTICK_LOAD_REG back to its standard
+    * value. */
+    portNVIC_SYSTICK_CURRENT_VALUE_REG = 0UL;
+    portNVIC_SYSTICK_CTRL_REG |= portNVIC_SYSTICK_ENABLE_BIT;
+
+    if (ulCompleteTickPeriods > 0) {
+        vTaskStepTick( ulCompleteTickPeriods );
+    }
+
+    portNVIC_SYSTICK_LOAD_REG = ulTimerCountsForOneTick - 1UL;
+}
+#endif /* !CONFIG_UPDATE_TICK_THEN_ENABLE_INT */
+
+void vPortSuppressTicksAndSleep( TickType_t xExpectedIdleTime )
+{
+    uint32_t ulReloadValue;
+    TickType_t xModifiableIdleTime;
+
+    /* Make sure the SysTick reload value does not overflow the counter. */
+    if (xExpectedIdleTime > xMaximumPossibleSuppressedTicks) {
+        xExpectedIdleTime = xMaximumPossibleSuppressedTicks;
+    }
+
+    /* Stop the SysTick momentarily. The time the SysTick is stopped for is
+    * accounted for as best it can be, but using the tickless mode will
+    * inevitably result in some tiny drift of the time maintained by the
+    * kernel with respect to calendar time. */
+    portNVIC_SYSTICK_CTRL_REG &= ~portNVIC_SYSTICK_ENABLE_BIT;
+    /* Calculate the reload value required to wait xExpectedIdleTime
+    * tick periods. -1 is used because this code will execute part way
+    * through one of the tick periods. */
+    ulReloadValue = portNVIC_SYSTICK_CURRENT_VALUE_REG + ( ulTimerCountsForOneTick * ( xExpectedIdleTime - 1UL ) );
+
+    if (ulReloadValue > ulStoppedTimerCompensation) {
+        ulReloadValue -= ulStoppedTimerCompensation;
+    }
+
+    /* we can use taskENTER_CRITICAL() to enter a critical section, because
+    in critical section also use primask to mask interrupts,this will not
+    destory the existing logic.  */
+    __asm volatile ( "cpsid i" ::: "memory" );
+    __asm volatile ( "dsb" );
+    __asm volatile ( "isb" );
+    prvTakeKernelLock();
+
+    /* If a context switch is pending or a task is waiting for the scheduler
+    * to be un-suspended then abandon the low power entry. */
+    if (eTaskConfirmSleepModeStatus() == eAbortSleep) {
+        /* Restart from whatever is left in the count register to complete
+        * this tick period. */
+        portNVIC_SYSTICK_LOAD_REG = portNVIC_SYSTICK_CURRENT_VALUE_REG;
+
+        /* Reset the reload register to the value required for normal tick
+        * periods. */
+        portNVIC_SYSTICK_LOAD_REG = ulTimerCountsForOneTick - 1UL;
+
+        /* Restart SysTick. */
+        portNVIC_SYSTICK_CTRL_REG |= portNVIC_SYSTICK_ENABLE_BIT;
+        //portNVIC_SYSTICK_CTRL_REG |= portNVIC_SYSTICK_INT_BIT;
+        /* Re-enable interrupts - see comments above the cpsid instruction()
+        * above. */
+        // __asm volatile ( "cpsie i" ::: "memory" );
+        prvReleaseKernelLock();
+        __asm volatile ( "cpsie i" ::: "memory" );
+
+    } else {
+        /* Set the new reload value. */
+        portNVIC_SYSTICK_LOAD_REG = ulReloadValue;
+
+        /* Clear the SysTick count flag and set the count value back to
+        * zero. */
+        portNVIC_SYSTICK_CURRENT_VALUE_REG = 0UL;
+
+        /* Restart SysTick. */
+        portNVIC_SYSTICK_CTRL_REG |= portNVIC_SYSTICK_ENABLE_BIT;
+
+        /* Sleep until something happens. configPRE_SLEEP_PROCESSING() can
+        * set its parameter to 0 to indicate that its implementation
+        * contains its own wait for interrupt or wait for event
+        * instruction, and so wfi should not be executed again. However,
+        * the original expected idle time variable must remain unmodified,
+        * so a copy is taken. */
+        xModifiableIdleTime = xExpectedIdleTime;
+        configPRE_SLEEP_PROCESSING( xModifiableIdleTime );
+
+        if (xModifiableIdleTime > 0) {
+            prvReleaseKernelLock();
+#if CONFIG_PM
+            pm_suspend(xModifiableIdleTime);
+#else
+            bk_pm_suppress_ticks_and_sleep(xModifiableIdleTime);
+#endif
+            prvTakeKernelLock();
+        }
+
+        configPOST_SLEEP_PROCESSING( xExpectedIdleTime );
+#if CONFIG_UPDATE_TICK_THEN_ENABLE_INT
+        systick_gated_update(xExpectedIdleTime, ulReloadValue);//it improve the systick update when adding here,otherwize the systick update fail and enter the vPortSuppressTicksAndSleep() fail
+#endif
+        /* Re-enable interrupts to allow the interrupt that brought the MCU
+        * out of sleep mode to execute immediately. See comments above
+        * the cpsid instruction above. */
+        __asm volatile ( "cpsie i" ::: "memory" );
+        __asm volatile ( "dsb" );
+        __asm volatile ( "isb" );
+
+        /* Disable interrupts again because the clock is about to be stopped
+        * and interrupts that execute while the clock is stopped will
+        * increase any slippage between the time maintained by the RTOS and
+        * calendar time. */
+        __asm volatile ( "cpsid i" ::: "memory" );
+        __asm volatile ( "dsb" );
+        __asm volatile ( "isb" );
+#if CONFIG_UPDATE_TICK_THEN_ENABLE_INT
+        systick_gated_update(xExpectedIdleTime, ulReloadValue);//it improve the systick update when adding here,otherwize the systick update fail and enter the vPortSuppressTicksAndSleep() fai
+#else
+        systick_update(xExpectedIdleTime, ulReloadValue);
+#endif
+
+        /* Restart SysTick. */
+        portNVIC_SYSTICK_CTRL_REG |= portNVIC_SYSTICK_ENABLE_BIT;
+        /* Exit with interrupts enabled. we used the critical to block interruption,
+        so should also be used accordingly here*/
+        prvReleaseKernelLock();
+        __asm volatile ( "cpsie i" ::: "memory" );
+    }
+}
 #endif /* configUSE_TICKLESS_IDLE */
 /*-----------------------------------------------------------*/
 
@@ -708,6 +930,10 @@ void soc_systick_handler( void ) /* PRIVILEGED_FUNCTION */
     uint32_t ulPreviousMask;
     BaseType_t xCoreID = portGET_CORE_ID();
 
+#if CONFIG_SUPPORT_WWDT
+    bk_wwdt_feed_current_core_from_isr();
+#endif
+
     //other cores
     if (xCoreID != ucPrimaryCoreNum)
     {
@@ -721,6 +947,10 @@ void soc_systick_handler( void ) /* PRIVILEGED_FUNCTION */
     //main core
     ulPreviousMask = portSET_INTERRUPT_MASK_FROM_ISR();
     {
+#if CONFIG_TASK_WDT
+        bk_task_wdt_systick_check();
+#endif
+
 #if ( configUSE_TICKLESS_IDLE >= 1 )
         /* OS tick aligned with AON timer */
         int tick_diff = rtos_get_time_diff();
@@ -1003,9 +1233,7 @@ void xPortDebug(const char *str)
 BaseType_t xPortStartSchedulerOnCore( void ) /* PRIVILEGED_FUNCTION */
 {
     #if ( configUSE_CPUHOTPLUG == 1 )
-        vSetCoreOnline( portGET_CORE_ID(), pdTRUE );
-        vSetCoreActive( portGET_CORE_ID(), pdTRUE );
-        bk_ap_cpu_hotplug_core_online();
+        bk_cpu_hp_core_online();
     #endif
 
     //if( ucPrimaryCoreNum == portGET_CORE_ID())
@@ -1028,6 +1256,17 @@ BaseType_t xPortStartSchedulerOnCore( void ) /* PRIVILEGED_FUNCTION */
     /* Start the timer that generates the tick ISR. Interrupts are disabled
      * here already. */
     vPortSetupTimerInterrupt();
+
+#if CONFIG_SMP_FIRST_TASK_PENDSV_RACE_TEST
+    /* TEST ONLY (BK7259SW-1723): force a PendSV to be pending right before this
+     * core starts its first task. This deterministically reproduces the race
+     * where a PendSV is serviced before the first task PSP is loaded. Without
+     * the fix this MemFaults (PSP=0xfffffffc); with the fix BASEPRI keeps it
+     * masked until the first task PSP is valid. */
+    portNVIC_INT_CTRL_REG = portNVIC_PENDSVSET_BIT;
+    __asm volatile ( "dsb" ::: "memory" );
+    __asm volatile ( "isb" );
+#endif
 
     /* Start the first task. */
     vStartFirstTask();
@@ -1059,6 +1298,32 @@ static uint32_t  dwt_addr, dwt_data;
 extern void arch_dwt_trap_write(uint32_t addr, uint32_t data);
 extern void arch_dwt_trap_disable(void);
 extern void dwt_set_data_address_write(uint32_t data_address);
+void crosscore_mb_rx_isr(mailbox_data_t *data);
+
+#if defined(CONFIG_FREERTOS_SMP_CROSS_CORE_IPI)
+#define SMP_IPI_EVENT_DOORBELL 0xA5U
+
+static void crosscore_ipi_rx_callback(ipi_core_id_t core_id, uint32_t value,
+    uint8_t src_cpu, uint8_t event, uint16_t payload, void *param)
+{
+    mailbox_data_t data = {payload, core_id, 0, 0};
+
+    (void)value;
+    (void)src_cpu;
+    (void)param;
+
+    if (event != SMP_IPI_EVENT_DOORBELL) {
+        return;
+    }
+ 
+    crosscore_mb_rx_isr(&data);
+}
+
+static bk_err_t crosscore_ipi_init(void)
+{
+    return bk_ipi_register_domain_callback(IPI_DOMAIN_SMP, crosscore_ipi_rx_callback, NULL);
+}
+#endif
 
 // message send between cores
 // xCoreID: to where the message will send
@@ -1066,7 +1331,9 @@ static bk_err_t crosscore_int_send(int xCoreID, uint32_t cmd)
 {
     bk_err_t ret = BK_OK;
     int core = rtos_get_core_id();     //portGET_CORE_ID();
+#if !defined(CONFIG_FREERTOS_SMP_CROSS_CORE_IPI)
     mailbox_data_t data = {core, xCoreID, 0, 0};
+#endif
 
 	if(cmd > 31)
 		return 0;
@@ -1083,7 +1350,22 @@ static bk_err_t crosscore_int_send(int xCoreID, uint32_t cmd)
 
 	if(old_busy == 0)
     {
+#if defined(CONFIG_FREERTOS_SMP_CROSS_CORE_IPI)
+		ret = bk_ipi_send_domain((ipi_core_id_t)xCoreID, IPI_DOMAIN_SMP,
+			SMP_IPI_EVENT_DOORBELL, (uint16_t)core);
+#else
 		ret = bk_mailbox_master_send(&data, core, xCoreID);
+#endif
+		if(ret != BK_OK)
+		{
+			/* Send failed, e.g. the destination mailbox RX FIFO is full
+			 * or the IPI doorbell could not be delivered.
+			 * Keep the accumulated cmd bits and clear busy so the next
+			 * cross-core command retries the hardware doorbell. */
+			spin_lock(&crosscore_spin_lock);
+			crosscore_mb_busy[core - CONFIG_CPU_ID_OFFSET] = 0;
+			spin_unlock(&crosscore_spin_lock);
+		}
     }
     else
     {
@@ -1154,10 +1436,12 @@ void crosscore_mb_rx_isr(mailbox_data_t *data)
 		arch_dwt_trap_disable();
 	}
 
+#if (CONFIG_CPU_HOTPLUG)
 	if(cmd & (0x01 << CC_HOTPLUG_STOP))
 	{
-		bk_ap_cpu_hotplug_core_stop_isr();
+		bk_cpu_hp_core_stop_hmb_isr();
 	}
+#endif
 	
 	return;
 }
@@ -1269,7 +1553,12 @@ BaseType_t xPortStartScheduler( void )
     #if configNUM_CORES > 1
         configASSERT( portGET_CORE_ID() == 0) ; // we must be started on core 0
 
+#if defined(CONFIG_FREERTOS_SMP_CROSS_CORE_IPI)
+		bk_err_t ret = crosscore_ipi_init();
+		configASSERT(ret == BK_OK);
+#else
 		bk_mailbox_cc_init();
+#endif
 
         multicore_launch_core1(prvDisableInterruptsAndPortStartSchedulerOnCore);
     #endif

@@ -307,13 +307,24 @@ static OPERATE_RET test_dac_play_square(uint32_t play_ms, uint32_t freq_hz)
     uint32_t sent_bytes = 0U;
     uint32_t frame_size;
 
-    if (s_dac_ctx.initialized != true || s_dac_ctx.started != true) {
-        tkl_log_output("dac test is not started, use: xdac init && xdac start\r\n");
-        return OPRT_RESOURCE_NOT_READY;
-    }
-
     if (play_ms == 0U || freq_hz == 0U) {
         return OPRT_INVALID_PARM;
+    }
+
+    /* One-key play: auto init + start if not already running. */
+    if (s_dac_ctx.initialized != true) {
+        ret = test_dac_init(DAC_TEST_DEFAULT_SAMPLE_RATE,
+                            DAC_TEST_DEFAULT_FRAME_TIME_MS,
+                            DAC_TEST_DEFAULT_VOLUME);
+        if (ret != OPRT_OK) {
+            return ret;
+        }
+    }
+    if (s_dac_ctx.started != true) {
+        ret = test_dac_start();
+        if (ret != OPRT_OK) {
+            return ret;
+        }
     }
 
     frame_size = s_dac_ctx.frame_size;

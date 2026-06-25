@@ -74,8 +74,7 @@ struct bk_display_bus_ctlr_t
  */
 avdk_err_t bk_display_bus_set_clock(bk_display_bus_handle_t handle, bk_panel_clock_config_t *clock);
 
-/* bk_display_bus_set_clock_src() is the public counterpart and is
- * declared in <components/bk_display_bus.h>. */
+/* ::bk_display_bus_set_clock_src() is now public; see <components/bk_display_bus.h>. */
 
 #ifdef __cplusplus
 }

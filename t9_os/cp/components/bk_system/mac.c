@@ -27,16 +27,16 @@
 #include "bk_wifi_types.h"
 #include "bk_wifi.h"
 #if (CONFIG_RANDOM_MAC_ADDR)
-#include <driver/trng.h>
+#include <components/bk_platform.h>
 #endif
 #include "driver/flash_partition.h"
 
 #define TAG "mac"
 
-#define BASE_MAC_LEN  (6)
-#define DEFAULT_MAC_ADDR "\xC8\x47\x8C\x00\x00\x18"
+#define BASE_MAC_LEN        (6)
+#define DEFAULT_MAC_ADDR       "\xC8\x47\x8C\x00\x00\x18"
 static uint8_t s_base_mac[] = DEFAULT_MAC_ADDR;
-static bool s_mac_inited = false;
+static bool s_mac_inited    = false;
 
 #if (CONFIG_BASE_MAC_FROM_OTP1)
 static int write_base_mac_to_otp1(const uint8_t *mac)
@@ -45,7 +45,7 @@ static int write_base_mac_to_otp1(const uint8_t *mac)
     int ret = BK_FAIL;
     uint8_t mac_r[] = DEFAULT_MAC_ADDR;
 
-    ret = bk_otp_apb_read(OTP_MAC_ADDRESS, mac_r, BASE_MAC_LEN);
+    ret = bk_otp_ahb_read(OTP_MAC_ADDRESS_1, mac_r, BASE_MAC_LEN);
     if(ret == 0)
     {
         for(UINT8 i = 0; i < BASE_MAC_LEN; i++)
@@ -57,7 +57,7 @@ static int write_base_mac_to_otp1(const uint8_t *mac)
         }
         if(ret == BASE_MAC_LEN)
         {
-           ret = bk_otp_apb_update(OTP_MAC_ADDRESS, (uint8_t *)mac, BASE_MAC_LEN);
+           ret = bk_otp_ahb_update(OTP_MAC_ADDRESS_1, (uint8_t *)mac, BASE_MAC_LEN);
            if(ret == 0)
                return BK_OK;
            else
@@ -77,7 +77,7 @@ static int read_base_mac_to_otp1(uint8_t *mac)
 #if CONFIG_OTP_V1
     int ret = BK_FAIL;
     uint8_t buf[6];
-    ret = bk_otp_apb_read(OTP_MAC_ADDRESS, buf, BASE_MAC_LEN);
+    ret = bk_otp_ahb_read(OTP_MAC_ADDRESS_1, buf, BASE_MAC_LEN);
     if ((ret == BK_OK) && ((buf[0] != 0) || (buf[1] != 0) || (buf[2] != 0) || (buf[3] != 0) || (buf[4] != 0) || (buf[5] != 0)))
     {
         os_memcpy(mac, buf, sizeof(buf));
@@ -116,7 +116,7 @@ static int bk_check_mac_address(u8 *mac)
 }
 #endif
 
-#if (CONFIG_NEW_MAC_POLICY)
+#if (!CONFIG_BASE_MAC_FROM_OTP1)
 /*
 1. BASE MAC stored at flash partison: BK_PARTITION_SYS_NET as WIFI_MAC_ITEM (0x3ff000: first 6 bytes)
 2. BASE MAC maybe missed while board power down at the time point:
@@ -360,49 +360,55 @@ static int sync_mac_record(void) {
 
 	return BK_OK;
 }
-#endif //#if (CONFIG_NEW_MAC_POLICY)
+#endif //#if (!CONFIG_BASE_MAC_FROM_OTP1)
 
 
 static int mac_init(void)
 {
-	int ret = BK_FAIL;
+    int ret = BK_FAIL;
 
-#if (CONFIG_NEW_MAC_POLICY)
-        ret = get_net_info(WIFI_MAC_ITEM, s_base_mac, NULL, NULL);
-        //ret = sync_mac_record();
-#elif (CONFIG_BASE_MAC_FROM_OTP1)
-        ret = read_base_mac_to_otp1(s_base_mac);
+#if (!CONFIG_BASE_MAC_FROM_OTP1)
+    ret = get_net_info(WIFI_MAC_ITEM, s_base_mac, NULL, NULL);
+    //ret = sync_mac_record();
+#else
+    ret = read_base_mac_to_otp1(s_base_mac);
 #endif
 
 #if (CONFIG_RANDOM_MAC_ADDR)
-	if ((BK_OK != ret) || BK_IS_GROUP_MAC(s_base_mac)
+    if ((BK_OK != ret) || BK_IS_GROUP_MAC(s_base_mac)
 #if CONFIG_BK_MAC_ADDR_CHECK
-		|| bk_check_mac_address(s_base_mac)
+        || bk_check_mac_address(s_base_mac)
 #endif
-	) {
-		os_memcpy(s_base_mac, DEFAULT_MAC_ADDR, BK_MAC_ADDR_LEN);
-		random_mac_address(s_base_mac);
-#if (CONFIG_NEW_MAC_POLICY)
-		ret = save_net_info(WIFI_MAC_ITEM, s_base_mac, NULL, NULL);
-		//ret = sync_mac_record();
+    ) {
+        os_memcpy(s_base_mac, DEFAULT_MAC_ADDR, BK_MAC_ADDR_LEN);
+        random_mac_address(s_base_mac);
+#if (!CONFIG_BASE_MAC_FROM_OTP1)
+        ret = save_net_info(WIFI_MAC_ITEM, s_base_mac, NULL, NULL);
+        //ret = sync_mac_record();
 #endif
-		BK_LOGD(TAG, "use random mac "BK_MAC_FORMAT" as base mac\n", BK_MAC_STR(s_base_mac));
-	}
+        BK_LOGD(TAG, "use random mac "BK_MAC_FORMAT" as base mac\n", BK_MAC_STR(s_base_mac));
+    }
 #else //#if (CONFIG_RANDOM_MAC_ADDR)
-	if (BK_OK != ret) {
-		os_memcpy(s_base_mac, DEFAULT_MAC_ADDR, BK_MAC_ADDR_LEN);
-		if (BK_IS_GROUP_MAC(s_base_mac)) {
+    if (BK_OK != ret)
+    {
+        os_memcpy(s_base_mac, DEFAULT_MAC_ADDR, BK_MAC_ADDR_LEN);
+        if (BK_IS_GROUP_MAC(s_base_mac))
+        {
                         BK_LOGE(TAG, "base mac is group mac"BK_MAC_FORMAT"\n", BK_MAC_STR(s_base_mac));
-			return BK_ERR_GROUP_MAC;
-		} else {
-			BK_LOGD(TAG, "use default mac "BK_MAC_FORMAT" as base mac\n", BK_MAC_STR(s_base_mac));
-		}
-        } else {
-		BK_LOGD(TAG, "base mac "BK_MAC_FORMAT"\n", BK_MAC_STR(s_base_mac));
-	}
+            return BK_ERR_GROUP_MAC;
+        }
+        else
+        {
+            BK_LOGD(TAG, "use default mac "BK_MAC_FORMAT" as base mac\n", BK_MAC_STR(s_base_mac));
+        }
+    }
+    else
+    {
+        BK_LOGD(TAG, "base mac "BK_MAC_FORMAT"\n", BK_MAC_STR(s_base_mac));
+    }
 #endif //#if (CONFIG_RANDOM_MAC_ADDR)
 
-	return BK_OK;
+    return BK_OK;
 }
 
 
@@ -470,30 +476,31 @@ bk_err_t bk_get_mac(uint8_t *mac, mac_type_t type)
 
 bk_err_t bk_set_base_mac(const uint8_t *mac)
 {
-	int ret = BK_FAIL;
+    int ret = BK_FAIL;
 
-	if (!mac)
-		return BK_ERR_NULL_PARAM;
+    if (!mac)
+        return BK_ERR_NULL_PARAM;
 
-	if (BK_IS_GROUP_MAC(mac)) {
-		BK_LOGE(TAG, "set failed, cann't be a bc/mc address\r\n");
-		return BK_ERR_GROUP_MAC;
-	}
+    if (BK_IS_GROUP_MAC(mac))
+    {
+        BK_LOGE(TAG, "set failed, cann't be a bc/mc address\r\n");
+        return BK_ERR_GROUP_MAC;
+    }
 
-	os_memcpy(s_base_mac, mac, BK_MAC_ADDR_LEN);
+    os_memcpy(s_base_mac, mac, BK_MAC_ADDR_LEN);
 
-#if (CONFIG_NEW_MAC_POLICY)
-	ret = save_net_info(WIFI_MAC_ITEM, s_base_mac, NULL, NULL);
-	//ret = sync_mac_record();
-	ret = get_net_info(WIFI_MAC_ITEM, s_base_mac, NULL, NULL);
-#elif (CONFIG_BASE_MAC_FROM_OTP1)
-	ret = write_base_mac_to_otp1(s_base_mac);
-	ret = read_base_mac_to_otp1(s_base_mac);
+#if (!CONFIG_BASE_MAC_FROM_OTP1)
+    ret = save_net_info(WIFI_MAC_ITEM, s_base_mac, NULL, NULL);
+    //ret = sync_mac_record();
+    ret = get_net_info(WIFI_MAC_ITEM, s_base_mac, NULL, NULL);
+#else
+    ret = write_base_mac_to_otp1(s_base_mac);
+    ret = read_base_mac_to_otp1(s_base_mac);
 #endif
 
-	if (ret != BK_OK)
-		BK_LOGE(TAG, "failed to write base mac, ret(%x)\n", ret);
+    if (ret != BK_OK)
+        BK_LOGE(TAG, "failed to write base mac, ret(%x)\n", ret);
 
-	return ret;
+    return ret;
 }
 

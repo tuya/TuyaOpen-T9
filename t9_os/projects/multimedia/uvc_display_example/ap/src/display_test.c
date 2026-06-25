@@ -47,23 +47,17 @@ static avdk_err_t lcd_example_dsi_open(app_display_config_t *display_config)
     dpu_config.video.format = BK_PIXEL_FORMAT_ARGB8888;
 
     // Configure panel device
-    const bk_lcd_panel_dev_config_t panel_dev_config = 
+    const bk_lcd_panel_config_t panel_config = 
     {
         .reset_pin = GPIO_60,
-        .reset_active_level = false,
     };
 
     AVDK_GOTO_ON_ERROR(bk_display_dsi_bus_new(&display_config->dis_bus_handle, NULL), err, TAG, "display dsi bus new err\n");
 
-    AVDK_GOTO_ON_ERROR(bk_lcd_mipi_panel_new(display_config->dis_bus_handle, &panel_dev_config, panel, &display_config->panel_handle),
+    AVDK_GOTO_ON_ERROR(bk_lcd_mipi_panel_new(display_config->dis_bus_handle, &panel_config, panel, &display_config->panel_handle),
                        err, TAG, "create panel err\n");
 
-
-    bk_lcd_panel_reset(display_config->panel_handle);
-    bk_lcd_panel_init(display_config->panel_handle);
-    dpu_config.timing = panel->timing;
-
-    AVDK_GOTO_ON_ERROR(bk_display_dpu_ctlr_new(&display_config->dpu_ctlr_handle, &dpu_config), err, TAG, "display dpu ctlr new err\n");
+    AVDK_GOTO_ON_ERROR(bk_display_dpu_ctlr_new(&display_config->dpu_ctlr_handle, display_config->panel_handle, &dpu_config), err, TAG, "display dpu ctlr new err\n");
     AVDK_GOTO_ON_ERROR(bk_display_init(display_config->dpu_ctlr_handle), err, TAG, "display init err\n");
     AVDK_GOTO_ON_ERROR(bk_display_open(display_config->dpu_ctlr_handle), err, TAG, "display open err\n");
 
@@ -211,10 +205,10 @@ static bk_err_t display_test_enable_gpu(void)
     gpu_config.dst_format = BK_PIXEL_FORMAT_ARGB8888;
     gpu_config.compress = true;
     gpu_config.scale = true;
-    gpu_config.malloc = display_test_frame_malloc;
-    gpu_config.free = display_test_frame_free;
-    gpu_config.frame_display = display_test_frame_display;
-    gpu_config.frame_display_args = NULL;
+    gpu_config.frame_malloc = display_test_frame_malloc;
+    gpu_config.frame_free = display_test_frame_free;
+    gpu_config.frame_done = display_test_frame_display;
+    gpu_config.frame_done_args = NULL;
 
     ret = bk_gpu_test_ctlr_new(&display_config->gpu_handle, &gpu_config);
 

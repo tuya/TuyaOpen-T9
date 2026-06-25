@@ -219,6 +219,7 @@ static int F58_Exit(ISP_PORT IspPort)
     if (F58_720P_CalibParam_dynamic != NULL)
     {
         os_free(F58_720P_CalibParam_dynamic);
+        F58_720P_CalibParam_dynamic = NULL;
     }
     return  0;
 }
@@ -943,6 +944,7 @@ static const bk_camera_sensor_format_t f58_format_array[] = {
         .width = 1920,
         .height = 1080,
         .fps = 30,
+        .output_pixel_fmt = BK_PIXEL_FORMAT_RGGB10,
     }
 };
 
@@ -976,11 +978,9 @@ avdk_err_t f58_detect(bk_camera_sensor_handle_t *handle, bk_camera_sensor_config
     AVDK_RETURN_ON_FALSE(config->bus, AVDK_ERR_GENERIC, TAG, "bus is NULL");
 
     /* disbale camera power */
-    gpio_dev_unmap(config->pin_pwdn);
     BK_LOG_ON_ERR(bk_gpio_enable_output(config->pin_pwdn));
     bk_gpio_set_capacity(config->pin_pwdn, GPIO_DRIVER_CAPACITY_3);
 
-    gpio_dev_unmap(config->pin_reset);
     BK_LOG_ON_ERR(bk_gpio_enable_output(config->pin_reset));
     bk_gpio_set_capacity(config->pin_reset, GPIO_DRIVER_CAPACITY_3);
 

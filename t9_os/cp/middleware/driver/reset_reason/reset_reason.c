@@ -17,6 +17,7 @@
 #include "bk_uart.h"
 #include "bk_arm_arch.h"
 #include "bk_sys_ctrl.h"
+#include <modules/pm.h>
 #include "reset_reason.h"
 #include <components/log.h>
 #include "aon_pmu_hal.h"
@@ -173,6 +174,11 @@ void show_reset_reason(void)
 #endif
 #endif
 	}
+
+	if((s_start_type == RESET_SOURCE_POWERON) || (s_start_type == RESET_SOURCE_REBOOT) || (s_start_type == RESET_SOURCE_WATCHDOG))
+	{
+		bk_pm_ap_first_boot_set(true);
+	}
 	BK_LOGD(TAG, "regs - %x, %x, %x\r\n", s_start_type, s_misc_value_save, s_mem_value_save);
 }
 
@@ -183,7 +189,8 @@ void show_reset_reason(void)
 // 		uint32_t fast_boot                :  1; /**<bit[1 : 1] */
 // 		uint32_t ota_finish               :  1; /**<bit[2 : 2] */
 // 		uint32_t bl2_deep_sleep           :  1; /**<bit[3 : 3] */
-// 		uint32_t reset_reason_cp          :  8; /**<bit[4 : 11] */
+// 		uint32_t dlv_startup              :  1; /**<bit[4 : 4] */
+// 		uint32_t reset_reason_cp          :  7; /**<bit[5 : 11] */
 // 		uint32_t gpio_retention_bitmap    :  8; /**<bit[12 : 19] */
 // 		uint32_t reset_count              :  4 ;/**<bit[20 : 23] */
 // 		uint32_t reset_reason_ap          :  7; /**<bit[24 : 30] */
@@ -194,18 +201,18 @@ void show_reset_reason(void)
 
 void bk_misc_set_cp_reset_reason(uint32_t type)
 {
-	if (type > 0xff) {
+	if (type > 0x7f) {
 		BK_DUMP_OUT("Invalid cp rr type: 0x%x", type);
 		return;
 	}
 
-	/* use PMU_REG0 bit[4:11] for reset reason */
+	/* use PMU_REG0 bit[5:11] for cp reset reason */
 	uint32_t misc_value = aon_pmu_hal_get_r0();
 
 	/* clear last reset reason */
-	misc_value &= ~(0xff << 4);
+	misc_value &= ~(0x7f << 5);
 
-	misc_value |= ((type & 0xff) << 4);
+	misc_value |= ((type & 0x7f) << 5);
 	aon_pmu_hal_set_r0(misc_value);
 }
 
@@ -237,7 +244,7 @@ uint32_t reset_reason_deep_sleep_check(void)
 {
 	uint32_t misc_value = 0;
 
-	if(s_misc_value_save != RESET_SOURCE_SUPER_DEEP)
+	if(s_start_type != RESET_SOURCE_SUPER_DEEP)
 		return misc_value;
 
 	misc_value = aon_pmu_hal_get_wakeup_source();
@@ -249,13 +256,15 @@ uint32_t reset_reason_deep_sleep_check(void)
 	case 0x2: // rtc
 		misc_value = RESET_SOURCE_DEEPPS_RTC;
 		break;
-	case 0x10: // touch
-		misc_value = RESET_SOURCE_DEEPPS_TOUCH;
-		break;
-	case 0x20: // usb
+	case 0x10: // usbplug
 		misc_value = RESET_SOURCE_DEEPPS_USB;
 		break;
-
+	case 0x20: // touch
+		misc_value = RESET_SOURCE_DEEPPS_TOUCH;
+		break;
+	case 0x40: // vad
+		misc_value = RESET_SOURCE_DEEPPS_VAD;
+		break;
 	default:
 		misc_value = 0;
 		break;
@@ -275,7 +284,7 @@ uint32_t reset_reason_init(void)
 	}
 
 	misc_value = aon_pmu_hal_get_reset_reason();
-	cp_reset_reason = ((misc_value >> 4) & 0xff);
+	cp_reset_reason = ((misc_value >> 5) & 0x7f);
 	ap_reset_reason = ((misc_value >> 24) & 0x7f);
 	
 	s_start_type = cp_reset_reason;

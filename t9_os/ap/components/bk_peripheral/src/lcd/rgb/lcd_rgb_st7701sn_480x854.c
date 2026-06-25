@@ -82,8 +82,8 @@ static const uint8_t st7701sn_rgb_480x854_read_id_regs[] = {0xA1, 0};  // ST7701
 const bk_display_rgb_panel_t st7701sn_rgb_panel = {
     .id = 0x9903,
     .name = "st7701sn_rgb_480x854",
+    .pixel_clock_hz = BK_RGB_PIXEL_CLK_HZ(30),
     .timing = {
-        .clk = LCD_30M,
         .h_size = 480,
         .v_size = 854,
         .hsync_pulse_width = 2,
@@ -97,7 +97,9 @@ const bk_display_rgb_panel_t st7701sn_rgb_panel = {
     .spi_cmd_16bit = 0,
     .read_id_regs = st7701sn_rgb_480x854_read_id_regs,
     .read_id_bytes = 2,
-    .custom_reset = NULL,
+    .reset_active_level = false,
+    .reset = bk_lcd_rgb_default_reset,
+    .init  = bk_lcd_rgb_default_init,
 };
 
 BK_LCD_PANEL_DEVICE_SECTION(st7701sn_rgb_panel, "st7701sn_rgb_480x854", BK_LCD_PANEL_BUS_RGB);

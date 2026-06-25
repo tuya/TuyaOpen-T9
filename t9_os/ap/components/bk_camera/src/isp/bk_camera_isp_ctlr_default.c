@@ -1,5 +1,6 @@
 #include <os/os.h>
 #include <os/mem.h>
+#include <cache.h>
 
 #include <common/avdk_pixel_types.h>
 #include <components/bk_isp_camera.h>
@@ -9,7 +10,6 @@
 #include <driver/io_matrix.h>
 
 #include <avdk_check.h>
-#include "isp_cam_sensor.h"
 #include "isp_camera_ctlr.h"
 #include "isp_camera_utils.h"
 
@@ -55,16 +55,45 @@ static void isp_camera_ctlr_task_entry(void *param)
 
         if (cam_control->read_register && cam_control->read_enable && cam_control->frame)
         {
-            uint8_t *dst_frame = (uint8_t *)(uintptr_t)buf.planes[0].dmaPhyAddr;
-            uint32_t length = config->chn_attr.chnFormat.imageSize;
-            if (length <= cam_control->size)
+            uint32_t copied = 0;
+            uint8_t plane_cnt = buf.numPlanes ? buf.numPlanes : 1;
+
+            if (plane_cnt > VIDEO_MAX_PLANES)
             {
-                //LOGD("%s, %p %p %d, %d\n", __func__, cam_control->frame, dst_frame, length, chnl_id);
-                os_memcpy(cam_control->frame, dst_frame, length);
+                plane_cnt = VIDEO_MAX_PLANES;
             }
-            else
+
+            for (uint8_t p = 0; p < plane_cnt; p++)
             {
-                LOGE("%s, frame size overflow, %d > %d\n", __func__, length, cam_control->size);
+                uint8_t *src = (uint8_t *)(uintptr_t)buf.planes[p].dmaPhyAddr;
+                uint32_t plen = buf.planes[p].size;
+
+                if (buf.planes[p].pUserAddr != NULL)
+                {
+                    src = (uint8_t *)buf.planes[p].pUserAddr;
+                }
+
+                if (src == NULL || plen == 0)
+                {
+                    continue;
+                }
+
+                if (copied + plen > cam_control->size)
+                {
+                    LOGE("%s, frame size overflow, %u + %u > %u\n",
+                         __func__, copied, plen, cam_control->size);
+                    copied = 0;
+                    break;
+                }
+
+                arch_dcache_flush_and_invd_range(src, plen);
+                os_memcpy(cam_control->frame + copied, src, plen);
+                copied += plen;
+            }
+
+            if (copied == 0)
+            {
+                LOGE("%s, no plane data copied\n", __func__);
                 cam_control->size = 0;
             }
 
@@ -75,8 +104,6 @@ static void isp_camera_ctlr_task_entry(void *param)
         isp_control->free_buf(config->channel, &buf);
     }
 
-    cam_control->thread = NULL;
-    rtos_set_semaphore(&cam_control->sem);
     rtos_delete_thread(NULL);
 }
 
@@ -168,10 +195,14 @@ static avdk_err_t isp_camera_ctlr_deinit(bk_isp_camera_ctlr_handle_t handle)
     if (control->thread_enable)
     {
         control->thread_enable = false;
-        // Wait for thread to exit (thread will set semaphore before exiting)
+
+        if (control->thread)
+        {
+            rtos_thread_join(&control->thread);
+            control->thread = NULL;
+        }
         if (control->sem)
         {
-            rtos_get_semaphore(&control->sem, 1000);  // Wait up to 1 second
             rtos_deinit_semaphore(&control->sem);
         }
     }

@@ -13,6 +13,7 @@ set(incs
 	reset_reason
 	flash
 	uart
+	dbg_probe
 	sys_ctrl
 	gpio
 	general_dma
@@ -92,7 +93,6 @@ endif()
 
 	list(APPEND srcs
 		common/driver.c
-		common/drv_model.c
 		sys_ctrl/sys_bt_driver.c
 		sys_ctrl/sys_wifi_driver.c
 		sys_ctrl/sys_psram_driver.c
@@ -113,6 +113,14 @@ endif()
 if (CONFIG_SOC_BK7259)
 	list(APPEND srcs
 		sys_ctrl/sys_audio_driver.c
+	)
+endif()
+
+if (CONFIG_DBG_PROBE)
+	list(APPEND srcs
+		dbg_probe/dbg_probe.c
+		dbg_probe/dbg_sink_uart.c
+		dbg_probe/dbg_sink_ram.c
 	)
 endif()
 
@@ -143,7 +151,6 @@ endif()
 if (NOT CMAKE_BUILD_EARLY_EXPANSION)
 	add_subdirectory(common)
 	add_subdirectory(rtc)
-	add_subdirectory(trng)
 	add_subdirectory(efuse)
 	add_subdirectory(deep_lv)
 	add_subdirectory(wdt)
@@ -167,8 +174,7 @@ if (NOT CMAKE_BUILD_EARLY_EXPANSION)
 	#add_subdirectory(h264)
 	#add_subdirectory(device)
 	add_subdirectory(lin)
-	add_subdirectory(io_matrix)
-	#add_subdirectory(wwdt)
+	add_subdirectory(wwdt)
 	add_subdirectory(multicore)
 	add_subdirectory(mailbox)
 	add_subdirectory(ipi)
@@ -379,5 +385,5 @@ armino_component_register(SRCS "${srcs}"
 	INCLUDE_DIRS "${incs}"
 
 	REQUIRES core cortex-m mpu
-	PRIV_REQUIRES bk_log easy_flash cmsis os_source unity console bk_phy temp_detect
+	PRIV_REQUIRES bk_log easy_flash cmsis os_source unity console bk_phy temp_detect psa_mbedtls
 )

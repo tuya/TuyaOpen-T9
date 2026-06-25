@@ -38,7 +38,7 @@
 #include <bk_wdt.h>
 #endif
 #if CONFIG_SUPPORT_WWDT
-#include "wwdt_driver.h"
+#include <driver/wwdt.h>
 #endif
 #if CONFIG_SUPPORT_CACHEABLE_SRAM
 #include "cache.h"
@@ -804,7 +804,7 @@ static inline void sys_hal_power_on_pd(volatile uint32_t v_sys_r10)
 
 static inline void sys_hal_set_wakeup_source(void)
 {
-	aon_pmu_ll_set_r41_wakeup_ena(0x3f);
+	aon_pmu_ll_set_r41_wakeup_ena(0x7f);
 }
 
 static inline void sys_hal_clear_wakeup_status(void)
@@ -985,11 +985,13 @@ __attribute__((section(".iram")))  void sys_hal_enter_deep_sleep(void *param)
 	sys_hal_disable_hf_clock();
 
 	sys_hal_enable_spi_latch();
-	/*disable psram*/
+	/*disable psram (skipped when PSRAM data retention is required across CP sleep)*/
+	#if !CONFIG_PSRAM_DATA_RETENTION_ENABLE
 	if(sys_ll_get_ana_reg14_enpsram() != 0x0)
 	{
 		sys_ll_set_ana_reg14_enpsram(0x0);
 	}
+	#endif
 
 	/*power optimization*/
 	if(sys_ll_get_ana_reg12_enpowa() != 0x0)
@@ -1022,20 +1024,23 @@ __attribute__((section(".iram")))  void sys_hal_enter_deep_sleep(void *param)
 	sys_ll_set_ana_reg9_valoldosel(PM_LOW_VOL_AON_LDO_SEL); //0x2:0.7V aon voltage
 	sys_hal_disable_spi_latch();
 
-	if (param && *(uint8_t *)param) {
-#if CONFIG_AON_PMU_REG0_REFACTOR_DEV
+	if (param && *(uint8_t *)param)
+	{
+		#if CONFIG_AON_PMU_REG0_REFACTOR_DEV
 		aon_pmu_hal_set_gpio_sleep(1, false);
 		aon_pmu_hal_r0_latch_to_r7b();
-#else
+		#else
 		sys_hal_gpio_state_switch(true);
-#endif
+		#endif
 		aon_pmu_ll_set_r3_shutdown_flag(1);
 		sys_ll_set_ana_reg11_sd(1);//shutdown directly
-	} else {
-#if CONFIG_AON_PMU_REG0_REFACTOR_DEV
+	}
+	else
+	{
+		#if CONFIG_AON_PMU_REG0_REFACTOR_DEV
 		aon_pmu_hal_r0_latch_to_r7b();
-#endif
-	/*-----enter deep sleep-------*/
+		#endif
+		/*-----enter deep sleep-------*/
 		arch_deep_sleep();
 	}
 
@@ -1135,6 +1140,9 @@ static inline void flash_ab_info_restore(flash_ab_reg_t *p_flash_ab_reg)
 #if CONFIG_DEEP_LV
 static uint32_t s_sys_saved_regs[18] = {0};
 static uint32_t s_sys_ana_regs[32] = {0};
+static uint32_t s_mailbox_saved_regs[0x59] = {0};
+__attribute__((section(".iram")))  void sys_hal_mailbox_regs_backup(void);
+__attribute__((section(".iram")))  void sys_hal_mailbox_regs_restore(void);
 //static uint32_t s_saved_sram[4] = {0};
 
 __attribute__((section(".iram"))) static void _deep_lv_enter_(void)
@@ -1188,10 +1196,80 @@ __attribute__((section(".iram"))) void sys_hal_regs_save(void)
 		s_sys_ana_regs[i] = sys_hal_analog_get(ANALOG_REG0 + i);
 	}
 
+	//sys_hal_mailbox_regs_backup();
+
 	// for (uint32_t i = 0; i < 4; i++) {
 	// 	s_saved_sram[i] = REG_READ(0x2801FFF0 + (i << 2));
 	// }
 }
+
+__attribute__((section(".iram")))  void sys_hal_mailbox_regs_backup(void)
+{
+	static const uint8_t s_mailbox_backup_start[] = {0x10, 0x20, 0x30, 0x40, 0x50};
+
+	s_mailbox_saved_regs[0x2] = REG_READ(SOC_MBOX0_REG_BASE + (0x2 << 2));
+
+	for (uint32_t i = 0; i < sizeof(s_mailbox_backup_start) / sizeof(s_mailbox_backup_start[0]); i++) {
+		uint32_t start = s_mailbox_backup_start[i];
+		uint32_t end = start + 0x8;
+
+		for (uint32_t reg_idx = start; reg_idx <= end; reg_idx++) {
+			s_mailbox_saved_regs[reg_idx] = REG_READ(SOC_MBOX0_REG_BASE + (reg_idx << 2));
+		}
+	}
+}
+
+void sys_hal_mailbox_saved_regs_dump(void)
+{
+	return;
+	static const uint8_t s_mailbox_dump_start[] = {0x10, 0x20, 0x30, 0x40, 0x50};
+
+	PM_HAL_LOGD("mailbox backup regs dump start\r\n");
+	PM_HAL_LOGD("mbox reg[0x02]=0x%08x\r\n", s_mailbox_saved_regs[0x2]);
+	for (uint32_t i = 0; i < sizeof(s_mailbox_dump_start) / sizeof(s_mailbox_dump_start[0]); i++) {
+		uint32_t start = s_mailbox_dump_start[i];
+		uint32_t end = start + 0x8;
+
+		for (uint32_t reg_idx = start; reg_idx <= end; reg_idx++) {
+			PM_HAL_LOGD("mbox reg[0x%02x]=0x%08x\r\n", reg_idx, s_mailbox_saved_regs[reg_idx]);
+		}
+	}
+	PM_HAL_LOGD("mailbox backup regs dump end\r\n");
+}
+
+__attribute__((section(".iram"))) void sys_hal_mailbox_regs_restore(void)
+{
+	static const uint8_t s_mailbox_restore_start[] = {0x10, 0x20, 0x30, 0x40, 0x50};
+	uint32_t mailbox_reg_0x2 = REG_READ(SOC_MBOX0_REG_BASE + (0x2 << 2));
+	uint32_t mailbox_saved_reg_0x2 = s_mailbox_saved_regs[0x2];
+
+	/* clear bit0 of reg_0x2 before restoring mailbox registers */
+	mailbox_reg_0x2 &= ~BIT(0);
+	REG_WRITE(SOC_MBOX0_REG_BASE + (0x2 << 2), mailbox_reg_0x2);
+
+	mailbox_reg_0x2 |= BIT(0);
+	REG_WRITE(SOC_MBOX0_REG_BASE + (0x2 << 2), mailbox_reg_0x2);
+
+	for (uint32_t i = 0; i < sizeof(s_mailbox_restore_start) / sizeof(s_mailbox_restore_start[0]); i++) {
+		uint32_t start = s_mailbox_restore_start[i];
+		uint32_t end = start + 0x4; /* only restore writable regs, skip RO status/data regs */
+
+		for (uint32_t reg_idx = start; reg_idx <= end; reg_idx++) {
+			uint32_t reg_val = s_mailbox_saved_regs[reg_idx];
+
+			/* wrerr/rderr/wrfull bits are W1C in reg_x0 */
+			if ((reg_idx == 0x10) || (reg_idx == 0x20) || (reg_idx == 0x30) || (reg_idx == 0x40) || (reg_idx == 0x50)) {
+				reg_val &= ~(0x7 << 16);
+			}
+
+			REG_WRITE(SOC_MBOX0_REG_BASE + (reg_idx << 2), reg_val);
+		}
+	}
+
+	/* restore reg_0x2 from backup value */
+	REG_WRITE(SOC_MBOX0_REG_BASE + (0x2 << 2), mailbox_saved_reg_0x2);
+}
+
 __attribute__((section(".iram"))) void sys_hal_regs_digital_restore(void)
 {
 	sys_ll_set_reserver_reg0xd_value(s_sys_saved_regs[5]); //reg 0xd
@@ -1202,12 +1280,18 @@ __attribute__((section(".iram"))) void sys_hal_regs_digital_restore(void)
 	s_sys_saved_regs[0] |= (0x3 << 6);
 	s_sys_saved_regs[0] |= (0x3 << 8);
 	sys_ll_set_cpu_clk_div_mode1_value(s_sys_saved_regs[0]); // reg_0x8
-
+	#if CONFIG_DEEP_LV_DEBUG
+	GPIO_UP(37);//18
+	GPIO_DOWN(37);
+	#endif
 	sys_ll_set_cpu_clk_div_mode2_value(s_sys_saved_regs[1]); // reg_0x9
 	sys_ll_set_cpu_clk_div_mode3_value(s_sys_saved_regs[2]); // reg_0xa
 	sys_ll_set_cpu_anaspi_freq_value(s_sys_saved_regs[3]); // reg_0xb
 	sys_ll_set_cpu_device_clk_enable_value(s_sys_saved_regs[4]); // reg_0xc
-
+	#if CONFIG_DEEP_LV_DEBUG
+	GPIO_UP(37);//19
+	GPIO_DOWN(37);
+	#endif
 	sys_ll_set_reserver_reg0xf_value(s_sys_saved_regs[6]); // reg_0xf
 	//sys_ll_set_reserver_reg0x10_value(s_sys_saved_regs[7]); // reg_0x10
 	sys_ll_set_cpu_power_sleep_wakeup_value(s_sys_saved_regs[8]); // reg_0x11
@@ -1220,6 +1304,15 @@ __attribute__((section(".iram"))) void sys_hal_regs_digital_restore(void)
 	// sys_ll_set_m55sub_int_0_31_en_value(s_sys_saved_regs[15]); // reg_0x1a
 	// sys_ll_set_m55sub_int_32_63_en_value(s_sys_saved_regs[16]); // reg_0x1b
 	// sys_ll_set_m55sub_int_64_95_en_value(s_sys_saved_regs[17]); // reg_0x1c
+	#if CONFIG_DEEP_LV_DEBUG
+	GPIO_UP(37);//20
+	GPIO_DOWN(37);
+	#endif
+	sys_hal_mailbox_regs_restore();
+	#if CONFIG_DEEP_LV_DEBUG
+	GPIO_UP(37);//21
+	GPIO_DOWN(37);
+	#endif
 }
 __attribute__((section(".iram"))) void sys_hal_regs_analog_restore(void)
 {
@@ -1235,7 +1328,7 @@ __attribute__((section(".iram"))) void sys_hal_regs_analog_restore(void)
 }
 #endif
 
-__attribute__((section(".iram"))) void sys_hal_enter_low_voltage(void)
+/*__attribute__((section(".iram")))*/ void sys_hal_enter_low_voltage(void)
 {
 	volatile uint32_t int_state1, int_state2, int_state3;
 	volatile uint8_t cksel_core = 0, clkdiv_core = 0, clkdiv_bus = 0;
@@ -1282,20 +1375,29 @@ __attribute__((section(".iram"))) void sys_hal_enter_low_voltage(void)
 #endif
 
 	bk_pm_module_lv_sleep_state_set();
+	bk_pm_sleep_wakeup_reason_clear();
 
 	//sys_hal_backup_disable_int(&int_state1, &int_state2);
 	sys_hal_backup_set_core_26m(&cksel_core, &clkdiv_core, &clkdiv_bus);
 	sys_hal_backup_set_flash_26m(&cksel_flash, &clkdiv_flash);
+	sys_hal_set_ram_low_speed();
 
 #if CONFIG_INT_WDT
+	extern void close_wdt(void);
+	close_wdt();
+
 #if CONFIG_SUPPORT_WWDT
     bk_wwdt_stop();
-#else
-	bk_wdt_stop();
 #endif
-	#if CONFIG_TASK_WDT
+
+#if INT_AON_WDT
+	bk_wdt_suspend();
+#endif
+
+#if CONFIG_TASK_WDT
 	bk_task_wdt_stop();
-	#endif
+#endif
+
 #endif
 
 #if CONFIG_OTA_POSITION_INDEPENDENT_AB || CONFIG_DIRECT_XIP
@@ -1344,7 +1446,7 @@ __attribute__((section(".iram"))) void sys_hal_enter_low_voltage(void)
 
 	sys_hal_enable_spi_latch();
 
-	#if CONFIG_PSRAM_POWER_DOMAIN_LV_DISABLE
+	#if CONFIG_PSRAM_POWER_DOMAIN_LV_DISABLE && !CONFIG_PSRAM_DATA_RETENTION_ENABLE
 	uint32_t psram_state = sys_ll_get_ana_reg14_enpsram();
 	if(psram_state != 0x0)
 	{
@@ -1430,8 +1532,8 @@ __attribute__((section(".iram"))) void sys_hal_enter_low_voltage(void)
 	arch_deep_sleep();
 #endif
 	#if CONFIG_DEEP_LV_DEBUG
-	GPIO_UP(27);//4
-	GPIO_DOWN(27);
+	GPIO_UP(37);//4
+	GPIO_DOWN(37);
 	#endif
 
 #if CONFIG_OTA_POSITION_INDEPENDENT_AB || CONFIG_DIRECT_XIP
@@ -1446,16 +1548,18 @@ __attribute__((section(".iram"))) void sys_hal_enter_low_voltage(void)
 	timer_hal_us_init(0);
 	#endif
 
+	// extern void bk_rtc_update_base_time(void);
+	// bk_rtc_update_base_time();
 	uint64_t current = bk_aon_rtc_get_us();
-	sys_hal_set_low_voltage_wakeup_time_us(current);
+	// sys_hal_set_low_voltage_wakeup_time_us(current);
 	sys_hal_set_low_voltage_sleep_duration_us(current - before);
 	#if CONFIG_LV_FLASH_ENTER_LP_ENABLE
 	bk_flash_exit_deep_sleep();
 	#endif
 
 	#if CONFIG_DEEP_LV_DEBUG
-	GPIO_UP(27);//5
-	GPIO_DOWN(27);
+	GPIO_UP(37);//5
+	GPIO_DOWN(37);
 	#endif
 /*-----------restore voltage  start----------------*/
 	sys_hal_enable_spi_latch();
@@ -1484,28 +1588,28 @@ __attribute__((section(".iram"))) void sys_hal_enter_low_voltage(void)
 	sys_hal_disable_spi_latch();
 /*-------------restore voltage  end-----------------*/
 	#if CONFIG_DEEP_LV_DEBUG
-	GPIO_UP(27);//6
-	GPIO_DOWN(27);
+	GPIO_UP(37);//6
+	GPIO_DOWN(37);
 	#endif
 /*----------restore analog clock  start--------------*/
 	sys_ll_set_ana_reg5_en_cb(1);
 	bk_delay_us(10);
 	#if CONFIG_DEEP_LV
 	#if CONFIG_DEEP_LV_DEBUG
-	GPIO_UP(27);//7
-	GPIO_DOWN(27);
+	GPIO_UP(37);//7
+	GPIO_DOWN(37);
 	#endif
 	//sys_hal_regs_digital_restore();
 	aon_pmu_hal_restore();
 	#if CONFIG_DEEP_LV_DEBUG
-	GPIO_UP(27);//8
-	GPIO_DOWN(27);
+	GPIO_UP(37);//8
+	GPIO_DOWN(37);
 	#endif
 
 #endif
 	#if CONFIG_DEEP_LV_DEBUG
-	GPIO_UP(27);//9
-	GPIO_DOWN(27);
+	GPIO_UP(37);//9
+	GPIO_DOWN(37);
 	#endif
 	sys_hal_restore_hf_clock(hf_reg_v);
 
@@ -1518,8 +1622,8 @@ __attribute__((section(".iram"))) void sys_hal_enter_low_voltage(void)
 	}
 	/*---------------wifi debug end -----------------*/
 	#if CONFIG_DEEP_LV_DEBUG
-		GPIO_UP(27);//10
-		GPIO_DOWN(27);
+		GPIO_UP(37);//10
+		GPIO_DOWN(37);
 	#endif
 /*-----------restore analog clock  end --------------*/
 
@@ -1535,8 +1639,8 @@ __attribute__((section(".iram"))) void sys_hal_enter_low_voltage(void)
 	}
 #endif
 	#if CONFIG_DEEP_LV_DEBUG
-	GPIO_UP(27);//11
-	GPIO_DOWN(27);
+	GPIO_UP(37);//11
+	GPIO_DOWN(37);
 	#endif
 
 	/*Use a function instead of delay*/
@@ -1544,19 +1648,19 @@ __attribute__((section(".iram"))) void sys_hal_enter_low_voltage(void)
 	pm_low_voltage_bsp_restore();
 
 	#if CONFIG_DEEP_LV_DEBUG
-	GPIO_UP(27);//12
-	GPIO_DOWN(27);
+	GPIO_UP(37);//12
+	GPIO_DOWN(37);
 	#endif
 
 	sys_hal_set_exit_low_voltage_tick(previous_tick);
 	#if CONFIG_DEEP_LV_DEBUG
-	GPIO_UP(27);//13
-	GPIO_DOWN(27);
+	GPIO_UP(37);//13
+	GPIO_DOWN(37);
 	#endif
 /*---------------at least delay 190us-----------------*/
 	#if CONFIG_DEEP_LV_DEBUG
-	GPIO_UP(27);//14
-	GPIO_DOWN(27);
+	GPIO_UP(37);//14
+	GPIO_DOWN(37);
 	#endif
 	/*restore power domain*/
 	if(pwd_cpu1 != sys_ll_get_reserver_reg0x10_pwd_cpu1())
@@ -1564,8 +1668,8 @@ __attribute__((section(".iram"))) void sys_hal_enter_low_voltage(void)
 		sys_ll_set_reserver_reg0x10_pwd_cpu1(pwd_cpu1);
 	}
 	#if CONFIG_DEEP_LV_DEBUG
-	GPIO_UP(27);//15
-	GPIO_DOWN(27);
+	GPIO_UP(37);//15
+	GPIO_DOWN(37);
 	#endif
 
 	if(pwd_vehp != sys_ll_get_reserver_reg0x10_pwd_vehp())
@@ -1573,9 +1677,12 @@ __attribute__((section(".iram"))) void sys_hal_enter_low_voltage(void)
 		sys_ll_set_reserver_reg0x10_pwd_vehp(pwd_vehp);
 	}
 	#if CONFIG_DEEP_LV_DEBUG
-	GPIO_UP(27);//16
-	GPIO_DOWN(27);
+	GPIO_UP(37);//16（GPIO37 16 matches the 17th pull-up）
+	GPIO_DOWN(37);
+	// GPIO_UP(36);//16
+	// GPIO_DOWN(36);
 	#endif
+	bk_delay_us(2);
 	if(pwd_wrls != sys_ll_get_reserver_reg0x10_pwd_wrls())
 	{
 		sys_ll_set_reserver_reg0x10_pwd_wrls(pwd_wrls);
@@ -1587,26 +1694,52 @@ __attribute__((section(".iram"))) void sys_hal_enter_low_voltage(void)
 
 /*---------------at least delay 190us end -----------------*/
 	#if CONFIG_DEEP_LV_DEBUG
-	GPIO_UP(27);//17
-	GPIO_DOWN(27);
+	GPIO_UP(37);//17
+	GPIO_DOWN(37);
 	#endif
 	#if CONFIG_DEEP_LV
 	sys_hal_regs_digital_restore();
 	#endif
+	#if CONFIG_DEEP_LV_DEBUG
+	GPIO_UP(37);//22
+	GPIO_DOWN(37);
+	#endif
+	switch (cksel_core) {
+		case PM_CLKSEL_CORE_26M:
+			break;
+		case PM_CLKSEL_CORE_DCO:
+			break;
+		case PM_CLKSEL_CORE_320M:
+			if(clkdiv_core <= 1)// >=160M
+			{
+				sys_hal_set_ram_high_speed();
+			}
+			break;
+		case PM_CLKSEL_CORE_480M:
+			if(clkdiv_core <= 2)// >=160M
+			{
+				sys_hal_set_ram_high_speed();
+			}
+			break;
+		default:
+			break;
+	}
 	sys_hal_restore_core_freq(cksel_core, clkdiv_core, clkdiv_bus);
 	sys_hal_restore_flash_freq(cksel_flash, clkdiv_flash);
 
 	#if CONFIG_DEEP_LV_DEBUG
-	GPIO_UP(27);//18
-	GPIO_DOWN(27);
+	GPIO_UP(37);//23
+	GPIO_DOWN(37);
 	#endif
 
 	sys_hal_restore_int(int_state1, int_state2, int_state3);
+	bk_pm_sleep_wakeup_reason_set(check_IRQ_pending());
+
 	portNVIC_SYSTICK_LOAD_REG = PM_EXIT_LOWVOL_SYSTICK_RELOAD_TIME;
 	portNVIC_SYSTICK_CTRL_REG = systick_ctrl_value;
 	#if CONFIG_DEEP_LV_DEBUG
-	GPIO_UP(27);//19
-	GPIO_DOWN(27);
+	GPIO_UP(37);//24
+	GPIO_DOWN(37);
 	#endif
 }
 
@@ -1636,18 +1769,33 @@ void sys_hal_rtc_wakeup_enable(uint32_t value)
 
 void sys_hal_rtc_ana_wakeup_enable(uint32_t period)
 {
+	#ifdef CONFIG_EXTERN_32K
+	sys_ll_set_ana_reg9_clk_sel(1);
+	#else
+	sys_ll_set_ana_reg9_clk_sel(0);
+	#endif
+
 	sys_hal_enable_spi_latch();
+
+	/* disable spi timer wakeup before updating the rtc/timer count */
+	sys_ll_set_ana_reg11_spi_timerwken(0);
+	sys_ll_set_ana_reg18_timer_set(0xffffffff);
+	sys_ll_set_ana_reg17_rtc_set(period);
+
+	sys_ll_set_ana_reg11_gpio_wkrst1v(1);
+	sys_ll_set_ana_reg11_timer_wkrstn(0);
+
+	/* pulse rst_wks to latch the new rtc wakeup config */
+	sys_ll_set_ana_reg10_rtc_wkrstn(0);
+	sys_ll_set_ana_reg10_rst_wks(1);
+	sys_ll_set_ana_reg10_rst_wks(0);
+	sys_ll_set_ana_reg10_rtc_wkrstn(1);
+
 	sys_ll_set_ana_reg11_spi_timerwken(1);
 
-	// period =0: 32ms, ... =5: 1s, =6: 2s ... =15: 1024s
-	//TODO: sys_ll_set_ana_reg10_timer_sel(period);
-#if CONFIG_EXTERN_32K
-	// set xtll as rtc clk
-	//TODO: sys_ll_set_ana_reg12_clk_sel(1);
-#else
-	// set rosc as rtc clk
-	//TODO: sys_ll_set_ana_reg12_clk_sel(0);
-#endif
+	/* bypass 32k power down so the rtc keeps counting during shutdown */
+	sys_ll_set_ana_reg11_spi_byp32pwd(1);
+
 	sys_hal_disable_spi_latch();
 }
 
@@ -1709,11 +1857,12 @@ int sys_hal_set_lpo_src(sys_lpo_src_t src)
 
 void sys_hal_enter_low_analog(void)
 {
-	sys_ll_set_ana_reg10_spi_latch1v(1);
-	sys_ll_set_ana_reg9_t_vanaldosel(0);
-	sys_ll_set_ana_reg9_r_vanaldosel(0);
-	sys_ll_set_ana_reg9_alopowsel(1);
-	sys_ll_set_ana_reg10_spi_latch1v(0);
+	/*Temp modify to disable low analog */
+	// sys_ll_set_ana_reg10_spi_latch1v(1);
+	// sys_ll_set_ana_reg9_t_vanaldosel(0);
+	// sys_ll_set_ana_reg9_r_vanaldosel(0);
+	// sys_ll_set_ana_reg9_alopowsel(1);
+	// sys_ll_set_ana_reg10_spi_latch1v(0);
 
 	//sys_ll_set_ana_reg3_hpssren(0);
 	//sys_ll_set_ana_reg3_anabuf_sel_rx(1);
@@ -1724,7 +1873,7 @@ void sys_hal_exit_low_analog(void)
 {
 	sys_ll_set_ana_reg10_spi_latch1v(1);
 	sys_ll_set_ana_reg9_t_vanaldosel(4);
-	sys_ll_set_ana_reg9_r_vanaldosel(4);
+	sys_ll_set_ana_reg9_r_vanaldosel(7);
 	sys_ll_set_ana_reg9_alopowsel(0);
 	sys_ll_set_ana_reg10_spi_latch1v(0);
 
@@ -2338,7 +2487,7 @@ device_t *pm_convert_sleep_module_enum_to_device_ptr(pm_sleep_module_name_e modu
 			return (device_t *)DEVICE_ID2PTR(uart2);
 		case PM_SLEEP_MODULE_NAME_UART3: // 26
 			return (device_t *)DEVICE_ID2PTR(uart3);
-		case PM_SLEEP_MODULE_NAME_TIMER_3: // 28
+		case PM_SLEEP_MODULE_NAME_AUDIO_ASR: // 28
 			return (device_t *)DEVICE_ID2PTR(timer3);
 		case PM_SLEEP_MODULE_NAME_CPU1: // 30
 			return (device_t *)DEVICE_ID2PTR(cpu1);

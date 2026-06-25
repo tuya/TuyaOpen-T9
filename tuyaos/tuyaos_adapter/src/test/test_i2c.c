@@ -21,6 +21,7 @@
 
 #include "cli.h"
 #include "tkl_i2c.h"
+#include "tkl_pinmux.h"
 #include "tkl_system.h"
 
 #include <os/mem.h>
@@ -31,6 +32,29 @@
 #include <string.h>
 
 extern void bk_printf(const char *fmt, ...);
+
+/*
+ * I2C pad routing (per vendor/gpio_map.h). The board's GPIO_DEFAULT_DEV_CONFIG
+ * does not assign the I2C pins, so the driver's gpio_dev_map_by_func() can't
+ * resolve them; route the pads explicitly via tkl_io_pinmux_config() before
+ * any tkl_i2c_init().
+ *
+ * NOTE: do NOT use UART pins here (UART0=GPIO10/11, UART1=GPIO0/1,
+ * UART2=GPIO40/41) or the serial console gets remapped and garbles. I2C0 is
+ * only on GPIO20/21; I2C1 here uses GPIO38/39 (an I2C1-capable, non-UART pair).
+ */
+#define I2C0_SCL_PIN   20
+#define I2C0_SDA_PIN   21
+#define I2C1_SCL_PIN   38
+#define I2C1_SDA_PIN   39
+
+static void test_i2c_pinmux_setup(void)
+{
+    (void)tkl_io_pinmux_config(I2C0_SCL_PIN, TUYA_IIC0_SCL);
+    (void)tkl_io_pinmux_config(I2C0_SDA_PIN, TUYA_IIC0_SDA);
+    (void)tkl_io_pinmux_config(I2C1_SCL_PIN, TUYA_IIC1_SCL);
+    (void)tkl_io_pinmux_config(I2C1_SDA_PIN, TUYA_IIC1_SDA);
+}
 
 #define I2C_SMOKE_LOOPS_DEFAULT       300U
 #define I2C_SMOKE_LOOPS_MAX           50000U
@@ -1034,6 +1058,9 @@ void cli_xi2c_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **arg
 
     (void)pcWriteBuffer;
     (void)xWriteBufferLen;
+
+    /* Route I2C pads before any init (independent of GPIO_DEFAULT_DEV_CONFIG). */
+    test_i2c_pinmux_setup();
 
     if ((argc < 2) || (argv == NULL) || (argv[1] == NULL)) {
         bk_printf("[xi2c] USAGE: xi2c single [port]\r\n");

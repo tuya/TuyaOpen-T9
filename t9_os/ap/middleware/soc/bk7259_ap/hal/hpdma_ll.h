@@ -130,11 +130,28 @@ static inline void hpdma_ll_disable_bus_err_interrupt(hpdma_hw_t *hw, hpdma_id_t
 	hw->config_group[id].req_mux.bus_err_int_en = 0;
 }
 
+/*
+ * P0 (HPDMA review): fifo_err is the 4th hardware error class on Reg23/Reg28.
+ *   Previously there was no enable / disable / clear / triggered helper, so
+ *   the driver could neither route fifo_err to a callback nor reliably W1C
+ *   clear bit17 in status. The pair below mirrors bus_err.
+ */
+static inline void hpdma_ll_enable_fifo_err_interrupt(hpdma_hw_t *hw, hpdma_id_t id)
+{
+	hw->config_group[id].req_mux.fifo_err_int_en = 1;
+}
+
+static inline void hpdma_ll_disable_fifo_err_interrupt(hpdma_hw_t *hw, hpdma_id_t id)
+{
+	hw->config_group[id].req_mux.fifo_err_int_en = 0;
+}
+
 static inline void hpdma_ll_enable_interrupt(hpdma_hw_t *hw, hpdma_id_t id)
 {
 	hpdma_ll_enable_half_finish_interrupt(hw, id);
 	hpdma_ll_enable_finish_interrupt(hw, id);
 	hpdma_ll_enable_bus_err_interrupt(hw,id);
+	hpdma_ll_enable_fifo_err_interrupt(hw, id);
 }
 
 static inline void hpdma_ll_disable_interrupt(hpdma_hw_t *hw, hpdma_id_t id)
@@ -142,33 +159,72 @@ static inline void hpdma_ll_disable_interrupt(hpdma_hw_t *hw, hpdma_id_t id)
 	hpdma_ll_disable_half_finish_interrupt(hw, id);
 	hpdma_ll_disable_finish_interrupt(hw, id);
 	hpdma_ll_disable_bus_err_interrupt(hw,id);
+	hpdma_ll_disable_fifo_err_interrupt(hw, id);
 }
 
+/*
+ * S0 (HPDMA SMP review):
+ *   The status register (REG_0x1C) holds four W1C event bits in the same
+ *   word - fifo_err(17), half_finish(18), finish(19), bus_err(20). The
+ *   previous "|= BIT(x)" implementation was a read-modify-write: it read
+ *   the live status, ORed the requested bit, then wrote the result back.
+ *   Because every other W1C bit that happened to be set at read time was
+ *   also written back as 1, clearing one event silently cleared *all*
+ *   pending events of the channel. e.g. clearing finish from the ISR while
+ *   half_finish was also pending would lose the half_finish edge.
+ *
+ *   The standard W1C idiom is a direct assignment of just the bit being
+ *   cleared. Writing 0 to the other W1C bits is a no-op (W1C only acts on
+ *   write 1); writing 0 to the surrounding RO fields (desc_num,
+ *   counters, repeat_*_pause) is ignored by the hardware. This also
+ *   removes the RMW window that two cores (task + ISR) could both be in
+ *   simultaneously and that was the root cause of lost interrupts under
+ *   SMP load.
+ */
 static inline void hpdma_ll_clear_finish_interrupt_status(hpdma_hw_t *hw, hpdma_id_t id)
 {
-	/*other interrupt bit also wirte 1 to clear, so should not effect other bits*/
-	hw->config_group[id].status.v |= BIT(HPDMA_FINISH_INT_POS);
+	hw->config_group[id].status.v = BIT(HPDMA_FINISH_INT_POS);
 }
 
 static inline void hpdma_ll_clear_half_finish_interrupt_status(hpdma_hw_t *hw, hpdma_id_t id)
 {
-	/*other interrupt bit also wirte 1 to clear, so should not effect other bits*/
-	hw->config_group[id].status.v |= BIT(HPDMA_HALF_FINISH_INT_POS);
+	hw->config_group[id].status.v = BIT(HPDMA_HALF_FINISH_INT_POS);
 }
 
 static inline void hpdma_ll_clear_bus_err_interrupt_status(hpdma_hw_t *hw, hpdma_id_t id)
 {
-	/*other interrupt bit also wirte 1 to clear, so should not effect other bits*/
-	hw->config_group[id].status.v |= BIT(HPDMA_BUS_ERR_INT_POS);
+	hw->config_group[id].status.v = BIT(HPDMA_BUS_ERR_INT_POS);
 }
 
+/*
+ * P0 (HPDMA review): added fifo_err W1C and a helper to clear *all* W1C
+ *   status bits in one shot. The previous implementation skipped bit17
+ *   (fifo_err) entirely, so once fifo_err was triggered the status bit
+ *   stayed set forever.
+ */
+static inline void hpdma_ll_clear_fifo_err_interrupt_status(hpdma_hw_t *hw, hpdma_id_t id)
+{
+	/* See note above clear_finish: direct W1C write, no RMW. */
+	hw->config_group[id].status.v = BIT(HPDMA_FIFO_ERR_INT_POS);
+}
+
+static inline bool hpdma_ll_is_fifo_err_interrupt_triggered(hpdma_hw_t *hw, hpdma_id_t id)
+{
+	return !!(hw->config_group[id].status.fifo_err_int & 0x1);
+}
 
 static inline void hpdma_ll_clear_interrupt_status(hpdma_hw_t *hw, hpdma_id_t id)
 {
-	hpdma_ll_clear_half_finish_interrupt_status(hw, id);
-	hpdma_ll_clear_finish_interrupt_status(hw, id);
-	hpdma_ll_clear_bus_err_interrupt_status(hw, id);
-
+	/*
+	 * Single write: assert 1 on every W1C event bit at once. Writing 0
+	 * to other W1C bits is a no-op, so this is functionally equivalent
+	 * to four sequential clears but avoids three extra register cycles
+	 * and three extra RMW windows under SMP.
+	 */
+	hw->config_group[id].status.v = BIT(HPDMA_HALF_FINISH_INT_POS)
+	                              | BIT(HPDMA_FINISH_INT_POS)
+	                              | BIT(HPDMA_BUS_ERR_INT_POS)
+	                              | BIT(HPDMA_FIFO_ERR_INT_POS);
 }
 
 static inline uint32_t hpdma_ll_repeat_wr_pause(hpdma_hw_t *hw, hpdma_id_t id)

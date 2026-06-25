@@ -16,9 +16,7 @@
 #include <os/os.h>
 #include <driver/psram.h>
 #include <driver/aon_rtc.h>
-#if CONFIG_TRNG_SUPPORT
-#include <driver/trng.h>
-#endif
+#include <components/bk_platform.h>
 #include "bk_general_dma.h"
 #include <driver/dma.h>
 #include <driver/hpdma.h>
@@ -1107,9 +1105,7 @@ static void cli_psram_cmd_handle(char *pcWriteBuffer, int xWriteBufferLen, int a
 		{
 			if(psram_debug->data_type == 1)
 			{
-#if CONFIG_TRNG_SUPPORT
 				psram_debug->data[i] = bk_rand() + i;
-#endif
 			}
 			else if (psram_debug->data_type == 2)
 			{
@@ -2704,6 +2700,11 @@ static void rapid_task_main(void *arg)
 		}
 
 		pat_idx++;
+
+		/* Yield one tick so the IDLE task can run and feed task_wdt; otherwise
+		 * this busy loop starves IDLE on its core and triggers task_wdt assert
+		 * after CONFIG_TASK_WDT_PERIOD_MS. */
+		rtos_delay_milliseconds(1);
 	}
 
 	CLI_LOGD("psram_rapid stopped: pass=%u, fail=%u, err_words=%u\r\n",

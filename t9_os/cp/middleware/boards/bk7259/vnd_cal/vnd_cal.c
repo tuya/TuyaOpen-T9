@@ -31,6 +31,7 @@
  * or update here directly before/without iTest
  */
 float target_pwr_ble  = 6.0; //2G4 BLE target power
+float target_pwr_thread = 10.0; //2.4G Thread target power (802.15.4 ch11-26)
 float target_pwr_11b  = 18.0; //2G4 11B target power
 float target_pwr_11g  = 16.0; //2G4 11G target power
 float target_pwr_n20  = 15.0; //2G4 N20 target power
@@ -48,7 +49,9 @@ int8_t g_dif_g_n40      = 2; //differ between g and n40
 int8_t g_dif_g_ble_ch0  = -14;
 int8_t g_dif_g_ble_ch19 = -13;
 int8_t g_dif_g_ble_ch39 = -12;
-
+int8_t g_dif_g_thread_ch11 = 37;  //differ between g and thread
+int8_t g_dif_g_thread_ch19 = 40;
+int8_t g_dif_g_thread_ch26 = 38;
 /**
  * shift power index of all format:
  * 0.25dB for 1 LSB
@@ -63,7 +66,7 @@ int8_t shift_pwr_idx_g_ch13   = -8;
 
 const UINT32 g_default_xtal   = DEFAULT_TXID_XTAL;
 char *vnd_cal_version         = "24-04-10 00:00:00";
-
+#if CONFIG_EPA_ENABLE_FLAG
 /**
  * pwr_gain<09:00> pregain in cfg_power_table.pregain
  * pwr_gain<13:10> pactrl in TRX_C<11:8>, F at present
@@ -73,8 +76,19 @@ char *vnd_cal_version         = "24-04-10 00:00:00";
  * pwr_gain<29:26> Dia in TRX_A<31:28>, 8 at present
  * pwr_gain<31:31> 1:11g/n 0:11b
  */
-const UINT32 pwr_gain_base_gain_b     = 0x18FABC00;//0x00233C00;
-const UINT32 pwr_gain_base_gain_g   = 0x98FABC00;//0x80233C00;
+const UINT32 pwr_gain_base_gain_b         = 0x18F05000;
+const UINT32 pwr_gain_base_gain_g         = 0x98F85000;
+const UINT32 pwr_gain_base_gain_ble       = 0x18F94C00;
+#else
+const UINT32 pwr_gain_base_gain_b         = 0x18FABC00;//0x00233C00;
+const UINT32 pwr_gain_base_gain_g         = 0x98FABC00;//0x80233C00;
+#if CONFIG_BLE_USE_HIGH_POWER_LEVEL
+const UINT32 pwr_gain_base_gain_ble       = 0x18F94C00;
+#else
+const UINT32 pwr_gain_base_gain_ble       = 0x18F94C00;
+#endif
+#endif
+
 #define TPC_PAMAP_TAB_LEN             (128)
 const PWR_REGS cfg_tab[TPC_PAMAP_TAB_LEN] = {
 	// pregain
@@ -207,11 +221,7 @@ const PWR_REGS cfg_tab[TPC_PAMAP_TAB_LEN] = {
 	PWRI(0x3E1),	//126	5.75db
 	PWRI(0x3FE),	//127	6db
 };
-#if CONFIG_BLE_USE_HIGH_POWER_LEVEL
-const UINT32 pwr_gain_base_gain_ble         = 0x18F94C00;
-#else
-const UINT32 pwr_gain_base_gain_ble         = 0x18F94C00;
-#endif
+
 #define TPC_PAMAP_TAB_BT_LEN                (65)
 const PWR_REGS cfg_tab_bt[TPC_PAMAP_TAB_BT_LEN] = {
 	// pregain
@@ -307,48 +317,54 @@ const TXPWR_CAL_ST gtxpwr_tab_def_ble[TXPWR_CAL_2G_MAX] = {
     INIT_TXPWR_VALUE(40, 46),  // ch39 2480 inused
 };
 
+/* IEEE 802.15.4 2.4G logical ch 11/19/26 (align g_dif_g_thread_ch*); same strip count as BLE/WiFi 2G */
+const TXPWR_CAL_ST gtxpwr_tab_def_thread[TXPWR_CAL_2G_MAX] = {
+    INIT_TXPWR_VALUE(11,54), //ch11
+    INIT_TXPWR_VALUE(19,54), //ch19
+    INIT_TXPWR_VALUE(26,57), //ch26
+};
 /****************************** temperature table  ****************************/
 const TMP_PWR_ST tmp_pwr_tab[TMP_PWR_TAB_LEN] = {
-//trx0x0c[12:15], shift_b, shift_g, shift_ble, xtal_c_delta
-    {  0x00,      -13,     -13,      -13,       -3},   // 0     ,-40
-    {  0x00,      -12,     -12,      -12,        1},   // 1     ,-35
-    {  0x00,      -11,     -11,      -11,        3},   // 2     ,-30
-    {  0x00,      -10,     -10,      -10,        5},   // 3     ,-25
-    {  0x00,       -9,      -9,       -9,        7},   // 4     ,-20
-    {  0x00,       -8,      -8,       -8,        7},   // 5     ,-15
-    {  0x00,       -6,      -7,       -7,        8},   // 6     ,-10
-    {  0x00,       -5,      -6,       -6,        7},   // 7     ,-5
-    {  0x00,       -4,      -4,       -4,        7},   // 8     ,0
-    {  0x00,       -3,      -3,       -3,        6},   // 9     ,5
-    {  0x00,       -2,      -2,       -2,        5},   // 10    ,10
-    {  0x00,        0,       0,        0,        3},   // 11    ,15
-    {  0x00,        0,       0,        0,        2},   // 12    ,20
-    {  0x00,        0,       0,        0,        0},   // 13    ,25
-    {  0x00,        0,       0,        0,       -2},   // 14    ,30
-    {  0x00,        0,       0,        0,       -3},   // 15    ,35
-    {  0x00,        2,       2,        2,       -5},   // 16    ,40
-    {  0x00,        3,       3,        3,       -6},   // 17    ,45
-    {  0x00,        3,       3,        3,       -7},   // 18    ,50
-    {  0x00,        3,       3,        3,       -8},   // 19    ,55
-    {  0x00,        3,       3,        3,       -8},   // 20    ,60
-    {  0x00,        4,       4,        4,       -8},   // 21    ,65
-    {  0x00,        5,       5,        5,       -8},   // 22    ,70
-    {  0x00,        5,       5,        5,       -7},   // 23    ,75
-    {  0x00,        6,       6,        6,       -6},   // 24    ,80
-    {  0x00,        7,       7,        7,       -3},   // 25    ,85
-    {  0x00,        8,       8,        8,        1},   // 26    ,90
-    {  0x00,       10,      10,       10,        5},   // 27    ,95
-    {  0x00,       11,      11,       11,       10},   // 28    ,100
-    {  0x00,       12,      12,       12,       17},   // 29    ,105
-    {  0x00,       13,      13,       13,       27},   // 30    ,110
-    {  0x00,       15,      15,       15,       38},   // 31    ,115
-    {  0x00,       16,      16,       16,       54},   // 32    ,120
-    {  0x00,       18,      18,       18,       73},   // 33    ,125
-    {  0x00,       19,      19,       19,       99},   // 34    ,130
-    {  0x00,       20,      20,       20,      120},   // 35    ,135
-    {  0x00,       21,      21,       21,      140},   // 36    ,140
-    {  0x00,       22,      22,       22,      160},   // 37    ,145
-    {  0x00,       23,      23,       23,      180},   // 38    ,150
+//trx0x0c[12:15], shift_b, shift_g, shift_ble, shift_thread,xtal_c_delta
+	{  0x00,      -13,     -13,      -13,       -13,         -3},   // 0     ,-40
+	{  0x00,      -12,     -12,      -12,       -12,          1},   // 1     ,-35
+	{  0x00,      -11,     -11,      -11,       -11,          3},   // 2     ,-30
+	{  0x00,      -10,     -10,      -10,       -10,          5},   // 3     ,-25
+	{  0x00,       -9,      -9,       -9,        -9,          7},   // 4     ,-20
+	{  0x00,       -8,      -8,       -8,        -8,          7},   // 5     ,-15
+	{  0x00,       -6,      -7,       -7,        -7,          8},   // 6     ,-10
+	{  0x00,       -5,      -6,       -6,        -6,          7},   // 7     ,-5
+	{  0x00,       -4,      -4,       -4,        -4,          7},   // 8     ,0
+	{  0x00,       -3,      -3,       -3,        -3,          6},   // 9     ,5
+	{  0x00,       -2,      -2,       -2,        -2,          5},   // 10    ,10
+	{  0x00,        0,       0,        0,         0,          3},   // 11    ,15
+	{  0x00,        0,       0,        0,         0,          2},   // 12    ,20
+	{  0x00,        0,       0,        0,         0,          0},   // 13    ,25
+	{  0x00,        0,       0,        0,         0,         -2},   // 14    ,30
+	{  0x00,        0,       0,        0,         0,         -3},   // 15    ,35
+	{  0x00,        2,       2,        2,         2,         -5},   // 16    ,40
+	{  0x00,        3,       3,        3,         3,         -6},   // 17    ,45
+	{  0x00,        3,       3,        3,         3,         -7},   // 18    ,50
+	{  0x00,        3,       3,        3,         3,         -8},   // 19    ,55
+	{  0x00,        3,       3,        3,         3,         -8},   // 20    ,60
+	{  0x00,        4,       4,        4,         4,         -8},   // 21    ,65
+	{  0x00,        5,       5,        5,         5,         -8},   // 22    ,70
+	{  0x00,        5,       5,        5,         5,         -7},   // 23    ,75
+	{  0x00,        6,       6,        6,         6,         -6},   // 24    ,80
+	{  0x00,        7,       7,        7,         7,         -3},   // 25    ,85
+	{  0x00,        8,       8,        8,         8,          1},   // 26    ,90
+	{  0x00,       10,      10,       10,        10,          5},   // 27    ,95
+	{  0x00,       11,      11,       11,        11,         10},   // 28    ,100
+	{  0x00,       12,      12,       12,        12,         17},   // 29    ,105
+	{  0x00,       13,      13,       13,        13,         27},   // 30    ,110
+	{  0x00,       15,      15,       15,        15,         38},   // 31    ,115
+	{  0x00,       16,      16,       16,        16,         54},   // 32    ,120
+	{  0x00,       18,      18,       18,        18,         73},   // 33    ,125
+	{  0x00,       19,      19,       19,        19,         99},   // 34    ,130
+	{  0x00,       20,      20,       20,        20,        120},   // 35    ,135
+	{  0x00,       21,      21,       21,        21,        140},   // 36    ,140
+	{  0x00,       22,      22,       22,        22,        160},   // 37    ,145
+	{  0x00,       23,      23,       23,        23,        180},   // 38    ,150
 };
 
 const AUTO_PWR_CALI_CONTEXT auto_pwr =
@@ -390,10 +406,10 @@ void vnd_cal_overlay(void)
 {
     vnd_cal_set_auto_pwr_thred(auto_pwr);
     //EPA
-#if EPA_ENABLE_FLAG
-    vnd_cal_set_epa_config(1, GPIO_28, GPIO_26, pwr_gain_base_gain_b, pwr_gain_base_gain_g);
+#if CONFIG_EPA_ENABLE_FLAG
+    vnd_cal_set_epa_config(1, GPIO_28, GPIO_26, GPIO_27);
 #else
-    vnd_cal_set_epa_config(0, GPIO_28, GPIO_26, pwr_gain_base_gain_b, pwr_gain_base_gain_g);
+    vnd_cal_set_epa_config(0, GPIO_28, GPIO_26, GPIO_27);
 #endif
     vnd_cal_version_log(vnd_cal_version);
     /*only used in SRRC adaptive testing !!!

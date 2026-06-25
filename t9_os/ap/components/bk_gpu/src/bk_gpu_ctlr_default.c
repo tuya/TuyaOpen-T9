@@ -189,10 +189,50 @@ vg_lite_buffer_format_t gpu_format_convert(bk_pixel_format_t bk_format)
     return vg_format;
 }
 
+static vg_lite_buffer_format_t gpu_blit_format_convert(bk_pixel_format_t bk_format)
+{
+    if (bk_format == BK_PIXEL_FORMAT_BGRA8888) {
+        /*
+         * The ISP SP path uses this public format as 32bpp BGRX. When a
+         * rotated blit forces an alpha-aware path in VG-Lite, treating X as A
+         * can make the overlay fully transparent.
+         */
+        return VG_LITE_BGRX8888;
+    }
+
+    return gpu_format_convert(bk_format);
+}
+
+static void *gpu_blit_uv_plane_get(const bk_gpu_blit_config_t *blit_config, void *front_frame)
+{
+    if (blit_config == NULL || front_frame == NULL) {
+        return NULL;
+    }
+
+    if (blit_config->src_format == BK_PIXEL_FORMAT_NV12) {
+        return (uint8_t *)front_frame +
+               ((uint32_t)blit_config->src_width * (uint32_t)blit_config->src_height);
+    }
+
+    return NULL;
+}
+
 #define CHECK_ERROR
+static bool gpu_blit_rotate_degree_is_valid(uint16_t rotate_degree);
+
 static avdk_err_t gpu_blit_set(bk_gpu_ctlr_handle_t handle, void *src_buffer, bk_gpu_blit_config_t *blit_config)
 {
     gpu_vn_ctlr_t *controller =  __containerof(handle, gpu_vn_ctlr_t, ops);
+
+    if (blit_config == NULL) {
+        LOGW("%s %d blit config is NULL\r\n", __func__, __LINE__);
+        return AVDK_ERR_INVAL;
+    }
+    if (!gpu_blit_rotate_degree_is_valid(blit_config->rotate_degree)) {
+        LOGW("%s %d unsupported blit rotate %u\r\n",
+             __func__, __LINE__, (unsigned)blit_config->rotate_degree);
+        return AVDK_ERR_INVAL;
+    }
 
     rtos_lock_mutex(&controller->blit_mutex);
     controller->update_blit_buffer = src_buffer;
@@ -391,6 +431,12 @@ static int gpu_flex_overlay_draw_line_block(gpu_flex_data_t *data,
 }
 // Modified by TUYA End
 
+static bool gpu_blit_rotate_degree_is_valid(uint16_t rotate_degree)
+{
+    return rotate_degree == 0 || rotate_degree == 90 ||
+           rotate_degree == 180 || rotate_degree == 270;
+}
+
 static void gpu_isp_line_done_handle(uint32_t line, void *arg)
 {
     gpu_vn_ctlr_t *gpu_vn_ctlr = (gpu_vn_ctlr_t *)arg;
@@ -524,8 +570,14 @@ static void gpu_flex_init_dma(gpu_flex_data_t *data)
         data->link_dma_list_table = NULL;
         return;
     }
-    bk_hpdma_set_dest_burst_len(data->gdma, 0x03);
-    bk_hpdma_set_src_burst_len(data->gdma, 0x03);
+    /*
+     * P1 (HPDMA review): use HPDMA_BURST_LEN_INC16 enum; the SMEM-same-
+     *   block downgrade to INC8 (if applicable) is now applied inside
+     *   the driver at start time, removing the need for callers to
+     *   second-guess the burst length.
+     */
+    bk_hpdma_set_dest_burst_len(data->gdma, HPDMA_BURST_LEN_INC16);
+    bk_hpdma_set_src_burst_len(data->gdma, HPDMA_BURST_LEN_INC16);
 #if HDMA_OPEN_ISR_ENABLE
     BK_LOG_ON_ERR(bk_hpdma_register_isr(data->gdma, NULL, NULL, gpu_flex_hpdma_link_transfer_complete_callback, &data->transfer_sem));
     BK_LOG_ON_ERR(bk_hpdma_enable_finish_interrupt(data->gdma));
@@ -538,7 +590,7 @@ static void gpu_flex_init_dma(gpu_flex_data_t *data)
  * @param config GPU controller configuration
  * @param draw_matrix Optional box matrix for face detection (can be NULL)
  */
-static void gpu_flex_update_matrix(gpu_flex_data_t *data, 
+static void gpu_flex_update_matrix(gpu_flex_data_t *data,
                                     const bk_gpu_ctlr_config_t *config)
 {
     if (config->rotate_degree == 0)
@@ -798,8 +850,12 @@ static void gpu_flex_data_frame_done_blit(gpu_flex_data_t *flex, const bk_gpu_ct
     memset(&front_buffer , 0, sizeof(front_buffer));
     front_buffer.width = blit_config->src_width;
     front_buffer.height = blit_config->src_height;
-    front_buffer.format = gpu_format_convert(blit_config->src_format);
-    vg_lite_allocate_with_data(&front_buffer, front_frame, NULL, NULL, NULL);
+    front_buffer.format = gpu_blit_format_convert(blit_config->src_format);
+    vg_lite_allocate_with_data(&front_buffer,
+                               front_frame,
+                               gpu_blit_uv_plane_get(blit_config, front_frame),
+                               NULL,
+                               NULL);
 
     memset(&display_matrix , 0, sizeof(display_matrix));
     vg_lite_identity(&display_matrix);
@@ -812,7 +868,32 @@ static void gpu_flex_data_frame_done_blit(gpu_flex_data_t *flex, const bk_gpu_ct
         .height = blit_config->src_height,
     };
 
-    vg_lite_translate(blit_config->dst_x, blit_config->dst_y, &display_matrix);
+    switch (blit_config->rotate_degree)
+    {
+        case 90:
+            vg_lite_rotate(90.0f, &display_matrix);
+            display_matrix.m[0][2] = (vg_lite_float_t)blit_config->dst_x +
+                                     (vg_lite_float_t)blit_config->src_height;
+            display_matrix.m[1][2] = (vg_lite_float_t)blit_config->dst_y;
+            break;
+        case 180:
+            vg_lite_rotate(180.0f, &display_matrix);
+            display_matrix.m[0][2] = (vg_lite_float_t)blit_config->dst_x +
+                                     (vg_lite_float_t)blit_config->src_width;
+            display_matrix.m[1][2] = (vg_lite_float_t)blit_config->dst_y +
+                                     (vg_lite_float_t)blit_config->src_height;
+            break;
+        case 270:
+            vg_lite_rotate(270.0f, &display_matrix);
+            display_matrix.m[0][2] = (vg_lite_float_t)blit_config->dst_x;
+            display_matrix.m[1][2] = (vg_lite_float_t)blit_config->dst_y +
+                                     (vg_lite_float_t)blit_config->src_width;
+            break;
+        case 0:
+        default:
+            vg_lite_translate(blit_config->dst_x, blit_config->dst_y, &display_matrix);
+            break;
+    }
 
     int ret = vg_lite_blit_rect(
         &display_buffer,
@@ -831,8 +912,8 @@ static void gpu_flex_data_frame_done_blit(gpu_flex_data_t *flex, const bk_gpu_ct
 
     vg_lite_finish();
 
-    vg_lite_free(&display_buffer);
-    vg_lite_free(&front_buffer);
+    vg_lite_free_without_free_data(&display_buffer);
+    vg_lite_free_without_free_data(&front_buffer);
 }
 
 /**
@@ -872,7 +953,13 @@ static inline void gpu_flex_data_frame_done(gpu_flex_data_t *data, gpu_vn_ctlr_t
 
         if (gpu_vn_ctlr->display_blit_buffer)
         {
-            gpu_flex_data_frame_done_blit(data, config, &gpu_vn_ctlr->display_blit_config, gpu_vn_ctlr->display_blit_buffer, data->dpu_frame_buffers);
+            rtos_lock_mutex(&gpu_vn_ctlr->gpu_mutex);
+            gpu_flex_data_frame_done_blit(data,
+                                          config,
+                                          &gpu_vn_ctlr->display_blit_config,
+                                          gpu_vn_ctlr->display_blit_buffer,
+                                          data->dpu_frame_buffers);
+            rtos_unlock_mutex(&gpu_vn_ctlr->gpu_mutex);
         }
     }
 
@@ -880,28 +967,29 @@ static inline void gpu_flex_data_frame_done(gpu_flex_data_t *data, gpu_vn_ctlr_t
 
     /* Swap frame buffer */
     uint32_t frame_size = bk_pixel_size_get(config->dst_format) * (config->compress ? data->output_width / 4 : data->output_width) * data->output_height;
-    void *new_buffer = config->malloc(frame_size);
+    void *new_buffer = config->frame_malloc(frame_size);
     //void *new_buffer = NULL;
     if (new_buffer)
     {
-        if(config->frame_display)
-        {
-            config->frame_display(data->dpu_frame_buffers, frame_size, config->frame_display_args);
-        }
+        void *done_frame = data->dpu_frame_buffers;
         data->dpu_frame_buffers = new_buffer;
         AVDK_MONITOR_GPU_FRAME_PLUS();
+
+        if (config->frame_done)
+        {
+            config->frame_done(done_frame, frame_size, config->frame_done_args);
+        }
     }
 
     if (gpu_vn_ctlr->bond != NULL && gpu_vn_ctlr->bond->frame_done != NULL) {
         gpu_vn_ctlr->bond->frame_done(BK_OK, gpu_vn_ctlr->bond);
     }
-
-    if (config->frame_done)
-    {
-        config->frame_done(data->dpu_frame_buffers, frame_size, config->frame_done_args);
-    }
     /* Reset state for next frame */
-    //rtos_get_semaphore(&gpu_vn_ctlr->gpu_process_sem, BEKEN_NO_WAIT);
+    uint32_t frame_last_line_count = (data->input_height + config->flexa_lines - 1) / config->flexa_lines;
+    if (gpu_vn_ctlr->line_cnt == frame_last_line_count)
+    {
+        rtos_get_semaphore(&gpu_vn_ctlr->gpu_process_sem, BEKEN_NO_WAIT);
+    }
     data->flexa_index = 1;
     data->read_lines = 0;
 
@@ -930,13 +1018,32 @@ static inline int gpu_flex_has_enough_lines(gpu_flex_data_t *data, uint32_t src_
  * @param data GPU flex data structure
  * @param gpu_vn_ctlr GPU controller handle
  */
-static void gpu_flex_process_line_block(gpu_flex_data_t *data,
+static bool gpu_flex_process_line_block(gpu_flex_data_t *data,
                                         gpu_vn_ctlr_t *gpu_vn_ctlr)
 {
     const bk_gpu_ctlr_config_t *config = &gpu_vn_ctlr->config;
     GPU_LINE_START();
     /* Update transformation matrix for current line */
     gpu_flex_update_matrix(data, config);
+
+    rtos_lock_mutex(&gpu_vn_ctlr->gpu_mutex);
+
+    uint32_t current_src_lines = gpu_vn_ctlr->line_cnt * config->flexa_lines;
+    uint32_t buffered_lines = data->read_lines + config->flexa_lines * config->flexa_buff_cnt;
+    if (current_src_lines > buffered_lines)
+    {
+        uint32_t overrun_lines = current_src_lines - buffered_lines;
+
+        LOGW("%s, flexa overrun, line_cnt %u, buff_cnt %u, overrun %u\n",
+             __func__, 
+             gpu_vn_ctlr->line_cnt,
+             config->flexa_buff_cnt,
+             overrun_lines);
+        gpu_flex_restart(gpu_vn_ctlr);
+        GPU_LINE_END();
+        rtos_unlock_mutex(&gpu_vn_ctlr->gpu_mutex);
+        return false;
+    }
 
     /* Perform GPU blit operation */
     vg_lite_blit(&data->dst_buf, &data->src_buf, &data->matrix,
@@ -965,9 +1072,11 @@ static void gpu_flex_process_line_block(gpu_flex_data_t *data,
 
     GPU_LINE_END();
     rtos_unlock_mutex(&data->draw_mutex);
+    rtos_unlock_mutex(&gpu_vn_ctlr->gpu_mutex);
     HPDMA_LINE_START();
     /* Pull out processed line data */
     gpu_flex_data_line_pull_out(data, gpu_vn_ctlr);
+    return true;
 }
 
 /**
@@ -992,7 +1101,7 @@ static void gpu_flex_main_entry(void *arg)
     vg_lite_rotate((float)config->rotate_degree, &flex->draw_matrix);
 
     /* Allocate initial frame buffer */
-    flex->dpu_frame_buffers = config->malloc(bk_pixel_size_get(config->dst_format) * (config->compress ? flex->output_width / 4 : flex->output_width) * flex->output_height);
+    flex->dpu_frame_buffers = config->frame_malloc(bk_pixel_size_get(config->dst_format) * (config->compress ? flex->output_width / 4 : flex->output_width) * flex->output_height);
     if (flex->dpu_frame_buffers == NULL)
     {
         LOGE("Failed to allocate flex->dpu_frame_buffers\r\n");
@@ -1039,14 +1148,16 @@ static void gpu_flex_main_entry(void *arg)
                 gpu_vn_ctlr->bond->flexa_done(src_line_count, gpu_vn_ctlr->bond);
             }
 
-            LOGW("%s, %d line error flag, src_line_count %d\n", __func__, __LINE__, src_line_count);
             continue;
         }
 
         /* Process available line blocks */
         while (gpu_flex_has_enough_lines(flex, src_line_count, config->flexa_lines))
         {
-            gpu_flex_process_line_block(flex, gpu_vn_ctlr);
+            if (!gpu_flex_process_line_block(flex, gpu_vn_ctlr))
+            {
+                break;
+            }
             AVDK_MONITOR_GPU_LINE_PLUS();
         }
 
@@ -1071,9 +1182,50 @@ static void gpu_flex_main_entry(void *arg)
 
 thread_exit:
     LOGW("%s,%d exit\n", __func__, __LINE__);
-    if (flex->dpu_frame_buffers != NULL && config->free != NULL)
+
+    /*
+     * S0 (HPDMA stability review - GPU thread_exit DMA UAF):
+     *
+     *   The previous order was:
+     *     1) free(dpu_frame_buffers)
+     *     2) disable/unregister ISR
+     *     3) bk_hpdma_free
+     *   If gpu_ctlr_close() unblocked transfer_sem while the GPU thread had
+     *   just kicked off a fresh bk_hpdma_link_transfer in line_pull_out, the
+     *   HPDMA could still be writing into dpu_frame_buffers when (1) freed
+     *   the backing memory -> classic DMA use-after-free; once the channel
+     *   was bk_hpdma_free()-ed, a later allocator could reuse the same
+     *   chnl_id and find it still running.
+     *
+     *   New order:
+     *     1) clear ISR callbacks first, so any pending finish IRQ won't try
+     *        to set transfer_sem after we tear the controller down.
+     *     2) bk_hpdma_free first: it now performs stop + wait-to-idle
+     *        internally (S0 contract), guaranteeing the channel is idle and
+     *        no longer writes into dpu_frame_buffers / link_dma_list_table.
+     *        On timeout it keeps the channel reserved (logged) and skips
+     *        freeing it; we still proceed with the rest of the teardown.
+     *     3) only after the DMA is provably idle do we free the backing
+     *        frame buffer and the descriptor table.
+     */
+#if HDMA_OPEN_ISR_ENABLE
+    if (flex->gdma < HPDMA_ID_MAX) {
+        bk_hpdma_disable_finish_interrupt(flex->gdma);
+        bk_hpdma_register_isr(flex->gdma, NULL, NULL, NULL, NULL);
+    }
+#endif
+
+    if (flex->gdma < HPDMA_ID_MAX) {
+        bk_err_t free_ret = bk_hpdma_free(HPDMA_DEV_DTCM, flex->gdma);
+        if (free_ret != BK_OK) {
+            LOGE("%s,%d bk_hpdma_free(ch=%d) failed ret=%d, DMA may still be active\n",
+                 __func__, __LINE__, flex->gdma, free_ret);
+        }
+    }
+
+    if (flex->dpu_frame_buffers != NULL && config->frame_free != NULL)
     {
-        config->free(flex->dpu_frame_buffers);
+        config->frame_free(flex->dpu_frame_buffers);
         flex->dpu_frame_buffers = NULL;
     }
 
@@ -1082,18 +1234,11 @@ thread_exit:
         gpu_vn_ctlr->gpu_process_sem = NULL;
     }
 
-#if HDMA_OPEN_ISR_ENABLE
-    if (flex->gdma < HPDMA_ID_MAX) {
-        bk_hpdma_disable_finish_interrupt(flex->gdma);
-        bk_hpdma_register_isr(flex->gdma, NULL, NULL, NULL, NULL);
-    }
-#endif
-    bk_hpdma_free(HPDMA_DEV_DTCM, flex->gdma);
     bk_hpdma_link_deinit(flex->link_dma_list_table);
     gpu_flex_deinit_pingpong_buffer(flex);
-    
+
     gpu_flex_data_deinit(flex, gpu_vn_ctlr);
-    
+
     rtos_set_semaphore(&gpu_vn_ctlr->gpu_flex_task_sem);
 
     gpu_vn_ctlr->flexa_thd = NULL;
@@ -1115,6 +1260,13 @@ static avdk_err_t gpu_ctlr_init(bk_gpu_ctlr_handle_t handle)
         avdk_err_t ret = rtos_init_mutex(&control->blit_mutex);
         if (ret != AVDK_ERR_OK) {
             LOGE("%s, %d rtos_init_mutex failed\n", __func__, __LINE__);
+            return ret;
+        }
+        ret = rtos_init_mutex(&control->gpu_mutex);
+        if (ret != AVDK_ERR_OK) {
+            LOGE("%s, %d rtos_init_mutex gpu_mutex failed\n", __func__, __LINE__);
+            rtos_deinit_mutex(&control->blit_mutex);
+            control->blit_mutex = NULL;
             return ret;
         }
     } else {
@@ -1148,6 +1300,15 @@ static avdk_err_t gpu_ctlr_deinit(bk_gpu_ctlr_handle_t handle)
                 LOGE("%s, %d rtos_deinit_mutex failed\n", __func__, __LINE__);
                 return ret;
             }
+            control->blit_mutex = NULL;
+        }
+        if (control->gpu_mutex) {
+            avdk_err_t ret = rtos_deinit_mutex(&control->gpu_mutex);
+            if (ret != AVDK_ERR_OK) {
+                LOGE("%s, %d rtos_deinit_mutex gpu_mutex failed\n", __func__, __LINE__);
+                return ret;
+            }
+            control->gpu_mutex = NULL;
         }
     } else {
         LOGE("%s %d flexa is not enabled\r\n", __func__, __LINE__);
@@ -1309,6 +1470,22 @@ static avdk_err_t gpu_ctlr_ioctl(bk_gpu_ctlr_handle_t handle, uint32_t cmd, void
 
         case BK_GPU_IOCTL_FLEXA_ADDR_UNMAPPING:
             gpu_flexa_addr_unmapping();
+            break;
+
+        case BK_GPU_IOCTL_LOCK:
+            if (control->gpu_mutex == NULL) {
+                LOGW("%s %d gpu_mutex is NULL\r\n", __func__, __LINE__);
+                return AVDK_ERR_INVAL;
+            }
+            rtos_lock_mutex(&control->gpu_mutex);
+            break;
+
+        case BK_GPU_IOCTL_UNLOCK:
+            if (control->gpu_mutex == NULL) {
+                LOGW("%s %d gpu_mutex is NULL\r\n", __func__, __LINE__);
+                return AVDK_ERR_INVAL;
+            }
+            rtos_unlock_mutex(&control->gpu_mutex);
             break;
 
         default:

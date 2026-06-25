@@ -15,12 +15,26 @@
 #include "wwdt_hal.h"
 #include "sys_hal.h"
 
+#define WWDT_XTALL_ITUNE_VALUE 4
+
+static void wwdt_hal_enable_32k_clock(void)
+{
+	uint32_t reg_val;
+
+	/* M55 CPU WWDT is driven by the 32 kHz low-speed clock, so enable both the clock gate and XTALL source. */
+	reg_val = REG_READ(SYS_ANA_REG5_ADDR);
+	reg_val &= ~(SYS_ANA_REG5_ITUNE_XTALL_MASK << SYS_ANA_REG5_ITUNE_XTALL_POS);
+	reg_val |= ((WWDT_XTALL_ITUNE_VALUE & SYS_ANA_REG5_ITUNE_XTALL_MASK) << SYS_ANA_REG5_ITUNE_XTALL_POS);
+	reg_val |= (SYS_ANA_REG5_EN_XTALL_MASK << SYS_ANA_REG5_EN_XTALL_POS);
+	REG_WRITE(SYS_ANA_REG5_ADDR, reg_val);
+}
+
 bk_err_t wwdt_hal_init(wwdt_hal_t *hal)
 {
 	hal->id = CPU_WWDT_ID;
 	hal->hw = (wwdt_hw_t *)WWDT_LL_REG_BASE;
 
-	// sys_hal_enable_32k_hz_clock();
+	wwdt_hal_enable_32k_clock();
 	wwdt_hal_set_smb_clkrst_soft_reset(1);
 
 	return BK_OK;
@@ -38,18 +52,21 @@ bk_err_t wwdt_hal_init_wwdt(wwdt_hal_t *hal, uint32_t timeout_ms)
 
 __attribute__((section(".itcm_sec_code"))) void wwdt_hal_close(void)
 {
+	wwdt_hal_set_smb_clkrst_clkg_bypass(1);
 	wwdt_hal_1st_set_wdt_config_period(0);
 	wwdt_hal_2nd_set_wdt_config_period(0);
 }
 
 void wwdt_hal_force_feed(void)
 {
+	wwdt_hal_set_smb_clkrst_clkg_bypass(1);
 	wwdt_hal_1st_set_wdt_config_period(WWDT_F_PERIOD_MAX_V);
 	wwdt_hal_2nd_set_wdt_config_period(WWDT_F_PERIOD_MAX_V);
 }
 
 void wwdt_hal_force_reboot(void)
 {
+	wwdt_hal_set_smb_clkrst_clkg_bypass(1);
 	wwdt_hal_1st_set_wdt_config_period(WWDT_F_PERIOD_MIN_V);
 	wwdt_hal_2nd_set_wdt_config_period(WWDT_F_PERIOD_MIN_V);
 }

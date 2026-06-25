@@ -18,10 +18,14 @@ typedef struct {
     BOOL_T input_decompress;
     TUYA_MIPI_BASE_CFG_T base_cfg;
     bk_display_ctlr_handle_t dpu_ctlr_handle;
+    bk_avdk_lcd_panel_handle_t panel_handle;
 } tkl_mipi_dpu_runtime_t;
 
 static tkl_mipi_dsi_runtime_t s_dsi_runtime;
 static tkl_mipi_dpu_runtime_t s_dpu_runtime;
+/* Panel descriptor consumed by bk_lcd_mipi_panel_new(); the panel handle keeps a
+ * pointer to it (no copy), so it must outlive the panel -> static storage. */
+static bk_display_dsi_panel_t s_dsi_panel_desc;
 static void (*s_flush_free_cb)(UINT8_T *frame_buff) = NULL;
 
 static OPERATE_RET tkl_mipi_dpu_init(const TUYA_MIPI_BASE_CFG_T *base_cfg);
@@ -30,16 +34,6 @@ static OPERATE_RET tkl_mipi_dpu_deinit(VOID_T);
 static BOOL_T tkl_mipi_dsi_lane_count_valid(UINT8_T n_lanes)
 {
     return (n_lanes >= 1U && n_lanes <= 4U) ? TRUE : FALSE;
-}
-
-static UINT32_T tkl_mipi_dsi_clk_mhz_normalize(UINT32_T clk)
-{
-    /* BK DSI/DPU clock expects MHz, while TUYA configs may pass raw Hz. */
-    if (clk > 1000U) {
-        return (clk + 500000U) / 1000000U;
-    }
-
-    return clk;
 }
 
 static UINT8_T tkl_mipi_dsi_fps_calculate(const TUYA_MIPI_BASE_CFG_T *base_cfg)
@@ -70,22 +64,6 @@ static UINT8_T tkl_mipi_dsi_fps_calculate(const TUYA_MIPI_BASE_CFG_T *base_cfg)
     }
 
     return (UINT8_T)fps;
-}
-
-static UINT8_T tkl_mipi_dsi_lane_count_convert(UINT8_T n_lanes)
-{
-    switch (n_lanes) {
-        case 1U:
-            return DSI_ACTIVE_LANES_1;
-        case 2U:
-            return DSI_ACTIVE_LANES_2;
-        case 3U:
-            return DSI_ACTIVE_LANES_3;
-        case 4U:
-            return DSI_ACTIVE_LANES_4;
-        default:
-            return 0xFFU;
-    }
 }
 
 static bk_pixel_format_t tkl_mipi_dpu_pixel_format_convert(DISPLAY_PIXEL_FORMAT_E format)
@@ -132,50 +110,6 @@ OPERATE_RET tkl_mipi_dsi_set_input_mode(BOOL_T decompress)
     return OPRT_OK;
 }
 
-static OPERATE_RET tkl_mipi_dsi_clock_set(const TUYA_MIPI_BASE_CFG_T *base_cfg)
-{
-    bk_panel_clock_config_t clock_cfg;
-    UINT8_T bk_n_lanes;
-    UINT32_T dpu_clk_mhz;
-
-    if (base_cfg == NULL || s_dsi_runtime.dis_bus_handle == NULL) {
-        return OPRT_INVALID_PARM;
-    }
-
-    dpu_clk_mhz = tkl_mipi_dsi_clk_mhz_normalize(base_cfg->clk);
-
-    if (base_cfg->clk == 0U || dpu_clk_mhz == 0U || base_cfg->width == 0U || base_cfg->height == 0U ||
-        tkl_mipi_dsi_lane_count_valid(base_cfg->n_lanes) != TRUE) {
-        return OPRT_INVALID_PARM;
-    }
-
-    bk_n_lanes = tkl_mipi_dsi_lane_count_convert(base_cfg->n_lanes);
-    if (bk_n_lanes == 0xFFU) {
-        return OPRT_INVALID_PARM;
-    }
-
-    os_memset(&clock_cfg, 0, sizeof(clock_cfg));
-    clock_cfg.clk = dpu_clk_mhz;
-    clock_cfg.n_lanes = bk_n_lanes;
-    clock_cfg.fps = tkl_mipi_dsi_fps_calculate(base_cfg);
-    clock_cfg.clk_src = DPU_CLK_SRC_DPHY_DPLL;
-    clock_cfg.timing.clk = dpu_clk_mhz;
-    clock_cfg.timing.h_size = base_cfg->width;
-    clock_cfg.timing.v_size = base_cfg->height;
-    clock_cfg.timing.hsync_back_porch = base_cfg->hsync_back_porch;
-    clock_cfg.timing.hsync_front_porch = base_cfg->hsync_front_porch;
-    clock_cfg.timing.vsync_back_porch = base_cfg->vsync_back_porch;
-    clock_cfg.timing.vsync_front_porch = base_cfg->vsync_front_porch;
-    clock_cfg.timing.hsync_pulse_width = base_cfg->hsync_pulse_width;
-    clock_cfg.timing.vsync_pulse_width = base_cfg->vsync_pulse_width;
-
-    if (bk_display_bus_set_clock_src(s_dsi_runtime.dis_bus_handle, clock_cfg.clk_src) != OPRT_OK) {
-        return OPRT_COM_ERROR;
-    }
-
-    return mipi_dsi_clock_set(&clock_cfg);
-}
-
 OPERATE_RET tkl_mipi_dsi_init(const TUYA_MIPI_BASE_CFG_T *base_cfg)
 {
     OPERATE_RET ret;
@@ -193,7 +127,10 @@ OPERATE_RET tkl_mipi_dsi_init(const TUYA_MIPI_BASE_CFG_T *base_cfg)
         goto err;
     }
 
-    ret = tkl_mipi_dsi_clock_set(base_cfg);
+    /* DSI bus already defaults to DPU_CLK_SRC_DPHY_DPLL; set it explicitly to keep
+     * behaviour identical to the previous implementation. Must be done between
+     * bk_display_dsi_bus_new() and bk_lcd_mipi_panel_new(). */
+    ret = bk_display_bus_set_clock_src(s_dsi_runtime.dis_bus_handle, DPU_CLK_SRC_DPHY_DPLL);
     if (ret != OPRT_OK) {
         goto err;
     }
@@ -237,8 +174,9 @@ static OPERATE_RET tkl_mipi_dpu_init(const TUYA_MIPI_BASE_CFG_T *base_cfg)
 {
     OPERATE_RET ret;
     bk_display_dpu_config_t lcd_cfg;
+    bk_lcd_panel_config_t panel_cfg;
     bk_pixel_format_t pixel_format;
-    UINT32_T dpu_clk_mhz;
+    UINT8_T fps;
 
     if (base_cfg == NULL) {
         return OPRT_INVALID_PARM;
@@ -248,10 +186,7 @@ static OPERATE_RET tkl_mipi_dpu_init(const TUYA_MIPI_BASE_CFG_T *base_cfg)
         return OPRT_OK;
     }
 
-    dpu_clk_mhz = tkl_mipi_dsi_clk_mhz_normalize(base_cfg->clk);
-
-    if (base_cfg->width == 0U || base_cfg->height == 0U ||
-        base_cfg->clk == 0U || dpu_clk_mhz == 0U ||
+    if (base_cfg->width == 0U || base_cfg->height == 0U || base_cfg->clk == 0U ||
         tkl_mipi_dsi_lane_count_valid(base_cfg->n_lanes) != TRUE) {
         return OPRT_INVALID_PARM;
     }
@@ -261,8 +196,44 @@ static OPERATE_RET tkl_mipi_dpu_init(const TUYA_MIPI_BASE_CFG_T *base_cfg)
         return OPRT_INVALID_PARM;
     }
 
+    /* The new BK display stack derives the DPI pixel clock and DSI timing from the
+     * panel descriptor (clock = fps * h_total * v_total, computed in
+     * bk_lcd_mipi_panel_new()/bk_display_init()), so the timing/lane/fps that used
+     * to be programmed via mipi_dsi_clock_set() are now carried on the panel. */
+    fps = tkl_mipi_dsi_fps_calculate(base_cfg);
+    if (fps == 0U) {
+        return OPRT_INVALID_PARM;
+    }
+
+    os_memset(&s_dsi_panel_desc, 0, sizeof(s_dsi_panel_desc));
+    s_dsi_panel_desc.name = "tuya_dsi_panel";
+    s_dsi_panel_desc.n_lanes = base_cfg->n_lanes;   /* raw active data lanes (1~4) */
+    s_dsi_panel_desc.fps = fps;
+    s_dsi_panel_desc.timing.h_size = base_cfg->width;
+    s_dsi_panel_desc.timing.v_size = base_cfg->height;
+    s_dsi_panel_desc.timing.hsync_pulse_width = base_cfg->hsync_pulse_width;
+    s_dsi_panel_desc.timing.vsync_pulse_width = base_cfg->vsync_pulse_width;
+    s_dsi_panel_desc.timing.hsync_back_porch = base_cfg->hsync_back_porch;
+    s_dsi_panel_desc.timing.hsync_front_porch = base_cfg->hsync_front_porch;
+    s_dsi_panel_desc.timing.vsync_back_porch = base_cfg->vsync_back_porch;
+    s_dsi_panel_desc.timing.vsync_front_porch = base_cfg->vsync_front_porch;
+    /* Panel reset and init-command sequences are issued by the upper Tuya display
+     * driver via tkl_mipi_dsi_tx_cmd(); keep the BK-side hooks disabled so this
+     * adapter behaves as before (no panel reset GPIO, no auto init cmds). */
+    s_dsi_panel_desc.init_cmds = NULL;
+    s_dsi_panel_desc.reset = NULL;
+    s_dsi_panel_desc.init = NULL;
+
+    os_memset(&panel_cfg, 0, sizeof(panel_cfg));
+    panel_cfg.reset_pin = -1;   /* reset GPIO managed externally */
+
+    ret = bk_lcd_mipi_panel_new(s_dsi_runtime.dis_bus_handle, &panel_cfg,
+                                &s_dsi_panel_desc, &s_dpu_runtime.panel_handle);
+    if (ret != OPRT_OK) {
+        goto err;
+    }
+
     os_memset(&lcd_cfg, 0, sizeof(lcd_cfg));
-    lcd_cfg.clk_src = DPU_CLK_SRC_DPHY_DPLL;
     lcd_cfg.video.enable = true;
     lcd_cfg.video.decompress = (s_dpu_runtime.input_decompress != FALSE) ? true : false;
     lcd_cfg.video.format = pixel_format;
@@ -271,17 +242,8 @@ static OPERATE_RET tkl_mipi_dpu_init(const TUYA_MIPI_BASE_CFG_T *base_cfg)
     lcd_cfg.video.disp_w = base_cfg->width;
     lcd_cfg.video.disp_h = base_cfg->height;
 
-    lcd_cfg.timing.clk = dpu_clk_mhz;
-    lcd_cfg.timing.h_size = base_cfg->width;
-    lcd_cfg.timing.v_size = base_cfg->height;
-    lcd_cfg.timing.hsync_back_porch = base_cfg->hsync_back_porch;
-    lcd_cfg.timing.hsync_front_porch = base_cfg->hsync_front_porch;
-    lcd_cfg.timing.vsync_back_porch = base_cfg->vsync_back_porch;
-    lcd_cfg.timing.vsync_front_porch = base_cfg->vsync_front_porch;
-    lcd_cfg.timing.hsync_pulse_width = base_cfg->hsync_pulse_width;
-    lcd_cfg.timing.vsync_pulse_width = base_cfg->vsync_pulse_width;
-
-    ret = bk_display_dpu_ctlr_new(&s_dpu_runtime.dpu_ctlr_handle, &lcd_cfg);
+    ret = bk_display_dpu_ctlr_new(&s_dpu_runtime.dpu_ctlr_handle,
+                                  s_dpu_runtime.panel_handle, &lcd_cfg);
     if (ret != OPRT_OK) {
         goto err;
     }
@@ -311,6 +273,10 @@ static OPERATE_RET tkl_mipi_dpu_deinit(VOID_T)
     if (s_dpu_runtime.dpu_ctlr_handle != NULL) {
         bk_display_deinit(s_dpu_runtime.dpu_ctlr_handle);
         bk_display_delete(s_dpu_runtime.dpu_ctlr_handle);
+    }
+
+    if (s_dpu_runtime.panel_handle != NULL) {
+        bk_lcd_panel_delete(s_dpu_runtime.panel_handle);
     }
 
     tkl_mipi_dpu_runtime_reset();

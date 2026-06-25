@@ -61,6 +61,7 @@ bk_err_t lvgl_app_widgets_init(void)
 {
     bk_err_t ret = BK_OK;
     lv_vnd_config_t lv_vnd_config = {0};
+    uint32_t frame_buffer_size = 0;
 
     g_disp_ctx = os_malloc(sizeof(display_ctx_t));
     if (g_disp_ctx == NULL) {
@@ -72,14 +73,13 @@ bk_err_t lvgl_app_widgets_init(void)
     bk_display_dpu_config_t dpu_config =
     {
         .video.enable = true,
-        .video.decompress = false,
-        .video.format = BK_PIXEL_FORMAT_RGB565,
+        .video.decompress = true,
+        .video.format = BK_PIXEL_FORMAT_ARGB8888,
     };
 
-    const bk_lcd_panel_dev_config_t panel_dev_config =
+    const bk_lcd_panel_config_t panel_config =
     {
         .reset_pin = GPIO_60,
-        .reset_active_level = false,
     };
 
     #define WIDTH (1080)
@@ -87,19 +87,15 @@ bk_err_t lvgl_app_widgets_init(void)
 
     // Create DSI bus
     AVDK_GOTO_ON_ERROR(bk_display_dsi_bus_new(&g_disp_ctx->dis_bus_handle, NULL), err, TAG, "display dsi bus new err\n");
-    AVDK_GOTO_ON_ERROR(bk_lcd_mipi_panel_new(g_disp_ctx->dis_bus_handle, &panel_dev_config, &lcd_device_hx8399c_mipi_1080x1920, &g_disp_ctx->panel_handle),
+    AVDK_GOTO_ON_ERROR(bk_lcd_mipi_panel_new(g_disp_ctx->dis_bus_handle, &panel_config, &lcd_device_hx8399c_mipi_1080x1920, &g_disp_ctx->panel_handle),
                        err, TAG, "create panel err\n");
-
-    bk_lcd_panel_reset(g_disp_ctx->panel_handle);
-    bk_lcd_panel_init(g_disp_ctx->panel_handle);
-    dpu_config.timing = lcd_device_hx8399c_mipi_1080x1920.timing;
 
     dpu_config.video.disp_x = 0;
     dpu_config.video.disp_y = 0;
-    dpu_config.video.disp_w = dpu_config.timing.h_size;
-    dpu_config.video.disp_h = dpu_config.timing.v_size;
-    
-    AVDK_GOTO_ON_ERROR(bk_display_dpu_ctlr_new(&g_disp_ctx->dpu_ctlr_handle, &dpu_config), err, TAG, "display dpu ctlr new err\n");
+    dpu_config.video.disp_w = lcd_device_hx8399c_mipi_1080x1920.timing.h_size;
+    dpu_config.video.disp_h = lcd_device_hx8399c_mipi_1080x1920.timing.v_size;
+
+    AVDK_GOTO_ON_ERROR(bk_display_dpu_ctlr_new(&g_disp_ctx->dpu_ctlr_handle, g_disp_ctx->panel_handle, &dpu_config), err, TAG, "display dpu ctlr new err\n");
     AVDK_GOTO_ON_ERROR(bk_display_init(g_disp_ctx->dpu_ctlr_handle), err, TAG, "display init err\n");
     AVDK_GOTO_ON_ERROR(bk_display_open(g_disp_ctx->dpu_ctlr_handle), err, TAG, "display open err\n");
 
@@ -119,7 +115,7 @@ bk_err_t lvgl_app_widgets_init(void)
     lv_vnd_config.rotation = ROTATE_NONE;
     lv_vnd_config.disp_width = WIDTH;
     lv_vnd_config.disp_height = HEIGHT;
-    lv_vnd_config.output_compress = false;
+    lv_vnd_config.output_compress = true;
     if (lv_vnd_config.output_compress && lv_vnd_config.render_mode == RENDER_PARTIAL_MODE) {
         if (WIDTH % 16 || HEIGHT % 4) {
             lv_vnd_config.disp_width = (WIDTH + 15) & ~15;
@@ -128,11 +124,17 @@ bk_err_t lvgl_app_widgets_init(void)
         LOGI("lv_vnd_config.disp_width:%d, lv_vnd_config.disp_height:%d\r\n", lv_vnd_config.disp_width, lv_vnd_config.disp_height);
     }
 
+    if (lv_vnd_config.output_compress) {
+        frame_buffer_size = lv_vnd_config.disp_width * lv_vnd_config.disp_height;
+    } else {
+        frame_buffer_size = lv_vnd_config.disp_width * lv_vnd_config.disp_height * sizeof(bk_color_t);
+    }
+
     for (int i = 0; i < CONFIG_LVGL_FRAME_BUFFER_NUM; i++) {
         if (i % 2) {
-            lv_vnd_config.frame_buffer[i] = bk_frame_buffer_malloc(MEM_SLAB_HEAP_UNCODED, lv_vnd_config.disp_width * lv_vnd_config.disp_height * sizeof(bk_color_t));
+            lv_vnd_config.frame_buffer[i] = bk_frame_buffer_malloc(MEM_SLAB_HEAP_UNCODED, frame_buffer_size);
         } else {
-            lv_vnd_config.frame_buffer[i] = bk_frame_buffer_malloc(MEM_SLAB_HEAP_CODED, lv_vnd_config.disp_width * lv_vnd_config.disp_height * sizeof(bk_color_t));
+            lv_vnd_config.frame_buffer[i] = bk_frame_buffer_malloc(MEM_SLAB_HEAP_CODED, frame_buffer_size);
         }
     }
     lv_vnd_config.args = g_disp_ctx->dpu_ctlr_handle;
@@ -162,8 +164,7 @@ err:
         }
 
         if (g_disp_ctx->panel_handle) {
-            bk_lcd_panel_reset(g_disp_ctx->panel_handle);
-            bk_lcd_panel_del(g_disp_ctx->panel_handle);
+            bk_lcd_panel_delete(g_disp_ctx->panel_handle);
             g_disp_ctx->panel_handle = NULL;
         }
 

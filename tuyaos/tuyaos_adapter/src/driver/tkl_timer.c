@@ -70,14 +70,6 @@ STATIC timer_id_t __tkl_timer_to_bk_id(TUYA_TIMER_NUM_E timer_id)
     return (timer_id_t)((INT_T)TKL_TIMER_BK_BASE_ID + (INT_T)timer_id);
 }
 
-STATIC BOOL_T __tkl_timer_hw_chan_valid(timer_id_t hw_chan)
-{
-    if ((hw_chan < 0) || ((UINT_T)hw_chan >= TUYA_TIMER_NUM_MAX)) {
-        return FALSE;
-    }
-    return TRUE;
-}
-
 STATIC BOOL_T __tkl_timer_bk_id_valid(timer_id_t bk_timer_id)
 {
     if ((bk_timer_id < TKL_TIMER_BK_BASE_ID) || (bk_timer_id > TKL_TIMER_BK_MAX_ID)) {
@@ -90,19 +82,29 @@ STATIC VOID __tkl_timer_isr(timer_id_t bk_timer_id)
 {
     TUYA_TIMER_NUM_E timer_id;
     timer_id_t real_bk_timer_id;
+    INT_T idx;
     tkl_timer_ctx_t *ctx;
     TUYA_TIMER_ISR_CB user_cb;
     VOID *user_arg;
 
     /*
-     * bk_timer_start(TIMER_ID12..17, cb) stores cb in s_timer_isr[hw_chan],
-     * and timer_driver ISR calls cb(hw_chan). So callback input is hw_chan 0..5.
+     * Depending on the vendor timer_driver version, the ISR callback argument
+     * is either the hardware channel (0..5) or the full BK timer id
+     * (TIMER_ID12..17 == TKL_TIMER_BK_BASE_ID + chan). Normalize both forms to
+     * a logical tkl timer id (0..5); otherwise the full-id form is wrongly
+     * rejected as out of range and the user callback never runs.
      */
-    if (__tkl_timer_hw_chan_valid(bk_timer_id) == FALSE) {
+    if ((bk_timer_id >= TKL_TIMER_BK_BASE_ID) && (bk_timer_id <= TKL_TIMER_BK_MAX_ID)) {
+        idx = (INT_T)bk_timer_id - (INT_T)TKL_TIMER_BK_BASE_ID;
+    } else {
+        idx = (INT_T)bk_timer_id;
+    }
+
+    if ((idx < 0) || ((UINT_T)idx >= TUYA_TIMER_NUM_MAX)) {
         return;
     }
 
-    timer_id = (TUYA_TIMER_NUM_E)bk_timer_id;
+    timer_id = (TUYA_TIMER_NUM_E)idx;
     real_bk_timer_id = __tkl_timer_to_bk_id(timer_id);
 
     ctx = &s_timer_ctx[timer_id];

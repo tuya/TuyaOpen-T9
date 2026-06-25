@@ -44,7 +44,7 @@ static sdmadc_buf_t s_sdmadc_buf = {0};
 static sdmadc_config_t s_sdmadc_config = {0};
 
 sdmadc_calibrate_val sdmadc_val = {
-#if (CONFIG_SOC_BK7236XX) || (CONFIG_SOC_BK7239XX)|| (CONFIG_SOC_BK7286XX)
+#if (CONFIG_SOC_BK7239XX)|| (CONFIG_SOC_BK7286XX)
     24695, 31618 /* 1Volt:-8072, 2Volt:-1149 +32768 offset*/
 #else
     /*TBD*/
@@ -155,10 +155,14 @@ static void sdmadc_init_gpio(sdmadc_chan_t chan)
 	sdmadc_gpio_map_t sdmadc_map_table[] = SDMADC_DEV_MAP;
 	sdmadc_gpio_map_t *sdmadc_map = &sdmadc_map_table[chan];
 
-	gpio_dev_map(sdmadc_map->gpio_id, sdmadc_map->gpio_dev);
+#if CONFIG_USR_GPIO_CFG_EN
+	gpio_dev_map_by_func(sdmadc_map->gpio_dev);
 	bk_gpio_disable_pull(sdmadc_map->gpio_id);
 	bk_gpio_disable_input(sdmadc_map->gpio_id);
 	bk_gpio_disable_output(sdmadc_map->gpio_id);
+#else
+	(void)sdmadc_map;
+#endif
 }
 
 

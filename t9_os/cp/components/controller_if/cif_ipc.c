@@ -4,7 +4,11 @@ extern uint8_t cif_dnld_buffer(void *param, void *node);
 
 cif_ipc_t cif_ipc_env[IPC_MAX];
 
-uint8_t cif_map_to_rx_wifi_type(uint8_t channel)
+#if CONFIG_SOC_SMP
+static SPINLOCK_SECTION volatile spinlock_t cif_ipc_tx_locks[IPC_MAX] = {SPIN_LOCK_INIT, SPIN_LOCK_INIT};
+#endif
+
+__IRAM3 uint8_t cif_map_to_rx_wifi_type(uint8_t channel)
 {
     switch(channel)
     {
@@ -19,7 +23,7 @@ uint8_t cif_map_to_rx_wifi_type(uint8_t channel)
     }
     return 0xff;
 }
-uint8_t cif_map_to_ipc_chnl(uint8_t channel)
+__IRAM3 uint8_t cif_map_to_ipc_chnl(uint8_t channel)
 {
     switch(channel)
     {
@@ -98,6 +102,10 @@ bk_err_t cif_ipc_init()
 
     co_list_init((struct co_list *)&cif_ipc_env[IPC_CMD].rx_list);
     co_list_init((struct co_list *)&cif_ipc_env[IPC_DATA].rx_list);
+#if CONFIG_SOC_SMP
+    cif_ipc_env[IPC_CMD].tx_lock = &cif_ipc_tx_locks[IPC_CMD];
+    cif_ipc_env[IPC_DATA].tx_lock = &cif_ipc_tx_locks[IPC_DATA];
+#endif
 
     return ret;
 }

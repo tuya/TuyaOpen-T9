@@ -43,7 +43,6 @@
 
 #include <components/log.h>
 #include <components/sensor.h>
-#include <driver/trng.h>
 
 #include "bk_arch.h"
 #include "bk_private/bk_driver.h"
@@ -62,7 +61,6 @@
 #if (CONFIG_SUPPORT_WWDT)
 #include <driver/wwdt.h>
 #endif
-
 #define TAG "init"
 
 
@@ -109,12 +107,12 @@ int bandgap_init(void)
 
 	old_bandgap = (uint8_t)sys_drv_get_bgcalm();
 
-	result = bk_otp_apb_read(OTP_VDDDIG_BANDGAP, &new_bandgap, sizeof(new_bandgap));
+	result = bk_otp_ahb_read(OTP_VDDDIG_BANDGAP, &new_bandgap, sizeof(new_bandgap));
 	if ((result != BK_OK) || (new_bandgap == 0) || (new_bandgap > 0x3F)) {
 		goto default_bandgap;
 	}
 
-	result = bk_otp_apb_read(OTP_DEVICE_ID, device_id, sizeof(device_id));
+	result = bk_otp_ahb_read(OTP_DEVICE_ID, device_id, sizeof(device_id));
 	if ((result != BK_OK) || ((device_id[0] == 0x32) && (device_id[1] == 0x31))) {
 		goto default_bandgap;
 	}
@@ -136,9 +134,22 @@ default_bandgap:
 
 int random_init(void)
 {
-#if (CONFIG_TRNG_SUPPORT)
 	BK_LOGV(TAG, "create srand seed\r\n");
-	srand(bk_rand());
+	srand((unsigned)rand());
+	return BK_OK;
+}
+
+static int product_id_boot_check(void)
+{
+#if (CONFIG_BK_PID_BOOT_CHECK && CONFIG_OTP_V1)
+	uint8_t product_id[16] = {0};
+	bk_err_t ret = bk_otp_ahb_read(OTP_PRODUCT_ID, product_id, sizeof(product_id));
+	if (ret != BK_OK) {
+		BK_LOGE(TAG, "read OTP product ID failed: %d\r\n", ret);
+		return ret;
+	}
+
+	BK_LOGI(TAG, "product ID boot check hook enabled\r\n");
 #endif
 	return BK_OK;
 }
@@ -150,7 +161,7 @@ __IRAM_SEC int wdt_init(void)
 #if (CONFIG_FREERTOS)
 #if CONFIG_INT_WDT
 	BK_LOGV(TAG, "int watchdog enabled, period=%u\r\n", CONFIG_INT_WDT_PERIOD_MS);
-	bk_wdt_start(CONFIG_INT_WDT_PERIOD_MS);
+	bk_wdt_resume();
 #else
 	BK_LOGD(TAG, "watchdog disabled\r\n");
 	bk_wdt_start(CONFIG_INT_WDT_PERIOD_MS);
@@ -165,9 +176,12 @@ __IRAM_SEC int wdt_init(void)
 #endif
 
 #if CONFIG_SUPPORT_WWDT
-	bk_wwdt_driver_init();
-	bk_wwdt_start(CONFIG_INT_WWDT_PERIOD_MS, false, 0);
-	BK_LOGV(TAG, "wwdt enabled, period=%u\r\n", CONFIG_INT_WWDT_PERIOD_MS);
+	/*
+	 * Start the boot core WWDT before the scheduler starts. The other cores
+	 * start/feed their own WWDT from their per-core SysTick after scheduling.
+	 */
+	BK_LOG_ON_ERR(bk_wwdt_start(CONFIG_INT_WWDT_PERIOD_MS, false, 0));
+	BK_LOGV(TAG, "boot core wwdt enabled, period=%u\r\n", CONFIG_INT_WWDT_PERIOD_MS);
 #endif
 
 #endif //CONFIG_WDT_EN
@@ -244,9 +258,8 @@ void *__stack_chk_guard = NULL;
 void bk_stack_guard_setup(void)
 {
     BK_LOGD(TAG, "Intialize random stack guard.\r\n");
-#if CONFIG_TRNG_SUPPORT
-    __stack_chk_guard = (void *)bk_rand();
-#endif
+
+    __stack_chk_guard = (void *)rand();
 }
 
 #if CONFIG_UT_REG
@@ -286,6 +299,8 @@ int components_early_init(void)
 
 	bandgap_init();
 	random_init();
+	if (product_id_boot_check())
+		return BK_FAIL;
 
 	bk_stack_guard_setup();
 

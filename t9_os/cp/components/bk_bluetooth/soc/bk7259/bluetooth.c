@@ -47,7 +47,7 @@
 
 #include <driver/aon_rtc.h>
 
-#define PM_BT_LP_RTC_ALARM_NAME "bt_lp"
+#define PM_BT_LP_RTC_ALARM_NAME  PM_BT_RTC_ALARM_NAME
 
 typedef struct
 {
@@ -534,24 +534,10 @@ static void uart_enable_wrapper(uint8_t uart_id, uint8_t enable, uint32_t band)
         switch (uart_id)
         {
             case UART_ID_0:
-                gpio_dev_unmap(GPIO_10);
-                gpio_dev_unmap(GPIO_11);
                 break;
-#if 0
-            case UART_ID_1:
-                gpio_dev_unmap(GPIO_0);
-                gpio_dev_unmap(GPIO_1);
-                break;
-
-            case UART_ID_2:
-                gpio_dev_unmap(GPIO_40);
-                gpio_dev_unmap(GPIO_41);
-                break;
-#endif
             default:
                 BK_LOGD(NULL,"%s uart_id err %d\n", __func__, uart_id);
                 return;
-                break;
         }
 
         ret = bk_uart_init(uart_id, &config);
@@ -573,130 +559,22 @@ static void uart_enable_wrapper(uint8_t uart_id, uint8_t enable, uint32_t band)
 
 void enable_debug_gpio_wrapper(void)
 {
-    //gpio2-8
-    *((volatile unsigned long *) (0x44000400+2*4)) =0x7f000040;
-    *((volatile unsigned long *) (0x44000400+3*4)) =0x7f000040;
-    *((volatile unsigned long *) (0x44000400+4*4)) =0x7f000040;
-    *((volatile unsigned long *) (0x44000400+5*4)) =0x7f000040;
-    *((volatile unsigned long *) (0x44000400+6*4)) =0x7f000040;
-    *((volatile unsigned long *) (0x44000400+7*4)) =0x7f000040;
-    *((volatile unsigned long *) (0x44000400+8*4)) =0x7f000040;
-    *((volatile unsigned long *) (0x44000400+9*4)) =0x7f000040;
+#if CONFIG_USR_GPIO_CFG_EN
+	static const gpio_dev_t debug_funcs[] = {
+		GPIO_DEV_DEBUG0, GPIO_DEV_DEBUG1, GPIO_DEV_DEBUG2, GPIO_DEV_DEBUG3,
+		GPIO_DEV_DEBUG4, GPIO_DEV_DEBUG5, GPIO_DEV_DEBUG6, GPIO_DEV_DEBUG7,
+		GPIO_DEV_DEBUG8, GPIO_DEV_DEBUG9, GPIO_DEV_DEBUG10, GPIO_DEV_DEBUG11,
+		GPIO_DEV_DEBUG12, GPIO_DEV_DEBUG13, GPIO_DEV_DEBUG14, GPIO_DEV_DEBUG15,
+		GPIO_DEV_DEBUG16, GPIO_DEV_DEBUG17, GPIO_DEV_DEBUG18, GPIO_DEV_DEBUG19,
+		GPIO_DEV_DEBUG20, GPIO_DEV_DEBUG21, GPIO_DEV_DEBUG22, GPIO_DEV_DEBUG23,
+		GPIO_DEV_DEBUG24, GPIO_DEV_DEBUG25, GPIO_DEV_DEBUG26, GPIO_DEV_DEBUG27,
+		GPIO_DEV_DEBUG28, GPIO_DEV_DEBUG29, GPIO_DEV_DEBUG30, GPIO_DEV_DEBUG31,
+	};
+	uint32_t i;
 
-    //gpio14-19,24-25
-    *((volatile unsigned long *) (0x44000400+14*4)) =0x7f000040;
-    *((volatile unsigned long *) (0x44000400+15*4)) =0x7f000040;
-    *((volatile unsigned long *) (0x44000400+16*4)) =0x7f000040;
-    *((volatile unsigned long *) (0x44000400+17*4)) =0x7f000040;
-    *((volatile unsigned long *) (0x44000400+18*4)) =0x7f000040;
-    *((volatile unsigned long *) (0x44000400+19*4)) =0x7f000040;
-    *((volatile unsigned long *) (0x44000400+24*4)) =0x7f000040;
-    *((volatile unsigned long *) (0x44000400+25*4)) =0x7f000040;
-
-    //gpio26-33
-    *((volatile unsigned long *) (0x44000400+26*4)) =0x7f000040;
-    *((volatile unsigned long *) (0x44000400+27*4)) =0x7f000040;
-    *((volatile unsigned long *) (0x44000400+28*4)) =0x7f000040;
-    *((volatile unsigned long *) (0x44000400+29*4)) =0x7f000040;
-    *((volatile unsigned long *) (0x44000400+30*4)) =0x7f000040;
-    *((volatile unsigned long *) (0x44000400+31*4)) =0x7f000040;
-    *((volatile unsigned long *) (0x44000400+32*4)) =0x7f000040;
-    *((volatile unsigned long *) (0x44000400+33*4)) =0x7f000040;
-
-    //gpio34-39,42-43
-    *((volatile unsigned long *) (0x44000400+34*4)) =0x7f000040;
-    *((volatile unsigned long *) (0x44000400+35*4)) =0x7f000040;
-    *((volatile unsigned long *) (0x44000400+36*4)) =0x7f000040;
-    *((volatile unsigned long *) (0x44000400+37*4)) =0x7f000040;
-    *((volatile unsigned long *) (0x44000400+38*4)) =0x7f000040;
-    *((volatile unsigned long *) (0x44000400+39*4)) =0x7f000040;
-    *((volatile unsigned long *) (0x44000400+42*4)) =0x7f000040;
-    *((volatile unsigned long *) (0x44000400+43*4)) =0x7f000040;
-
-#if 0
-    gpio_dev_unmap(GPIO_2);
-    gpio_dev_map(GPIO_2, GPIO_DEV_DEBUG0);//CLK(H6)
-    gpio_dev_unmap(GPIO_3);
-    gpio_dev_map(GPIO_3, GPIO_DEV_DEBUG1);//CMD(H6)
-    gpio_dev_unmap(GPIO_4);
-    gpio_dev_map(GPIO_4, GPIO_DEV_DEBUG2);//D0(H6)
-    gpio_dev_unmap(GPIO_5);
-    gpio_dev_map(GPIO_5, GPIO_DEV_DEBUG3);//D1(H6)
-    gpio_dev_unmap(GPIO_6);
-    gpio_dev_map(GPIO_6, GPIO_DEV_DEBUG4);//CD(H6)
-    gpio_dev_unmap(GPIO_7);
-    gpio_dev_map(GPIO_7, GPIO_DEV_DEBUG5);//P7(H5)
-    if (PM_LPO_SRC_X32K != bk_clk_32k_customer_config_get())
-    {
-        gpio_dev_unmap(GPIO_8);
-        gpio_dev_map(GPIO_8, GPIO_DEV_DEBUG6);//P8(CON4)
-        gpio_dev_unmap(GPIO_9);
-        gpio_dev_map(GPIO_9, GPIO_DEV_DEBUG7);//P9(CON4)
-    }
-    else
-    {
-        BK_LOGD(NULL,"%s, external 32k is in use, GPIO8 and GPIO9 can not be used to debug \r\n", __func__);
-    }
-
-    gpio_dev_unmap(GPIO_14);
-    gpio_dev_map(GPIO_14, GPIO_DEV_DEBUG8);
-    gpio_dev_unmap(GPIO_15);
-    gpio_dev_map(GPIO_15, GPIO_DEV_DEBUG9);
-    //gpio_dev_unmap(GPIO_16);
-    //_gpio_dev_map_wrapper(GPIO_16, GPIO_DEV_DEBUG10);
-    gpio_dev_unmap(GPIO_17);
-    gpio_dev_map(GPIO_17, GPIO_DEV_DEBUG11);
-    gpio_dev_unmap(GPIO_18);
-    gpio_dev_map(GPIO_18, GPIO_DEV_DEBUG12);
-    gpio_dev_unmap(GPIO_19);
-    gpio_dev_map(GPIO_19, GPIO_DEV_DEBUG13);
-
-    if (PM_LPO_SRC_X32K != bk_clk_32k_customer_config_get())
-    {
-        gpio_dev_unmap(GPIO_24);
-        gpio_dev_map(GPIO_24, GPIO_DEV_DEBUG14);
-    }
-    else
-    {
-        BK_LOGD(NULL,"%s, external 32k is in use, GPIO24 can not be used to debug \r\n", __func__);
-    }
-
-    gpio_dev_unmap(GPIO_25);
-    gpio_dev_map(GPIO_25, GPIO_DEV_DEBUG15);
-
-    gpio_dev_unmap(GPIO_26);
-    gpio_dev_map(GPIO_26, GPIO_DEV_DEBUG16);
-    gpio_dev_unmap(GPIO_27);
-    gpio_dev_map(GPIO_27, GPIO_DEV_DEBUG17);
-    gpio_dev_unmap(GPIO_28);
-    gpio_dev_map(GPIO_28, GPIO_DEV_DEBUG18);
-    gpio_dev_unmap(GPIO_29);
-    gpio_dev_map(GPIO_29, GPIO_DEV_DEBUG19);
-    gpio_dev_unmap(GPIO_30);
-    gpio_dev_map(GPIO_30, GPIO_DEV_DEBUG20);
-    gpio_dev_unmap(GPIO_31);
-    gpio_dev_map(GPIO_31, GPIO_DEV_DEBUG21);
-    gpio_dev_unmap(GPIO_32);
-    gpio_dev_map(GPIO_32, GPIO_DEV_DEBUG22);
-    gpio_dev_unmap(GPIO_33);
-    gpio_dev_map(GPIO_33, GPIO_DEV_DEBUG23);
-
-    gpio_dev_unmap(GPIO_34);
-    gpio_dev_map(GPIO_34, GPIO_DEV_DEBUG24);
-    gpio_dev_unmap(GPIO_35);
-    gpio_dev_map(GPIO_35, GPIO_DEV_DEBUG25);
-    gpio_dev_unmap(GPIO_36);
-    gpio_dev_map(GPIO_36, GPIO_DEV_DEBUG26);
-    gpio_dev_unmap(GPIO_37);
-    gpio_dev_map(GPIO_37, GPIO_DEV_DEBUG27);
-    gpio_dev_unmap(GPIO_38);
-    gpio_dev_map(GPIO_38, GPIO_DEV_DEBUG28);
-    gpio_dev_unmap(GPIO_39);
-    gpio_dev_map(GPIO_39, GPIO_DEV_DEBUG29);
-    gpio_dev_unmap(GPIO_42);
-    gpio_dev_map(GPIO_42, GPIO_DEV_DEBUG30);
-    gpio_dev_unmap(GPIO_43);
-    gpio_dev_map(GPIO_43, GPIO_DEV_DEBUG31);
+	for (i = 0; i < (sizeof(debug_funcs) / sizeof(debug_funcs[0])); i++) {
+		gpio_dev_map_by_func(debug_funcs[i]);
+	}
 #endif
 }
 
@@ -1266,10 +1144,7 @@ static void bt_lp_rtc_clear(void)
 
 static uint64_t bt_get_rtc_max_value(void)
 {
-    uint32_t rtc_up_val_l = *((volatile unsigned long *) (0x44000200+0x1*4));
-    uint32_t rtc_up_val_h = *((volatile unsigned long *) (0x44000200+0x6*4));
-    //printf("rtc_max_value----: 0x%08x, 0x%08x\n", rtc_up_val_l,rtc_up_val_h);
-    return (((uint64_t)(rtc_up_val_h) << 32) + rtc_up_val_l);
+    return bk_aon_rtc_get_max_value(AON_RTC_ID_1);
 }
 
 static void bt_delay_us(uint32_t us)
@@ -1280,7 +1155,52 @@ static void bt_delay_us(uint32_t us)
 
 static uint16_t bt_get_low_voltage_wakeup_margin_cycles(void)
 {
-    return 208;//about 6.5ms
+    return PM_SLEEP_WAKEUP_COMSUME_ALL_TIME_TICKS;
+}
+
+static void bt_sys_drv_rf_ctrl(bool en)
+{
+    if (en)
+    {
+        sys_hal_rf_ctrl(RF_CTRL_BT);
+    }
+    else
+    {
+        sys_hal_rf_ctrl(RF_CTRL_PTA);
+    }
+}
+
+static void bt_vote_cpu_freq_wrapper(uint32_t cpu_freq)
+{
+    pm_cpu_freq_e freq = PM_CPU_FRQ_DEFAULT;
+    switch (cpu_freq)
+    {
+        case 0: //restore to default
+            freq = PM_CPU_FRQ_DEFAULT;
+            break;
+        case 26: //26M
+            freq = PM_CPU_FRQ_XTAL;
+            break;
+        case 60: //60M
+            freq = PM_CPU_FRQ_60M;
+            break;
+        case 80: //80M
+            freq = PM_CPU_FRQ_80M;
+            break;
+        case 120: //120M
+            freq = PM_CPU_FRQ_120M;
+            break;
+        case 160: //160M
+            freq = PM_CPU_FRQ_160M;
+            break;
+        case 240: //240M
+            freq = PM_CPU_FRQ_240M;
+            break;
+        default:
+            break;
+    }
+
+    bk_pm_module_vote_cpu_freq(PM_DEV_ID_BTDM, freq);
 }
 
 //warning: bt_osi_funcs must be data section, otherwise a2dp_source_pcm and a2dp_source_decode will trig watchdog !!!!!!!!
@@ -1401,6 +1321,8 @@ static struct bt_osi_funcs_t bt_osi_funcs =
     ._get_rtc_max_value     = bt_get_rtc_max_value,
     ._bt_delay_us           = bt_delay_us,
     ._bt_get_low_voltage_wakeup_margin_cycles = bt_get_low_voltage_wakeup_margin_cycles,
+    ._bt_sys_drv_rf_ctrl = bt_sys_drv_rf_ctrl,
+    ._bt_vote_cpu_freq = bt_vote_cpu_freq_wrapper,
 };
 
 int bk_bt_os_adapter_init(void)

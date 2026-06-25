@@ -19,6 +19,8 @@
 #include "bk_arch.h"
 #include <stdint.h>
 #include "wdt_driver.h"
+#include "sys_hal.h"
+#include "dbg_probe.h"
 
 /*----------------------------------------------------------------------------
   External References
@@ -65,13 +67,7 @@ __attribute__((naked)) void Default_Handler(void)
 
 void bk_enable_swd(void)
 {
-    uint32_t reg = REG_READ(0xE000EE04);
-    reg |= 0x2;
-    REG_WRITE(0xE000EE04, reg);
-    REG_WRITE(SOC_SYSTEM_REG_BASE + (0x3b << 2), 0x20000000);
-    reg = REG_READ(SOC_PPRO_REG_BASE + (0xf << 2));
-    reg &= ~(0x8);
-    REG_WRITE(SOC_PPRO_REG_BASE + (0xf << 2), reg);
+    sys_hal_enable_swd();
 }
 
 /*----------------------------------------------------------------------------
@@ -184,22 +180,36 @@ __attribute__((used, section(".vectors_core0"))) const VECTOR_ENTRY_TYPE __VECTO
 
 #define ENTRY_SECTION __attribute__((naked, section(".fix.reset_entry")))
 
+/* Records that the core0 reset handler was entered, for postmortem/hang
+ * debugging (e.g. when a reboot stalls before the system is re-initialized). */
+volatile uint32_t g_reset_entry_state_core0 = 0;
+
 /*----------------------------------------------------------------------------
   Reset Handler called on controller reset
  *----------------------------------------------------------------------------*/
 __NO_RETURN ENTRY_SECTION void Reset_Handler_Core0(void)
 {
+    g_reset_entry_state_core0 = 1;
     dlv_hook();
 
     __set_MSPLIM((uint32_t)(&__STACK_LIMIT_CORE0));
 
     __disable_irq();
 
+    dbg_probe_init();
+    dbg_probe_early_stage(0u, 1);
+
     bk_wdt_force_feed();
     bk_enable_swd();
 
+    dbg_probe_early_stage(0u, 2);
     b_system_base_init();
+    dbg_probe_early_stage(0u, 3);
     b_prep_entry_main();
+    dbg_probe_early_stage(0u, 4);
+    /* RAM (.data/.bss) is ready after b_prep_entry_main(); safe for the runtime
+     * (re)init path. NULL => compile-time defaults. */
+    dbg_probe_runtime_init(NULL);
     b_program_start();
 }
 // eof

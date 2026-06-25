@@ -396,11 +396,9 @@ static void gsensor_timer_restart(gsensor_timer_handle timer, GSENSOR_TIMER_TYPE
 
 static void gsensor_gpio_config(gpio_id_t index, gpio_io_mode_t dir, gpio_pull_mode_t pull, gpio_func_mode_t peir)
 {
-    if(index >= GPIO_NUM)
-    {
+    if (index >= SOC_GPIO_NUM) {
         return;
     }
-    gpio_dev_unmap(index);
     gpio_config_t cfg;
     cfg.io_mode = dir;
     cfg.pull_mode = pull;

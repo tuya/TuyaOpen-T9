@@ -32,6 +32,7 @@ extern "C" {
 #endif //#if (CONFIG_WIFI_ENABLE)
 
 #define CLI_CFG_BLE         1
+#define CLI_CFG_BK_24G      1
 
 #if (CONFIG_BK_NETIF)
 #define CLI_CFG_NETIF       1
@@ -63,11 +64,7 @@ extern "C" {
 #if (CONFIG_INT_WDT)
 #define CLI_CFG_WDT         1
 #endif
-#if (CONFIG_TRNG_SUPPORT)
-#define CLI_CFG_TRNG        1
-#else
 #define CLI_CFG_TRNG        0
-#endif
 #if (CONFIG_EFUSE)
 #define CLI_CFG_EFUSE       1
 #else
@@ -134,13 +131,13 @@ extern "C" {
 #if (CONFIG_FATFS)
 #define CLI_FATFS          1
 #else
-    
+
 #if (CONFIG_FATFS && (CONFIG_JPEG_SW_ENCODER_TEST || CONFIG_H264_SW_DECODER_TEST))
 #define CLI_FATFS          1
 #else
 #define CLI_FATFS          0
 #endif
-    
+
 #endif
 
 #if (CONFIG_VFS_TEST)
@@ -173,7 +170,7 @@ extern "C" {
 #define CLI_CFG_QRCODEGEN	0
 #endif
 
-#if (CONFIG_SOC_BK7236XX) || (CONFIG_SOC_BK7239XX) || (CONFIG_SOC_BK7286XX) || (CONFIG_SOC_BK7259)
+#if (CONFIG_SOC_BK7239XX) || (CONFIG_SOC_BK7286XX) || (CONFIG_SOC_BK7259)
 #if (CONFIG_TOUCH && CONFIG_TOUCH_TEST)
 #define CLI_CFG_TOUCH    1
 #else

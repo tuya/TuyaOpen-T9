@@ -3,6 +3,8 @@
 #include "lwip/prot/ethernet.h"
 #include "lwip/prot/ip4.h"
 #include "lwip/prot/ip.h"
+#include "lwip/prot/ip6.h"
+#include "lwip/prot/icmp6.h"
 #include "lwip/prot/udp.h"
 #include "lwip/prot/tcp.h"
 #include "lwip/prot/icmp.h"
@@ -58,7 +60,7 @@ static uint8_t cif_vif_id_route()
     return INVALID_VIF_IDX;
 }
 
-bk_err_t cif_handle_txdata(void *head)
+__IRAM2 bk_err_t cif_handle_txdata(void *head)
 {
     uint8_t ret = BK_OK;
     struct pbuf* pbuf = NULL;
@@ -108,6 +110,24 @@ bk_err_t cif_handle_txdata(void *head)
 #endif
 
 #if CONFIG_CONTROLLER_AP_BUFFER_COPY
+    /*
+     * In bridge mode AP-side bridgeif_send_to_port() already pbuf_clone's into
+     * a PBUF_RAW_TX TX-headroom buffer (see bridgeif.c:1386). Cloning again on
+     * CP wastes ~1.5KB heap per frame and serializes TX. Skip the second clone
+     * when bridge is ENABLED and pass the pbuf to bmsg_tx_sender directly.
+     */
+#if CONFIG_BRIDGE
+    if (bk_wifi_get_bridge_state() == BRIDGE_STATE_ENABLED)
+    {
+        ret = bmsg_tx_sender(pbuf, vif_id);
+        if (ret != BK_OK)
+        {
+            cif_free_ap_txbuf(pbuf);
+            ret = false;
+        }
+        return ret;
+    }
+#endif
 
     struct pbuf* p_copy = pbuf_clone(PBUF_RAW_TX,PBUF_RAM,pbuf);
 
@@ -143,7 +163,7 @@ void cif_filter_add_customer_filter(uint32_t ip, uint16_t port)
     cif_env.filter.src_ip = ip;
     cif_env.filter.src_port = port;
 }
-static bool cif_filter_check_customer_filter(struct ip_hdr *iphdr, uint32_t src_port, uint32_t dst_port)
+__IRAM3 static bool cif_filter_check_customer_filter(struct ip_hdr *iphdr, uint32_t src_port, uint32_t dst_port)
 {
     if (cif_env.filter.src_ip == 0)
         return false;
@@ -158,7 +178,7 @@ static bool cif_filter_check_customer_filter(struct ip_hdr *iphdr, uint32_t src_
 
     return false;
 }
-static bool cif_filter_check_bk_filter(uint32_t src_port, uint32_t dst_port)
+__IRAM3 static bool cif_filter_check_bk_filter(uint32_t src_port, uint32_t dst_port)
 {
     if ((dst_port == DHCP_SERVER_PORT) || (dst_port == DHCP_CLIENT_PORT) || (dst_port == NAMESERVER_PORT))
     {
@@ -172,7 +192,7 @@ static bool cif_filter_check_bk_filter(uint32_t src_port, uint32_t dst_port)
 
     return false;
 }
-static bool cif_filter_check_ip_and_port(struct ip_hdr *iphdr, uint32_t src_port, uint32_t dst_port)
+__IRAM2 static bool cif_filter_check_ip_and_port(struct ip_hdr *iphdr, uint32_t src_port, uint32_t dst_port)
 {
     if(iperf_get_state() != 0)
     {
@@ -191,7 +211,7 @@ static bool cif_filter_check_ip_and_port(struct ip_hdr *iphdr, uint32_t src_port
 
     return false;
 }
-bool cif_filter_check_ip_data(struct pbuf *p)
+__IRAM2 bool cif_filter_check_ip_data(struct pbuf *p)
 {
     bool upload2ctrl = false;
     u16_t iphdr_hlen;
@@ -282,12 +302,48 @@ bool cif_filter_check_ip_data(struct pbuf *p)
     return upload2ctrl;
 }
 
+#if CONFIG_IPV6
+__IRAM3 static bool cif_filter_check_ip6_data(struct pbuf *p)
+{
+    bool upload2ctrl = false;
+
+    if (p->len < (s16_t)(SIZEOF_ETH_HDR + IP6_HLEN + 1))
+        return false;
+
+    u8_t *payload = (u8_t *)p->payload;
+    u8_t nexth    = payload[SIZEOF_ETH_HDR + 6];
+
+    switch (nexth)
+    {
+        case IP6_NEXTH_ICMP6:
+            if (2 == get_ping_state()) //PING_STATE_STARTED
+            {
+                upload2ctrl = true;
+            } else {
+                upload2ctrl = false;
+            }
+            break;
+        case IP6_NEXTH_UDP:
+            upload2ctrl = false;
+            break;
+        case IP6_NEXTH_TCP:
+            upload2ctrl = false;
+            break;
+        default:
+            upload2ctrl = false;
+            break;
+    }
+
+    return upload2ctrl;
+}
+#endif
+
 #if CONFIG_BK_RAW_LINK
 /**
  * @brief Send memory free request to AP side
  * @param mem_addr Memory address to be freed
  */
-static void cif_send_mem_free_req(void *mem_addr)
+__IRAM3 static void cif_send_mem_free_req(void *mem_addr)
 {
     //CIF_LOGD("CP Send memory free request: addr=%p\r\n", mem_addr);
 
@@ -299,7 +355,7 @@ static void cif_send_mem_free_req(void *mem_addr)
 }
 #endif
 
-bool cif_rx_local_packet_check(struct pbuf **p_ptr, struct eth_hdr * ethhdr,void* vif, uint8_t dst_idx)
+__IRAM2 bool cif_rx_local_packet_check(struct pbuf **p_ptr, struct eth_hdr * ethhdr,void* vif, uint8_t dst_idx)
 {
     bool upload2ctrl = true;
     struct pbuf *p = *p_ptr;
@@ -333,28 +389,36 @@ bool cif_rx_local_packet_check(struct pbuf **p_ptr, struct eth_hdr * ethhdr,void
             CIF_LOGV("ARP RX\n");
 
 #if CONFIG_CONTROLLER_RX_DIRECT_PSH
-            p_copy = pbuf_alloc(PBUF_RAW,p->len+sizeof(cpdu_t),PBUF_RAM_RX);
 #if CONFIG_BRIDGE
-            upload2ctrl = false;
-#endif
-            if(p_copy)
+            /*
+             * Zero-copy ARP when bridge is ENABLED - same pattern as the
+             * IP fast-path above. ARP processing (proxy reply / flood) is
+             * owned by AP bridgeif, so we pass the original pbuf directly.
+             */
+            if (bk_wifi_get_bridge_state() == BRIDGE_STATE_ENABLED)
             {
-                pbuf_header(p_copy, -(s16)sizeof(struct cpdu_t));
-                memcpy(p_copy->payload,p->payload,p->len);
+                p_copy = p;
+                upload2ctrl = false;
             }
             else
-            {
-                return upload2ctrl;
-            }
-#if CONFIG_BRIDGE
-            pbuf_free(p);
-#else
-            if(cif_is_arp_request(p))
-            {
-                upload2ctrl = false;
-                pbuf_free(p);
-            }
 #endif
+            {
+                p_copy = pbuf_alloc(PBUF_RAW,p->len+sizeof(cpdu_t),PBUF_RAM_RX);
+                if(p_copy)
+                {
+                    pbuf_header(p_copy, -(s16)sizeof(struct cpdu_t));
+                    memcpy(p_copy->payload,p->payload,p->len);
+                }
+                else
+                {
+                    return upload2ctrl;
+                }
+                if(cif_is_arp_request(p))
+                {
+                    upload2ctrl = false;
+                    pbuf_free(p);
+                }
+            }
 #else
             p_copy = (struct pbuf*)cif_maclloc_rx_buf();
 
@@ -480,6 +544,81 @@ bool cif_rx_local_packet_check(struct pbuf **p_ptr, struct eth_hdr * ethhdr,void
             }
             break;
         }
+#if CONFIG_IPV6
+        case ETHTYPE_IPV6:
+        {
+            u8_t nexth      = (p->tot_len >= SIZEOF_ETH_HDR + 7)
+                            ? ((u8_t*)p->payload)[SIZEOF_ETH_HDR + 6] : 0;
+            u8_t icmp6_type = (nexth == IP6_NEXTH_ICMP6 && p->tot_len >= SIZEOF_ETH_HDR + IP6_HLEN + 1)
+                            ? ((u8_t*)p->payload)[SIZEOF_ETH_HDR + IP6_HLEN] : 0;
+             /*
+              * Packets that CP lwIP must also process (copy to both sides):
+              *   1. NDP: NS/NA/RS/RA (icmp6 133~136), nexth=58
+              *   2. MLD: Multicast Listener Discovery (icmp6 130~132,143), nexth=0 (Hop-by-Hop)
+              *      MLD uses Hop-by-Hop extension header, so nexth != 58; treat all nexth=0
+              *      multicast-dst packets as "need CP copy" to keep CP multicast state correct.
+              */
+            bool is_nd = (nexth == IP6_NEXTH_ICMP6)
+                         && (icmp6_type >= ICMP6_TYPE_MLQ && icmp6_type <= ICMP6_TYPE_RD);
+            bool is_mld = (nexth == 0);
+            bool need_copy = is_nd || is_mld;
+            if (need_copy)
+            {
+                struct pbuf* p_copy = pbuf_alloc(PBUF_RAW, p->len + sizeof(cpdu_t), PBUF_RAM_RX);
+                //os_printf("[ipv6 nd] pbuf_alloc p_copy=%p\r\n", p_copy);
+                if (p_copy == NULL)
+                {
+                    CIF_LOGW("[ipv6 nd] alloc fail, CP-only\r\n");
+                    break;
+                }
+                pbuf_header(p_copy, -(s16_t)sizeof(cpdu_t));
+                memcpy(p_copy->payload, p->payload, p->len);
+
+                struct cpdu_t *cpdu_nd = (struct cpdu_t*)(p_copy + 1);
+                cpdu_nd->co_hdr.length       = p_copy->len - sizeof(struct pbuf);
+                cpdu_nd->co_hdr.type         = RX_MSDU_DATA;
+                cpdu_nd->co_hdr.need_free    = 0;
+                cpdu_nd->co_hdr.special_type = 0;
+                cpdu_nd->co_hdr.vif_idx      = wifi_netif_vif_to_netif_type(vif);
+                cpdu_nd->co_hdr.dst_index    = dst_idx;
+
+                ret = cif_msg_sender(cpdu_nd, CIF_TASK_MSG_RX_DATA, 0);
+                if (ret != BK_OK)
+                    pbuf_free(p_copy);
+                else
+                    cif_stats_ptr->cif_rx_cnt++;
+            }
+            else if (cif_filter_check_ip6_data(p) == false)
+            {
+                struct pbuf* p_data = p;
+                upload2ctrl = false;
+
+                struct cpdu_t *cpdu_data = (struct cpdu_t*)(p_data + 1);
+                cpdu_data->co_hdr.length       = p_data->len - sizeof(struct pbuf);
+                cpdu_data->co_hdr.type         = RX_MSDU_DATA;
+                cpdu_data->co_hdr.need_free    = 0;
+                cpdu_data->co_hdr.special_type = 0;
+                cpdu_data->co_hdr.vif_idx      = wifi_netif_vif_to_netif_type(vif);
+                cpdu_data->co_hdr.dst_index    = dst_idx;
+
+                ret = cif_msg_sender(cpdu_data, CIF_TASK_MSG_RX_DATA, 0);
+                if (ret != BK_OK)
+                {
+                    upload2ctrl = true;
+                    CIF_LOGW("[ipv6 data] fwd fail, fallback to CP\r\n");
+                }
+                else
+                {
+                    cif_stats_ptr->cif_rx_cnt++;
+                }
+            }
+            else
+            {
+                upload2ctrl = true;
+            }
+            break;
+        }
+#endif
         default:
         {
             upload2ctrl = true;

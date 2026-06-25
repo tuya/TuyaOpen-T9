@@ -12,6 +12,9 @@
 #endif
 #include "ntwk_pack.h"
 #include "ntwk_fragmentation.h"
+#if CONFIG_NTWK_CTRL_CHAN_JSON
+#include "ntwk_json.h"
+#endif
 
 #define TAG "ntwk-trans"
 
@@ -76,6 +79,9 @@ int ntwk_trans_ctrl_recv_handler(uint8_t *data, uint32_t length)
         {
             return length;
         }
+#if CONFIG_NTWK_CTRL_CHAN_JSON
+        return BK_FAIL;
+#endif
     }
 
     if (s_ntwk_trans_ctxt->cntrl_chan->recive != NULL)
@@ -223,6 +229,68 @@ int ntwk_trans_fragment_rx_handler(chan_type_t chan, uint8_t *data, uint32_t len
     return BK_OK;
 }
 
+#if CONFIG_NTWK_CTRL_CHAN_JSON
+int ntwk_trans_json_tx_handler(chan_type_t chan, uint8_t *data, uint32_t length)
+{
+    if (s_ntwk_trans_ctxt == NULL || !s_ntwk_trans_ctxt->initialized)
+    {
+        LOGE("%s, context not initialized\n", __func__);
+        return BK_FAIL;
+    }
+
+    if (data == NULL || length == 0)
+    {
+        return BK_FAIL;
+    }
+
+    switch (chan)
+    {
+        case NTWK_TRANS_CHAN_CTRL:
+        {
+            if (s_ntwk_trans_ctxt->cntrl_chan && s_ntwk_trans_ctxt->cntrl_chan->send)
+            {
+                return s_ntwk_trans_ctxt->cntrl_chan->send(data, length);
+            }
+        } break;
+        default:
+            LOGE("%s, invalid json channel type: %d\n", __func__, chan);
+            break;
+    }
+
+    return BK_FAIL;
+}
+
+int ntwk_trans_json_rx_handler(chan_type_t chan, uint8_t *data, uint32_t length)
+{
+    if (s_ntwk_trans_ctxt == NULL || !s_ntwk_trans_ctxt->initialized)
+    {
+        LOGE("%s, context not initialized\n", __func__);
+        return BK_FAIL;
+    }
+
+    if (data == NULL || length == 0)
+    {
+        return BK_FAIL;
+    }
+
+    switch (chan)
+    {
+        case NTWK_TRANS_CHAN_CTRL:
+        {
+            if (s_ntwk_trans_ctxt->cntrl_chan && s_ntwk_trans_ctxt->cntrl_chan->recive)
+            {
+                return s_ntwk_trans_ctxt->cntrl_chan->recive(data, length);
+            }
+        } break;
+        default:
+            LOGE("%s, invalid json channel type: %d\n", __func__, chan);
+            break;
+    }
+
+    return BK_FAIL;
+}
+#endif
+
 bk_err_t ntwk_trans_ctxt_init(ntwk_trans_ctxt_t *ctxt)
 {
     LOGV("%s start\r\n", __func__);
@@ -287,6 +355,10 @@ bk_err_t ntwk_trans_ctxt_init(ntwk_trans_ctxt_t *ctxt)
     ntwk_fragmentation_init(NTWK_TRANS_CHAN_VIDEO);
     ntwk_fragmentation_init(NTWK_TRANS_CHAN_AUDIO);
 
+#if CONFIG_NTWK_CTRL_CHAN_JSON
+    ntwk_json_init(NTWK_TRANS_CHAN_CTRL);
+#endif
+
     s_ntwk_trans_ctxt->initialized = true;
 
     LOGV("%s, service: %s\n", __func__, s_ntwk_trans_ctxt->service_name);
@@ -317,6 +389,10 @@ bk_err_t ntwk_trans_ctxt_deinit(void)
     ntwk_fragmentation_deinit(NTWK_TRANS_CHAN_CTRL);
     ntwk_fragmentation_deinit(NTWK_TRANS_CHAN_VIDEO);
     ntwk_fragmentation_deinit(NTWK_TRANS_CHAN_AUDIO);
+
+#if CONFIG_NTWK_CTRL_CHAN_JSON
+    ntwk_json_deinit(NTWK_TRANS_CHAN_CTRL);
+#endif
 
     if (s_ntwk_trans_ctxt->cntrl_chan != NULL)
     {
@@ -421,6 +497,11 @@ int ntwk_trans_ctrl_send(uint8_t *data, uint32_t length)
         {
             return BK_OK;
         }
+        else
+        {
+            LOGE("%s, fragment failed\n", __func__);
+            return BK_FAIL;
+        }
     }
 
     if (s_ntwk_trans_ctxt->cntrl_chan->pack != NULL)
@@ -429,6 +510,10 @@ int ntwk_trans_ctrl_send(uint8_t *data, uint32_t length)
         {
             (s_ntwk_trans_ctxt->cntrl_chan->send)(pack_ptr, pack_ptr_length);
             return BK_OK;
+        } else
+        {
+            LOGE("%s, pack failed\n", __func__);
+            return BK_FAIL;
         }
     }
 
@@ -481,7 +566,18 @@ int ntwk_trans_video_send(uint8_t *data, uint32_t length, image_format_t video_t
             ntwk_video_fps_frame_end(length, ret);
 #endif
             return length;
+        } else
+        {
+            LOGE("%s, fragment failed: %d\n", __func__, ret);
+            return BK_FAIL;
         }
+
+        /* Fragment failure/abort must not fall through to pack (data is frame_buffer_t*). */
+        LOGE("%s, video fragment failed, ret=%d, length=%u\n", __func__, ret, length);
+#if CONFIG_NTWK_VIDEO_FPS_CALC_ENABLE
+        ntwk_video_fps_frame_end(length, ret);
+#endif
+        return ret;
     }
 
     if (s_ntwk_trans_ctxt->video_chan->pack != NULL)
@@ -493,6 +589,10 @@ int ntwk_trans_video_send(uint8_t *data, uint32_t length, image_format_t video_t
             ntwk_video_fps_frame_end(length, ret);
 #endif
             return ret;
+        } else
+        {
+            LOGE("%s, pack failed: %d\n", __func__, ret);
+            return BK_FAIL;
         }
     }
 
@@ -534,6 +634,10 @@ int ntwk_trans_audio_send(uint8_t *data, uint32_t length, audio_enc_type_t audio
         if(s_ntwk_trans_ctxt->audio_chan->fragment(data, length) >= 0)
         {
             return length;
+        } else
+        {
+            LOGE("%s, fragment failed: %d\n", __func__);
+            return BK_FAIL;
         }
     }
 
@@ -542,6 +646,11 @@ int ntwk_trans_audio_send(uint8_t *data, uint32_t length, audio_enc_type_t audio
         if(s_ntwk_trans_ctxt->audio_chan->pack(data, length, &pack_ptr, &pack_ptr_length) >= 0)
         {
             return (s_ntwk_trans_ctxt->audio_chan->send)(pack_ptr, pack_ptr_length, s_ntwk_trans_ctxt->audio_chan->aud_type);
+        }
+        else
+        {
+            LOGE("%s, pack failed: %d\n", __func__);
+            return BK_FAIL;
         }
     }
 
@@ -572,6 +681,9 @@ int ntwk_trans_pack_rx_handler(chan_type_t chan_type, uint8_t *data, uint32_t le
                 {
                     return length;
                 }
+#if CONFIG_NTWK_CTRL_CHAN_JSON
+                return BK_FAIL;
+#endif
             }
 
             if (s_ntwk_trans_ctxt->cntrl_chan->recive != NULL)

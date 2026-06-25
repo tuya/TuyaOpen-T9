@@ -45,6 +45,13 @@ typedef struct
 } display_ctx_t;
 
 static display_ctx_t *g_disp_ctx = NULL;
+static beken_semaphore_t s_buf_ready_sem = NULL;
+
+static int on_frame_released(void *frame)
+{
+    rtos_set_semaphore(&s_buf_ready_sem);
+    return BK_OK;
+}
 
 static int zoomOut    = 0;
 static int scaleCount = 0;
@@ -203,7 +210,14 @@ static void animateTiger_sequence(vg_lite_matrix_t* matrix, uint32_t width, uint
     if (frame_counter >= state_durations[current_state])
     {
         frame_counter = 0;
+        anim_state_t prev_state = current_state;
         current_state = (anim_state_t)((current_state + 1) % ANIM_STATE_MAX);
+
+        /* One full round (scale -> rotate -> translate) just finished */
+        if (prev_state == ANIM_STATE_TRANSLATE)
+        {
+            LOGI("tiger animation round complete\r\n");
+        }
     }
 }
 
@@ -241,22 +255,33 @@ static void render_tiger_task(void *arg)
 
     LOGI("render_tiger_task\r\n");
 
+    // GPU rendering: redraw the tiger animation into the current frame buffer
+    redraw(&g_disp_ctx->draw_buffer, &matrix);
+
+    // Submit the drawn buffer to DPU for display
+    bk_display_flush(g_disp_ctx->dpu_ctlr_handle,
+                     g_disp_ctx->frame_buffer[g_disp_ctx->frame_buffer_index],
+                     on_frame_released);
+
     while (1)
     {
-        // GPU rendering: redraw the tiger animation into the current frame buffer
-        redraw(&g_disp_ctx->draw_buffer, &matrix);
-
-        // Submit the drawn buffer to DPU for display
-        bk_display_flush(g_disp_ctx->dpu_ctlr_handle, g_disp_ctx->frame_buffer[g_disp_ctx->frame_buffer_index], NULL);
-
         // Swap frame buffer.
         g_disp_ctx->frame_buffer_index = (g_disp_ctx->frame_buffer_index + 1) % 2;
         vg_lite_allocate_with_data(&g_disp_ctx->draw_buffer,
                                    g_disp_ctx->frame_buffer[g_disp_ctx->frame_buffer_index],
-                                   NULL,
-                                   NULL, NULL);
-    }
+                                   NULL, NULL, NULL);
 
+        // Wait for DPU to release this buffer
+        rtos_get_semaphore(&s_buf_ready_sem, BEKEN_WAIT_FOREVER);
+
+        // GPU rendering: redraw the tiger animation into the current frame buffer
+        redraw(&g_disp_ctx->draw_buffer, &matrix);
+
+        // Submit the drawn buffer to DPU for display
+        bk_display_flush(g_disp_ctx->dpu_ctlr_handle,
+                         g_disp_ctx->frame_buffer[g_disp_ctx->frame_buffer_index],
+                         on_frame_released);
+    }
 }
 
 avdk_err_t draw_tiger(void)
@@ -278,33 +303,29 @@ avdk_err_t draw_tiger(void)
         .video.format = BK_PIXEL_FORMAT_ARGB8888,
     };
 
-	const bk_lcd_panel_dev_config_t panel_dev_config = 
+	const bk_lcd_panel_config_t panel_config = 
 	{
 		.reset_pin = GPIO_60,
-		.reset_active_level = false,
 	};
 
     AVDK_GOTO_ON_ERROR(bk_display_dsi_bus_new(&g_disp_ctx->dis_bus_handle, NULL), err, TAG, "display dsi bus new err\n");
 
 #if CONFIG_LCD_HX8399C_MIPI_1080x1920
-    AVDK_GOTO_ON_ERROR(bk_lcd_mipi_panel_new(g_disp_ctx->dis_bus_handle, &panel_dev_config, &lcd_device_hx8399c_mipi_1080x1920, &g_disp_ctx->panel_handle),
+    AVDK_GOTO_ON_ERROR(bk_lcd_mipi_panel_new(g_disp_ctx->dis_bus_handle, &panel_config, &lcd_device_hx8399c_mipi_1080x1920, &g_disp_ctx->panel_handle),
                        err, TAG, "create panel err\n");
 #endif
-    bk_lcd_panel_reset(g_disp_ctx->panel_handle);
-    bk_lcd_panel_init(g_disp_ctx->panel_handle);
-    bk_lcd_panel_read_id(g_disp_ctx->panel_handle, &id);
-#if CONFIG_LCD_HX8399C_MIPI_1080x1920
-    dpu_config.timing = lcd_device_hx8399c_mipi_1080x1920.timing;
-#endif
-    LOGI("read lcd id: 0x%x\n", id);
+
+    const bk_display_timing_t *panel_timing = &lcd_device_hx8399c_mipi_1080x1920.timing;
 
     dpu_config.video.disp_x = 0;
     dpu_config.video.disp_y = 0;
-    dpu_config.video.disp_w = dpu_config.timing.h_size;
-    dpu_config.video.disp_h = dpu_config.timing.v_size;
-    
-    AVDK_GOTO_ON_ERROR(bk_display_dpu_ctlr_new(&g_disp_ctx->dpu_ctlr_handle, &dpu_config), err, TAG, "display dpu ctlr new err\n");
+    dpu_config.video.disp_w = panel_timing->h_size;
+    dpu_config.video.disp_h = panel_timing->v_size;
+
+    AVDK_GOTO_ON_ERROR(bk_display_dpu_ctlr_new(&g_disp_ctx->dpu_ctlr_handle, g_disp_ctx->panel_handle, &dpu_config), err, TAG, "display dpu ctlr new err\n");
     AVDK_GOTO_ON_ERROR(bk_display_init(g_disp_ctx->dpu_ctlr_handle), err, TAG, "display init err\n");
+    bk_lcd_panel_read_id(g_disp_ctx->panel_handle, &id);
+    LOGI("read lcd id: 0x%x\n", id);
     AVDK_GOTO_ON_ERROR(bk_display_open(g_disp_ctx->dpu_ctlr_handle), err, TAG, "display open err\n");
 
     /* enable backlight */
@@ -314,14 +335,14 @@ avdk_err_t draw_tiger(void)
     bk_gpio_set_capacity(GPIO_7, GPIO_DRIVER_CAPACITY_3);  // Enhance GPIO Driver Capacity
     bk_gpio_set_output_high(GPIO_7);
 
-    g_disp_ctx->lcd_width = dpu_config.timing.h_size + 8;
-    g_disp_ctx->lcd_height = dpu_config.timing.v_size;
+    g_disp_ctx->lcd_width = panel_timing->h_size + 8;
+    g_disp_ctx->lcd_height = panel_timing->v_size;
     g_disp_ctx->frame_buffer_index = 0;
-    g_disp_ctx->frame_buffer[0] = (void*)((uint32_t)bk_frame_buffer_malloc(MEM_SLAB_HEAP_CODED, (dpu_config.timing.h_size + 64) * dpu_config.timing.v_size) & 0xFFFFFFC0);
-    g_disp_ctx->frame_buffer[1] = (void*)((uint32_t)bk_frame_buffer_malloc(MEM_SLAB_HEAP_UNCODED, (dpu_config.timing.h_size + 64) * dpu_config.timing.v_size) & 0xFFFFFFC0);
+    g_disp_ctx->frame_buffer[0] = (void*)((uint32_t)bk_frame_buffer_malloc(MEM_SLAB_HEAP_CODED, (panel_timing->h_size + 64) * panel_timing->v_size) & 0xFFFFFFC0);
+    g_disp_ctx->frame_buffer[1] = (void*)((uint32_t)bk_frame_buffer_malloc(MEM_SLAB_HEAP_UNCODED, (panel_timing->h_size + 64) * panel_timing->v_size) & 0xFFFFFFC0);
 
     bk_gpu_driver_init();
-    vg_lite_init(dpu_config.timing.h_size / 2, dpu_config.timing.v_size / 2);
+    vg_lite_init(panel_timing->h_size / 2, panel_timing->v_size / 2);
 
     memset(&g_disp_ctx->draw_buffer,0,sizeof(vg_lite_buffer_t));
     vg_lite_buffer_t *pdraw_buffer = &g_disp_ctx->draw_buffer;
@@ -335,6 +356,8 @@ avdk_err_t draw_tiger(void)
                                g_disp_ctx->frame_buffer[g_disp_ctx->frame_buffer_index],
                                NULL,
                                NULL, NULL);
+
+    rtos_init_semaphore_ex(&s_buf_ready_sem, 1, 1);
 
     AVDK_RETURN_ON_ERROR(rtos_create_thread(&g_disp_ctx->draw_thd,
                        BEKEN_DEFAULT_WORKER_PRIORITY,

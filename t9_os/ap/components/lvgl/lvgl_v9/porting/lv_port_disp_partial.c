@@ -21,6 +21,9 @@
 #define LOGD(...) BK_LOGD(TAG, ##__VA_ARGS__)
 #define LOGV(...) BK_LOGV(TAG, ##__VA_ARGS__)
 
+#define LV_COMPRESSED_TILE_WIDTH 16
+#define LV_COMPRESSED_TILE_HEIGHT 4
+
 typedef struct {
     const lv_area_t *area;
     lv_area_t rotated_area;
@@ -35,7 +38,6 @@ typedef struct {
 static vg_lite_buffer_t lv_dst_buf;
 static vg_lite_buffer_t lv_src_buf;
 static vg_lite_matrix_t lv_matrix;
-static bool s_compress_buffer_initialized;
 
 static vg_lite_color_t lv_partial_color_to_vg(lv_color_t color)
 {
@@ -76,11 +78,12 @@ void lv_port_disp_partial_init(lv_vnd_data_t *vnd_data)
     lv_hpdma_memcpy_init(vnd_data);
 
 #if LV_USE_GPU_ROTATE
-    lv_gpu_rotate_init(vnd_data);
+    if (vnd_data->config.rotation != ROTATE_NONE && !vnd_data->config.output_compress) {
+        lv_gpu_rotate_init(vnd_data);
+    }
 #endif
 
     if (vnd_data->config.output_compress) {
-        s_compress_buffer_initialized = false;
         os_memset(&lv_dst_buf, 0, sizeof(vg_lite_buffer_t));
         #if (LV_COLOR_DEPTH == 16)
             lv_dst_buf.format = VG_LITE_BGR565;
@@ -116,11 +119,12 @@ void lv_port_disp_partial_deinit(lv_vnd_data_t *vnd_data)
     lv_hpdma_memcpy_deinit(vnd_data);
 
 #if LV_USE_GPU_ROTATE
-    lv_gpu_rotate_deinit(vnd_data);
+    if (vnd_data->config.rotation != ROTATE_NONE && !vnd_data->config.output_compress) {
+        lv_gpu_rotate_deinit(vnd_data);
+    }
 #endif
 
     if (vnd_data->config.output_compress) {
-        s_compress_buffer_initialized = false;
         vg_lite_free_without_free_data(&lv_src_buf);
         vg_lite_free_without_free_data(&lv_dst_buf);
     }
@@ -164,7 +168,33 @@ static void lv_get_display_buffer(lv_vnd_data_t *vnd_data, const lv_area_t *area
 #endif
 }
 
-static void lv_partial_flush_compress(lv_vnd_data_t *vnd_data, lv_partial_flush_ctx_t *ctx, uint8_t *px_map)
+static void lv_partial_set_compress_matrix(const lv_vnd_data_t *vnd_data, const lv_partial_flush_ctx_t *ctx)
+{
+    vg_lite_identity(&lv_matrix);
+
+    switch (vnd_data->config.rotation) {
+        case ROTATE_90:
+            vg_lite_rotate(270.0f, &lv_matrix);
+            lv_matrix.m[0][2] = ctx->area->x1;
+            lv_matrix.m[1][2] = ctx->area->y1 + ctx->width;
+            break;
+        case ROTATE_270:
+            vg_lite_rotate(90.0f, &lv_matrix);
+            lv_matrix.m[0][2] = ctx->area->x1 + ctx->height;
+            lv_matrix.m[1][2] = ctx->area->y1;
+            break;
+        case ROTATE_180:
+            vg_lite_rotate(180.0f, &lv_matrix);
+            lv_matrix.m[0][2] = ctx->area->x1 + ctx->width;
+            lv_matrix.m[1][2] = ctx->area->y1 + ctx->height;
+            break;
+        default:
+            vg_lite_translate(ctx->area->x1, ctx->area->y1, &lv_matrix);
+            break;
+    }
+}
+
+static void lv_partial_flush_compress(lv_vnd_data_t *vnd_data, lv_partial_flush_ctx_t *ctx)
 {
     vg_lite_rectangle_t rect = {
         .x = 0,
@@ -173,31 +203,44 @@ static void lv_partial_flush_compress(lv_vnd_data_t *vnd_data, lv_partial_flush_
         .height = ctx->height,
     };
 
+    bool gpu_locked = lv_vendor_gpu_lock();
+
     lv_src_buf.width = ctx->width;
     lv_src_buf.height = ctx->height;
-    vg_lite_allocate_with_data(&lv_src_buf, px_map, NULL, NULL, NULL);
+    vg_lite_allocate_with_data(&lv_src_buf, ctx->color_ptr, NULL, NULL, NULL);
 
     lv_dst_buf.width = vnd_data->config.disp_width;
     lv_dst_buf.height = vnd_data->config.disp_height;
     vg_lite_allocate_with_data(&lv_dst_buf, vnd_data->disp_buf, NULL, NULL, NULL);
 
-    if (!s_compress_buffer_initialized) {
-        if (vg_lite_clear(&lv_dst_buf, NULL, lv_partial_get_default_clear_color()) == VG_LITE_SUCCESS) {
-            vg_lite_finish();
-            s_compress_buffer_initialized = true;
-        } else {
-            LOGE("%s clear compressed frame buffer failed\n", __func__);
-        }
-    }
+    vg_lite_rectangle_t clear_rect = {
+        .x = ctx->area->x1,
+        .y = ctx->area->y1,
+        .width = lv_area_get_width(ctx->area),
+        .height = lv_area_get_height(ctx->area),
+    };
+    vg_lite_clear(&lv_dst_buf, &clear_rect, lv_partial_get_default_clear_color());
 
-    vg_lite_identity(&lv_matrix);
-    vg_lite_translate(ctx->area->x1, ctx->area->y1, &lv_matrix);
+    lv_partial_set_compress_matrix(vnd_data, ctx);
     vg_lite_error_t ret = vg_lite_blit_rect(&lv_dst_buf, &lv_src_buf, &rect, &lv_matrix, VG_LITE_BLEND_NONE, 0, VG_LITE_FILTER_POINT);
     if (ret != VG_LITE_SUCCESS) {
         LOGE("%s blit compressed frame buffer failed, ret=%d, area=(%d,%d)-(%d,%d)\n",
              __func__, ret, ctx->area->x1, ctx->area->y1, ctx->area->x2, ctx->area->y2);
     }
     vg_lite_finish();
+
+    lv_vendor_gpu_unlock(gpu_locked);
+}
+
+static void lv_partial_prepare_compress(lv_display_t *disp_drv, uint8_t *px_map, lv_partial_flush_ctx_t *ctx)
+{
+    ctx->color_ptr = px_map;
+
+    if (lv_display_get_rotation(disp_drv) != LV_DISPLAY_ROTATION_0) {
+        ctx->rotated_area = *ctx->area;
+        lv_display_rotate_area(disp_drv, &ctx->rotated_area);
+        ctx->area = &ctx->rotated_area;
+    }
 }
 
 static void lv_partial_flush_rotate(lv_display_t *disp_drv, lv_vnd_data_t *vnd_data, const lv_area_t *area,
@@ -253,13 +296,60 @@ static void lv_partial_flush_copy_to_disp_buf(lv_vnd_data_t *vnd_data, const lv_
     }
 }
 
+static uint32_t lv_partial_align_down(uint32_t value, uint32_t align)
+{
+    return value & ~(align - 1);
+}
+
+static uint32_t lv_partial_align_up(uint32_t value, uint32_t align)
+{
+    return (value + align - 1) & ~(align - 1);
+}
+
+static void lv_partial_flush_compressed_frame_buffer_copy(lv_vnd_data_t *vnd_data)
+{
+    uint32_t x1 = lv_partial_align_down((uint32_t)vnd_data->d_area.x1, LV_COMPRESSED_TILE_WIDTH);
+    uint32_t y1 = lv_partial_align_down((uint32_t)vnd_data->d_area.y1, LV_COMPRESSED_TILE_HEIGHT);
+    uint32_t x2 = lv_partial_align_up((uint32_t)vnd_data->d_area.x2 + 1, LV_COMPRESSED_TILE_WIDTH);
+    uint32_t y2 = lv_partial_align_up((uint32_t)vnd_data->d_area.y2 + 1, LV_COMPRESSED_TILE_HEIGHT);
+
+    if (x2 > vnd_data->config.disp_width) {
+        x2 = vnd_data->config.disp_width;
+    }
+
+    if (y2 > vnd_data->config.disp_height) {
+        y2 = vnd_data->config.disp_height;
+    }
+
+    if (x1 >= x2 || y1 >= y2) {
+        LOGE("%s invalid compressed area: (%d,%d)-(%d,%d)\n",
+             __func__, vnd_data->d_area.x1, vnd_data->d_area.y1,
+             vnd_data->d_area.x2, vnd_data->d_area.y2);
+        return;
+    }
+
+    /*
+     * VG_LITE_DEC_HV_SAMPLE stores BGRA8888 as compressed 16x4 tiles.
+     * One tile band contains 4 compressed bytes per horizontal pixel.
+     */
+    uint32_t line_bytes = (x2 - x1) * LV_COMPRESSED_TILE_HEIGHT;
+    uint32_t band_count = (y2 - y1) / LV_COMPRESSED_TILE_HEIGHT;
+    uint32_t frame_stride = vnd_data->config.disp_width * LV_COMPRESSED_TILE_HEIGHT;
+    uint32_t step_bytes = frame_stride - line_bytes;
+    uint32_t offset = (y1 / LV_COMPRESSED_TILE_HEIGHT) * frame_stride + x1 * LV_COMPRESSED_TILE_HEIGHT;
+    void *src_start = (uint8_t *)vnd_data->disp_buf + offset;
+    void *dst_start = (uint8_t *)vnd_data->copy_buf + offset;
+
+    lv_hpdma_memcpy_start(src_start, dst_start,
+                          line_bytes, band_count,
+                          line_bytes, band_count,
+                          step_bytes, step_bytes);
+}
+
 static void lv_partial_flush_frame_buffer_copy(lv_display_t *disp_drv, lv_vnd_data_t *vnd_data, lv_coord_t lv_hor)
 {
     if (vnd_data->config.output_compress) {
-        lv_hpdma_memcpy_start(vnd_data->disp_buf, vnd_data->copy_buf,
-                              vnd_data->config.disp_width, vnd_data->config.disp_height,
-                              vnd_data->config.disp_width, vnd_data->config.disp_height,
-                              0, 0);
+        lv_partial_flush_compressed_frame_buffer_copy(vnd_data);
     } else {
         uint32_t color_size = lv_color_format_get_size(lv_display_get_color_format(disp_drv));
         uint32_t area_width = lv_area_get_width(&vnd_data->d_area);
@@ -332,12 +422,17 @@ void lv_disp_flush_for_partial_mode(lv_display_t * disp_drv, const lv_area_t * a
     }
 
     if (vnd_data->config.output_compress) {
-        lv_get_display_buffer(vnd_data, ctx.area);
-        lv_partial_flush_compress(vnd_data, &ctx, px_map);
+        lv_partial_prepare_compress(disp_drv, px_map, &ctx);
     } else {
         lv_partial_flush_rotate(disp_drv, vnd_data, area, px_map, &ctx);
-        lv_get_display_buffer(vnd_data, ctx.area);
-        lv_area_join(&vnd_data->d_area, &vnd_data->d_area, ctx.area);
+    }
+
+    lv_get_display_buffer(vnd_data, ctx.area);
+    lv_area_join(&vnd_data->d_area, &vnd_data->d_area, ctx.area);
+
+    if (vnd_data->config.output_compress) {
+        lv_partial_flush_compress(vnd_data, &ctx);
+    } else {
         lv_partial_flush_copy_to_disp_buf(vnd_data, &ctx);
     }
 

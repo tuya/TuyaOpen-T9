@@ -3,7 +3,6 @@
 #include <os/mem.h>
 #include "sys_driver.h"
 #include <driver/mipi_dsi_types.h>
-#include <components/bk_lcd_panel.h>
 #include "mipi_dsi_host_reg.h"
 #include "mipi_dsi_phy_reg.h"
 #include "mipi_dsi_hal.h"
@@ -15,6 +14,29 @@
 #define LOGW(...) BK_LOGW(TAG, ##__VA_ARGS__)
 #define LOGE(...) BK_LOGE(TAG, ##__VA_ARGS__)
 #define LOGD(...) BK_LOGD(TAG, ##__VA_ARGS__)
+
+#define DSI_CMD_PKT_WAIT_TIMEOUT_MS  20
+#define DSI_CMD_PKT_STATUS_FULL      (1U << 1)
+#define DSI_CMD_PKT_STATUS_BUSY      (1U << 6)
+
+static void hal_dsi_gen_read_restore(uint32_t save_mode)
+{
+    reg_PCKHDL_CFG &= ~(1U << 2);
+    hal_dsi_operation_mode_set(save_mode);
+}
+
+static bool hal_dsi_wait_cmd_pkt_clear(uint32_t mask, const char *what)
+{
+    for (uint32_t t = 0; t < DSI_CMD_PKT_WAIT_TIMEOUT_MS; t++) {
+        if ((reg_CMD_PKT_STATUS & mask) == 0) {
+            return true;
+        }
+        rtos_delay_milliseconds(1);
+    }
+
+    LOGE("%s %s timeout, status=0x%x\n", __func__, what, reg_CMD_PKT_STATUS);
+    return false;
+}
 
 void hal_dsi_wait_fpga_dphy_done(void)
 {
@@ -771,121 +793,47 @@ void hal_dsi_dphy_init(uint32_t br)
     // LOGI("%s finish\n", __func__);
 }
 
-uint32_t dsi_dphy_bitrate_calc(uint32_t dpu_clk, uint8_t n_lanes)
+uint32_t hal_dsi_sysclk_lane_mbps_select(uint64_t pclk_hz, uint8_t n_lanes, uint16_t bpp,
+                                         uint32_t overhead_permille)
 {
-    uint32_t bitrate = 0;
+    static const uint32_t s_brackets[] = {
+        DPHY_BR_100M, DPHY_BR_200M, DPHY_BR_300M, DPHY_BR_400M, DPHY_BR_440M,
+        DPHY_BR_500M, DPHY_BR_600M, DPHY_BR_700M, DPHY_BR_800M, DPHY_BR_1000M,
+        DPHY_BR_1200M, DPHY_BR_1400M, DPHY_BR_1500M, DPHY_BR_1600M,
+    };
 
-    /* calc equation: dpu_clk*3*8 < bitrate*n_lanes */
-    switch(dpu_clk)
-    {
-        case LCD_320M:
-        case LCD_240M:                 // use for dphy test, 1.5g bps, 60fps
-            if(n_lanes == DSI_ACTIVE_LANES_4)
-                bitrate = DPHY_BR_1500M;
-            else
-                goto err;
-            break;
+    uint32_t lane_cnt = (uint32_t)n_lanes + 1u;
+    uint64_t den = (uint64_t)lane_cnt * 1000000ULL * 1000ULL;
+    uint64_t min_lane_mbps = (pclk_hz * (uint64_t)bpp * (1000ULL + (uint64_t)overhead_permille) + den - 1ULL) / den;
+    uint32_t max_mbps = (lane_cnt == 1u) ? DPHY_BR_800M : DPHY_BR_1600M;
+    uint32_t picked = max_mbps;
 
-        case LCD_160M:
-            if(n_lanes == DSI_ACTIVE_LANES_4)
-                bitrate = DPHY_BR_1000M;
-            else if(n_lanes == DSI_ACTIVE_LANES_3)
-                bitrate = DPHY_BR_1500M;
-            else
-                goto err;
-            break;
-
-        case LCD_120M:
-        case LCD_106M:
-        case LCD_80M:
-            if(n_lanes == DSI_ACTIVE_LANES_4)
-                bitrate = DPHY_BR_800M;
-            else if(n_lanes == DSI_ACTIVE_LANES_3)
-                bitrate = DPHY_BR_1000M;
-            else if(n_lanes == DSI_ACTIVE_LANES_2)
-                bitrate = DPHY_BR_1500M; 
-            else //if(n_lanes == DSI_ACTIVE_LANES_1)
-                goto err;
-            break;
-        case LCD_64M:
-        case LCD_60M:
-        case LCD_53M:
-        case LCD_48M:
-        case LCD_45M:
-            if(n_lanes == DSI_ACTIVE_LANES_4)
-                bitrate = DPHY_BR_440M;
-            else if(n_lanes == DSI_ACTIVE_LANES_3)
-                bitrate = DPHY_BR_600M;
-            else if(n_lanes == DSI_ACTIVE_LANES_2)
-                bitrate = DPHY_BR_800M; 
-            else //if(n_lanes == DSI_ACTIVE_LANES_1)
-                bitrate = DPHY_BR_1500M;
-            break;
-
-        case LCD_40M:
-        case LCD_35M:
-        case LCD_34M:
-        case LCD_32M:
-        case LCD_30M:
-        case LCD_29M:
-            if(n_lanes == DSI_ACTIVE_LANES_4)
-                bitrate = DPHY_BR_300M;
-            else if(n_lanes == DSI_ACTIVE_LANES_3)
-                bitrate = DPHY_BR_440M;
-            else if(n_lanes == DSI_ACTIVE_LANES_2)
-                bitrate = DPHY_BR_600M; 
-            else //if(n_lanes == DSI_ACTIVE_LANES_1)
-                bitrate = DPHY_BR_1200M;
-            break;
-        case LCD_26M:
-        case LCD_24M:
-        case LCD_22M:
-        case LCD_21M:
-        case LCD_20M:
-        case LCD_18M:
-        case LCD_17M:
-            if(n_lanes == DSI_ACTIVE_LANES_4)
-                bitrate = DPHY_BR_200M;
-            else if(n_lanes == DSI_ACTIVE_LANES_3)
-                bitrate = DPHY_BR_300M;
-            else if(n_lanes == DSI_ACTIVE_LANES_2)
-                bitrate = DPHY_BR_400M; 
-            else //if(n_lanes == DSI_ACTIVE_LANES_1)
-                bitrate = DPHY_BR_800M;
-            break;
-        case LCD_13M:
-            if(n_lanes == DSI_ACTIVE_LANES_1)
-                bitrate = DPHY_BR_800M;
-            break;
-        case LCD_16M:
-        case LCD_15M:
-        case LCD_14M:
-        case LCD_12M:
-        case LCD_11M:
-        case LCD_10M:
-        case LCD_9M:
-        case LCD_8M:
-        case LCD_7M:
-            if(n_lanes == DSI_ACTIVE_LANES_4)
-                bitrate = DPHY_BR_100M;
-            else if(n_lanes == DSI_ACTIVE_LANES_3)
-                bitrate = DPHY_BR_200M;
-            else if(n_lanes == DSI_ACTIVE_LANES_2)
-                bitrate = DPHY_BR_200M; 
-            else //if(n_lanes == DSI_ACTIVE_LANES_1)
-                bitrate = DPHY_BR_400M;
-            break;
-
-        default:
-            goto err;
-            break;
+    if (min_lane_mbps > max_mbps) {
+        LOGW("%s pclk:%llu Hz need:%llu Mbps/lane exceeds SYSCLK cap %u Mbps; using cap\n",
+             __func__, (unsigned long long)pclk_hz, (unsigned long long)min_lane_mbps,
+             (unsigned)max_mbps);
+        return max_mbps;
     }
 
-    return bitrate;
+    /* 1-lane SYSCLK fallback: fixed 800 Mbps (legacy lookup under-provisioned). */
+    if (lane_cnt == 1u) {
+        picked = DPHY_BR_800M;
+    } else {
+        for (size_t i = 0; i < sizeof(s_brackets) / sizeof(s_brackets[0]); i++) {
+            if (s_brackets[i] >= (uint32_t)min_lane_mbps) {
+                picked = s_brackets[i];
+                break;
+            }
+        }
+        if (picked > max_mbps) {
+            picked = max_mbps;
+        }
+    }
 
-err:
-    LOGE("dsi clk:%d, n_lanes=%d, not support!\n", dpu_clk, n_lanes);
-    return 0;
+    LOGI("%s pclk:%llu Hz lanes:%u need:%llu Mbps/lane -> %u Mbps/lane\n", __func__,
+         (unsigned long long)pclk_hz, (unsigned)lane_cnt, (unsigned long long)min_lane_mbps,
+         (unsigned)picked);
+    return picked;
 }
 
 /**
@@ -911,19 +859,28 @@ uint16_t hal_dsi_gen_read_pkt(  uint8_t vc, uint8_t data_type,
 
     save_mode = hal_dsi_operation_mode_get();       // save mode
     hal_dsi_operation_mode_set(1);                  // in cmd mode
-    reg_PCKHDL_CFG |= 1 << 2;                       // BTA enable
+    reg_PCKHDL_CFG |= 1U << 2;                      // BTA enable
 
-    while(reg_CMD_PKT_STATUS & ( 1 << 1))  LOGE("%s cmd full 1\n", __func__);
+    if (!hal_dsi_wait_cmd_pkt_clear(DSI_CMD_PKT_STATUS_FULL, "cmd full")) {
+        hal_dsi_gen_read_restore(save_mode);
+        return false;
+    }
 
     reg_GEN_HDR = (bytes_to_read << 8 ) | ((vc << 6) | 0x37);                      // set maximum return packet size
 
-    while(reg_CMD_PKT_STATUS & ( 1 << 1))  LOGE("%s cmd full 2\n", __func__);
+    if (!hal_dsi_wait_cmd_pkt_clear(DSI_CMD_PKT_STATUS_FULL, "cmd full")) {
+        hal_dsi_gen_read_restore(save_mode);
+        return false;
+    }
 
     reg_GEN_HDR = (msb_byte <<  16) | (lsb_byte << 8 ) | ((vc << 6) | data_type);  // short read with 0, 1, 2 parameters
 
     rtos_delay_milliseconds(1);                     // delay for reg_GEN_HDR is done
 
-    while(reg_CMD_PKT_STATUS & ( 1 << 6))  LOGE("%s cmd busy\n", __func__);
+    if (!hal_dsi_wait_cmd_pkt_clear(DSI_CMD_PKT_STATUS_BUSY, "cmd busy")) {
+        hal_dsi_gen_read_restore(save_mode);
+        return false;
+    }
 
     for(uint8_t i = 0; i < bytes_to_read; i += 4)
     {
@@ -938,8 +895,7 @@ uint16_t hal_dsi_gen_read_pkt(  uint8_t vc, uint8_t data_type,
         }
     }
 
-    reg_PCKHDL_CFG &= ~(1 << 2);                    // BTA disable
-    hal_dsi_operation_mode_set(save_mode);          // save mode write back
+    hal_dsi_gen_read_restore(save_mode);
 
     // LOGI("%s, cmd:%x, len:%d\n", __func__, lsb_byte, bytes_to_read);
 

@@ -13,7 +13,6 @@
 // limitations under the License.
 
 #include <common/bk_include.h>
-#include "bk_drv_model.h"
 #include "bk_sys_ctrl.h"
 #include "sys_driver.h"
 #include <driver/int.h>
@@ -23,7 +22,7 @@
 #include <driver/uart.h>
 #include <driver/wdt.h>
 #include <driver/aon_wdt.h>
-#include <driver/trng.h>
+#include <driver/wwdt.h>
 #include <driver/efuse.h>
 #include <driver/ckmn.h>
 #include <os/mem.h>
@@ -218,10 +217,6 @@ int driver_early_init(void)
 	power_clk_rf_init();
 #endif
 
-#if CONFIG_TRNG_SUPPORT
-	bk_trng_driver_init();
-#endif
-
 #if CONFIG_EFUSE
 	bk_efuse_driver_init();
 #endif
@@ -232,6 +227,10 @@ int driver_early_init(void)
 
 #if CONFIG_HSPL
 	bk_hspl_driver_init();
+#endif
+
+#if CONFIG_IPI
+	bk_ipi_driver_init();
 #endif
 
 	return 0;
@@ -260,15 +259,9 @@ int driver_init(void) {
 		return BK_FAIL;
 	}
 #endif
-	///
-	drv_model_init();
 
 #if CONFIG_TIMER
 	bk_timer_driver_init();
-#endif
-
-#if CONFIG_IPI
-	bk_ipi_driver_init();
 #endif
 
 #if CONFIG_GENERAL_DMA
@@ -279,9 +272,13 @@ int driver_init(void) {
 	bk_wdt_driver_init();
 #endif
 
-#if CONFIG_AON_WDT && !CONFIG_INT_AON_WDT
-	bk_aon_wdt_stop();
+#if CONFIG_SUPPORT_WWDT
+	bk_wwdt_driver_init();
 #endif
+
+// #if CONFIG_AON_WDT && !CONFIG_INT_AON_WDT
+// 	bk_aon_wdt_stop();
+// #endif
 
 #if CONFIG_MAILBOX
 	extern bk_err_t ipc_init(void);

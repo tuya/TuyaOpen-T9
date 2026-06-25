@@ -9,61 +9,50 @@
 #include "sys_driver.h"
 #include "media_service.h"
 #include <common/avdk_pixel_types.h>
+#include "cli.h"
 #include "lcd_example.h"
+#include <modules/pm.h>
+#include <avdk_check.h>
+#include <avdk_error.h>
 
-#define DEFAULT_RGB_PANEL_NAME   "st7701sn_rgb_480x854"
+#define TAG "rgb_lcd"
+
+#define LOGI(...) BK_LOGI(TAG, ##__VA_ARGS__)
+#define LOGE(...) BK_LOGE(TAG, ##__VA_ARGS__)
+
+#define DEFAULT_RGB_PANEL_NAME   "st7701sn_rgb_480x854" //"st7282_rgb_480x272"
 #define DEFAULT_RGB_FORMAT      BK_PIXEL_FORMAT_RGB565
 
-#define SYS_ANA_REG_BASE    (0x44010000)
-#define LDO_ANA_REG         (0x69)
+/* Shared with CLI: power-on display ctx, also used by the switch-format IT case. */
+static display_ctx_t s_rgb_disp_ctx;
 
-#define SYS_M55_BASE_ADDR    (0x48000000)
-#define SYS_GPIO_BASE_ADDR    (0x44000400)
-
-
-static void bk_lodoen_enable(void)
+static avdk_err_t bk_lodoen_enable(void)
 {
-    uint32_t reg = REG_READ(SYS_ANA_REG_BASE + LDO_ANA_REG * 4);
-    reg |= (0xF << 28) | (0x2 << 23) | (0x7 << 19) | (0x7 << 15);
-    reg &= ~(0xF << 11);
-    reg |= (0x8 << 11);
-    REG_WRITE(SYS_ANA_REG_BASE + LDO_ANA_REG * 4, reg);
+    pm_auxldo_ctrl_cfg_t auxldo_cfg = {0};
+    auxldo_cfg.ldo = AUXLDOS_SEL_1P8V; 
+    auxldo_cfg.out = PM_AUXLDO_1P8V_OUT_1P8V;
+    auxldo_cfg.user = PM_AUXLDO_USER_DISPLAY;
+    auxldo_cfg.state = PM_AUXLDO_ENABLE;
+    AVDK_RETURN_ON_ERROR(bk_pm_auxldo_ctrl_vote(&auxldo_cfg), TAG, "display 1p8v ldo vote failed");
+    return AVDK_ERR_OK;
+}
 
-    // close multimedia clock
-    reg = REG_READ(SYS_M55_BASE_ADDR + 0xA * 4);
-    reg &= ~(1 << 2); // usb hs clock
-    reg &= ~(1 << 5); // qspi0 clock
-    reg &= ~(1 << 6); // qspi1 clock
-    reg &= ~(1 << 7); // sdio0 clock
-    reg &= ~(1 << 8); // sdio1 clock
-    reg &= ~(1 << 9); // isp clock
-    reg &= ~(1 << 10); // gpu clock
-    reg &= ~(1 << 11); // h264e clock
-    reg &= ~(1 << 12); // csi clock
-    reg &= ~(1 << 13); // dsi clock
-    reg &= ~(1 << 14); // dpu clock
-    reg &= ~(1 << 15); // usb fs clock
-    reg &= ~(1 << 22); // npu clock
+/* IT case: cycle RGB565/ARGB8888 to verify the runtime switch API, then auto-close. */
+static void cli_rgb_lcd_switch_format_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv)
+{
+    rgb_lcd_switch_format_test(&s_rgb_disp_ctx, DEFAULT_RGB_PANEL_NAME);
+}
 
-    reg &= ~(0x3F << 26); // not used clock
-    REG_WRITE(SYS_M55_BASE_ADDR + 0xA * 4, reg);
+static const struct cli_command s_rgb_lcd_cli_commands[] =
+{
+    {"rgb_lcd_switch_format", "switch RGB565/ARGB8888 to verify switch API", cli_rgb_lcd_switch_format_cmd},
+};
 
-#if 0
-    reg = REG_READ(SYS_ANA_REG_BASE + 0x39 * 4);
-    reg |= 0x6;
-    REG_WRITE(SYS_ANA_REG_BASE + 0x39 * 4, reg);
+#define RGB_LCD_CLI_CMDS_COUNT  (sizeof(s_rgb_lcd_cli_commands) / sizeof(struct cli_command))
 
-    reg = REG_READ(SYS_M55_BASE_ADDR + 0x23 * 4);
-    reg |= 0x1;
-    REG_WRITE(SYS_M55_BASE_ADDR + 0x23 * 4, reg);
-
-
-    for (int i = 0x1D; i < 0x28; i++) {
-        reg = REG_READ(SYS_GPIO_BASE_ADDR + i * 4);
-        reg |= (127 << 24);
-        REG_WRITE(SYS_GPIO_BASE_ADDR + i * 4, reg);
-    }
-#endif
+static int cli_rgb_lcd_example_init(void)
+{
+    return cli_register_commands(s_rgb_lcd_cli_commands, RGB_LCD_CLI_CMDS_COUNT);
 }
 
 
@@ -87,11 +76,10 @@ int main(void)
     bk_frame_buffer_init();
     #endif
 
-    /* Power-on display: open RGB panel with panel name and format, then start flush thread. */
-    static display_ctx_t s_rgb_disp_ctx;
-    os_memset(&s_rgb_disp_ctx, 0, sizeof(s_rgb_disp_ctx));
-    if (lcd_example_rgb_open(&s_rgb_disp_ctx, DEFAULT_RGB_PANEL_NAME, DEFAULT_RGB_FORMAT) == AVDK_ERR_OK)
-        lcd_example_flush_thread_start(&s_rgb_disp_ctx);
+    cli_rgb_lcd_example_init();
+
+    /* Power-on IT case: open RGB565, hold ~20s, then auto-close, log [RESULT][PASS] at end. */
+    rgb_lcd_rgb565_test(&s_rgb_disp_ctx, DEFAULT_RGB_PANEL_NAME);
 
     return 0;
 }

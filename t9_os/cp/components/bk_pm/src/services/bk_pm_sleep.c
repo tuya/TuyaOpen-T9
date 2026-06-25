@@ -22,6 +22,7 @@
 #include "driver/wdt.h"
 #include "driver/flash.h"
 #include <os/os.h>
+#include "sys_sw_regs.h"
 
 #include "pm_sleep.h"
 #include "pm_power.h"
@@ -160,7 +161,7 @@ uint64_t pm_normal_sleep_process()
 
 extern uint32_t pm_disable_int(void);
 extern void pm_enable_int(uint32_t irq_level);
-
+uint32_t g_enter_sleep = 0;
 uint64_t pm_low_voltage_process()
 {
 	GLOBAL_INT_DECLARATION();
@@ -190,15 +191,20 @@ uint64_t pm_low_voltage_process()
 	pm_enter_low_voltage();
 
 	/* Execute post-sleep (wakeup) callbacks */
-
+	g_enter_sleep = 0x1;
 	/*Debug pd,lpo,psram start*/
 	pm_debug_low_vol_wakeup_hook();
 	/*Debug pd,lpo,psram end*/
 
 	pm_low_voltage_resource_restore();
+	bk_pm_rtc_wakeup_reason_parse();
 
-	if (pm_debug_mode() & 0x2)
-		BK_LOGD(NULL, "low voltage int open before\r\n");
+    //extern uint64_t check_IRQ_pending(void);
+	//LOGD("LV IRQ_pending:0x%llx", check_IRQ_pending());
+	//if (pm_debug_mode() & 0x2)
+	//uint64_t current_time = bk_aon_rtc_get_us();
+	//uint64_t wakeup_time = sys_hal_get_low_voltage_wakeup_time_us();
+	//BK_LOGD(NULL, "low voltage int open before[%d][0x%x][0x%llx][0x%llx]\r\n",bk_pm_exit_low_vol_wakeup_source_get(),current_time-wakeup_time,current_time,wakeup_time);
 
 #if CONFIG_AON_RTC || CONFIG_ANA_RTC
 	uint64_t exit_tick          = 0ULL;
@@ -412,16 +418,16 @@ __attribute__((section(".iram"))) void pm_low_voltage_bsp_restore(void)
 	bk_rosc_32k_ckest_prog(32);
 #endif
 
-
-#if CONFIG_INT_WDT //temp debug
-	// extern int wdt_init(void);
-	// wdt_init();
+#if CONFIG_INT_WDT
+	extern int wdt_init(void);
+	wdt_init();
 #endif
 #if CONFIG_PM_LV_WDT_PROTECTION
 	#if CONFIG_AON_WDT
 		bk_aon_wdt_stop();
 	#endif
 #endif
+
 
 	bk_pm_exit_low_vol_wakeup_source_set();
 }
@@ -760,7 +766,6 @@ bk_err_t bk_pm_light_sleep_unregister_cb(bool enter_cb, bool exit_cb)
 /*=========================SLEEP CB REGISTER API END========================*/
 
 /*=========================WIFI ALARM START========================*/
-#define PM_WIFI_RTC_ALARM_NAME "wifi"
 
 void bk_pm_wifi_rtc_set(uint32_t tick, void *callback)
 {

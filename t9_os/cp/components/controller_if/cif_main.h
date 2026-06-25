@@ -32,8 +32,11 @@ extern "C" {
 #define CIF_LOGV(...)       BK_LOGV(CIF_TAG, ##__VA_ARGS__)
 #define CIF_LOG_RAW(...)    BK_LOG_RAW(CIF_TAG, ##__VA_ARGS__)
 
-#define CIF_STATS_INC(x) do{uint32_t int_level = 0;int_level = rtos_disable_int();++cif_stats_ptr->x;rtos_enable_int(int_level);BK_ASSERT(cif_stats_ptr->x >= 0);}while(0)
-#define CIF_STATS_DEC(x) do{uint32_t int_level = 0;int_level = rtos_disable_int();--cif_stats_ptr->x;rtos_enable_int(int_level);BK_ASSERT(cif_stats_ptr->x >= 0);}while(0)
+uint32_t cif_stats_enter_critical(void);
+void cif_stats_exit_critical(uint32_t flags);
+
+#define CIF_STATS_INC(x) do{uint32_t int_level = cif_stats_enter_critical();++cif_stats_ptr->x;cif_stats_exit_critical(int_level);BK_ASSERT(cif_stats_ptr->x >= 0);}while(0)
+#define CIF_STATS_DEC(x) do{uint32_t int_level = cif_stats_enter_critical();uint8_t valid = (cif_stats_ptr->x > 0);if(valid){--cif_stats_ptr->x;}cif_stats_exit_critical(int_level);BK_ASSERT(valid);}while(0)
 
 #if CONFIG_CONTROLLER_AP_BUFFER_COPY
 #define CNTRL_IF_QUEUE_LEN                          300
@@ -464,12 +467,12 @@ typedef struct {
 extern struct cif_env_t cif_env;
 extern struct cif_stats * cif_stats_ptr;
 extern bk_err_t cif_init();
-extern uint8_t cif_dnld_buffer(void *param, void *node);
-bk_err_t cif_rxbuf_push(uint8_t channel,void* head,void* tail,uint8_t num);
-bk_err_t cif_rxdata_pre_process(uint8_t channel,void* head,uint8_t need_retry);
-void cif_rx_data_complete(void *param, void *ack_buf);
-void cif_rx_evt_complete(void *param, void *ack_buf);
-bk_err_t cif_msg_sender(void* head,enum cif_task_msg_evt type,uint8_t retry);
+extern __IRAM2 uint8_t cif_dnld_buffer(void *param, void *node);
+__IRAM2 bk_err_t cif_rxbuf_push(uint8_t channel,void* head,void* tail,uint8_t num);
+__IRAM2 bk_err_t cif_rxdata_pre_process(uint8_t channel,void* head,uint8_t need_retry);
+__IRAM2 void cif_rx_data_complete(void *param, void *ack_buf);
+__IRAM2 void cif_rx_evt_complete(void *param, void *ack_buf);
+__IRAM2 bk_err_t cif_msg_sender(void* head,enum cif_task_msg_evt type,uint8_t retry);
 
 void cif_print_debug_info();
 #ifdef __cplusplus

@@ -33,8 +33,8 @@
 const bk_display_rgb_panel_t h050iwv_rgb_panel = {
     .id = 0x0500,
     .name = "h050iwv_rgb_800x480",
+    .pixel_clock_hz = BK_RGB_PIXEL_CLK_HZ(30),
     .timing = {
-        .clk = LCD_30M,
         .h_size = 800,
         .v_size = 480,
         .hsync_pulse_width = 2,
@@ -48,7 +48,9 @@ const bk_display_rgb_panel_t h050iwv_rgb_panel = {
     .spi_cmd_16bit = 0,
     .read_id_regs = NULL,
     .read_id_bytes = 3,
-    .custom_reset = NULL,
+    .reset_active_level = false,
+    .reset = bk_lcd_rgb_default_reset,
+    .init  = bk_lcd_rgb_default_init,
 };
 
 BK_LCD_PANEL_DEVICE_SECTION(h050iwv_rgb_panel, "h050iwv_rgb_800x480", BK_LCD_PANEL_BUS_RGB);

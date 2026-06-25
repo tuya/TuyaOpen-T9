@@ -3,19 +3,40 @@
 #include <stddef.h>
 #include <string.h>
 #include "bk_coredump.h"
+#include "bk_arch.h"
 #include "wdt_driver.h"
 #include "os/mem.h"
+#include "os/os.h"
 #include "reg_base.h"
 #include "bk_rtos_debug.h"
+#if CONFIG_SOC_SMP
+#include "multicore_driver.h"
+#endif
+
+#if CONFIG_SUPPORT_WWDT
+#include <driver/wwdt.h>
+#include "wwdt_driver.h"
+#endif
 
 #define BK_EXCEPTION_MAGIC 0xA55AA55A
 #define BK_ASSERT_MAGIC 0x55AA55AA
 static volatile bk_assert_info_t s_bk_assert_info;
 static volatile uint32_t s_bk_exception_magic = 0;
 static volatile uint32_t s_core_id = 0;
+volatile uint32_t g_ap_dump_flag = 0;
 
 static hook_func s_wifi_dump_func = NULL;
 static hook_func s_ble_dump_func = NULL;
+
+static inline void coredump_feed_watchdogs(void)
+{
+#if CONFIG_WDT_EN
+    bk_wdt_force_feed();
+#endif
+#if CONFIG_SUPPORT_WWDT
+    bk_wwdt_force_feed();
+#endif
+}
 
 bool bk_check_assert(void)
 {
@@ -31,24 +52,42 @@ static inline void coredump_stop_other_cores(void)
 {
     // smp needs stop other cores
 #if CONFIG_SOC_SMP
-    // TODO
+    uint32_t core_id = rtos_get_core_id();
+
+    if (core_id == CPU0_CORE_ID) {
+        bk_multicore_stop(CPU1_CORE_ID);
+    } else if (core_id == CPU1_CORE_ID) {
+        bk_multicore_stop(CPU0_CORE_ID);
+    } else {
+        BK_DUMP_OUT("warning: unexpected CP core id %u, cannot stop peer core\r\n", core_id);
+    }
 #endif
 }
 
 
 static void bk_exception_preprocess(bk_exception_t *self)
 {
+    bool secondary;
+
     rtos_disable_int();
+
+    /* Mark "in exception" BEFORE taking any resource lock, so the HSPL/SSPL
+     * lock layer (see arch_is_enter_exception()) skips its blocking/assert path
+     * while a peer core might still hold a shared lock. Otherwise the UART_LOG
+     * lock taken by bk_coredump_lock() below could spin/assert and trigger a
+     * secondary exception. */
+    secondary = (s_bk_exception_magic == BK_EXCEPTION_MAGIC);
+    s_bk_exception_magic = BK_EXCEPTION_MAGIC;
+    s_core_id = rtos_get_core_id();
+
     bk_coredump_lock();
-    if (s_bk_exception_magic == BK_EXCEPTION_MAGIC) {
+    if (secondary) {
         BK_DUMP_OUT("A secondary exception occurred, reset_reason: 0x%x\r\n", self->reset_reason);
         bk_reboot_ex(self->reset_reason);
     }
-    s_bk_exception_magic = BK_EXCEPTION_MAGIC;
-    s_core_id = rtos_get_core_id();
     coredump_stop_other_cores();
 
-    bk_wdt_force_feed();
+    coredump_feed_watchdogs();
     bk_misc_set_reset_reason(self->reset_reason);
     
     bk_set_printf_sync(true);  // set printf sync
@@ -121,15 +160,20 @@ static void coredump_execute_hook_function(void)
 {
     
     if (is_valid_function_addr(s_wifi_dump_func)) {
+        coredump_feed_watchdogs();
         s_wifi_dump_func();
+        coredump_feed_watchdogs();
     }
     if (is_valid_function_addr(s_ble_dump_func)) {
+        coredump_feed_watchdogs();
         s_ble_dump_func();
+        coredump_feed_watchdogs();
     }
 }
 
 static void bk_exception_dump_main(bk_exception_t *self)
 {
+    coredump_feed_watchdogs();
     bk_coredump_writer_init();
 
     bk_coredump_meta_info();
@@ -138,16 +182,19 @@ static void bk_exception_dump_main(bk_exception_t *self)
 
     coredump_prompt_prologue();
 
+    coredump_feed_watchdogs();
     bk_coredump_memory();
 
 #if CONFIG_MEMDUMP_ALL
     coredump_execute_hook_function();
 #endif
 
+    coredump_feed_watchdogs();
     coredump_prompt_info();
 
 #if CONFIG_CM_BACKTRACE
     if (self->reset_reason != RESET_SOURCE_CRASH_ASSERT) {
+        coredump_feed_watchdogs();
         cm_backtrace_fault(self->lr, self->sp);
     }
 #endif
@@ -159,19 +206,31 @@ static void bk_exception_dump_main(bk_exception_t *self)
 
 void bk_coredump_dump_ap_memory_for_trap(void)
 {
+    coredump_feed_watchdogs();
     bk_coredump_writer_init();
     bk_coredump_write_prompt("***********************************************************************************************\r\n");
     bk_coredump_write_prompt("*************************************AP memory dump begin**************************************\r\n");
     bk_coredump_write_prompt("***********************************************************************************************\r\n");
+    coredump_feed_watchdogs();
     bk_coredump_ap_memory();
     bk_coredump_write_prompt("***********************************************************************************************\r\n");
     bk_coredump_write_prompt("**************************************AP memory dump end***************************************\r\n");
     bk_coredump_write_prompt("***********************************************************************************************\r\n");
     bk_coredump_writer_deinit();
+    
+    coredump_prompt_epilogue();
 }
 
 static void bk_exception_postprocess(bk_exception_t *self)
 {
+#if CONFIG_SUPPORT_WWDT
+    /* Disable WWDT before rebooting. The reboot path does not feed watchdogs
+     * and can run for a while (delay, cpu-freq vote, flash power-saving); a 2nd
+     * WWDT timeout here re-enters NMI and ends up resetting only the CPU while
+     * peripherals (e.g. WIFI) keep their pending interrupts, which then fire
+     * before their handlers are re-registered and cause a null-pointer fault. */
+    bk_wwdt_driver_deinit();
+#endif
     if (self->reset_reason != RESET_SOURCE_CRASH_ASSERT) {
         BK_LOG_FLUSH();
     }
@@ -183,10 +242,17 @@ void bk_exception_handler(uint32_t reset_reason, uint32_t lr, uint32_t sp)
     if (bk_check_assert()) {
         reset_reason = RESET_SOURCE_CRASH_ASSERT;
     }
+    /* Capture the special registers here, before bk_exception_preprocess()
+     * disables interrupts, so PRIMASK/BASEPRI/FAULTMASK/CONTROL reflect the
+     * real pre-exception state instead of the dump handler's own state. */
     bk_exception_t exception = {
         .lr = lr,
         .sp = sp,
         .reset_reason = reset_reason,
+        .primask = __get_PRIMASK(),
+        .basepri = __get_BASEPRI(),
+        .faultmask = __get_FAULTMASK(),
+        .control = __get_CONTROL(),
     };
     bk_exception_preprocess(&exception);
 #if CONFIG_DEBUG_VERSION || CONFIG_DUMP_ENABLE

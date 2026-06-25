@@ -1,8 +1,7 @@
 #include "cli.h"
 #include <os/os.h>
 #include <driver/pwm.h>
-#include "pwm_hal.h"
-#include <driver/trng.h>
+#include <components/bk_platform.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <time.h>

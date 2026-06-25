@@ -141,10 +141,10 @@ const bk_dump_mem_info_t bk7259_sram_info[] = {
     {"SRAM0", SOC_SRAM0_DATA_BASE, SOC_SRAM0_DATA_SIZE},
     {"SRAM1", SOC_SRAM1_DATA_BASE, SOC_SRAM1_DATA_SIZE},
     {"SRAM2", SOC_SRAM2_DATA_BASE, SOC_SRAM2_DATA_SIZE},
-    {"SRAM3", SOC_SRAM3_DATA_BASE, SOC_SRAM3_DATA_SIZE},
-    {"SRAM4", SOC_SRAM4_DATA_BASE, SOC_SRAM4_DATA_SIZE},
     {"SRAM5", SOC_SRAM5_DATA_BASE, SOC_SRAM5_DATA_SIZE},
     {"SRAM6", SOC_SRAM6_DATA_BASE, SOC_SRAM6_DATA_SIZE},
+    {"SRAM3", SOC_SRAM3_DATA_BASE, SOC_SRAM3_DATA_SIZE},
+    {"SRAM4", SOC_SRAM4_DATA_BASE, SOC_SRAM4_DATA_SIZE},
 };
 
 const bk_dump_mem_info_t* bk_get_sram_info_list(void)
@@ -160,6 +160,17 @@ uint32_t bk_get_sram_info_count(void)
 
 const bk_dump_mem_info_t bk7259_peri_reg_info[] = {
     {"SYS", (uint32_t)SOC_SYS_REG_BASE, (0x5c*4)},
+    /* M55 SYSTEM block @ 0x48000000 (AHB-peri side).  Contains:
+     *   Reg 0..0x1F : PLL / clock divider / reset / power-domain ctrl
+     *                 (e.g. cpu/h26e/isp/dpu/gpu/npu/psram clock enables,
+     *                  reset releases, power-domain on/off).
+     *   Reg 0x20    : per-master AHB QoS (enet/h26e/isp/dpu/npu).
+     *   Reg 0x21    : DPU sub-block gating (cpu / videopost / ...).
+     *   Reg 0x22..0x53 : DMA flexa / debug counters.
+     * Without this we cannot tell whether a victim peripheral was clock-
+     * gated or in reset at hang time.  0x60*4 = 384B covers all known
+     * regs up to 0x53. */
+    {"SYS_AHBP", (uint32_t)SOC_SYS_AHBP_REG_BASE,       (0x60*4)},
     // flash regs warning!!!
     {"FLASH", (uint32_t)SOC_FLASH_REG_BASE, (0x20*4)},
     {"HSPL0_CFG", (uint32_t)SOC_HSPL0_REG_BASE, (0x10*4)},
@@ -185,8 +196,43 @@ const bk_dump_mem_info_t bk7259_peri_reg_info[] = {
     {"AON_RTC", (uint32_t)SOC_AON_RTC_REG_BASE, (0x0a*4)},
 #endif
 #if CONFIG_PSRAM
-    {"PSRAM", (uint32_t)SOC_PSRAM_REG_BASE, (0x17*4)},
+    {"PSRAM0", (uint32_t)SOC_PSRAM0_REG_BASE, (0x18*4)},
+    {"PSRAM1", (uint32_t)SOC_PSRAM1_REG_BASE, (0x18*4)},
 #endif
+    /* Bus-stall forensics: AP-side peripherals reachable via the shared
+     * SoC bus.  Captured ONLY for coredump, not used at runtime.  Sizes
+     * are picked to cover IRQ / status registers we already know are
+     * accessed inside AP ISRs (see 0516-night RCA: MIPI #6/#19/#21/#22).
+     *
+     *   HPDMA  : 0x100*4 covers ctrl + status of all 16 channels.
+     *   ISP    : 0x80*4  covers ID + global control block (front of regs).
+     *   ISP_MI : separate 0x10*4 window at offset 0x1070*4 captures
+     *            ISP_TIMEOUT_CFG_STREAMxx / ISP_STREAM_STATUS_STREAMxx
+     *            which is what vsi_isp_hal_read_reg() touches in ISR.
+     *   H26E   : 0x80*4  covers encode engine status.
+     *   DPU    : 0x100*4 covers viv_dc chip-ID + interrupt regs.
+     *   GPU    : 0x100*4 covers AQHIIDLEREG / AQINTACK / AQINTREN. */
+    {"HPDMA",  (uint32_t)SOC_HPDMA_REG_BASE,            (0x100*4)},
+    {"ISP",    (uint32_t)SOC_ISP_REG_BASE,              (0x80*4)},
+    {"ISP_MI", (uint32_t)SOC_ISP_REG_BASE + (0x1070*4), (0x10*4)},
+    {"H26E",   (uint32_t)SOC_H26E_REG_BASE,             (0x80*4)},
+    {"DPU",    (uint32_t)SOC_DPU_REG_BASE,              (0x100*4)},
+    {"GPU",    (uint32_t)SOC_GPU_REG_BASE,              (0x100*4)},
+    /* AHB access controllers (Peripheral-Protection blocks).
+     *
+     *   PPHS @ 0x480D0000 (M55/AP side): regs 0..7.  Reg0x4[31]
+     *          ahbp_ahb_sresp = 1 makes an illegal AHB transaction return
+     *          a bus error response; if a master is parked waiting for
+     *          HREADY this is the documented stall mechanism.
+     *   PPRO @ 0x44050000 (M52/CP side): regs 0..0x23 (sparse).
+     *          Reg0x7[29]/Reg0x7[12]/Reg0x8[13]/Reg0x8[8]/Reg0x9[30] are
+     *          the corresponding AON/BAK AHB/APB sresp control bits.
+     *
+     * Capturing these gives a 1-shot read of who is allowed to talk to
+     * whom and whether bus-error response is enabled at hang time. */
+    {"PPHS",   (uint32_t)SOC_PPHS_REG_BASE,             (0x10*4)},
+    {"PPRO",   (uint32_t)SOC_PPRO_REG_BASE,             (0x24*4)},
+
 };
 
 const bk_dump_mem_info_t* bk_get_peri_reg_info_list(void)
@@ -336,6 +382,10 @@ static inline bool addr_is_in_dtcm(uint32_t addr)
 
 static inline bool addr_is_in_sram(uint32_t addr)
 {
+    /* When CONFIG_SRAM_DIRECT_ADDR is enabled the OS RAM lives in the
+     * 0x2Cxxxxxx alias, while SOC_RAM_BASE is the 0x28xxxxxx alias. Normalise
+     * the 0x2C alias back to 0x28 so both forms are recognised. */
+    addr = SOC_SRAM_PERI_ADDR(addr);
     return ((addr >= SOC_RAM_BASE) && (addr < SOC_RAM_BASE + SOC_RAM_SIZE));
 }
 

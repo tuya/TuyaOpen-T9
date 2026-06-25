@@ -6,6 +6,19 @@
 #if !CONFIG_HSPL
 #define aspl_res_lock bk_sspl_res_lock
 #define aspl_res_unlock bk_sspl_res_unlock
+#elif CONFIG_HSPL_LEAK_DEBUG
+#define aspl_res_lock(res) do { \
+	uint32_t __aspl_owner_pc = (uint32_t)(uintptr_t)__builtin_return_address(0); \
+	bk_hspl_res3_trace_record((res), BK_HSPL_RES3_TRACE_ENTER_REQ, __aspl_owner_pc, 0U); \
+	bk_hspl_res_must_lock(res); \
+	bk_hspl_res_dbg_set_owner((res), (uint8_t)rtos_get_core_id(), __aspl_owner_pc); \
+} while (0)
+#define aspl_res_unlock(res) do { \
+	bk_hspl_res3_trace_record((res), BK_HSPL_RES3_TRACE_EXIT_REQ, \
+		(uint32_t)(uintptr_t)__builtin_return_address(0), 0U); \
+	bk_hspl_res_dbg_clear_owner(res); \
+	bk_hspl_res_unlock(res); \
+} while (0)
 #else
 #define aspl_res_lock bk_hspl_res_must_lock
 #define aspl_res_unlock bk_hspl_res_unlock
@@ -133,5 +146,18 @@ uint32_t bk_aspl_isp_enter_critical(void)
 void bk_aspl_isp_exit_critical(uint32_t flags)
 {
 	aspl_res_unlock(BK_HSPL_RES_ISP);
+	rtos_enable_int(flags);
+}
+
+uint32_t bk_aspl_npu_enter_critical(void)
+{
+	uint32_t flags = rtos_disable_int();
+	aspl_res_lock(BK_HSPL_RES_NPU);
+	return flags;
+}
+
+void bk_aspl_npu_exit_critical(uint32_t flags)
+{
+	aspl_res_unlock(BK_HSPL_RES_NPU);
 	rtos_enable_int(flags);
 }

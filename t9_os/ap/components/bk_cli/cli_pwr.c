@@ -15,7 +15,7 @@
 #include <driver/aon_rtc_types.h>
 #include <driver/aon_rtc.h>
 #include <driver/timer.h>
-#include <driver/trng.h>
+#include <components/bk_platform.h>
 #include <driver/pwr_clk.h>
 #include <driver/rosc_32k.h>
 #include <driver/rosc_ppm.h>
@@ -208,7 +208,8 @@ static void cli_pm_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char 
 			#if CONFIG_GPIO_WAKEUP_SUPPORT
 			bk_gpio_register_isr(pm_param1, cli_pm_gpio_callback);
 			bk_gpio_register_wakeup_source(pm_param1,pm_param2);
-			bk_pm_wakeup_source_set(PM_WAKEUP_SOURCE_INT_GPIO, NULL);
+			pm_gpio_wakeup_config_t gpio_wakeup = {pm_param1, pm_param2};
+			bk_pm_ap_gpio_wakeup_source_config(pm_sleep_mode, PM_WAKEUP_SOURCE_INT_GPIO, &gpio_wakeup);
 			#endif //CONFIG_GPIO_WAKEUP_SUPPORT
 		}
 	}
@@ -820,7 +821,7 @@ static void cli_pm_demo_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, 
 	if (os_strcmp(argv[1], "init") == 0)
 	{
 		CLI_LOGD("pm demo init\r\n");
-		//pm_demo_thread_main();
+		pm_demo_thread_main();
 	} 
 	else if (os_strcmp(argv[1], "deep_sleep") == 0) 
 	{

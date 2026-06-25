@@ -45,14 +45,42 @@ uint32_t aon_pmu_hal_get_chipid(void)
 	return aon_pmu_ll_get_r7c_id();
 }
 
+/*
+ * Read the DPLL unlock latches from R7D (dpll_unlockL bit 22, dpll_unlockH
+ * bit 23). Either out-pointer may be NULL. Returns the logical OR of the
+ * two latch values (1 = currently out-of-lock, 0 = locked).
+ */
+uint32_t aon_pmu_hal_get_dpll_unlock(uint32_t *unlockL, uint32_t *unlockH)
+{
+	uint32_t dpll_unlock_l = aon_pmu_ll_get_r7d_dpll_unlock_l();
+	uint32_t dpll_unlock_h = aon_pmu_ll_get_r7d_dpll_unlock_h();
+
+	if (NULL != unlockL)
+	{
+		*unlockL = dpll_unlock_l;
+	}
+	if (NULL != unlockH)
+	{
+		*unlockH = dpll_unlock_h;
+	}
+
+	return (dpll_unlock_l | dpll_unlock_h) ? 1 : 0;
+}
+
+uint32_t aon_pmu_hal_get_dpll_band(void)
+{
+    return aon_pmu_ll_get_r7d_dpll_band();
+}
+
 /**
- * WAKEUP SOURCE
+ * WAKEUP SOURCE (reg41 wakeup_ena[10:4] / reg71 wakeup_source[26:20])
  * BIT0(0x1): GPIO
  * BIT1(0x2): RTC
  * BIT2(0x4): WIFI
  * BIT3(0x8): BT
- * BIT4(0x10): TOUCHED
- * BIT5(0x20): USBPLUG
+ * BIT4(0x10): USBPLUG
+ * BIT5(0x20): TOUCHED
+ * BIT6(0x40): VAD
  * - write r41 to enable/disable wakeup source before sleep
  * - read r71 to identify the wakeup source after wakeup
 */
@@ -197,8 +225,7 @@ uint32_t aon_pmu_hal_bias_cal_get()
 
 uint32_t aon_pmu_hal_band_cal_get()
 {
-	// return aon_pmu_ll_get_r7e_band_cal();
-	return 0;
+	return aon_pmu_ll_get_r7e_bandcal();
 }
 
 void aon_pmu_hal_r0_latch_to_r7b(void)
@@ -210,7 +237,7 @@ void aon_pmu_hal_r0_latch_to_r7b(void)
 #if CONFIG_AON_PMU_REG0_REFACTOR_DEV
 uint32_t aon_pmu_hal_get_reset_reason(void)
 {
-	return aon_pmu_ll_get_r7b_reset_reason();
+	return aon_pmu_ll_get_r7b();
 }
 
 void aon_pmu_hal_set_reset_reason(uint32_t value, bool write_immediately)
@@ -221,6 +248,7 @@ void aon_pmu_hal_set_reset_reason(uint32_t value, bool write_immediately)
 		aon_pmu_ll_set_r0_value(r7b);
 		aon_pmu_ll_set_r0_reset_reason(value);
 		aon_pmu_hal_r0_latch_to_r7b();
+        delay_us(5);    //add delay to make sure ana value is set successfully
 		aon_pmu_ll_set_r0_value(r0);
 		aon_pmu_ll_set_r0_reset_reason(value);
 	} else {
@@ -288,7 +316,7 @@ __IRAM_SEC void aon_pmu_hal_set_dlv_startup(uint32_t value, bool write_immediate
 #else
 uint32_t aon_pmu_hal_get_reset_reason(void)
 {
-	return aon_pmu_ll_get_r0_reset_reason();
+	return aon_pmu_ll_get_r7b();
 }
 
 void aon_pmu_hal_set_reset_reason(uint32_t value)

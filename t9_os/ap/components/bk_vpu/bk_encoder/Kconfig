@@ -9,6 +9,10 @@ menu "BEKEN CODEC ENCODER"
 	config BK_ENCODER_H264_TASK_SIZE
 		int "BK_ENCODER_H264_TASK_SIZE"
 		default 10240
+		
+	config BK_ENCODER_MJPEG_TASK_SIZE
+		int "BK_ENCODER_MJPEG_TASK_SIZE"
+		default 10240
 
 	config BK_ENCODER_H264_MAX_OUTPUT_BUFFER
 		int "BK_ENCODER_H264_MAX_OUTPUT_BUFFER"
@@ -17,12 +21,26 @@ menu "BEKEN CODEC ENCODER"
 		help
 			"Maximum H.264 encoder output buffer size in bytes"
 
+	config BK_ENCODER_MJPEG_MAX_OUTPUT_BUFFER
+		int "BK_ENCODER_MJPEG_MAX_OUTPUT_BUFFER"
+		default 262144
+		depends on BK_ENCODER
+		help
+			"Maximum MJPEG/JPEG encoder output buffer size in bytes"
+
 	config H264_ENCODER_USE_OS_MALLOC
 		bool "H264 Encoder Use OS Malloc"
 		default n
 		depends on BK_ENCODER
 		help
 			"Use OS malloc for encoder memory allocation instead of frame buffer"
-	
+
+	config H264E_STREAM_SESSION
+		bool "H264E stream session (h264EScream RPC)"
+		default n
+		depends on BK_ENCODER
+		depends on BK_NTWK_TRANSFER
+		help
+			"Enable H264E stream module. JSON-RPC control uses h264EScream.* methods; VIDEO channel sends H264 elementary stream."
 
 endmenu

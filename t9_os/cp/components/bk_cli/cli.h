@@ -68,6 +68,7 @@ extern "C" {
 
 int cli_wifi_init(void);
 int cli_ble_init(void);
+int cli_24g_init(void);
 int cli_netif_init(void);
 int cli_misc_init(void);
 int cli_mem_init(void);
@@ -82,6 +83,7 @@ int cli_lwip_init(void);
 
 int cli_iperf_init(void);
 int cli_pwr_init(void);
+int cli_cp_hotplug_init(void);
 int cli_os_init(void);
 int cli_ota_init(void);
 

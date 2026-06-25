@@ -7,6 +7,9 @@
 #include "network_transfer.h"
 #include "network_type.h"
 #include "ntwk_pack.h"
+#if CONFIG_NTWK_CTRL_CHAN_JSON
+#include "ntwk_json.h"
+#endif
 
 #define TAG "ntwk-trans"
 
@@ -75,12 +78,15 @@ static void ntwk_msg_message_handle(void)
                         (msg.code == NTWK_TRANS_EVT_STOP))
                     {
                         ntwk_pack_clear_ccount(msg.chan_type);
+#if CONFIG_NTWK_CTRL_CHAN_JSON
+                        ntwk_json_clear_rx(msg.chan_type);
+#endif
                     }
 
                     // Call user registered event callback
                     if (ntwk_in_cfg && ntwk_in_cfg->event_cb != NULL)
                     {
-                        LOGV("%s, event:%d, param:%d, chan_type:%d\n", __func__, msg.code, msg.param, msg.chan_type);
+                        LOGW("%s, event:%d, param:%d, chan_type:%d\n", __func__, msg.code, msg.param, msg.chan_type);
                         // Convert internal msg format to ntwk_trans_event_t
                         ntwk_trans_event_t event;
                         event.chan_type = msg.chan_type;

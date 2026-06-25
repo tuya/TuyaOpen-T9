@@ -24,6 +24,8 @@
 #include <reset_reason.h>
 #include "cache.h"
 #include <driver/psram.h>
+#include "sys_hal.h"
+#include "driver/aon_rtc.h"
 
 #if CONFIG_AP_EMUBOOT
 #include "cmsis_gcc.h"
@@ -73,9 +75,13 @@ void multicore_launch_core1(void (*func)(void))
 {
 	multicore_core1_func = func;
 
+#if CONFIG_CPU_HOTPLUG_BOOT_OFFLINE
+	BK_LOGW(TAG, "CP CPU1 stays offline, use 'cpu online 1' to start it\n");
+#else
     //cp smp(core0,core1) + ap smp(core0,core1)
 	// bk_pm_module_vote_power_ctrl(PM_POWER_MODULE_NAME_CPU1, PM_POWER_MODULE_STATE_ON);
 	bk_multicore_start(CPU1_CORE_ID);
+#endif
 
 	BK_LOGW(TAG, "%s end\n", __func__);
 }
@@ -136,9 +142,9 @@ void _soc_start(void)
 //     is_psram_init_done = true;
 // #endif
 	bk_sys_sw_regs_ptr()->flash_init_done = BK_SYS_SW_REGS_FLASH_INIT_NOT_DONE;
-	__DMB();
+	__DSB();
 	flush_dcache((void *)&bk_sys_sw_regs_ptr()->flash_init_done, sizeof(bk_sys_sw_regs_ptr()->flash_init_done));
-	__DMB();
+	__DSB();
 	bk_start_ap_system();
 #endif
 
@@ -265,13 +271,15 @@ void dlv_hook(void)
     if (dlv_is_startup())
     {
 #if CONFIG_DEEP_LV_DEBUG
-        GPIO_UP(27);//1
-        GPIO_DOWN(27);
+        GPIO_UP(37);//1
+        GPIO_DOWN(37);
+		early_jtag_gpio_map();
 #endif
+		bk_wdt_force_feed();
+		bk_rtc_update_base_time();
+		uint64_t current = bk_aon_rtc_get_us();
+		sys_hal_set_low_voltage_wakeup_time_us(current);
 
-        bk_wdt_force_feed();
-        early_jtag_gpio_map();
-    
         extern uint32_t __STACK_LIMIT;
         __set_MSPLIM((uint32_t)(&__STACK_LIMIT));
 

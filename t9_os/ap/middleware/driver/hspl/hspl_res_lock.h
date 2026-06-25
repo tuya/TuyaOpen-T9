@@ -104,16 +104,63 @@ bk_err_t bk_hspl_res_unlock_irqrestore(bk_hspl_res_t res, uint32_t flags);
 bk_err_t bk_hspl_res_unlock(bk_hspl_res_t res);
 
 /**
- * @brief Lock a resource using HSPL with busy-wait (can be used in interrupt context)
+ * @brief Lock a resource using HSPL (blocking until acquired or timeout)
  *
- * @note This function will spin until the lock is acquired. It can be used in
- *       interrupt context but may cause system hang if the lock is held for too long.
- *       Use with caution and ensure the lock holder releases it quickly.
+ * @note FLASH uses CONFIG_HSPL_MUST_LOCK_TIMEOUT_MS_FLASH; other resources use
+ *       CONFIG_HSPL_MUST_LOCK_TIMEOUT_MS_DEFAULT (0 = wait forever).
+ *       On timeout BK_ASSERT is triggered.
  *
  * @param res Resource id
- * @return BK_OK on success, BK_ERR_PARAM on invalid parameter
+ * @return BK_OK on success, BK_ERR_PARAM / BK_ERR_NOT_SUPPORTED / BK_ERR_TIMEOUT
  */
 bk_err_t bk_hspl_res_must_lock(bk_hspl_res_t res);
+
+void bk_hspl_res_dbg_set_owner(bk_hspl_res_t res, uint8_t core, uint32_t pc);
+void bk_hspl_res_dbg_clear_owner(bk_hspl_res_t res);
+
+#if CONFIG_HSPL_LEAK_DEBUG
+#define BK_HSPL_RES3_TRACE_DEPTH 64U
+
+typedef enum {
+	BK_HSPL_RES3_TRACE_ENTER_REQ = 1,
+	BK_HSPL_RES3_TRACE_ENTER_GOT = 2,
+	BK_HSPL_RES3_TRACE_OWNER_SET = 3,
+	BK_HSPL_RES3_TRACE_EXIT_REQ = 4,
+	BK_HSPL_RES3_TRACE_OWNER_CLEAR = 5,
+	BK_HSPL_RES3_TRACE_EXIT_DONE = 6,
+	BK_HSPL_RES3_TRACE_RECUR_ENTER = 7,
+	BK_HSPL_RES3_TRACE_RECUR_EXIT = 8,
+	BK_HSPL_RES3_TRACE_TIMEOUT = 9,
+} bk_hspl_res3_trace_action_t;
+
+typedef struct {
+	volatile uint32_t seq;
+	volatile uint32_t tick_ms;
+	volatile uint32_t action;
+	volatile uint32_t core;
+	volatile uint32_t pc;
+	volatile uint32_t rec_before;
+	volatile uint32_t rec_after;
+	volatile uint32_t ret;
+} bk_hspl_res3_trace_entry_t;
+
+typedef struct {
+	volatile uint32_t magic;
+	volatile uint32_t version;
+	volatile uint32_t entry_size;
+	volatile uint32_t depth;
+	volatile uint32_t write_index;
+	volatile uint32_t wrapped;
+	volatile uint32_t registered;
+	volatile uint32_t reserved;
+	volatile bk_hspl_res3_trace_entry_t entries[BK_HSPL_RES3_TRACE_DEPTH];
+} bk_hspl_res3_trace_buffer_t;
+
+void bk_hspl_res3_trace_record(bk_hspl_res_t res, bk_hspl_res3_trace_action_t action,
+	uint32_t pc, uint32_t ret);
+const volatile bk_hspl_res3_trace_buffer_t *bk_hspl_res3_trace_get(void);
+void bk_hspl_res3_trace_clear(void);
+#endif
 
 /**
  * @brief Get mapping info for debug

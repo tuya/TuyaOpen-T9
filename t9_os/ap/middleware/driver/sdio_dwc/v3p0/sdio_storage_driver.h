@@ -15,6 +15,7 @@
 #pragma once
 
 #include <stdint.h>
+#include <common/bk_include.h>
 #include  "mshc_regs.h"
 
 #include <components/log.h>
@@ -40,6 +41,9 @@
 #else
 #define SDIOD_LOGD(...) do {} while (0)
 #endif
+
+bk_err_t sdio_dwc_interrupt_init(void);
+bk_err_t sdio_dwc_interrupt_deinit(void);
 
 
 #ifdef CONFIG_CPU64_BIT
@@ -131,17 +135,26 @@ struct cmd_param_t {
 #define sdio_mshc_0_base     0x48040000
 #define sdio_mshc_1_base     0x48050000
 
-// Modified by TUYA Start
-/* Default host when the board layer does not override sdio_board_use_sdio1().
- * 0 = SDIO0, 1 = SDIO1. Tuya boards can override this at runtime from
- * usr_sdio.c based on the configured pin group. */
+/* Compile-time *default* of the active controller for the v3p0 driver:
+ *   0 = SDIO0 (host base 0x48040000, GPIO 2/3/4/5 + 10/11), production wiring.
+ *   1 = SDIO1 (host base 0x48050000, GPIO 14..23).
+ *
+ * NOTE: controller selection is now a runtime decision driven by the generic
+ * bk_sdio_host_*(host_id) API (and, for the SD card, by CONFIG_SDCARD_HOST_ID);
+ * this macro only seeds the initial value of s_active_base/s_active_id before
+ * the first bk_sdio_host_init(), which immediately overrides it. It is kept
+ * solely so the low-level register code can still reference a default base, and
+ * defaults to SDIO0. A board bring-up can force the default via the compiler
+ * define SDIO_VERIFY_USE_SDIO1=1 if needed. */
+#ifndef SDIO_VERIFY_USE_SDIO1
 #define SDIO_VERIFY_USE_SDIO1    0
+#endif
 
-uint8_t sdio_board_use_sdio1(void);
-uintptr_t sdio_board_get_active_base(void);
-
-#define SDIO_ACTIVE_BASE         sdio_board_get_active_base()
-// Modified by TUYA End
+#if SDIO_VERIFY_USE_SDIO1
+#define SDIO_ACTIVE_BASE         sdio_mshc_1_base
+#else
+#define SDIO_ACTIVE_BASE         sdio_mshc_0_base
+#endif
 
 //********user reg **********//
 #define sdio_reg0(addr)                                   *((volatile unsigned int *)  (addr + 0x700))

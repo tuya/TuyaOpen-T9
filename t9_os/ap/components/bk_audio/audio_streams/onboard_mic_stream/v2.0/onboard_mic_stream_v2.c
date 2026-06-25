@@ -138,7 +138,26 @@ typedef struct onboard_mic_stream
     int                      out_block_num;    /**< Number of output block */
     beken_semaphore_t        can_process;      /**< can process */
     uint32_t                 ch_bitmap;        /**< Active adc channel bitmap,bit[x]:0:ch_x inactive;1:ch_x active */
+    uint32_t                 fade_samp;        /**< amplitude (pop) fade-in length in int16 samples after a (re)start */
+    uint32_t                 fade_remain;      /**< remaining int16 samples of the amplitude fade-in */
+    uint32_t                 lp_samp;          /**< spectral low-pass open length in int16 samples (decoupled, longer) */
+    uint32_t                 lp_remain;        /**< remaining int16 samples of the spectral low-pass window */
+    int32_t                  lpf_y[3];         /**< cascaded one-pole low-pass states (one per order) used during the low-pass window */
 } onboard_mic_stream_t;
+
+/* Mic (re)start transient shaper. Two decoupled windows; see the parameter
+ * tuning doc (onboard_mic_startup_shaping.md) for the why and how to retune.
+ *   FADEIN_MS : amplitude smoothstep fade, masks the start "pop".
+ *   LPF_MS    : cascaded-LP open window, masks the high-freq "energy spread".
+ *               Longer than the fade and opens late (r^5), as the spread peaks
+ *               ~300-500ms and decays to ~800-900ms. Effective wall-clock is
+ *               ~half the configured ms in this path.
+ *   LPF_A_MIN : per-stage one-pole coeff at window start, Q15 (7875 ~= 700Hz).
+ *   LPF_ORDER : cascaded one-pole stages (~6 dB/oct each); must match lpf_y[]. */
+#define ONBOARD_MIC_FADEIN_MS    (800u)
+#define ONBOARD_MIC_LPF_MS       (2100u)
+#define ONBOARD_MIC_LPF_A_MIN    (7875)
+#define ONBOARD_MIC_LPF_ORDER    (3u)
 
 static onboard_mic_stream_t *gl_onboard_mic = NULL;
 
@@ -328,6 +347,48 @@ exit:
     return BK_FAIL;
 }
 
+static bk_err_t onboard_mic_init_dmic(const onboard_mic_stream_cfg_t *config, uint32_t ch_bitmap)
+{
+    uint32_t dmic_mode0_mask = ONBOARD_MIC_ADC_ACTIVE_CH_0_BIT;
+    uint32_t dmic_mode1_mask = ONBOARD_MIC_ADC_ACTIVE_CH_1_BIT | ONBOARD_MIC_ADC_ACTIVE_CH_2_BIT;
+    aud_dmic_mode_t dmic_mode = config->dmic_cfg.dmic_mode;
+    aud_dmic_config_t dmic_config = DEFAULT_AUD_DMIC_CONFIG();
+
+    /* DMIC mode and ADC channel bitmap are strongly related:
+     *  - AUD_DMIC_MODE_0 -> adc ch0 path
+     *  - AUD_DMIC_MODE_1 -> adc ch1/ch2 path
+     * Auto-correct obvious mismatches to avoid routing DMIC data to inactive ADC channels.
+     */
+    if (dmic_mode == AUD_DMIC_MODE_0)
+    {
+        if ((ch_bitmap & dmic_mode0_mask) == 0)
+        {
+            BK_LOGE(TAG, "dmic_mode(0) not match ch_bitmap:0x%x, need adc ch0 enabled\n", ch_bitmap);
+            return BK_FAIL;
+        }
+    }
+    else if (dmic_mode == AUD_DMIC_MODE_1)
+    {
+        if ((ch_bitmap & dmic_mode1_mask) == 0)
+        {
+            BK_LOGE(TAG, "dmic_mode(1) not match ch_bitmap:0x%x, need adc ch1/ch2 enabled\n", ch_bitmap);
+            return BK_FAIL;
+        }
+    }
+    else
+    {
+        BK_LOGE(TAG, "invalid dmic_mode:%d now.\n", dmic_mode);
+        return BK_FAIL;
+    }
+
+    dmic_config.dmic_clk_gpio  = config->dmic_cfg.dmic_clk_gpio;
+    dmic_config.dmic_data_gpio = config->dmic_cfg.dmic_data_gpio;
+    dmic_config.dmic_mode      = dmic_mode;
+    dmic_config.channel        = config->dmic_cfg.channel;
+
+    return bk_aud_dmic_init(&dmic_config);
+}
+
 static bk_err_t _onboard_mic_open(audio_element_handle_t self)
 {
     BK_LOGD(TAG, "[%s] %s\n", audio_element_get_tag(self), __func__);
@@ -365,6 +426,17 @@ static bk_err_t _onboard_mic_open(audio_element_handle_t self)
     }
 
     bk_aud_adc_enable_used_channel(onboard_mic->ch_bitmap);
+
+    /* Arm pop suppression to mask the mic enable/reset settling transient. The
+     * mic read path outputs a mono int16 stream, so size the ramp in mono int16
+     * samples. */
+    onboard_mic->fade_samp   = ONBOARD_MIC_FADEIN_MS * onboard_mic->adc_cfg.sample_rate / 1000u;
+    onboard_mic->fade_remain = onboard_mic->fade_samp;
+    onboard_mic->lp_samp     = ONBOARD_MIC_LPF_MS * onboard_mic->adc_cfg.sample_rate / 1000u;
+    onboard_mic->lp_remain   = onboard_mic->lp_samp;
+    for (uint32_t k = 0; k < ONBOARD_MIC_LPF_ORDER; k++)
+        onboard_mic->lpf_y[k] = 0;
+
     onboard_mic->is_open = true;
     return BK_OK;
 }
@@ -439,6 +511,58 @@ static int _onboard_mic_read(audio_port_handle_t self, char *buffer, int len, Ti
     return ret;
 }
 
+/* Apply the (re)start transient shaping (amplitude smoothstep + cascaded LP) to
+ * one mono int16 frame, in place. Both ramp positions advance incrementally so
+ * the inner loop stays division-free (only two divides per call to seed the Q15
+ * step). No-op once both windows have elapsed. Q15 fixed point throughout. */
+static void onboard_mic_apply_startup_shaping(onboard_mic_stream_t *m, int16_t *p, uint32_t n)
+{
+    if (!m->fade_remain && !m->lp_remain)
+        return;
+
+    int32_t dr  = m->fade_remain ? (int32_t)((1 << 15) / m->fade_samp) : 0;
+    int32_t drl = m->lp_remain   ? (int32_t)((1 << 15) / m->lp_samp)   : 0;
+    int32_t r   = m->fade_remain ? (int32_t)(((int64_t)(m->fade_samp - m->fade_remain) << 15) / m->fade_samp) : (1 << 15);
+    int32_t rl  = m->lp_remain   ? (int32_t)(((int64_t)(m->lp_samp   - m->lp_remain)   << 15) / m->lp_samp)   : (1 << 15);
+
+    for (uint32_t i = 0; i < n && (m->fade_remain || m->lp_remain); i++)
+    {
+        int64_t x = p[i];
+
+        /* spectral: cascaded one-pole LP, per-stage coeff a opens with rl^5 */
+        if (m->lp_remain)
+        {
+            int32_t rl2 = (int32_t)(((int64_t)rl * rl) >> 15);
+            int32_t rl3 = (int32_t)(((int64_t)rl2 * rl) >> 15);
+            int32_t rl5 = (int32_t)(((int64_t)rl3 * rl2) >> 15);
+            int32_t a   = ONBOARD_MIC_LPF_A_MIN
+                        + (int32_t)(((int64_t)(32768 - ONBOARD_MIC_LPF_A_MIN) * rl5) >> 15);
+            for (uint32_t k = 0; k < ONBOARD_MIC_LPF_ORDER; k++)
+            {
+                m->lpf_y[k] += (int32_t)(((int64_t)a * (x - m->lpf_y[k])) >> 15);
+                x = m->lpf_y[k];
+            }
+            rl += drl;
+            if (rl > (1 << 15)) rl = (1 << 15);
+            m->lp_remain--;
+        }
+
+        /* amplitude: smoothstep g = 3r^2 - 2r^3 */
+        if (m->fade_remain)
+        {
+            int32_t r2 = (int32_t)(((int64_t)r * r) >> 15);
+            int32_t r3 = (int32_t)(((int64_t)r2 * r) >> 15);
+            int32_t g  = 3 * r2 - 2 * r3;
+            x = (x * g) >> 15;
+            r += dr;
+            if (r > (1 << 15)) r = (1 << 15);
+            m->fade_remain--;
+        }
+
+        p[i] = (int16_t)x;
+    }
+}
+
 static int _onboard_mic_process(audio_element_handle_t self, char *in_buffer, int in_len)
 {
     onboard_mic_stream_t *onboard_mic = (onboard_mic_stream_t *)audio_element_getdata(self);
@@ -481,6 +605,11 @@ static int _onboard_mic_process(audio_element_handle_t self, char *in_buffer, in
     }
     else if (r_size > 0)
     {
+        /* Mask the mic (re)start transient: amplitude pop + high-freq spread.
+         * See onboard_mic_apply_startup_shaping() and the tuning doc. */
+        onboard_mic_apply_startup_shaping(onboard_mic,
+                                          (int16_t *)in_buffer,
+                                          (uint32_t)r_size / sizeof(int16_t));   //~700us
 
         ONBOARD_MIC_DATA_DUMP_BY_UART_DATA(in_buffer, r_size);
 
@@ -537,6 +666,8 @@ static bk_err_t _onboard_mic_close(audio_element_handle_t self)
     }
 
     onboard_mic->is_open = false;
+    onboard_mic->fade_remain = 0;
+    onboard_mic->lp_remain = 0;
 
     return BK_OK;
 }
@@ -573,7 +704,7 @@ audio_element_handle_t onboard_mic_stream_init(onboard_mic_stream_cfg_t *config)
     audio_element_handle_t el;
     bk_err_t ret = BK_OK;
     uint32_t i;
-    
+
     gl_onboard_mic = audio_calloc(1, sizeof(onboard_mic_stream_t));
     AUDIO_MEM_CHECK(TAG, gl_onboard_mic, return NULL);
 
@@ -594,56 +725,37 @@ audio_element_handle_t onboard_mic_stream_init(onboard_mic_stream_cfg_t *config)
     os_memcpy(&gl_onboard_mic->adc_cfg, &config->adc_cfg, sizeof(aud_adc_config_t));
 
     /* the buffer_len is the parameter of _onboard_mic_process api */
-    #if 0
-    if (config->adc_cfg.chl_num == 2)
+
+    gl_onboard_mic->ch_bitmap = config->ch_bitmap;
+    uint8_t adc_active_ch_num = 0;
+    for (i = 0; i < AUD_ADC_CHL_MAX; i++)
     {
-        cfg.buffer_len = config->frame_size;
+        if (gl_onboard_mic->ch_bitmap & (1 << i))
+        {
+            adc_active_ch_num++;
+        }
     }
-    else if (config->adc_cfg.chl_num == 1)
+    if (adc_active_ch_num == 0)
     {
-        cfg.buffer_len = config->frame_size * 2;
-    }
-    else
-    {
-        BK_LOGE(TAG, "chl_num: %d is not support\n", config->adc_cfg.chl_num);
+        BK_LOGE(TAG, "invalid ch_bitmap: 0x%x, no active adc channel\n", gl_onboard_mic->ch_bitmap);
         goto _onboard_mic_init_exit;
     }
-    #else
-    gl_onboard_mic->ch_bitmap = config->ch_bitmap;
-    cfg.buffer_len            = config->frame_size * aud_adc_get_active_ch_num();
-    #endif
+    /* ch_bitmap is the source of truth for active ADC channels. */
+    gl_onboard_mic->adc_cfg.chl_num = adc_active_ch_num;
 
+    cfg.tag            = "onboard_mic";
+    cfg.buffer_len     = config->frame_size * aud_adc_get_active_ch_num();
     cfg.out_block_size = config->frame_size * aud_adc_get_active_ch_num();
     cfg.out_block_num  = config->out_block_num;
 
-    cfg.tag = "onboard_mic";
-    gl_onboard_mic->frame_size = config->frame_size;
+    gl_onboard_mic->frame_size     = config->frame_size;
     gl_onboard_mic->out_block_size = cfg.out_block_size;
     gl_onboard_mic->out_block_num  = cfg.out_block_num;
-    
+
     BK_LOGD(TAG, "ch_bitmap:%d, buffer_len: %d, out_block_size: %d, out_block_num: %d\n", 
         gl_onboard_mic->ch_bitmap, cfg.buffer_len, gl_onboard_mic->out_block_size, gl_onboard_mic->out_block_num);
 
     /* init audio adc */
-    #if 0
-    aud_adc_config_t aud_adc_cfg = DEFAULT_AUD_ADC_CONFIG();
-    if (config->adc_cfg.chl_num == 1 || config->adc_cfg.chl_num == 2)
-    {
-        aud_adc_cfg.adc_chl = AUD_ADC_CHL_LR;
-    }
-    else
-    {
-        BK_LOGE(TAG, "adc_chl: %d is not support \n", config->adc_cfg.chl_num);
-        goto _onboard_mic_init_exit;
-    }
-    /* check bits, must be 16bit */
-    if ((config->adc_cfg.bits != 16) || (config->adc_cfg.bits != 24))
-    {
-        BK_LOGE(TAG, "bits: %d is not support, only support 16bits/24bits\n", config->adc_cfg.bits);
-        goto _onboard_mic_init_exit;
-    }
-    #endif
-
     bk_aud_hardware_reset();
 
     ret = bk_aud_adc_init(&gl_onboard_mic->adc_cfg);
@@ -652,32 +764,15 @@ audio_element_handle_t onboard_mic_stream_init(onboard_mic_stream_cfg_t *config)
         BK_LOGE(TAG, "%s, %d, aud_adc_init fail\n", __func__, __LINE__);
         goto _onboard_mic_init_exit;
     }
-    #if 0
-    if (config->adc_cfg.chl_num == 1)
-    {
-        ret = bk_aud_adc_set_mic_mode(AUD_MIC_MIC1, config->adc_cfg.mode);
-    }
-    else
-    {
-        ret = bk_aud_adc_set_mic_mode(AUD_MIC_BOTH, config->adc_cfg.mode);
-    }
-    if (ret != BK_OK)
-    {
-        BK_LOGE(TAG, "set audio adc mode:%d fail, ret: %d \r\n", config->adc_cfg.mode, ret);
-        goto _onboard_mic_init_exit;
-    }
-    #endif
 
-    aud_dmic_config_t dmic_config = DEFAULT_AUD_DMIC_CONFIG();
-    dmic_config.dmic_clk_gpio  = config->dmic_cfg.dmic_clk_gpio;
-    dmic_config.dmic_data_gpio = config->dmic_cfg.dmic_data_gpio;
-    // dmic_config.dmic_mode      = config->dmic_cfg.dmic_mode;
-    // dmic_config.channel        = config->dmic_cfg.channel;
-    ret = bk_aud_dmic_init(&dmic_config);
-    if (ret != BK_OK)
+    if (config->dmic_en)
     {
-        BK_LOGE(TAG, "%s, %d, bk_aud_dmic_init fail\n", __func__, __LINE__);
-        goto _onboard_mic_init_exit;
+        ret = onboard_mic_init_dmic(config, gl_onboard_mic->ch_bitmap);
+        if (ret != BK_OK)
+        {
+            BK_LOGE(TAG, "%s, %d, bk_aud_dmic_init fail\n", __func__, __LINE__);
+            goto _onboard_mic_init_exit;
+        }
     }
 
     //uint32_t adc_bits = config->adc_cfg.chl_cfg[0].bits;
@@ -685,7 +780,7 @@ audio_element_handle_t onboard_mic_stream_init(onboard_mic_stream_cfg_t *config)
     {
         if(gl_onboard_mic->ch_bitmap & (1 << i))
         {
-            gl_onboard_mic->adc_cfg.chl_cfg[i].bits = 16;//adc_bits;   // Force all channels to the same 16bits!
+            gl_onboard_mic->adc_cfg.chl_cfg[i].bits = 16;   // Force all channels to the same 16bits!
             bk_aud_adc_set_ana_gain_db(i, config->adc_cfg.chl_cfg[i].ana_gain);
             BK_LOGD(TAG, "adc_cfg chl_num: %d, adc_gain_db: %.2f, samp_rate: %d, clk_src: %s, adc_mode: %s \n",
                 i, gl_onboard_mic->adc_cfg.chl_cfg[i].dig_gain, gl_onboard_mic->adc_cfg.sample_rate, gl_onboard_mic->adc_cfg.clk_src == 1 ? "APLL" : "XTAL", gl_onboard_mic->adc_cfg.chl_cfg[i].adc_mode == 1 ? "AUD_ADC_MODE_SIGNAL_END" : "AUD_ADC_MODE_DIFFEN");

@@ -425,7 +425,6 @@ const dvp_sensor_config_t dvp_sensor_gc0308 =
 {
     .name = "gc0308",
     .clk = MCLK_24M,
-    .fmt = BK_PIXEL_FORMAT_YUYV,
     .vsync = SYNC_HIGH_LEVEL,
     .hsync = SYNC_HIGH_LEVEL,
     /* default config */
@@ -455,6 +454,7 @@ static const bk_camera_sensor_format_t gc0308_format_array[] = {
         .width = 640,
         .height = 480,
         .fps = 30,
+        .output_pixel_fmt = BK_PIXEL_FORMAT_RGGB8,
     },
 };
 
@@ -502,7 +502,6 @@ avdk_err_t gc0308_detect(bk_camera_sensor_handle_t *handle, bk_camera_sensor_con
     /* enable camera power */
     if (config->pin_pwdn != 0xFF)
     {
-        gpio_dev_unmap(config->pin_pwdn);
         BK_LOG_ON_ERR(bk_gpio_enable_output(config->pin_pwdn));
         bk_gpio_set_capacity(config->pin_pwdn, GPIO_DRIVER_CAPACITY_3);
         bk_gpio_set_output_high(config->pin_pwdn);
@@ -511,7 +510,6 @@ avdk_err_t gc0308_detect(bk_camera_sensor_handle_t *handle, bk_camera_sensor_con
 
     if (config->pin_reset != 0xFF)
     {
-        gpio_dev_unmap(config->pin_reset);
         BK_LOG_ON_ERR(bk_gpio_enable_output(config->pin_reset));
         bk_gpio_set_capacity(config->pin_reset, GPIO_DRIVER_CAPACITY_3);
         bk_gpio_set_output_high(config->pin_reset);

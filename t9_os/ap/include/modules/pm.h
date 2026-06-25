@@ -48,6 +48,7 @@ typedef void (*sleep_callback_t)(void *arg);
 #define PM_WAKEUP_SOURCE_INT_WIFI        (WAKEUP_SOURCE_INT_WIFI)
 #define PM_WAKEUP_SOURCE_INT_BT          (WAKEUP_SOURCE_INT_BT)
 #define PM_WAKEUP_SOURCE_INT_USBPLUG     (WAKEUP_SOURCE_INT_USBPLUG)
+#define PM_WAKEUP_SOURCE_INT_VAD         (WAKEUP_SOURCE_INT_VAD)
 #define PM_WAKEUP_SOURCE_INT_NONE        (WAKEUP_SOURCE_INT_NONE)
 /*--------------------------WAKEUP SOURCE DEFINE  END--------------------------------*/
 
@@ -241,6 +242,7 @@ typedef struct
     uint32_t param1;
 	uint32_t param2;
     uint32_t param3;
+	uint32_t param4;
 } pm_ap_core_msg_t;
 
 typedef enum
@@ -367,7 +369,7 @@ typedef enum
 	PM_SLEEP_MODULE_NAME_UART2,    // 25
 	PM_SLEEP_MODULE_NAME_UART3,    // 26
 	PM_SLEEP_MODULE_NAME_WDG,      // 27
-	PM_SLEEP_MODULE_NAME_TIMER_3,  // 28
+	PM_SLEEP_MODULE_NAME_AUDIO_ASR,// 28
 	PM_SLEEP_MODULE_NAME_APP1,     // 29
 	PM_SLEEP_MODULE_NAME_CPU1,     // 30
 	PM_SLEEP_MODULE_NAME_ROSC_PROG,// 31
@@ -451,8 +453,23 @@ typedef enum
 	PM_DEV_ID_KEY,          //42
 	PM_DEV_ID_CIF,          //43
 	PM_DEV_ID_MAILBOX,      //44
+	/*
+	 * S2 (HPDMA review):
+	 *   New PM device id for the High-Performance DMA controller. The
+	 *   global HPDMA registers (soft_reset / secure_attr /
+	 *   privileged_attr / prio_mode) are powered down with the chip
+	 *   during low-voltage sleep and read back as zero on wakeup; the
+	 *   HPDMA driver uses this id to register an exit-low-voltage
+	 *   callback that invokes bk_hpdma_recover_after_low_voltage()
+	 *   exactly once per wakeup, before any client of HPDMA runs.
+	 *
+	 *   PM_DEV_ID_DEFAULT remains the sentinel for the "default cpu
+	 *   frequency" pseudo-device, so it is intentionally renumbered to
+	 *   46. PM_DEV_ID_MAX still fits the "max 63" limit.
+	 */
+	PM_DEV_ID_HPDMA,        //45
 
-	PM_DEV_ID_DEFAULT,      //45  it is used by pm module set default cpu frequency
+	PM_DEV_ID_DEFAULT,      //46  it is used by pm module set default cpu frequency
 
 	PM_DEV_ID_MAX       //attention:max 63
 }pm_dev_id_e;
@@ -574,7 +591,7 @@ typedef enum
 	PM_SLEEP_MODULE_NAME_UART2,\
 	PM_SLEEP_MODULE_NAME_UART3,\
 	PM_SLEEP_MODULE_NAME_WDG,\
-	PM_SLEEP_MODULE_NAME_TIMER_3,\
+	PM_SLEEP_MODULE_NAME_AUDIO_ASR,\
 	PM_SLEEP_MODULE_NAME_APP1,\
 	PM_SLEEP_MODULE_NAME_CPU1,\
 	PM_SLEEP_MODULE_NAME_ROSC_PROG,\
@@ -616,7 +633,7 @@ typedef enum
 	PM_SLEEP_MODULE_NAME_UART2,\
 	PM_SLEEP_MODULE_NAME_UART3,\
 	PM_SLEEP_MODULE_NAME_WDG,\
-	PM_SLEEP_MODULE_NAME_TIMER_3,\
+	PM_SLEEP_MODULE_NAME_AUDIO_ASR,\
 	PM_SLEEP_MODULE_NAME_APP1,\
 	PM_SLEEP_MODULE_NAME_CPU1,\
 	PM_SLEEP_MODULE_NAME_ROSC_PROG,\
@@ -646,11 +663,19 @@ typedef enum {
 	BK_PM_WAKEUP_SRC_COUNT,     /* 7:Source Count */
 } bk_pm_wakeup_reason_e;
 
+typedef enum {
+	PM_AP_WORK_STATE_FIRST_BOOT   = (1U << 0), /**< first AP boot */
+	PM_AP_WORK_STATE_BOOT_SUCCESS = (1U << 1), /**< AP boot success */
+	PM_AP_WORK_STATE_RESERVED2    = (1U << 2), /**< reserved for extension */
+	PM_AP_WORK_STATE_RESERVED3    = (1U << 3), /**< reserved for extension */
+} pm_ap_work_state_e;
+
 typedef struct {
     volatile uint8_t pm_ap0_sleep_state;
     volatile uint8_t pm_ap1_sleep_state;
     volatile uint8_t pm_cp0_sleep_state;
     volatile uint8_t pm_cp1_sleep_state;
+	volatile uint8_t pm_ap_work_state;
     volatile pm_wakeup_source_e wakeup_source;
     volatile uint8_t wakeup_alarm_name[ALARM_NAME_MAX_LEN+1];
     volatile uint8_t gpio_id;
@@ -664,13 +689,14 @@ typedef enum {
     BK_SYS_SW_REGS_PM_SHARED_INFO_FIELD_AP1_SLEEP_STATE = (1U << 1),
     BK_SYS_SW_REGS_PM_SHARED_INFO_FIELD_CP0_SLEEP_STATE = (1U << 2),
     BK_SYS_SW_REGS_PM_SHARED_INFO_FIELD_CP1_SLEEP_STATE = (1U << 3),
-    BK_SYS_SW_REGS_PM_SHARED_INFO_FIELD_WAKEUP_SOURCE   = (1U << 4),
-    BK_SYS_SW_REGS_PM_SHARED_INFO_FIELD_WAKEUP_ALARM_NAME = (1U << 5),
-    BK_SYS_SW_REGS_PM_SHARED_INFO_FIELD_GPIO_ID         = (1U << 6),
-    BK_SYS_SW_REGS_PM_SHARED_INFO_FIELD_PARAM0          = (1U << 7),
-    BK_SYS_SW_REGS_PM_SHARED_INFO_FIELD_PARAM1          = (1U << 8),
-    BK_SYS_SW_REGS_PM_SHARED_INFO_FIELD_PARAM2          = (1U << 9),
-    BK_SYS_SW_REGS_PM_SHARED_INFO_FIELD_ALL             = (1U << 10) - 1U,
+    BK_SYS_SW_REGS_PM_SHARED_INFO_FIELD_AP_WORK_STATE   = (1U << 4),
+    BK_SYS_SW_REGS_PM_SHARED_INFO_FIELD_WAKEUP_SOURCE   = (1U << 5),
+    BK_SYS_SW_REGS_PM_SHARED_INFO_FIELD_WAKEUP_ALARM_NAME = (1U << 6),
+    BK_SYS_SW_REGS_PM_SHARED_INFO_FIELD_GPIO_ID         = (1U << 7),
+    BK_SYS_SW_REGS_PM_SHARED_INFO_FIELD_PARAM0          = (1U << 8),
+    BK_SYS_SW_REGS_PM_SHARED_INFO_FIELD_PARAM1          = (1U << 9),
+    BK_SYS_SW_REGS_PM_SHARED_INFO_FIELD_PARAM2          = (1U << 10),
+    BK_SYS_SW_REGS_PM_SHARED_INFO_FIELD_ALL             = (1U << 11) - 1U,
 } bk_sys_sw_regs_pm_shared_info_field_t;
 
 /*config the voltage at low vol*/
@@ -686,6 +712,38 @@ typedef enum {
 #define PM_CP1_AUTO_POWER_DOWN_CTRL      (PM_CP1_AUTO_POWER_DOWN_ENABLE)
 
 /*=====================CONFIG  SECTION  END=======================*/
+
+/**
+ * @brief set sleep mode for AP
+ *
+ * set sleep mode for AP.
+ *
+ * @attention
+ * - This API set sleep mode for AP
+ *
+ * @param sleep mode:0x0:NORMAL_SLEEP;0x1:LOW_VOLTAGE;0x2:DEEP_SLEEP;0x3:DEFAULT(if it meet low voltage,enter low voltage,otherwise enter normal sleep);
+ *
+ * @return
+ * - BK_OK: succeed
+ * - others: other errors.
+ */
+bk_err_t bk_pm_ap_sleep_mode_set(pm_sleep_mode_e sleep_mode);
+/**
+ * @brief get whether this is the first AP boot
+ *
+ * @return true if first AP boot, false otherwise
+ */
+bool bk_pm_ap_first_boot_get(void);
+
+/**
+ * @brief set whether AP boot completed successfully
+ *
+ * Weak symbol: applications may override this function.
+ *
+ * @param boot_success true to set PM_AP_WORK_STATE_BOOT_SUCCESS, false to clear
+ * @return BK_OK on success
+ */
+bk_err_t bk_pm_ap_boot_success_set(bool boot_success);
 /****************************************************************************
  * Name: bk_pm_auxldo_ctrl_vote
  *
@@ -1052,7 +1110,7 @@ uint64_t bk_pm_module_lv_sleep_state_get(pm_dev_id_e module);
  * @param
  * -void
  * @return
- * - wakeup source(0x0:WAKEUP SOURCE OF GPIO;0x1:WAKEUP SOURCE OF RTC;0x2:WAKEUP SOURCE OF WIFI OR BT;0x4:WAKEUP SOURCE OF TOUCHED;0x5:NONE WAKEUP_SOURCE)
+ * - wakeup source(0:GPIO;1:RTC;2:WIFI;3:BT;4:USBPLUG;5:TOUCHED;6:VAD;7:NONE)
  */
 pm_wakeup_source_e bk_pm_deep_sleep_wakeup_source_get(void);
 /**
@@ -1098,7 +1156,7 @@ bk_err_t bk_pm_exit_low_vol_wakeup_source_set(void);
  * @param
  * -void
  * @return
- * - wakeup source(0x0:WAKEUP SOURCE OF GPIO;0x1:WAKEUP SOURCE OF RTC;0x2:WAKEUP SOURCE OF WIFI OR BT;0x4:WAKEUP SOURCE OF TOUCHED;0x5:NONE WAKEUP_SOURCE)
+ * - wakeup source(0:GPIO;1:RTC;2:WIFI;3:BT;4:USBPLUG;5:TOUCHED;6:VAD;7:NONE)
  */
 pm_wakeup_source_e bk_pm_exit_low_vol_wakeup_source_get(void);
 /**

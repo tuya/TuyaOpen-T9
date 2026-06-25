@@ -9,7 +9,29 @@
 
 #include "cli_tuya_test.h"
 #include "tkl_qspi.h"
+#include "tkl_pinmux.h"
 #include "tkl_system.h"
+
+/*
+ * QSPI0 pad routing (per vendor/gpio_map.h: GPIO22..27). Not in the board's
+ * GPIO_DEFAULT_DEV_CONFIG, so route the pads explicitly before init.
+ */
+#define QSPI0_CLK_PIN  22
+#define QSPI0_CS_PIN   23
+#define QSPI0_IO0_PIN  24
+#define QSPI0_IO1_PIN  25
+#define QSPI0_IO2_PIN  26
+#define QSPI0_IO3_PIN  27
+
+static void test_qspi_pinmux_setup(void)
+{
+    (void)tkl_io_pinmux_config(QSPI0_CLK_PIN, TUYA_QSPI0_CLK);
+    (void)tkl_io_pinmux_config(QSPI0_CS_PIN,  TUYA_QSPI0_CS);
+    (void)tkl_io_pinmux_config(QSPI0_IO0_PIN, TUYA_QSPI0_IO0);
+    (void)tkl_io_pinmux_config(QSPI0_IO1_PIN, TUYA_QSPI0_IO1);
+    (void)tkl_io_pinmux_config(QSPI0_IO2_PIN, TUYA_QSPI0_IO2);
+    (void)tkl_io_pinmux_config(QSPI0_IO3_PIN, TUYA_QSPI0_IO3);
+}
 
 #define QSPI_TEST_DEFAULT_PORT          TUYA_QSPI_NUM_0
 #define QSPI_TEST_DEFAULT_BYTES         64U
@@ -738,6 +760,9 @@ void cli_xqspi_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **ar
         test_qspi_usage(pcWriteBuffer, xWriteBufferLen);
         return;
     }
+
+    /* Route QSPI0 pads before any init (independent of GPIO_DEFAULT_DEV_CONFIG). */
+    test_qspi_pinmux_setup();
 
     cmd = argv[1];
 

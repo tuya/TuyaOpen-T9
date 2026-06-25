@@ -217,12 +217,24 @@ static uint32_t aon_pmu_get_device_id(void)
 
 static int gpio_dev_map_rxen(uint32_t gpio_id)
 {
-    return gpio_dev_map(gpio_id, GPIO_DEV_RXEN);
+    return gpio_dev_map(gpio_id, GPIO_DEV_WIFI_RX_EN);
 }
 
 static int gpio_dev_map_txen(uint32_t gpio_id)
 {
-    return gpio_dev_map(gpio_id, GPIO_DEV_TXEN);
+    return gpio_dev_map(gpio_id, GPIO_DEV_WIFI_TX_EN);
+}
+
+static int gpio_dev_map_elna(uint32_t gpio_id)
+{
+    return gpio_dev_map(gpio_id, GPIO_DEV_FEM_LNA_EN);
+}
+
+static void bk_epa_gpio_config(UINT32 rx_gpio, UINT32 tx_gpio, UINT32 lna_gpio)
+{
+    gpio_dev_map_txen(tx_gpio);
+    gpio_dev_map_rxen(rx_gpio);
+    gpio_dev_map_elna(lna_gpio);
 }
 
 static bk_err_t bk_pm_clock_ctrl_saradc_pwrup(void)
@@ -615,6 +627,28 @@ bool rtos_is_critical_section_wrapper(void)
 
 extern uint64 riscv_get_mtimer(void);
 
+static UINT32 phy_adapter_ddev_control(UINT32 handle, UINT32 cmd, VOID *param)
+{
+	(void)handle;
+
+	switch (cmd) {
+	case CMD_GET_DEVICE_ID:
+		return sys_drv_get_device_id();
+	case CMD_GET_CHIP_ID:
+		return sys_drv_get_chip_id();
+	case CMD_SCTRL_MODEM_CORE_RESET:
+		return sys_drv_modem_core_reset();
+	case CMD_SCTRL_BLK_ENABLE:
+		if (param)
+			return sys_drv_block_en_mux_set(*(UINT32 *)param);
+		break;
+	default:
+		break;
+	}
+
+	return 0;
+}
+
 const phy_os_funcs_t g_phy_os_funcs = {
 
     ._version                           = PHY_OSI_VERSION,
@@ -642,7 +676,7 @@ const phy_os_funcs_t g_phy_os_funcs = {
 #endif
     ._delay                             = delay,
     ._delay_us                          = bk_delay_us,
-    ._ddev_control                      = ddev_control,
+    ._ddev_control                      = phy_adapter_ddev_control,
     ._bk_wdt_stop                       = bk_wdt_stop_wrapper,
 
     ._temp_detect_is_init               = temp_detect_is_init,
@@ -755,6 +789,7 @@ const phy_os_funcs_t g_phy_os_funcs = {
     ._bk_feature_phy_log_enable             = bk_feature_phy_log_enable,
     ._bk_feature_wifi_signal_cert_enable    = bk_feature_wifi_signal_cert_enable,
     ._me_is_connect_with_instrument         = me_is_connect_with_instrument,
+    ._bk_epa_gpio_config                    = bk_epa_gpio_config,
 };
 
 const phy_os_variable_t g_phy_os_variable = {
@@ -771,9 +806,8 @@ const phy_os_variable_t g_phy_os_variable = {
     ._pm_cpu_frq_60m         = PM_CPU_FRQ_60M,
     ._pm_cpu_frq_80m         = PM_CPU_FRQ_80M,
     ._pm_cpu_frq_120m        = PM_CPU_FRQ_120M,
+    ._pm_cpu_frq_160m        = PM_CPU_FRQ_160M,
     ._pm_cpu_frq_240m        = PM_CPU_FRQ_240M,
-    ._pm_cpu_frq_320m        = PM_CPU_FRQ_320M,
-    ._pm_cpu_frq_480m        = PM_CPU_FRQ_480M,
     ._pm_cpu_frq_default     = PM_CPU_FRQ_DEFAULT,
 
     ._pm_dev_id_phy          = PM_DEV_ID_PHY,
@@ -808,6 +842,7 @@ const phy_os_variable_t g_phy_os_variable = {
     ._pm_power_module_state_on      = PM_POWER_MODULE_STATE_ON,
     ._pm_power_module_state_off     = PM_POWER_MODULE_STATE_OFF,
     ._pm_power_module_state_none    = PM_POWER_MODULE_STATE_NONE,
+    ._pm_power_domain_wrls          = POWER_DOMAIN_NAME_WRLP_ENCP,
 
     ._ADC_TEMP_SENSER_CHANNEL       = ADC_TEMP_SENSOR_CHANNEL,
     ._ADC_VOLT_SENSER_CHANNEL       = ADC_VOLT_SENSER_CHANNEL,

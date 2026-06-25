@@ -120,13 +120,11 @@ bk_err_t bk_lin_gpio_init(lin_channel_t chn)
 			LIN_LOGV("unsupported lin chnnal\r\n");
 			return BK_ERR_PARAM;
 	}
-	BK_LOG_ON_ERR(gpio_dev_unmap(s_lin_gpio[chn].tx_gpio.id));
-	BK_LOG_ON_ERR(gpio_dev_map(s_lin_gpio[chn].tx_gpio.id, s_lin_gpio[chn].tx_gpio.dev));
-	BK_LOG_ON_ERR(gpio_dev_unmap(s_lin_gpio[chn].rx_gpio.id));
-	BK_LOG_ON_ERR(gpio_dev_map(s_lin_gpio[chn].rx_gpio.id, s_lin_gpio[chn].rx_gpio.dev));
-	BK_LOG_ON_ERR(gpio_dev_unmap(s_lin_gpio[chn].sleep_gpio.id));
-	BK_LOG_ON_ERR(gpio_dev_map(s_lin_gpio[chn].sleep_gpio.id, s_lin_gpio[chn].sleep_gpio.dev));
-
+#if CONFIG_USR_GPIO_CFG_EN
+	BK_LOG_ON_ERR(gpio_dev_map_by_func(s_lin_gpio[chn].tx_gpio.dev));
+	BK_LOG_ON_ERR(gpio_dev_map_by_func(s_lin_gpio[chn].rx_gpio.dev));
+	BK_LOG_ON_ERR(gpio_dev_map_by_func(s_lin_gpio[chn].sleep_gpio.dev));
+#endif
 	return BK_OK;
 }
 
@@ -136,10 +134,11 @@ static bk_err_t bk_lin_gpio_deinit(lin_channel_t chn)
 			LIN_LOGV("unsupported lin chnnal\r\n");
 			return BK_ERR_PARAM;
 	}
-	BK_LOG_ON_ERR(gpio_dev_unmap(s_lin_gpio[chn].tx_gpio.id));
-	BK_LOG_ON_ERR(gpio_dev_unmap(s_lin_gpio[chn].rx_gpio.id));
-	BK_LOG_ON_ERR(gpio_dev_unmap(s_lin_gpio[chn].sleep_gpio.id));
-
+#if CONFIG_USR_GPIO_CFG_EN
+	BK_LOG_ON_ERR(gpio_dev_unmap_by_func(s_lin_gpio[chn].tx_gpio.dev));
+	BK_LOG_ON_ERR(gpio_dev_unmap_by_func(s_lin_gpio[chn].rx_gpio.dev));
+	BK_LOG_ON_ERR(gpio_dev_unmap_by_func(s_lin_gpio[chn].sleep_gpio.dev));
+#endif
 	return BK_OK;
 }
 

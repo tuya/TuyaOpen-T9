@@ -380,168 +380,99 @@ static int get_printf_port_wrapper(void)
 
 static void uart_enable_wrapper(uint8_t uart_id, uint8_t enable, uint32_t band)
 {
-    BK_LOGD(NULL,"%s, not supported\r\n", __func__);
+    bk_err_t ret = 0;
+
+    if (enable)
+    {
+        uart_config_t config =
+        {
+            //.baud_rate = UART_BAUDRATE_115200,
+            .baud_rate = UART_BAUDRATE_2000000,
+            .data_bits = UART_DATA_8_BITS,
+            .parity = UART_PARITY_NONE,
+            .stop_bits = UART_STOP_BITS_1,
+            .flow_ctrl = UART_FLOWCTRL_DISABLE,
+            .src_clk = UART_SCLK_XTAL_26M
+        };
+
+        switch (band)
+        {
+            case 115200:
+                config.baud_rate = UART_BAUDRATE_115200;
+                break;
+
+            case 921600:
+                config.baud_rate = UART_BAUDRATE_921600;
+                break;
+
+            case 1000000:
+                config.baud_rate = 1000000;
+                break;
+
+            case 3250000:
+                config.baud_rate = UART_BAUDRATE_3250000;
+                break;
+
+            case 2000000:
+            default:
+                config.baud_rate = UART_BAUDRATE_2000000;
+                break;
+        }
+
+        switch (uart_id)
+        {
+            case UART_ID_0:
+                break;
+
+            case UART_ID_1:
+                break;
+
+            case UART_ID_2:
+                break;
+
+            default:
+                BK_LOGE(NULL, "%s uart_id err %d\n", __func__, uart_id);
+                return;
+                break;
+        }
+
+        ret = bk_uart_init(uart_id, &config);
+
+        if (ret != 0)
+        {
+            BK_LOGE(NULL, "%s bk_uart_init err, ret %d\n", __func__, ret);
+            return;
+        }
+
+        BK_LOGD(NULL, "%s ble uart %d enable\n", __func__, uart_id);
+    }
+    else
+    {
+        bk_uart_deinit(uart_id);
+        BK_LOGD(NULL, "%s ble uart %d disable\n", __func__, uart_id);
+    }
 }
 
 void enable_debug_gpio_wrapper(void)
 {
-    //gpio2-8
-    *((volatile unsigned long *) (0x44000400+2*4)) =0x40;
-    *((volatile unsigned long *) (0x44880000+0x10*4)) |= (0x7f<<16);
-    *((volatile unsigned long *) (0x44000400+3*4)) =0x40;
-    *((volatile unsigned long *) (0x44880000+0x10*4)) |= (0x7f<<24);
-    *((volatile unsigned long *) (0x44000400+4*4)) =0x40;
-    *((volatile unsigned long *) (0x44880000+0x11*4)) |= (0x7f<<0);
-    *((volatile unsigned long *) (0x44000400+5*4)) =0x40;
-    *((volatile unsigned long *) (0x44880000+0x11*4)) |= (0x7f<<8);
-    *((volatile unsigned long *) (0x44000400+6*4)) =0x40;
-    *((volatile unsigned long *) (0x44880000+0x11*4)) |= (0x7f<<16);
-    *((volatile unsigned long *) (0x44000400+7*4)) =0x40;
-    *((volatile unsigned long *) (0x44880000+0x11*4)) |= (0x7f<<24);
-    *((volatile unsigned long *) (0x44000400+8*4)) =0x40;
-    *((volatile unsigned long *) (0x44880000+0x12*4)) |= (0x7f<<0);
-    *((volatile unsigned long *) (0x44000400+9*4)) =0x40;
-    *((volatile unsigned long *) (0x44880000+0x12*4)) |= (0x7f<<8);
+#if CONFIG_USR_GPIO_CFG_EN
+	static const gpio_dev_t debug_funcs[] = {
+		GPIO_DEV_DEBUG0, GPIO_DEV_DEBUG1, GPIO_DEV_DEBUG2, GPIO_DEV_DEBUG3,
+		GPIO_DEV_DEBUG4, GPIO_DEV_DEBUG5, GPIO_DEV_DEBUG6, GPIO_DEV_DEBUG7,
+		GPIO_DEV_DEBUG8, GPIO_DEV_DEBUG9, GPIO_DEV_DEBUG10, GPIO_DEV_DEBUG11,
+		GPIO_DEV_DEBUG12, GPIO_DEV_DEBUG13, GPIO_DEV_DEBUG14, GPIO_DEV_DEBUG15,
+		GPIO_DEV_DEBUG16, GPIO_DEV_DEBUG17, GPIO_DEV_DEBUG18, GPIO_DEV_DEBUG19,
+		GPIO_DEV_DEBUG20, GPIO_DEV_DEBUG21, GPIO_DEV_DEBUG22, GPIO_DEV_DEBUG23,
+		GPIO_DEV_DEBUG24, GPIO_DEV_DEBUG25, GPIO_DEV_DEBUG26, GPIO_DEV_DEBUG27,
+		GPIO_DEV_DEBUG28, GPIO_DEV_DEBUG29, GPIO_DEV_DEBUG30, GPIO_DEV_DEBUG31,
+	};
+	uint32_t i;
 
-    //gpio14-19,24-25
-    *((volatile unsigned long *) (0x44000400+14*4)) =0x40;
-    *((volatile unsigned long *) (0x44880000+0x13*4)) |= (0x7f<<16);
-    *((volatile unsigned long *) (0x44000400+15*4)) =0x40;
-    *((volatile unsigned long *) (0x44880000+0x13*4)) |= (0x7f<<24);
-    *((volatile unsigned long *) (0x44000400+16*4)) =0x40;
-    *((volatile unsigned long *) (0x44880000+0x14*4)) |= (0x7f<<0);
-    *((volatile unsigned long *) (0x44000400+17*4)) =0x40;
-    *((volatile unsigned long *) (0x44880000+0x14*4)) |= (0x7f<<8);
-    *((volatile unsigned long *) (0x44000400+18*4)) =0x40;
-    *((volatile unsigned long *) (0x44880000+0x14*4)) |= (0x7f<<16);
-    *((volatile unsigned long *) (0x44000400+19*4)) =0x40;
-    *((volatile unsigned long *) (0x44880000+0x14*4)) |= (0x7f<<24);
-    *((volatile unsigned long *) (0x44000400+24*4)) =0x40;
-    *((volatile unsigned long *) (0x44880000+0x16*4)) |= (0x7f<<0);
-    *((volatile unsigned long *) (0x44000400+25*4)) =0x40;
-    *((volatile unsigned long *) (0x44880000+0x16*4)) |= (0x7f<<8);
-
-    //gpio26-33
-    *((volatile unsigned long *) (0x44000400+26*4)) =0x40;
-    *((volatile unsigned long *) (0x44880000+0x16*4)) |= (0x7f<<16);
-    *((volatile unsigned long *) (0x44000400+27*4)) =0x40;
-    *((volatile unsigned long *) (0x44880000+0x16*4)) |= (0x7f<<24);
-    *((volatile unsigned long *) (0x44000400+28*4)) =0x40;
-    *((volatile unsigned long *) (0x44880000+0x17*4)) |= (0x7f<<0);
-    *((volatile unsigned long *) (0x44000400+29*4)) =0x40;
-    *((volatile unsigned long *) (0x44880000+0x17*4)) |= (0x7f<<8);
-    *((volatile unsigned long *) (0x44000400+30*4)) =0x40;
-    *((volatile unsigned long *) (0x44880000+0x17*4)) |= (0x7f<<16);
-    *((volatile unsigned long *) (0x44000400+31*4)) =0x40;
-    *((volatile unsigned long *) (0x44880000+0x17*4)) |= (0x7f<<24);
-    *((volatile unsigned long *) (0x44000400+32*4)) =0x40;
-    *((volatile unsigned long *) (0x44880000+0x18*4)) |= (0x7f<<0);
-    *((volatile unsigned long *) (0x44000400+33*4)) =0x40;
-    *((volatile unsigned long *) (0x44880000+0x18*4)) |= (0x7f<<8);
-
-    //gpio34-39,42-43
-    *((volatile unsigned long *) (0x44000400+34*4)) =0x40;
-    *((volatile unsigned long *) (0x44880000+0x18*4)) |= (0x7f<<16);
-    *((volatile unsigned long *) (0x44000400+35*4)) =0x40;
-    *((volatile unsigned long *) (0x44880000+0x18*4)) |= (0x7f<<24);
-    *((volatile unsigned long *) (0x44000400+36*4)) =0x40;
-    *((volatile unsigned long *) (0x44880000+0x19*4)) |= (0x7f<<0);
-    *((volatile unsigned long *) (0x44000400+37*4)) =0x40;
-    *((volatile unsigned long *) (0x44880000+0x19*4)) |= (0x7f<<8);
-    *((volatile unsigned long *) (0x44000400+38*4)) =0x40;
-    *((volatile unsigned long *) (0x44880000+0x19*4)) |= (0x7f<<16);
-    *((volatile unsigned long *) (0x44000400+39*4)) =0x40;
-    *((volatile unsigned long *) (0x44880000+0x19*4)) |= (0x7f<<24);
-    *((volatile unsigned long *) (0x44000400+42*4)) =0x40;
-    *((volatile unsigned long *) (0x44880000+0x1a*4)) |= (0x7f<<16);
-    *((volatile unsigned long *) (0x44000400+43*4)) =0x40;
-    *((volatile unsigned long *) (0x44880000+0x1a*4)) |= (0x7f<<24);
-
-#if 0
-    gpio_dev_unmap(GPIO_2);
-    gpio_dev_map(GPIO_2, GPIO_DEV_DEBUG0);//CLK(H6)
-    gpio_dev_unmap(GPIO_3);
-    gpio_dev_map(GPIO_3, GPIO_DEV_DEBUG1);//CMD(H6)
-    gpio_dev_unmap(GPIO_4);
-    gpio_dev_map(GPIO_4, GPIO_DEV_DEBUG2);//D0(H6)
-    gpio_dev_unmap(GPIO_5);
-    gpio_dev_map(GPIO_5, GPIO_DEV_DEBUG3);//D1(H6)
-    gpio_dev_unmap(GPIO_6);
-    gpio_dev_map(GPIO_6, GPIO_DEV_DEBUG4);//CD(H6)
-    gpio_dev_unmap(GPIO_7);
-    gpio_dev_map(GPIO_7, GPIO_DEV_DEBUG5);//P7(H5)
-    if (PM_LPO_SRC_X32K != bk_clk_32k_customer_config_get())
-    {
-        gpio_dev_unmap(GPIO_8);
-        gpio_dev_map(GPIO_8, GPIO_DEV_DEBUG6);//P8(CON4)
-        gpio_dev_unmap(GPIO_9);
-        gpio_dev_map(GPIO_9, GPIO_DEV_DEBUG7);//P9(CON4)
-    }
-    else
-    {
-        BK_LOGD(NULL,"%s, external 32k is in use, GPIO8 and GPIO9 can not be used to debug \r\n", __func__);
-    }
-
-    gpio_dev_unmap(GPIO_14);
-    gpio_dev_map(GPIO_14, GPIO_DEV_DEBUG8);
-    gpio_dev_unmap(GPIO_15);
-    gpio_dev_map(GPIO_15, GPIO_DEV_DEBUG9);
-    //gpio_dev_unmap(GPIO_16);
-    //_gpio_dev_map_wrapper(GPIO_16, GPIO_DEV_DEBUG10);
-    gpio_dev_unmap(GPIO_17);
-    gpio_dev_map(GPIO_17, GPIO_DEV_DEBUG11);
-    gpio_dev_unmap(GPIO_18);
-    gpio_dev_map(GPIO_18, GPIO_DEV_DEBUG12);
-    gpio_dev_unmap(GPIO_19);
-    gpio_dev_map(GPIO_19, GPIO_DEV_DEBUG13);
-
-    if (PM_LPO_SRC_X32K != bk_clk_32k_customer_config_get())
-    {
-        gpio_dev_unmap(GPIO_24);
-        gpio_dev_map(GPIO_24, GPIO_DEV_DEBUG14);
-    }
-    else
-    {
-        BK_LOGD(NULL,"%s, external 32k is in use, GPIO24 can not be used to debug \r\n", __func__);
-    }
-
-    gpio_dev_unmap(GPIO_25);
-    gpio_dev_map(GPIO_25, GPIO_DEV_DEBUG15);
-
-    gpio_dev_unmap(GPIO_26);
-    gpio_dev_map(GPIO_26, GPIO_DEV_DEBUG16);
-    gpio_dev_unmap(GPIO_27);
-    gpio_dev_map(GPIO_27, GPIO_DEV_DEBUG17);
-    gpio_dev_unmap(GPIO_28);
-    gpio_dev_map(GPIO_28, GPIO_DEV_DEBUG18);
-    gpio_dev_unmap(GPIO_29);
-    gpio_dev_map(GPIO_29, GPIO_DEV_DEBUG19);
-    gpio_dev_unmap(GPIO_30);
-    gpio_dev_map(GPIO_30, GPIO_DEV_DEBUG20);
-    gpio_dev_unmap(GPIO_31);
-    gpio_dev_map(GPIO_31, GPIO_DEV_DEBUG21);
-    gpio_dev_unmap(GPIO_32);
-    gpio_dev_map(GPIO_32, GPIO_DEV_DEBUG22);
-    gpio_dev_unmap(GPIO_33);
-    gpio_dev_map(GPIO_33, GPIO_DEV_DEBUG23);
-
-    gpio_dev_unmap(GPIO_34);
-    gpio_dev_map(GPIO_34, GPIO_DEV_DEBUG24);
-    gpio_dev_unmap(GPIO_35);
-    gpio_dev_map(GPIO_35, GPIO_DEV_DEBUG25);
-    gpio_dev_unmap(GPIO_36);
-    gpio_dev_map(GPIO_36, GPIO_DEV_DEBUG26);
-    gpio_dev_unmap(GPIO_37);
-    gpio_dev_map(GPIO_37, GPIO_DEV_DEBUG27);
-    gpio_dev_unmap(GPIO_38);
-    gpio_dev_map(GPIO_38, GPIO_DEV_DEBUG28);
-    gpio_dev_unmap(GPIO_39);
-    gpio_dev_map(GPIO_39, GPIO_DEV_DEBUG29);
-    gpio_dev_unmap(GPIO_42);
-    gpio_dev_map(GPIO_42, GPIO_DEV_DEBUG30);
-    gpio_dev_unmap(GPIO_43);
-    gpio_dev_map(GPIO_43, GPIO_DEV_DEBUG31);
+	for (i = 0; i < (sizeof(debug_funcs) / sizeof(debug_funcs[0])); i++) {
+		gpio_dev_map_by_func(debug_funcs[i]);
+	}
 #endif
+    return;
 }
 
 

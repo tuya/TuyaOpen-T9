@@ -18,7 +18,8 @@
 #include "soc/soc.h"
 #include "bk_arch.h"
 #include <stdint.h>
-
+#include "soc_debug.h"
+#include "dbg_probe.h"
 /*----------------------------------------------------------------------------
   External References
  *----------------------------------------------------------------------------*/
@@ -158,23 +159,32 @@ const VECTOR_ENTRY_TYPE __VECTOR_TABLE_CORE0[] = {
 
 #define ENTRY_SECTION  __attribute__((naked, section(".fix.reset_entry")))
 
-
+/* Records that the core0 reset handler was entered, for postmortem/hang
+ * debugging (e.g. when a reboot stalls before the system is re-initialized). */
+volatile uint32_t g_reset_entry_state_core0 = 0;
 
 /*----------------------------------------------------------------------------
   Reset Handler called on controller reset
  *----------------------------------------------------------------------------*/
 __NO_RETURN ENTRY_SECTION void Reset_Handler_Core0(void)
 {
+  g_reset_entry_state_core0 = 1;
   // dlv_hook();
 
   __set_MSPLIM((uint32_t)(&__STACK_LIMIT_CORE0));
 
   __disable_irq();
 
+  dbg_probe_init();
+  dbg_probe_early_stage(0u, 1);
+
   b_system_base_init();
-
+  dbg_probe_early_stage(0u, 3);
   b_prep_entry_main();
-
+  dbg_probe_early_stage(0u, 4);
+  /* RAM (.data/.bss) is ready after b_prep_entry_main(); safe for the runtime
+   * (re)init path. NULL => compile-time defaults. */
+  dbg_probe_runtime_init(NULL);
   b_program_start();
 }
 // eof

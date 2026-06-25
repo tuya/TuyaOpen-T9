@@ -310,8 +310,8 @@ OPERATE_RET tkl_aud_dmic_init(TUYA_AUDIO_DMIC_PORT_E port, TKL_AUD_DMIC_CFG_T *c
     }
 
     bk_err_t ret = BK_OK;
-    gpio_dev_t dmic_clk_func = GPIO_DEV_DMIC1_CLK;
-    gpio_dev_t dmic_data_func = GPIO_DEV_DMIC1_DAT;
+    gpio_dev_t dmic_clk_func = GPIO_DEV_DMIC0_CLK;
+    gpio_dev_t dmic_data_func = GPIO_DEV_DMIC0_DAT;
 #if CONFIG_AUD_DRIVER_V2
     aud_dmic_channel_t dmic_chl = AUD_DMIC_CHANNEL_L;
     aud_dmic_mode_t dmic_mode = AUD_DMIC_MODE_0;
@@ -338,8 +338,8 @@ OPERATE_RET tkl_aud_dmic_init(TUYA_AUDIO_DMIC_PORT_E port, TKL_AUD_DMIC_CFG_T *c
 #if CONFIG_AUD_DRIVER_V2
     if (port == TUYA_AUDIO_DMIC_PORT_1) {
         dmic_mode = AUD_DMIC_MODE_1;
-        dmic_clk_func = GPIO_DEV_DMIC2_CLK;
-        dmic_data_func = GPIO_DEV_DMIC2_DAT;
+        dmic_clk_func = GPIO_DEV_DMIC1_CLK;
+        dmic_data_func = GPIO_DEV_DMIC1_DAT;
         adc_ch_bitmap |= (1 << AUD_ADC_CHL_1) | (1 << AUD_ADC_CHL_2);
     }
 #endif
