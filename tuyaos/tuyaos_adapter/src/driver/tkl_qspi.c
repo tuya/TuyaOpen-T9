@@ -20,6 +20,8 @@
 #include "sys_driver.h"
 #include "tuya_dma.h"
 
+extern void bk_delay_us(UINT32 us);
+
 #define TKL_QSPI_DIV_FACTOR_NUM 5U
 #define TKL_QSPI_SRC_DIV_MAX    15U
 #define TKL_QSPI_CLK_DIV_MAX    4U
