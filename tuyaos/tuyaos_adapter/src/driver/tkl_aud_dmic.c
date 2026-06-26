@@ -24,7 +24,6 @@
 
 #include "tuya_cloud_types.h"
 #include "tkl_aud_dmic.h"
-#include "tkl_aud_pm.h"
 #include "gpio_driver.h"
 
 extern void bk_printf(const char *fmt, ...);
@@ -53,7 +52,6 @@ extern void bk_printf(const char *fmt, ...);
 typedef struct {
     TKL_AUD_DMIC_CFG_T   cfg;
     bool                    is_open;
-    bool                    pm_voted;
 #if CONFIG_AUD_DRIVER_V2
     aud_dmic_mode_t          dmic_mode;
     uint32_t                 adc_ch_bitmap;
@@ -331,10 +329,6 @@ OPERATE_RET tkl_aud_dmic_init(TUYA_AUDIO_DMIC_PORT_E port, TKL_AUD_DMIC_CFG_T *c
     os_memset(gl_dmic_ctx, 0, sizeof(tkl_aud_dmic_ctx_t));
     os_memcpy(&gl_dmic_ctx->cfg, config, sizeof(TKL_AUD_DMIC_CFG_T));
 
-    // 设置主频
-    tkl_aud_pm_acquire();
-    gl_dmic_ctx->pm_voted = true;
-
 #if CONFIG_AUD_DRIVER_V2
     if (port == TUYA_AUDIO_DMIC_PORT_1) {
         dmic_mode = AUD_DMIC_MODE_1;
@@ -412,10 +406,6 @@ __dmic_init_exit:
 #else
     bk_aud_dmic_deinit();
 #endif
-    if (gl_dmic_ctx->pm_voted) {
-        tkl_aud_pm_release();
-        gl_dmic_ctx->pm_voted = false;
-    }
 
     if (gl_dmic_ctx) {
         if (gl_dmic_ctx->read_buf) {
@@ -582,11 +572,6 @@ VOID_T tkl_aud_dmic_deinit(TUYA_AUDIO_DMIC_PORT_E port)
 #else
     bk_aud_dmic_deinit();
 #endif
-
-    if (gl_dmic_ctx->pm_voted) {
-        tkl_aud_pm_release();
-        gl_dmic_ctx->pm_voted = false;
-    }
 
     if (gl_dmic_ctx->read_buf) {
         tkl_system_psram_free(gl_dmic_ctx->read_buf);

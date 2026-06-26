@@ -15,7 +15,6 @@
 
 #include "tuya_cloud_types.h"
 #include "tkl_aud_adc.h"
-#include "tkl_aud_pm.h"
 
 extern void bk_printf(const char *fmt, ...);
 
@@ -48,7 +47,6 @@ extern void bk_printf(const char *fmt, ...);
 typedef struct {
     TKL_AUD_ADC_CFG_T   cfg;
     bool                is_open;
-    bool                pm_voted;
     uint32_t            dma_frame_size;
     uint8_t             chl_num;
     uint8_t             raw_ch_num;
@@ -516,9 +514,6 @@ OPERATE_RET tkl_aud_adc_init(TUYA_AUDIO_ADC_PORT_E port, TKL_AUD_ADC_CFG_T *conf
     os_memset(gl_adc_ctx, 0, sizeof(tkl_aud_adc_ctx_t));
     os_memcpy(&gl_adc_ctx->cfg, config, sizeof(TKL_AUD_ADC_CFG_T));
 
-    tkl_aud_pm_acquire();
-    gl_adc_ctx->pm_voted = true;
-
 #if CONFIG_AUD_DRIVER_V2
     switch (config->chan) {
         case TUYA_AUDIO_ADC_CHANNEL_L:
@@ -687,10 +682,6 @@ OPERATE_RET tkl_aud_adc_init(TUYA_AUDIO_ADC_PORT_E port, TKL_AUD_ADC_CFG_T *conf
 __adc_init_exit:
     __tkl_aud_adc_dma_deconfig();
     bk_aud_adc_deinit();
-    if (gl_adc_ctx && gl_adc_ctx->pm_voted) {
-        tkl_aud_pm_release();
-        gl_adc_ctx->pm_voted = false;
-    }
 
     if (gl_adc_ctx) {
         if (gl_adc_ctx->read_buf) {
@@ -883,11 +874,6 @@ VOID_T tkl_aud_adc_deinit(TUYA_AUDIO_ADC_PORT_E port)
     bk_aud_adc_deinit();
 
     mb_flash_unregister_op_onboard_mic_stream_notify();
-
-    if (gl_adc_ctx->pm_voted) {
-        tkl_aud_pm_release();
-        gl_adc_ctx->pm_voted = false;
-    }
 
     if (gl_adc_ctx->read_buf)
     {

@@ -14,7 +14,6 @@
 
 #include "tuya_cloud_types.h"
 #include "tkl_aud_dac.h"
-#include "tkl_aud_pm.h"
 
 extern void bk_printf(const char *fmt, ...);
 
@@ -38,7 +37,6 @@ typedef struct {
     TKL_AUD_DAC_CFG_T       cfg;
     TUYA_AUDIO_DAC_PORT_E   port;
     TKL_AUD_DAC_STAT_E      stat;
-    bool                    pm_voted;
     dma_id_t                spk_dma_id;
     RingBufferContext       spk_rb;
     int8_t                 *spk_dma_buf;
@@ -258,9 +256,6 @@ OPERATE_RET tkl_aud_dac_init(TUYA_AUDIO_DAC_PORT_E port, TKL_AUD_DAC_CFG_T *conf
         gl_dac_ctx->cfg.chan_num = 1;
     }
 
-    tkl_aud_pm_acquire();
-    gl_dac_ctx->pm_voted = true;
-
     /* DAC init */
 #if CONFIG_AUD_DRIVER_V2
     if (gl_dac_ctx->cfg.chan_num == 1) {
@@ -355,11 +350,6 @@ __dac_init_exit:
 
     __tkl_aud_dac_dma_deconfig();
     bk_aud_dac_deinit();
-
-    if (gl_dac_ctx->pm_voted) {
-        tkl_aud_pm_release();
-        gl_dac_ctx->pm_voted = false;
-    }
 
     if (gl_dac_ctx) {
         tkl_system_free(gl_dac_ctx);
@@ -699,11 +689,6 @@ OPERATE_RET tkl_aud_dac_deinit(TUYA_AUDIO_DAC_PORT_E port)
     (void)bk_aud_dac_stop();
 #endif
     bk_aud_dac_deinit();
-
-    if (gl_dac_ctx->pm_voted) {
-        tkl_aud_pm_release();
-        gl_dac_ctx->pm_voted = false;
-    }
 
     tkl_system_free(gl_dac_ctx);
     gl_dac_ctx = NULL;
