@@ -103,7 +103,7 @@ static OPERATE_RET test_dac_set_volume(uint8_t volume)
     return ret;
 }
 
-static OPERATE_RET test_dac_init(uint32_t sample_rate, uint32_t frame_time_ms, uint8_t volume)
+static OPERATE_RET test_dac_init(uint32_t sample_rate, uint32_t frame_time_ms, uint8_t volume, uint8_t chan_num)
 {
     OPERATE_RET ret;
     TKL_AUD_DAC_CFG_T cfg;
@@ -111,6 +111,9 @@ static OPERATE_RET test_dac_init(uint32_t sample_rate, uint32_t frame_time_ms, u
 
     if (sample_rate == 0U || frame_time_ms == 0U) {
         return OPRT_INVALID_PARM;
+    }
+    if (chan_num != 1U && chan_num != 2U) {
+        chan_num = DAC_TEST_DEFAULT_CHAN_NUM;
     }
 
     if (s_dac_ctx.started == true) {
@@ -129,7 +132,7 @@ static OPERATE_RET test_dac_init(uint32_t sample_rate, uint32_t frame_time_ms, u
 
     os_memset(&cfg, 0, sizeof(cfg));
     cfg.volume = volume;
-    cfg.chan_num = DAC_TEST_DEFAULT_CHAN_NUM;
+    cfg.chan_num = chan_num;
     cfg.sample_bits = DAC_TEST_DEFAULT_SAMPLE_BITS;
     cfg.sample_rate = sample_rate;
     cfg.frame_time_ms = frame_time_ms;
@@ -165,7 +168,7 @@ static OPERATE_RET test_dac_init(uint32_t sample_rate, uint32_t frame_time_ms, u
     s_dac_ctx.port = DAC_TEST_DEFAULT_PORT;
     s_dac_ctx.sample_rate = sample_rate;
     s_dac_ctx.sample_bits = DAC_TEST_DEFAULT_SAMPLE_BITS;
-    s_dac_ctx.chan_num = DAC_TEST_DEFAULT_CHAN_NUM;
+    s_dac_ctx.chan_num = chan_num;
     s_dac_ctx.frame_time_ms = frame_time_ms;
     s_dac_ctx.volume = (volume > 100U) ? 100U : volume;
     s_dac_ctx.tx_complete_cnt = 0U;
@@ -315,7 +318,8 @@ static OPERATE_RET test_dac_play_square(uint32_t play_ms, uint32_t freq_hz)
     if (s_dac_ctx.initialized != true) {
         ret = test_dac_init(DAC_TEST_DEFAULT_SAMPLE_RATE,
                             DAC_TEST_DEFAULT_FRAME_TIME_MS,
-                            DAC_TEST_DEFAULT_VOLUME);
+                            DAC_TEST_DEFAULT_VOLUME,
+                            DAC_TEST_DEFAULT_CHAN_NUM);
         if (ret != OPRT_OK) {
             return ret;
         }
@@ -378,6 +382,139 @@ static OPERATE_RET test_dac_play_square(uint32_t play_ms, uint32_t freq_hz)
     return ret;
 }
 
+/* ---------------------- Stereo (dual-channel) test ------------------------- */
+
+typedef enum {
+    DAC_CH_LEFT = 0,
+    DAC_CH_RIGHT,
+    DAC_CH_BOTH,
+} dac_test_ch_e;
+
+/*
+ * Fill an interleaved stereo buffer (L0,R0,L1,R1,...) with a square wave on the
+ * selected channel(s); the other channel is silence. Lets the dual-channel test
+ * drive the left and right speakers independently.
+ */
+static void test_dac_fill_square_stereo(uint8_t *buf, uint32_t len, uint32_t freq_hz, dac_test_ch_e ch)
+{
+    int16_t *pcm = (int16_t *)buf;
+    uint32_t samples = len / sizeof(int16_t);   /* total int16 count (L,R,L,R,...) */
+    uint32_t half_period;
+    uint32_t i;
+
+    if (buf == NULL || len < (2U * sizeof(int16_t)) || s_dac_ctx.sample_rate == 0U || freq_hz == 0U) {
+        return;
+    }
+
+    half_period = s_dac_ctx.sample_rate / (freq_hz * 2U);
+    if (half_period == 0U) {
+        half_period = 1U;
+    }
+
+    for (i = 0U; (i + 1U) < samples; i += 2U) {
+        bool high_level = ((s_dac_ctx.wave_sample_pos / half_period) & 0x1U) ? true : false;
+        int16_t v = high_level ? DAC_TEST_SQUARE_AMP : -DAC_TEST_SQUARE_AMP;
+        pcm[i]      = (ch == DAC_CH_LEFT  || ch == DAC_CH_BOTH) ? v : 0;   /* L */
+        pcm[i + 1U] = (ch == DAC_CH_RIGHT || ch == DAC_CH_BOTH) ? v : 0;   /* R */
+        s_dac_ctx.wave_sample_pos++;
+    }
+}
+
+static OPERATE_RET test_dac_play_stereo_phase(uint32_t play_ms, uint32_t freq_hz, dac_test_ch_e ch)
+{
+    OPERATE_RET ret = OPRT_OK;
+    uint8_t *frame = NULL;
+    uint32_t total_bytes;
+    uint32_t sent_bytes = 0U;
+    uint32_t frame_size;
+    const uint32_t lr_align = 2U * sizeof(int16_t);   /* one L+R frame = 4 bytes */
+
+    frame_size = s_dac_ctx.frame_size;
+    if (frame_size < lr_align) {
+        frame_size = test_dac_calc_frame_size(s_dac_ctx.sample_rate, s_dac_ctx.sample_bits,
+                                              s_dac_ctx.chan_num, s_dac_ctx.frame_time_ms);
+    }
+    if (frame_size < lr_align) {
+        return OPRT_INVALID_PARM;
+    }
+
+    total_bytes = ((s_dac_ctx.sample_rate * (s_dac_ctx.sample_bits / 8U) * s_dac_ctx.chan_num) / 1000U) * play_ms;
+    total_bytes &= ~(lr_align - 1U);
+    if (total_bytes < lr_align) {
+        return OPRT_INVALID_PARM;
+    }
+
+    frame = (uint8_t *)tkl_system_malloc(frame_size);
+    if (frame == NULL) {
+        return OPRT_MALLOC_FAILED;
+    }
+
+    while (sent_bytes < total_bytes) {
+        uint32_t chunk = total_bytes - sent_bytes;
+        if (chunk > frame_size) {
+            chunk = frame_size;
+        }
+        chunk &= ~(lr_align - 1U);
+        if (chunk == 0U) {
+            break;
+        }
+        test_dac_fill_square_stereo(frame, chunk, freq_hz, ch);
+        ret = test_dac_write_with_retry(frame, chunk);
+        if (ret != OPRT_OK) {
+            break;
+        }
+        sent_bytes += chunk;
+    }
+
+    tkl_system_free(frame);
+    return ret;
+}
+
+/*
+ * One-key dual-channel test: (re)init the DAC in stereo, then play the tone on
+ * the LEFT speaker only, then the RIGHT only, then BOTH -- so each speaker can
+ * be verified independently.
+ */
+static OPERATE_RET test_dac_play_stereo(uint32_t play_ms, uint32_t freq_hz)
+{
+    OPERATE_RET ret;
+
+    if (play_ms == 0U || freq_hz == 0U) {
+        return OPRT_INVALID_PARM;
+    }
+
+    if (s_dac_ctx.initialized != true || s_dac_ctx.chan_num != 2U) {
+        if (s_dac_ctx.started == true) {
+            (void)test_dac_stop();
+        }
+        ret = test_dac_init(DAC_TEST_DEFAULT_SAMPLE_RATE, DAC_TEST_DEFAULT_FRAME_TIME_MS,
+                            DAC_TEST_DEFAULT_VOLUME, 2U);
+        if (ret != OPRT_OK) {
+            return ret;
+        }
+    }
+    if (s_dac_ctx.started != true) {
+        ret = test_dac_start();
+        if (ret != OPRT_OK) {
+            return ret;
+        }
+    }
+
+    tkl_log_output("xdac stereo: LEFT only, %u ms\r\n", (unsigned int)play_ms);
+    ret = test_dac_play_stereo_phase(play_ms, freq_hz, DAC_CH_LEFT);
+    if (ret != OPRT_OK) {
+        return ret;
+    }
+    tkl_log_output("xdac stereo: RIGHT only, %u ms\r\n", (unsigned int)play_ms);
+    ret = test_dac_play_stereo_phase(play_ms, freq_hz, DAC_CH_RIGHT);
+    if (ret != OPRT_OK) {
+        return ret;
+    }
+    tkl_log_output("xdac stereo: BOTH, %u ms\r\n", (unsigned int)play_ms);
+    ret = test_dac_play_stereo_phase(play_ms, freq_hz, DAC_CH_BOTH);
+    return ret;
+}
+
 void cli_tuya_dac_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv)
 {
     OPERATE_RET ret = OPRT_OK;
@@ -387,6 +524,7 @@ void cli_tuya_dac_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char *
     uint32_t play_ms = DAC_TEST_DEFAULT_PLAY_MS;
     uint32_t freq_hz = DAC_TEST_DEFAULT_FREQ;
     uint32_t volume = DAC_TEST_DEFAULT_VOLUME;
+    uint32_t chan_num = DAC_TEST_DEFAULT_CHAN_NUM;
 
     if (pcWriteBuffer == NULL || xWriteBufferLen <= 0) {
         return;
@@ -394,7 +532,7 @@ void cli_tuya_dac_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char *
 
     if (argc < 2) {
         snprintf(pcWriteBuffer, xWriteBufferLen,
-                 "Usage: xdac <init [rate] [frame_ms] [volume]|start|play [ms] [freq]|vol [0-100]|stop|deinit|close|status>");
+                 "Usage: xdac <init [rate] [frame_ms] [volume] [chan 1|2]|start|play [ms] [freq]|stereo [ms] [freq]|vol [0-100]|stop|deinit|close|status>");
         return;
     }
 
@@ -413,15 +551,19 @@ void cli_tuya_dac_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char *
         if (volume > 100U) {
             volume = 100U;
         }
+        if (argc >= 6) {
+            chan_num = os_strtoul(argv[5], NULL, 10);
+        }
 
-        ret = test_dac_init(sample_rate, frame_time_ms, (uint8_t)volume);
+        ret = test_dac_init(sample_rate, frame_time_ms, (uint8_t)volume, (uint8_t)chan_num);
         snprintf(pcWriteBuffer, xWriteBufferLen,
-                 "xdac init %s (%d), rate=%u frame_ms=%u volume=%u frame_size=%u\r\n",
+                 "xdac init %s (%d), rate=%u frame_ms=%u volume=%u chan=%u frame_size=%u\r\n",
                  (ret == OPRT_OK) ? "ok" : "failed",
                  ret,
                  (unsigned int)sample_rate,
                  (unsigned int)frame_time_ms,
                  (unsigned int)volume,
+                 (unsigned int)s_dac_ctx.chan_num,
                  (unsigned int)s_dac_ctx.frame_size);
     } else if (os_strcmp(cmd, "start") == 0) {
         ret = test_dac_start();
@@ -445,6 +587,23 @@ void cli_tuya_dac_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char *
                  ret,
                  (unsigned int)play_ms,
                  (unsigned int)freq_hz,
+                 (unsigned int)s_dac_ctx.tx_complete_cnt);
+    } else if (os_strcmp(cmd, "stereo") == 0 || os_strcmp(cmd, "play2") == 0) {
+        if (argc >= 3) {
+            play_ms = os_strtoul(argv[2], NULL, 10);
+        }
+        if (argc >= 4) {
+            freq_hz = os_strtoul(argv[3], NULL, 10);
+        }
+
+        ret = test_dac_play_stereo(play_ms, freq_hz);
+        snprintf(pcWriteBuffer, xWriteBufferLen,
+                 "xdac stereo %s (%d), play_ms=%u freq=%u chan=%u tx_cb=%u (L->R->BOTH)\r\n",
+                 (ret == OPRT_OK) ? "ok" : "failed",
+                 ret,
+                 (unsigned int)play_ms,
+                 (unsigned int)freq_hz,
+                 (unsigned int)s_dac_ctx.chan_num,
                  (unsigned int)s_dac_ctx.tx_complete_cnt);
     } else if (os_strcmp(cmd, "vol") == 0 || os_strcmp(cmd, "volume") == 0) {
         if (argc >= 3) {
@@ -488,6 +647,6 @@ void cli_tuya_dac_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char *
                  (unsigned int)s_dac_ctx.tx_complete_cnt);
     } else {
         snprintf(pcWriteBuffer, xWriteBufferLen,
-                 "Usage: xdac <init [rate] [frame_ms] [volume]|start|play [ms] [freq]|vol [0-100]|stop|deinit|close|status>");
+                 "Usage: xdac <init [rate] [frame_ms] [volume] [chan 1|2]|start|play [ms] [freq]|stereo [ms] [freq]|vol [0-100]|stop|deinit|close|status>");
     }
 }

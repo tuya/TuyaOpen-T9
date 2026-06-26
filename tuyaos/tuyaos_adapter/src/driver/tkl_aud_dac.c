@@ -9,6 +9,7 @@
 #include <driver/flash.h>
 #include <driver/flash_types.h>
 #include <components/bk_audio/audio_pipeline/audio_mem.h>
+#include <modules/pm.h>
 #include "gpio_driver.h"
 
 #include "tuya_cloud_types.h"
@@ -251,8 +252,11 @@ OPERATE_RET tkl_aud_dac_init(TUYA_AUDIO_DAC_PORT_E port, TKL_AUD_DAC_CFG_T *conf
     gl_dac_ctx->frame_cb = config->frame_cb;
     gl_dac_ctx->frame_cb_arg = config->args;
 
-    /* T5 only has one onboard speaker, force set */
-    gl_dac_ctx->cfg.chan_num = 1;
+    /* Onboard speaker path supports mono (1) or stereo/LR (2). Clamp any other
+     * value to mono. (Was previously forced to 1 for T5's single speaker.) */
+    if (gl_dac_ctx->cfg.chan_num != 1 && gl_dac_ctx->cfg.chan_num != 2) {
+        gl_dac_ctx->cfg.chan_num = 1;
+    }
 
     tkl_aud_pm_acquire();
     gl_dac_ctx->pm_voted = true;
@@ -322,8 +326,11 @@ OPERATE_RET tkl_aud_dac_init(TUYA_AUDIO_DAC_PORT_E port, TKL_AUD_DAC_CFG_T *conf
         bk_aud_dac_unmute();
     }
 
+    /* frame_size is the per-frame byte count fed to the DMA/FIFO; it must scale
+     * with the channel count (stereo packs an L+R pair per sample instant). The
+     * macro itself only covers one channel, so multiply by chan_num. */
     gl_dac_ctx->frame_size = TKL_DAC_FRAME_SIZE_MS(config->sample_rate, config->sample_bits,
-                                                      config->frame_time_ms);
+                                                      config->frame_time_ms) * gl_dac_ctx->cfg.chan_num;
     if (gl_dac_ctx->frame_size == 0) {
         TKL_DAC_LOG("dac frame size calc fail\n");
         ret = BK_FAIL;
@@ -359,6 +366,40 @@ __dac_init_exit:
         gl_dac_ctx = NULL;
     }
     return OPRT_COM_ERROR;
+}
+
+/*
+ * On-board speaker analog power + power-amplifier enable.
+ *
+ * The DAC *digital* path (DMA, FIFO, tx callbacks) runs fine without these, but
+ * there is NO audible output until:
+ *   1. the 3.3V AUX-LDO that powers the audio analog/output stage is voted on, and
+ *   2. the speaker power-amplifier enable pin (GPIO60, active-high) is driven.
+ * This mirrors ex_audio_onboard_spk_start() in test_aud_utils.c, which is the
+ * known-good on-board mic->speaker path. Missing these two steps is exactly why
+ * playback produced no sound. GPIO60 is the board's PA enable (NOT GPIO28).
+ */
+#define TKL_AUD_DAC_SPK_PA_GPIO   60
+
+static void __tkl_aud_dac_spk_power_on(void)
+{
+    pm_auxldo_ctrl_cfg_t auxldo_cfg = {0};
+    auxldo_cfg.ldo   = AUXLDOS_SEL_3V;
+    auxldo_cfg.out   = PM_AUXLDO_3V_OUT_3P3V;
+    auxldo_cfg.user  = PM_AUXLDO_USER_CAMERA;
+    auxldo_cfg.state = 1;
+    (void)bk_pm_auxldo_ctrl_vote(&auxldo_cfg);
+
+    gpio_dev_unmap(TKL_AUD_DAC_SPK_PA_GPIO);
+    (void)bk_gpio_enable_output(TKL_AUD_DAC_SPK_PA_GPIO);
+    (void)bk_gpio_set_output_high(TKL_AUD_DAC_SPK_PA_GPIO);
+}
+
+static void __tkl_aud_dac_spk_power_off(void)
+{
+    /* Disable the PA (mute the amplifier). Leave the AUX-LDO vote as-is so other
+     * users of the 3.3V rail are not disturbed. */
+    (void)bk_gpio_set_output_low(TKL_AUD_DAC_SPK_PA_GPIO);
 }
 
 /**
@@ -477,6 +518,10 @@ OPERATE_RET tkl_aud_dac_start(TUYA_AUDIO_DAC_PORT_E port)
         bk_aud_dac_unmute();
     }
 
+    /* Power the analog output stage + enable the speaker PA, otherwise the DAC
+     * runs but stays silent (see helper comment above). */
+    __tkl_aud_dac_spk_power_on();
+
     gl_dac_ctx->stat = TKL_AUD_DAC_STAT_START;
     TKL_DAC_LOG("dac start ok\n");
 
@@ -506,6 +551,9 @@ OPERATE_RET tkl_aud_dac_stop(TUYA_AUDIO_DAC_PORT_E port)
                gl_dac_ctx->stat == TKL_AUD_DAC_STAT_DEINIT) {
         return OPRT_COM_ERROR;
     }
+
+    /* Disable the speaker PA before tearing down the data path. */
+    __tkl_aud_dac_spk_power_off();
 
     bk_err_t ret = bk_dma_stop(gl_dac_ctx->spk_dma_id);
     if (ret != BK_OK) {
