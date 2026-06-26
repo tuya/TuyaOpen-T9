@@ -122,10 +122,10 @@
         },
         {
             "gpio_id": "GPIO_12",
-            "second_func_en": "GPIO_SECOND_FUNC_DISABLE",
-            "second_func_dev": "GPIO_DEV_INVALID",
+            "second_func_en": "GPIO_SECOND_FUNC_ENABLE",
+            "second_func_dev": "GPIO_DEV_GPIO_OUTPUT",
             "time_sharing_func_dev": "GPIO_DEV_INVALID",
-            "pull_mode": "GPIO_PULL_DISABLE",
+            "pull_mode": "GPIO_PULL_DOWN_EN",
             "int_en": "GPIO_INT_DISABLE",
             "int_type": "GPIO_INT_TYPE_LOW_LEVEL",
             "low_power_io_ctrl": "GPIO_LOW_POWER_DISCARD_IO_STATUS",

@@ -107,6 +107,25 @@ static void tkl_adc_fill_config(adc_config_t *config, UINT8_T ch_id,
     config->vol_div = g_channel_id_div[ch_id] ? ADC_VOL_DIV_1 : ADC_VOL_DIV_NONE;
 }
 
+gpio_id_t tkl_adc_to_pin_func(adc_chan_t adc)
+{
+    gpio_id_t gpio_pin = GPIO_25;
+
+    switch (adc) {
+        case ADC_1:  gpio_pin = GPIO_25; break;
+        case ADC_2:  gpio_pin = GPIO_24; break;
+        case ADC_3:  gpio_pin = GPIO_23; break;
+        case ADC_4:  gpio_pin = GPIO_28; break;
+        case ADC_5:  gpio_pin = GPIO_22; break;
+        case ADC_6:  gpio_pin = GPIO_21; break;
+        case ADC_10: gpio_pin = GPIO_8;  break;
+        default:
+            break;
+    }
+    // bk_printf("tkl_adc_to_pin_func adc:%d,%d\r\n",adc,gpio_pin);
+    return gpio_pin;
+}
+
 static OPERATE_RET tkl_adc_start_channel(adc_config_t *config, BOOL_T *gpio_inited,
                                          BOOL_T *adc_inited, BOOL_T *started)
 {
@@ -123,11 +142,7 @@ static OPERATE_RET tkl_adc_start_channel(adc_config_t *config, BOOL_T *gpio_init
 
     sys_drv_set_ana_pwd_gadc_buf(1);
 
-    ret = bk_adc_chan_init_gpio(config->chan);
-    if (ret != BK_OK) {
-        goto err_exit;
-    }
-    *gpio_inited = TRUE;
+    gpio_dev_unmap(tkl_adc_to_pin_func(config->chan));
 
     ret = bk_adc_init(config->chan);
     if (ret != BK_OK) {
@@ -169,11 +184,6 @@ err_exit:
         *adc_inited = FALSE;
     }
 
-    if (*gpio_inited) {
-        bk_adc_chan_deinit_gpio(config->chan);
-        *gpio_inited = FALSE;
-    }
-
     sys_drv_set_ana_pwd_gadc_buf(0);
     bk_adc_release();
 
@@ -189,10 +199,6 @@ static void tkl_adc_stop_channel(adc_config_t *config, BOOL_T gpio_inited,
 
     if (adc_inited) {
         bk_adc_deinit(config->chan);
-    }
-
-    if (gpio_inited) {
-        bk_adc_chan_deinit_gpio(config->chan);
     }
 
     sys_drv_set_ana_pwd_gadc_buf(0);

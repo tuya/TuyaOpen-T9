@@ -78,12 +78,13 @@ static gpio_dev_t __tkl_pinmux_func_to_gpio_dev(TUYA_PIN_FUNC_E pin_func)
         case TUYA_DMIC1_CLK: return GPIO_DEV_DMIC1_CLK;
         case TUYA_DMIC1_DAT: return GPIO_DEV_DMIC1_DAT;
 #endif
-        case TUYA_ADC0:      return GPIO_DEV_ADC0;
-        case TUYA_ADC1:      return GPIO_DEV_ADC1;
-        case TUYA_ADC2:      return GPIO_DEV_ADC2;
-        case TUYA_ADC3:      return GPIO_DEV_ADC3;
-        case TUYA_ADC4:      return GPIO_DEV_ADC4;
-        case TUYA_ADC5:      return GPIO_DEV_ADC5;
+        /*
+         * ADC is an ANALOG function (datasheet Table 3-5), not a digital IOMUX
+         * function: the AP-side IOMUX map has no ADC func code, and the SARADC +
+         * its pad routing live on the CP side. So ADC is NOT mapped via
+         * gpio_dev_unprotect_map() here; it is delegated to bk_adc_chan_init_gpio()
+         * (CP IPC) in tkl_io_pinmux_config() instead.
+         */
         /*
          * SPI/UART/SDIO are NOT mapped here: their drivers re-map the pads in
          * their own init() using configurable pin getters, which would override
@@ -253,10 +254,6 @@ INT32_T tkl_io_pin_to_func(UINT32_T pin, TUYA_PIN_TYPE_E pin_type)
                 port_channel = ADC_6;
             } else if (TUYA_IO_PIN_8 == pin) {
                 port_channel = ADC_10;
-            } else if (TUYA_IO_PIN_13 == pin) {
-                port_channel = ADC_15;
-            } else if (TUYA_IO_PIN_12 == pin) {
-                port_channel = ADC_14;
             } else if (TUYA_IO_PIN_1 == pin) {
                 port_channel = ADC_13;
             } else if (TUYA_IO_PIN_0 == pin) {
