@@ -1,0 +1,8 @@
+{
+    "ota_mode": {
+        "_comment": "支持压缩模式与兼容模式，值为compress或partition",
+        "_comment_compress": "压缩模式： SMP固件使用压缩升级模式",
+        "_comment_partition": "分段模式： SMP固件使用覆盖分段升级模式",
+        "mode": "compress"
+    }
+}

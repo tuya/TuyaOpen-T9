@@ -214,13 +214,13 @@ else
 fi
 
 # 业务需求：提前初始化gpio
-app_config_file=${TUYA_PROJECT_DIR}/apps/$APP_BIN_NAME/app_resource_config.json
-export TUYA_APP_CONFIG_FILE=${app_config_file}
+# apps/*/app_resource_config.json 已废弃：GPIO 配置只由 tuya_default_gpio_config.json 生成，
+# OTA 模式由 tuya_scripts/default_ota_mode.json 决定，故不再需要 TUYA_APP_CONFIG_FILE。
 default_gpio_config_file=${TUYA_APP_DEMO_PATH}/tuya_scripts/tuya_default_gpio_config.json
 update_gpio_config_script=${TUYA_PROJECT_DIR}/vendor/T9/t9_os/${TUYA_APP_DEMO_PATH}/tuya_scripts/user_gpio_config.py
 gpio_config_file=${TUYA_APP_DEMO_PATH}/ap/config/${TARGET_PLATFORM}_ap/usr_gpio_cfg.h
-echo "python3 ${update_gpio_config_script} ${app_config_file} ${default_gpio_config_file} -o ${gpio_config_file}"
-if ! python3 ${update_gpio_config_script} ${app_config_file} ${default_gpio_config_file} -o ${gpio_config_file}; then
+echo "python3 ${update_gpio_config_script} ${default_gpio_config_file} -o ${gpio_config_file}"
+if ! python3 ${update_gpio_config_script} ${default_gpio_config_file} -o ${gpio_config_file}; then
     echo "update config error"
     exit 1
 fi

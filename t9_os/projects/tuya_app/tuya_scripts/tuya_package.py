@@ -126,7 +126,6 @@ class TuyaPackager:
         self.version     = os.environ.get('TUYA_APP_VERSION', '').strip()
         self.platform    = os.environ.get('TUYA_APP_PLATFORM', '').strip() or 'bk7259'
         self.project_dir = os.environ.get('TUYA_PROJECT_DIR', '').strip()
-        self.app_config  = os.environ.get('TUYA_APP_CONFIG_FILE', '').strip()
         self.verbose     = args.verbose
 
         # 检查必需的环境变量
@@ -136,15 +135,12 @@ class TuyaPackager:
             raise RuntimeError("环境变量 TUYA_APP_VERSION 未设置")
         if not self.project_dir:
             raise RuntimeError("环境变量 TUYA_PROJECT_DIR 未设置")
-        if not self.app_config:
-            raise RuntimeError("环境变量 TUYA_APP_CONFIG_FILE 未设置")
 
         if self.verbose:
             print_info(f"应用名称: {self.app_name}")
             print_info(f"版本号: {self.version}")
             print_info(f"平台: {self.platform}")
             print_info(f"项目目录: {self.project_dir}")
-            print_info(f"配置文件: {self.app_config}")
 
         # Armino 根目录：.../t9_os（本文件在 t9_os/projects/tuya_app/tuya_scripts/ 下，需向上 4 级）
         _armino_root = Path(__file__).resolve().parent.parent.parent.parent
@@ -154,6 +150,10 @@ class TuyaPackager:
         # 设置路径
         self.tuya_app_demo_path = "projects/tuya_app"
         self.scripts_dir = f"{self.tuya_app_demo_path}/tuya_scripts"
+
+        # OTA 模式配置：apps/*/app_resource_config.json 已废弃，统一改用脚本目录下的
+        # default_ota_mode.json 决定 SMP 固件的 OTA 升级模式（compress/partition/compatible）。
+        self.ota_mode_config = f"{self.scripts_dir}/default_ota_mode.json"
 
         _bl2_under_build = (
             _armino_root / "build" / self.platform / "tuya_app" / self.platform / "bl2.bin"
@@ -239,9 +239,14 @@ class TuyaPackager:
             return None
 
     def get_ota_mode(self) -> str:
-        """获取OTA模式"""
+        """获取OTA模式（从 default_ota_mode.json 解析，缺失时回退 compress）"""
+        if not os.path.isfile(self.ota_mode_config):
+            print_warning(
+                f"OTA 配置文件不存在: {self.ota_mode_config}，回退使用 compress 模式"
+            )
+            return "compress"
         result = run_command(
-            ['python3', self.tools['ota_select'], self.app_config],
+            ['python3', self.tools['ota_select'], self.ota_mode_config],
             capture_output=True
         )
         return result.stdout.strip()

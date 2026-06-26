@@ -1,19 +1,17 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-GPIO配置合并工具
+GPIO配置生成工具
 
-此脚本用于合并基础GPIO配置和应用特定配置，生成最终的usr_gpio_cfg.h头文件。
-应用配置中的设置会覆盖基础配置中的相同GPIO设置。
+此脚本根据默认GPIO配置生成最终的usr_gpio_cfg.h头文件（已移除 app 配置覆盖逻辑）。
 
 使用方法:
-    python3 user_gpio_config.py <app_config.json> <default_config.json> --output <output_file.h>
+    python3 user_gpio_config.py <default_config.json> --output <output_file.h>
 
 示例:
-    python3 vendor/T5/t5_os/projects/tuya_app/tuya_scripts/user_gpio_config.py \\
-        apps/t5_common_user_config_ai_baseline_ty/app_resource_config.json \\
-        vendor/T5/t5_os/projects/tuya_app/tuya_scripts/tuya_default_gpio_config.json \\
-        --output vendor/T5/t5_os/projects/tuya_app/ap/config/bk7258_ap/usr_gpio_cfg.h
+    python3 vendor/T9/t9_os/projects/tuya_app/tuya_scripts/user_gpio_config.py \\
+        vendor/T9/t9_os/projects/tuya_app/tuya_scripts/tuya_default_gpio_config.json \\
+        --output vendor/T9/t9_os/projects/tuya_app/ap/config/bk7259_ap/usr_gpio_cfg.h
 
 Copyright © 2025 Tuya Inc.
 """
@@ -85,54 +83,24 @@ def load_json_file(file_path: str, optional: bool = False) -> Dict:
         raise ValueError(f"读取文件失败 {file_path}: {str(e)}")
 
 
-def merge_gpio_configs(default_config: Dict, app_config: Dict) -> Dict[str, Dict]:
+def build_gpio_configs(default_config: Dict) -> Dict[str, Dict]:
     """
-    合并默认配置和应用配置
+    从默认配置构建 GPIO 配置字典（已移除 app 配置覆盖逻辑）
 
     Args:
         default_config: 默认GPIO配置
-        app_config: 应用特定GPIO配置
 
     Returns:
-        合并后的GPIO配置字典，key为gpio_id
+        GPIO配置字典，key为gpio_id
     """
     merged_gpio = {}
 
-    # 首先加载默认配置
     for item in default_config.get('gpio_map', []):
         gpio_id = item.get('gpio_id')
         if gpio_id:
             merged_gpio[gpio_id] = item.copy()
 
-    default_count = len(merged_gpio)
-    print_info(f"已加载 {default_count} 个默认GPIO配置")
-
-    # 如果应用配置为空，直接使用默认配置
-    if not app_config or not app_config.get('gpio_map'):
-        print_info("未提供应用配置，使用默认配置")
-        return merged_gpio
-
-    # 用应用配置覆盖默认配置
-    override_count = 0
-    new_count = 0
-    for item in app_config.get('gpio_map', []):
-        gpio_id = item.get('gpio_id')
-        if gpio_id:
-            if gpio_id in merged_gpio:
-                # 更新已存在的配置
-                merged_gpio[gpio_id].update(item)
-                override_count += 1
-                print_info(f"  覆盖配置: {gpio_id}")
-            else:
-                # 添加新配置
-                merged_gpio[gpio_id] = item.copy()
-                new_count += 1
-                print_warning(f"  新增配置: {gpio_id} (不在默认配置中)")
-
-    if override_count > 0:
-        print_success(f"应用配置覆盖了 {override_count} 个GPIO设置")
-    if new_count > 0:
-        print_warning(f"应用配置新增了 {new_count} 个GPIO设置")
+    print_info(f"已加载 {len(merged_gpio)} 个GPIO配置")
 
     return merged_gpio
 
@@ -251,21 +219,15 @@ extern "C" {{
 def gpio_process():
     """主函数"""
     parser = argparse.ArgumentParser(
-        description='GPIO配置合并工具 - 合并基础配置和应用配置生成头文件',
+        description='GPIO配置生成工具 - 根据默认配置生成头文件',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 示例:
-  python3 user_gpio_config.py app_config.json default_config.json -o output.h
+  python3 user_gpio_config.py default_config.json -o output.h
   python3 user_gpio_config.py \\
-      apps/t5_common_user_config_ai_baseline_ty/app_resource_config.json \\
-      vendor/T5/t5_os/projects/tuya_app/tuya_scripts/tuya_default_gpio_config.json \\
-      --output vendor/T5/t5_os/projects/tuya_app/ap/config/bk7258_ap/usr_gpio_cfg.h
+      vendor/T9/t9_os/projects/tuya_app/tuya_scripts/tuya_default_gpio_config.json \\
+      --output vendor/T9/t9_os/projects/tuya_app/ap/config/bk7259_ap/usr_gpio_cfg.h
         """
-    )
-
-    parser.add_argument(
-        'app_config',
-        help='应用特定配置文件路径 (JSON格式，可选，不存在时使用默认配置)'
     )
 
     parser.add_argument(
@@ -295,11 +257,10 @@ def gpio_process():
         # 加载配置文件
         print_info("\n[1/3] 加载配置文件...")
         default_config = load_json_file(args.default_config, optional=False)
-        app_config = load_json_file(args.app_config, optional=True)
 
-        # 合并配置
-        print_info("\n[2/3] 合并配置...")
-        merged_gpio = merge_gpio_configs(default_config, app_config)
+        # 解析配置（仅使用默认配置，已移除 app 配置覆盖逻辑）
+        print_info("\n[2/3] 解析配置...")
+        merged_gpio = build_gpio_configs(default_config)
 
         # 生成头文件
         print_info("\n[3/3] 生成头文件...")
