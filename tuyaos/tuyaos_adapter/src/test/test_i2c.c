@@ -43,8 +43,8 @@ extern void bk_printf(const char *fmt, ...);
  * UART2=GPIO40/41) or the serial console gets remapped and garbles. I2C0 is
  * only on GPIO20/21; I2C1 here uses GPIO38/39 (an I2C1-capable, non-UART pair).
  */
-#define I2C0_SCL_PIN   20
-#define I2C0_SDA_PIN   21
+#define I2C0_SCL_PIN   24
+#define I2C0_SDA_PIN   25
 #define I2C1_SCL_PIN   38
 #define I2C1_SDA_PIN   39
 
@@ -900,6 +900,50 @@ static void test_i2c_run_smoke(int port, UINT32_T loops)
     test_i2c_stats_print("smoke");
 }
 
+/*
+ * Loopback-only runner: exercises ONLY the I2C0<->I2C1 data-path loopback
+ * (L01/L02), skipping the param/config/PAJ cases. Use this to get the decisive
+ * "is the I2C controller/IRQ data path healthy" verdict without the PAJ7620
+ * probe (which times out 500 ms/op when the off-board sensor is absent) or any
+ * other case getting in the way. Requires I2C0<->I2C1 wired (SCL/SCL, SDA/SDA)
+ * with pull-ups.
+ */
+static void test_i2c_run_loop(int master_port, int slave_port, UINT16_T slave_addr, UINT32_T loops, UINT32_T bytes)
+{
+    OPERATE_RET ret;
+
+    if (!test_i2c_port_ok(master_port) || !test_i2c_port_ok(slave_port) || (master_port == slave_port)) {
+        bk_printf("[xi2c] ERROR invalid_loop_ports master=%d slave=%d hw_ports=%u\r\n",
+                  master_port, slave_port, (unsigned)test_i2c_hw_port_num());
+        return;
+    }
+    if (loops == 0U) {
+        loops = I2C_LOOPBACK_LOOPS_DEFAULT;
+    }
+    if (loops > I2C_LOOPBACK_LOOPS_MAX) {
+        loops = I2C_LOOPBACK_LOOPS_MAX;
+    }
+    if (bytes == 0U) {
+        bytes = I2C_LOOPBACK_BYTES_DEFAULT;
+    }
+    if (bytes > I2C_LOOPBACK_BYTES_MAX) {
+        bytes = I2C_LOOPBACK_BYTES_MAX;
+    }
+
+    test_i2c_stats_reset();
+    bk_printf("[xi2c] SUITE BEGIN test_name=LOOP master_port=%d slave_port=%d slave_addr=0x%02x loops=%u bytes=%u\r\n",
+              master_port, slave_port, (unsigned)slave_addr, (unsigned)loops, (unsigned)bytes);
+
+    ret = test_i2c_case_loopback((TUYA_I2C_NUM_E)master_port, (TUYA_I2C_NUM_E)slave_port, slave_addr, bytes, loops,
+                                 "L01_loopback_master_to_slave");
+    (void)ret;
+    ret = test_i2c_case_loopback((TUYA_I2C_NUM_E)slave_port, (TUYA_I2C_NUM_E)master_port, slave_addr, bytes, loops,
+                                 "L02_loopback_slave_to_master");
+    (void)ret;
+
+    test_i2c_stats_print("loop");
+}
+
 static void test_i2c_run_full(int master_port, int slave_port, UINT16_T slave_addr, UINT32_T loops, UINT32_T bytes)
 {
     OPERATE_RET ret;
@@ -947,14 +991,21 @@ static void test_i2c_run_full(int master_port, int slave_port, UINT16_T slave_ad
         test_i2c_skip("M02_dual_port_parallel", "single i2c port build");
     }
 
-    ret = test_i2c_case_pajid((TUYA_I2C_NUM_E)master_port, (UINT16_T)PAJ7620_DEFAULT_ADDR);
-    (void)ret;
-
+    /*
+     * Run the I2C0<->I2C1 loopback (real data transfer + verify) FIRST: it is the
+     * decisive check of the controller/driver/IRQ data path and does not depend on
+     * any external device. The PAJ7620 probe below talks to an off-board sensor and
+     * will simply time out (500 ms/op) if the part is absent/unpowered/unwired, so
+     * keep it last to avoid masking/delaying the loopback verdict.
+     */
     ret = test_i2c_case_loopback((TUYA_I2C_NUM_E)master_port, (TUYA_I2C_NUM_E)slave_port, slave_addr, bytes, loops,
                                  "L01_loopback_master_to_slave");
     (void)ret;
     ret = test_i2c_case_loopback((TUYA_I2C_NUM_E)slave_port, (TUYA_I2C_NUM_E)master_port, slave_addr, bytes, loops,
                                  "L02_loopback_slave_to_master");
+    (void)ret;
+
+    ret = test_i2c_case_pajid((TUYA_I2C_NUM_E)master_port, (UINT16_T)PAJ7620_DEFAULT_ADDR);
     (void)ret;
 
     test_i2c_stats_print("full");
@@ -1065,6 +1116,7 @@ void cli_xi2c_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **arg
     if ((argc < 2) || (argv == NULL) || (argv[1] == NULL)) {
         bk_printf("[xi2c] USAGE: xi2c single [port]\r\n");
         bk_printf("[xi2c] USAGE: xi2c smoke [port] [loops]\r\n");
+        bk_printf("[xi2c] USAGE: xi2c loop [master_port] [slave_port] [slave_addr_hex] [loops] [bytes]\r\n");
         bk_printf("[xi2c] USAGE: xi2c full [master_port] [slave_port] [slave_addr_hex] [loops] [bytes]\r\n");
         bk_printf("[xi2c] USAGE: xi2c pajid [port] [dev_addr_hex]\r\n");
         bk_printf("[xi2c] USAGE: xi2c slave [port] [slave_addr_hex] [bytes] [loops]\r\n");
@@ -1088,6 +1140,28 @@ void cli_xi2c_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **arg
             loops = (UINT32_T)strtoul(argv[3], NULL, 10);
         }
         test_i2c_run_smoke(port, loops);
+        return;
+    }
+
+    if (strcmp(argv[1], "loop") == 0) {
+        if ((argc >= 3) && (argv[2] != NULL)) {
+            master_port = atoi(argv[2]);
+        }
+        if ((argc >= 4) && (argv[3] != NULL)) {
+            slave_port = atoi(argv[3]);
+        }
+        if ((argc >= 5) && (argv[4] != NULL)) {
+            slave_addr = (UINT16_T)strtoul(argv[4], NULL, 16);
+        }
+        if ((argc >= 6) && (argv[5] != NULL)) {
+            loops = (UINT32_T)strtoul(argv[5], NULL, 10);
+        } else {
+            loops = I2C_LOOPBACK_LOOPS_DEFAULT;
+        }
+        if ((argc >= 7) && (argv[6] != NULL)) {
+            bytes = (UINT32_T)strtoul(argv[6], NULL, 10);
+        }
+        test_i2c_run_loop(master_port, slave_port, slave_addr, loops, bytes);
         return;
     }
 

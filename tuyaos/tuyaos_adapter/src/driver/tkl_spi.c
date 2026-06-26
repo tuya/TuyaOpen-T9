@@ -40,6 +40,20 @@ static SPINLOCK_SECTION volatile spinlock_t tkl_spi_spin_lock = SPIN_LOCK_INIT;
 #define SOC_SPI_MAX_NUM  (2)
 #define SPI_DMA_HW_TRANS_LEN_MAX 0xFFFU
 #define SPI_DMA_WAIT_POLL_US 10U
+
+/*
+ * Non-DMA (FIFO/CPU) transfer limits. The tx/rx_trans_len register is 12-bit, so
+ * a single HW transfer can move at most 0xFFF (4095) bytes; a larger size wraps
+ * (e.g. 4096 & 0xFFF == 0) and the finish interrupt never fires -> 10s timeout.
+ * Larger transfers must use DMA (trans_len=0 continuous mode). Additionally, a
+ * SLAVE send in non-DMA mode pre-fills the TX FIFO synchronously and can only
+ * hold up to the FIFO depth (256 bytes) before it blocks waiting for the master
+ * to clock it out -- which deadlocks against a master that is itself waiting for
+ * the slave to be ready. Both cases are reported as OPRT_NOT_SUPPORTED instead
+ * of hanging.
+ */
+#define SPI_NODMA_MAX_TRANS_LEN     0xFFFU
+#define SPI_SLAVE_NODMA_TX_FIFO_MAX 256U
 /*
  * Stall-detection bound for a single DMA transfer. A healthy transfer finishes
  * in milliseconds; this is only the "give up" threshold for a transfer that
@@ -1694,6 +1708,17 @@ static void tkl_spi_isr_common(spi_id_t id)
 				rtos_set_semaphore(&spi[id].rx_sema);
 				spi[id].is_rx_blocked = false;
 			}
+			/*
+			 * Flush slave TX once CS is released (transfer done). The master
+			 * path does spi_clr_tx() on tx-finish; the slave never did, so the
+			 * last byte of a slave send stayed latched in the TX shift register
+			 * and got clocked out FIRST on the next transfer (one-byte shift ->
+			 * data mismatch on every loop after the first). Disabling TX and
+			 * clearing the TX FIFO here resets that residual; harmless for the
+			 * slave-receive case where TX was unused.
+			 */
+			spi_clr_tx(id);
+			spi_hal_clear_tx_fifo(hal);
 		}
 	}
 }
@@ -2013,6 +2038,20 @@ OPERATE_RET tkl_spi_send(TUYA_SPI_NUM_E port, VOID_T *data, UINT32_T size)
     } else
 #endif
     {
+        /* Non-DMA: enforce the 12-bit trans-len limit and the slave TX-FIFO
+         * pre-fill limit up front so an oversized request is rejected cleanly
+         * instead of wrapping/deadlocking into a 10s timeout. Use DMA for large
+         * transfers. */
+        if (size > SPI_NODMA_MAX_TRANS_LEN) {
+            SPI_LOGW("nodma send size %u > %u not supported, use dma\r\n",
+                     (unsigned int)size, (unsigned int)SPI_NODMA_MAX_TRANS_LEN);
+            return OPRT_NOT_SUPPORTED;
+        }
+        if (spi_hal_is_slave(&spi[port].hal) && (size > SPI_SLAVE_NODMA_TX_FIFO_MAX)) {
+            SPI_LOGW("slave nodma send size %u > fifo %u not supported, use dma\r\n",
+                     (unsigned int)size, (unsigned int)SPI_SLAVE_NODMA_TX_FIFO_MAX);
+            return OPRT_NOT_SUPPORTED;
+        }
         if (spi_irq[port].irq_enable) {
             ret = spi_write_bytes_async((spi_id_t)port, data, size);
         } else {
@@ -2064,6 +2103,14 @@ OPERATE_RET tkl_spi_recv(TUYA_SPI_NUM_E port, VOID *data, UINT32_T size)
     } else
 #endif
     {
+        /* Non-DMA recv is bounded by the 12-bit rx_trans_len register; a larger
+         * size wraps and the rx-finish interrupt never fires (10s timeout). Use
+         * DMA for large receives. */
+        if (size > SPI_NODMA_MAX_TRANS_LEN) {
+            SPI_LOGW("nodma recv size %u > %u not supported, use dma\r\n",
+                     (unsigned int)size, (unsigned int)SPI_NODMA_MAX_TRANS_LEN);
+            return OPRT_NOT_SUPPORTED;
+        }
         if (spi_irq[port].irq_enable) {
             ret = spi_read_bytes_async((spi_id_t)port, data, size);
         } else {
