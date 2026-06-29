@@ -66,6 +66,22 @@ static UINT8_T tkl_mipi_dsi_fps_calculate(const TUYA_MIPI_BASE_CFG_T *base_cfg)
     return (UINT8_T)fps;
 }
 
+static UINT8_T tkl_mipi_dsi_lane_count_convert(UINT8_T n_lanes)
+{
+    switch (n_lanes) {
+        case 1U:
+            return DSI_ACTIVE_LANES_1;
+        case 2U:
+            return DSI_ACTIVE_LANES_2;
+        case 3U:
+            return DSI_ACTIVE_LANES_3;
+        case 4U:
+            return DSI_ACTIVE_LANES_4;
+        default:
+            return 0xFFU;
+    }
+}
+
 static bk_pixel_format_t tkl_mipi_dpu_pixel_format_convert(DISPLAY_PIXEL_FORMAT_E format)
 {
     switch (format) {
@@ -177,6 +193,7 @@ static OPERATE_RET tkl_mipi_dpu_init(const TUYA_MIPI_BASE_CFG_T *base_cfg)
     bk_lcd_panel_config_t panel_cfg;
     bk_pixel_format_t pixel_format;
     UINT8_T fps;
+    UINT8_T bk_n_lanes;
 
     if (base_cfg == NULL) {
         return OPRT_INVALID_PARM;
@@ -188,6 +205,11 @@ static OPERATE_RET tkl_mipi_dpu_init(const TUYA_MIPI_BASE_CFG_T *base_cfg)
 
     if (base_cfg->width == 0U || base_cfg->height == 0U || base_cfg->clk == 0U ||
         tkl_mipi_dsi_lane_count_valid(base_cfg->n_lanes) != TRUE) {
+        return OPRT_INVALID_PARM;
+    }
+
+    bk_n_lanes = tkl_mipi_dsi_lane_count_convert(base_cfg->n_lanes);
+    if (bk_n_lanes == 0xFFU) {
         return OPRT_INVALID_PARM;
     }
 
@@ -207,7 +229,7 @@ static OPERATE_RET tkl_mipi_dpu_init(const TUYA_MIPI_BASE_CFG_T *base_cfg)
 
     os_memset(&s_dsi_panel_desc, 0, sizeof(s_dsi_panel_desc));
     s_dsi_panel_desc.name = "tuya_dsi_panel";
-    s_dsi_panel_desc.n_lanes = base_cfg->n_lanes;   /* raw active data lanes (1~4) */
+    s_dsi_panel_desc.n_lanes = bk_n_lanes;   /* raw active data lanes (1~4) */
     s_dsi_panel_desc.fps = fps;
     s_dsi_panel_desc.timing.h_size = base_cfg->width;
     s_dsi_panel_desc.timing.v_size = base_cfg->height;

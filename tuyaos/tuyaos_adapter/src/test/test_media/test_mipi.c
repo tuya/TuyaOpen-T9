@@ -539,9 +539,7 @@ static OPERATE_RET test_mipi_panel_cfg_apply(void)
     }
 
     s_mipi_base_cfg.clk = clk;
-    /* Panel descriptor now stores the raw active-lane count (1~4); the previous
-     * "+1" was for the old 0-based DSI_ACTIVE_LANES enum and must be dropped. */
-    s_mipi_base_cfg.n_lanes = panel->n_lanes;
+    s_mipi_base_cfg.n_lanes = (UINT8_T)(panel->n_lanes + 1U);
     s_mipi_base_cfg.width = panel->timing.h_size;
     s_mipi_base_cfg.height = panel->timing.v_size;
     s_mipi_base_cfg.hsync_back_porch = panel->timing.hsync_back_porch;
