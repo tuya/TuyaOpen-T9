@@ -1640,18 +1640,15 @@ OPERATE_RET tkl_wifi_set_country_code(CONST COUNTRY_CODE_E ccode)
  */
 OPERATE_RET tkl_wifi_set_rf_calibrated(VOID_T)
 {
-    bk_err_t bk_ret = BK_OK;
+    int stat = bk_wifi_manual_cal_rfcali_status();
 
-    if (s_wifi.inited == FALSE) {
-        return OPRT_RESOURCE_NOT_READY;
+    bk_printf("tkl_wifi_set_rf_calibrated stat: %d\r\n", stat);
+
+    if(stat == BK_OK) {
+        return true;
     }
 
-    bk_ret = bk_wifi_manual_cal_rfcali_status();
-    if (bk_ret != BK_OK) {
-        return __wifi_map_ret(bk_ret, OPRT_COM_ERROR);
-    }
-
-    return OPRT_OK;
+    return false;
 }
 
 /**
