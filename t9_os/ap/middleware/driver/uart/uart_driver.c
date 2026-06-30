@@ -476,7 +476,8 @@ static gpio_id_t uart_cfg_rx_pin(uart_id_t id)
 
 static void uart_init_gpio(uart_id_t id)
 {
-#if CONFIG_USR_GPIO_CFG_EN
+// Modified by TUYA
+#if 0 // !CONFIG_USR_GPIO_CFG_EN
 	/* UART pin muxing is fully owned by GPIO_DEFAULT_DEV_CONFIG in
 	 * usr_gpio_cfg.h and applied once at boot by gpio_default_map_init().
 	 * The UART driver no longer maps/pulls UART GPIOs in this mode; only the
