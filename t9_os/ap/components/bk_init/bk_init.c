@@ -52,6 +52,10 @@
 extern void bk_ota_confirm_update_partition(ota_confirm_flag ota_confirm_val);
 #endif
 
+#if CONFIG_SUPPORT_MULTICORE
+#include "multicore_driver.h"
+#endif
+
 #if (CONFIG_CLI)
 #include "bk_api_cli.h"
 #else
@@ -273,6 +277,10 @@ int bk_init(void)
 
 	app_cli_init();
 
+#if CONFIG_CPU_HP_GOVERNOR
+	bk_cpu_hp_governor_init();
+#endif
+
 #if CONFIG_AT
     set_ap_startup_index(AP_ENTER_AT_SERVER_INIT);
 	at_server_init();
@@ -323,7 +331,7 @@ int bk_init(void)
 #if CONFIG_MAILBOX
 	bk_pm_cp1_boot_ok_response_set();
 #endif
-	/*Set AP boot success*/
+	/* Set AP boot success only after all AP-side late init done */
 	bk_pm_ap_boot_success_set(BK_TRUE);
 
 #if CONFIG_USB //&& CONFIG_MENTOR_USB
@@ -353,6 +361,7 @@ int bk_init(void)
 #if CONFIG_ETH
 	app_eth_init();
 #endif
+
 	BK_LOGD(TAG, "First Boot: %d\r\n", bk_pm_ap_first_boot_get());
     set_ap_startup_index(AP_EXIT_BK_INIT);
 

@@ -14,11 +14,11 @@ extern "C" {
 /// Class of device
 typedef union {
     struct class_of_device {
-        uint32_t      reserved_2: 2;                    /*!< undefined */
+        uint32_t      reserved_2: 2;                    /*!< reserved */
         uint32_t      minor: 6;                         /*!< minor class */
         uint32_t      major: 5;                         /*!< major class */
         uint32_t      service: 11;                      /*!< service class */
-        uint32_t      reserved_8: 8;                    /*!< undefined */
+        uint32_t      reserved_8: 8;                    /*!< reserved */
     } cod_t;
     uint32_t cod;
 } bk_bt_cod_t;
@@ -94,6 +94,12 @@ typedef struct {
     uint16_t                url_len;                /*!< URL length, 0 by default */
     uint8_t                 *p_url;                 /*!< URL point */
 } bk_bt_eir_data_t;
+
+typedef struct {
+    bk_bt_eir_type_t type;
+    uint8_t *data;
+    uint8_t len;
+} bk_bt_eir_raw_data_elem_t;
 
 /// Major service class field of Class of Device, mutiple bits can be set
 typedef enum {
@@ -225,6 +231,44 @@ typedef enum {
 /** Minimum and Maximum inquiry length*/
 #define BK_BT_GAP_MIN_INQ_LEN                (0x01)  /*!< Minimum inquiry duration, unit is 1.28s */
 #define BK_BT_GAP_MAX_INQ_LEN                (0x30)  /*!< Maximum inquiry duration, unit is 1.28s */
+
+/**
+ * @brief bt link key storage
+ */
+typedef struct
+{
+    /// this struct size
+    uint16_t size;
+
+    /// bt addr
+    //bd_addr_t addr;
+    uint8_t addr[6];
+
+    /// bt link key
+    uint8_t link_key[16];
+
+}__attribute__((packed)) bk_bt_linkkey_storage_t;
+
+/// Discoverability and Connectability mode
+typedef enum {
+    BK_BT_NON_CONNECTABLE,             /*!< Non-connectable */
+    BK_BT_CONNECTABLE,                 /*!< Connectable */
+} bk_bt_conn_mode_t;
+
+typedef enum {
+    BK_BT_NON_DISCOVERABLE,            /*!< Non-discoverable */
+    BK_BT_DISCOVERABLE,                /*!< Discoverable */
+} bk_bt_disc_mode_t;
+
+/*
+ * @brief common class of device
+ */
+typedef enum
+{
+    COD_PHONE    = 0x40020C,
+    COD_SOUNDBAR = 0x240414,
+    COD_HEADSET  = 0x240404,
+} common_cod_t;
 
 /** bluetooth role defenitions */
 #define BT_MASTER_ROLE             0
@@ -448,4 +492,3 @@ typedef void (* bk_bt_gap_cb_t)(bk_gap_bt_cb_event_t event, bk_bt_gap_cb_param_t
 #ifdef __cplusplus
 }
 #endif
-

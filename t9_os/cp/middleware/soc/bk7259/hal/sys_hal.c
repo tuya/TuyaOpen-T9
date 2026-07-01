@@ -56,6 +56,24 @@
 
 #define SYS_HAL_SWD_CORESIGHT_VALID         (1)
 
+#define SYS_PM_HAL_CPU_BARRIER()              do {      \
+	asm volatile ("dsb");                               \
+	asm volatile ("isb");                               \
+} while (0)
+
+/* [EXPERIMENT] Force all low-power code out of .iram (0x2C non-cacheable SRAM)
+ * into Flash, to verify whether the wakeup/clock-switch crash is related to
+ * fetching from the 0x2C000000 SRAM alias. Set to 0 to restore original.
+ * NOTE: literal __attribute__((section(".iram"))) in this file have been
+ * normalized to __IRAM_SEC so this single switch controls them. */
+#ifndef PM_EXP_ALL_TO_FLASH
+#define PM_EXP_ALL_TO_FLASH 0
+#endif
+#if PM_EXP_ALL_TO_FLASH
+#undef  __IRAM_SEC
+#define __IRAM_SEC
+#endif
+
 static sys_hal_t s_sys_hal;
 static uint32_t s_pm_wireless_clock_state = 0;
 
@@ -552,7 +570,7 @@ bk_err_t sys_hal_ctrl_vddd_h_vol(uint32_t vol_value)
 	return BK_OK;
 }
 
-bk_err_t sys_hal_ctrl_vdddig_h_vol(uint32_t vol_value)
+__IRAM_SEC bk_err_t sys_hal_ctrl_vdddig_h_vol(uint32_t vol_value)
 {
 	uint32_t cur_vol = sys_ll_get_ana_reg10_vcorehsel();
 	uint32_t next_vol;
@@ -628,6 +646,8 @@ bk_err_t sys_hal_switch_cpu_bus_freq_high_to_low(pm_cpu_freq_e cpu_bus_freq)
 		return BK_FAIL;
 
 	ret = sys_hal_set_cpu_bus_freq_clock(cfg);
+	SYS_PM_HAL_CPU_BARRIER();
+
 	if(ret != BK_OK)
 		return ret;
 
@@ -639,9 +659,11 @@ bk_err_t sys_hal_switch_cpu_bus_freq_high_to_low(pm_cpu_freq_e cpu_bus_freq)
 	{
 		sys_hal_set_ram_high_speed();
 	}
+	SYS_PM_HAL_CPU_BARRIER();
 
 	sys_hal_ctrl_vddd_h_vol(PM_VDDD_H_VOL_1V);
 	sys_hal_ctrl_vdddig_h_vol(cfg->vdddig_vol);
+	SYS_PM_HAL_CPU_BARRIER();
 
 	return ret;
 }
@@ -656,6 +678,8 @@ bk_err_t sys_hal_switch_cpu_bus_freq_low_to_high(pm_cpu_freq_e cpu_bus_freq)
 	sys_hal_ctrl_vddd_h_vol(PM_VDDD_H_VOL_1V);
 	sys_hal_ctrl_vdddig_h_vol(cfg->vdddig_vol);
 
+	SYS_PM_HAL_CPU_BARRIER();
+
 	if(cpu_bus_freq < PM_CPU_FRQ_160M)
 	{
 		sys_hal_set_ram_low_speed();
@@ -664,8 +688,11 @@ bk_err_t sys_hal_switch_cpu_bus_freq_low_to_high(pm_cpu_freq_e cpu_bus_freq)
 	{
 		sys_hal_set_ram_high_speed();
 	}
+	SYS_PM_HAL_CPU_BARRIER();
 
 	ret = sys_hal_set_cpu_bus_freq_clock(cfg);
+	SYS_PM_HAL_CPU_BARRIER();
+
 	return ret;
 }
 
@@ -707,28 +734,28 @@ uint32 sys_hal_get_device_id(void)
 	return sys_ll_get_device_id_deviceid();
 }
 
-void sys_hal_set_ram_sph_cfg(uint32_t value)
+__IRAM_SEC void sys_hal_set_ram_sph_cfg(uint32_t value)
 {
 	sys_ll_set_reserver_reg0x1e_value(value);
 }
 
-void sys_hal_set_ram_tph_cfg(uint32_t value)
+__IRAM_SEC void sys_hal_set_ram_tph_cfg(uint32_t value)
 {
 	sys_ll_set_reserver_reg0x1f_value(value);
 }
 
-void sys_hal_set_ram_spl_cfg(uint32_t value)
+__IRAM_SEC void sys_hal_set_ram_spl_cfg(uint32_t value)
 {
 	sys_ll_set_reserver_reg0x2e_value(value);
 }
 
-void sys_hal_set_ram_tpl_cfg(uint32_t value)
+__IRAM_SEC void sys_hal_set_ram_tpl_cfg(uint32_t value)
 {
 	sys_ll_set_reserver_reg0x2f_value(value);
 }
 
 
-void sys_hal_set_ram_high_speed(void)
+__IRAM_SEC void sys_hal_set_ram_high_speed(void)
 {
 
 	/* When running at high frequency (more than half of the maximum frequency),
@@ -737,23 +764,23 @@ void sys_hal_set_ram_high_speed(void)
 	 * yield. RAM library recommends using high-speed configuration for
 	 * high-speed operation and low-speed configuration for low-speed operation.
 	 */
-     uint32_t ram_sph_cfg = 0x0;//Default: 0x442 << 10 | 0x242;
-     ram_sph_cfg = 0x441 << 10 | 0x241;
-     sys_hal_set_ram_sph_cfg(0x5A << 24 | ram_sph_cfg); ///Default: Low-speed configuration
-     sys_hal_set_ram_sph_cfg(0xA5 << 24 | ram_sph_cfg); ///Default: Low-speed configuration
+    //  uint32_t ram_sph_cfg = 0x0;//Default: 0x442 << 10 | 0x242;
+    //  ram_sph_cfg = 0x441 << 10 | 0x241;
+    //  sys_hal_set_ram_sph_cfg(0x5A << 24 | ram_sph_cfg); ///Default: Low-speed configuration
+    //  sys_hal_set_ram_sph_cfg(0xA5 << 24 | ram_sph_cfg); ///Default: Low-speed configuration
 
-     uint32_t ram_tph_cfg = 0x0;//Default: 0x902;
-     ram_tph_cfg = 0x901;
-     sys_hal_set_ram_tph_cfg(0x5A << 24 | ram_tph_cfg); ///Default: Low-speed configuration
-     sys_hal_set_ram_tph_cfg(0xA5 << 24 | ram_tph_cfg); ///Default: Low-speed configuration
+    //  uint32_t ram_tph_cfg = 0x0;//Default: 0x902;
+    //  ram_tph_cfg = 0x901;
+    //  sys_hal_set_ram_tph_cfg(0x5A << 24 | ram_tph_cfg); ///Default: Low-speed configuration
+    //  sys_hal_set_ram_tph_cfg(0xA5 << 24 | ram_tph_cfg); ///Default: Low-speed configuration
 
 	 uint32_t ram_spl_cfg = 0x0;//Default: 0x444 << 10 | 0x244;
-     ram_spl_cfg = 0x441 << 10 | 0x241;
+     ram_spl_cfg = 0x443 << 10 | 0x243;
      sys_hal_set_ram_spl_cfg(0x5A << 24 | ram_spl_cfg); ///Default: Low-speed configuration
      sys_hal_set_ram_spl_cfg(0xA5 << 24 | ram_spl_cfg); ///Default: Low-speed configuration
 
      uint32_t ram_tpl_cfg = 0x0;//Default: 0x904;
-     ram_tpl_cfg = 0x901;
+     ram_tpl_cfg = 0x903;
      sys_hal_set_ram_tpl_cfg(0x5A << 24 | ram_tpl_cfg); ///Default: Low-speed configuration
      sys_hal_set_ram_tpl_cfg(0xA5 << 24 | ram_tpl_cfg); ///Default: Low-speed configuration
 }
@@ -767,23 +794,23 @@ void sys_hal_set_ram_low_speed(void)
 	 * yield. RAM library recommends using high-speed configuration for
 	 * high-speed operation and low-speed configuration for low-speed operation.
 	 */
-     uint32_t ram_sph_cfg = 0x0;//Default: 0x442 << 10 | 0x242;
-     ram_sph_cfg = 0x442 << 10 | 0x242;
-     sys_hal_set_ram_sph_cfg(0x5A << 24 | ram_sph_cfg);
-     sys_hal_set_ram_sph_cfg(0xA5 << 24 | ram_sph_cfg);
+    //  uint32_t ram_sph_cfg = 0x0;//Default: 0x442 << 10 | 0x242;
+    //  ram_sph_cfg = 0x442 << 10 | 0x242;
+    //  sys_hal_set_ram_sph_cfg(0x5A << 24 | ram_sph_cfg);
+    //  sys_hal_set_ram_sph_cfg(0xA5 << 24 | ram_sph_cfg);
 
-     uint32_t ram_tph_cfg = 0x0;//Default: 0x902;
-     ram_tph_cfg = 0x902;
-     sys_hal_set_ram_tph_cfg(0x5A << 24 | ram_tph_cfg);
-     sys_hal_set_ram_tph_cfg(0xA5 << 24 | ram_tph_cfg);
+    //  uint32_t ram_tph_cfg = 0x0;//Default: 0x902;
+    //  ram_tph_cfg = 0x902;
+    //  sys_hal_set_ram_tph_cfg(0x5A << 24 | ram_tph_cfg);
+    //  sys_hal_set_ram_tph_cfg(0xA5 << 24 | ram_tph_cfg);
 
 	 uint32_t ram_spl_cfg = 0x0;//Default: 0x444 << 10 | 0x244;
-     ram_spl_cfg = 0x444 << 10 | 0x244;
+     ram_spl_cfg = 0x443 << 10 | 0x243;
      sys_hal_set_ram_spl_cfg(0x5A << 24 | ram_spl_cfg); ///Default: Low-speed configuration
      sys_hal_set_ram_spl_cfg(0xA5 << 24 | ram_spl_cfg); ///Default: Low-speed configuration
 
      uint32_t ram_tpl_cfg = 0x0;//Default: 0x904;
-     ram_tpl_cfg = 0x904;
+     ram_tpl_cfg = 0x903;
      sys_hal_set_ram_tpl_cfg(0x5A << 24 | ram_tpl_cfg); ///Default: Low-speed configuration
      sys_hal_set_ram_tpl_cfg(0xA5 << 24 | ram_tpl_cfg); ///Default: Low-speed configuration
 }
@@ -972,7 +999,7 @@ uint32 sys_hal_get_int_status(uint32_t core_index)
 	return ret;
 }
 
-__attribute__((section(".iram"))) uint32 sys_hal_get_int_group2_status(uint32_t core_index)
+__IRAM_SEC uint32 sys_hal_get_int_group2_status(uint32_t core_index)
 {
 	uint32_t ret = 0;
 
@@ -2310,7 +2337,7 @@ void sys_hal_set_xtalh_ctune(uint32_t value)
 	sys_ll_set_ana_reg3_ctune(value);
 	return;
 }
-__attribute__((section(".iram"))) void sys_hal_analog_set(analog_reg_t reg, uint32_t value)
+__IRAM_SEC void sys_hal_analog_set(analog_reg_t reg, uint32_t value)
 {
 	uint32_t analog_reg_address;
 
@@ -3214,11 +3241,11 @@ uint32_t sys_hal_cali_dpll(uint32_t param)
 
     if (!param)
     {
-        sys_hal_delay(120);
+		timer_hal_early_delay_us(120);
     }
     else
     {
-        sys_hal_delay(60);
+		timer_hal_early_delay_us(60);
     }
 
     sys_hal_cali_dpll_spi_trig_enable();
@@ -3226,22 +3253,22 @@ uint32_t sys_hal_cali_dpll(uint32_t param)
 
     if (!param)
     {
-        sys_hal_delay(3400);
+		timer_hal_early_delay_us(3400);
     }
     else
     {
-        sys_hal_delay(340);
+		timer_hal_early_delay_us(340);
     }
 
 	sys_hal_cali_dpll_spi_detect_enable();
 
     if (!param)
     {
-        sys_hal_delay(3400);
+		timer_hal_early_delay_us(3400);
     }
     else
     {
-        sys_hal_delay(340);
+		timer_hal_early_delay_us(340);
     }
 	return 0;
 }
@@ -3523,7 +3550,18 @@ static void sys_hal_dpll_cpu_flash_time_early_init(uint32_t chip_id)
 	sys_ll_set_cpu_clk_div_mode1_cksel_core(0x3);
 
 }
+static void sys_hal_dpll_cpu_flash_time_early_init_sleep(uint32_t chip_id)
+{
+	/*Calibrate the dpll*/
+	sys_hal_cali_dpll(0);
 
+	/*Enable all the clock sources*/
+	sys_ll_set_reserver_reg0xd_sig_240m_cken(1);
+	sys_ll_set_reserver_reg0xd_sig_320m_cken(1);
+	sys_ll_set_reserver_reg0xd_sig_480m_cken(1);
+	sys_ll_set_reserver_reg0xd_sig_160m_cken(1);
+	sys_ll_set_reserver_reg0xd_sig_120m_cken(1);
+}
 static void sys_hal_pwd_rosc()
 {
 	return;
@@ -3574,6 +3612,49 @@ void sys_hal_early_init(void)
 	#if !CONFIG_PM_ONLY_CP_ENABLE && !CONFIG_PM_AP_POWERDOWN_WHEN_LV
 	sys_hal_m55_clock_power_init();
 	#endif
+}
+void sys_hal_early_init_sleep(void)
+{
+	uint32_t chip_id;
+	uint32_t val;
+	chip_id = aon_pmu_hal_get_chipid();
+
+	sys_ll_set_ana_reg10_spi_latch1v(1);
+
+	sys_hal_analog_set(ANALOG_REG0, 0xC1385B56);
+	sys_hal_analog_set(ANALOG_REG5, 0x640F836C);
+
+	val = sys_hal_analog_get(ANALOG_REG0);
+	val |= 0x1 << 26;
+	sys_hal_analog_set(ANALOG_REG0,val);
+
+	val = sys_hal_analog_get(ANALOG_REG0);
+	val &= ~(0x1 << 26);
+	sys_hal_analog_set(ANALOG_REG0,val);
+
+	sys_hal_analog_set(ANALOG_REG2, 0x04248050); //wangjian20221110 xtal=0x50
+	sys_hal_analog_set(ANALOG_REG3, 0xC5F00B88); //ronghui20241226 <10>=1 for xtal
+	sys_hal_analog_set(ANALOG_REG4, 0x9FC9A7F0);
+	sys_hal_analog_set(ANALOG_REG9, 0x57E627E6); //shuguang20241226 <8:6>=7 for EVM
+
+	//if ((chip_id & PM_CHIP_ID_MASK) == (PM_CHIP_ID_BK7259 & PM_CHIP_ID_MASK))
+	{
+		sys_hal_analog_set(ANALOG_REG10, 0x786BC867 | (0x1<<9));
+		sys_hal_analog_set(ANALOG_REG11, 0xC3DD4587);//siqing20260202 bit[27:25] = 1 for Reduce BUCK frequency to 1 MHz
+		sys_hal_analog_set(ANALOG_REG12, 0x346E9878);
+		sys_hal_analog_set(ANALOG_REG13, 0x346E9858);//siqing20260330 bit[5]=0 per V2 sys_ana.ini 0x4d: dzcdcal (bit4)=1, dzcdmsel (bit5)=0; do not set both to 1. Low-power BUCK_L discontinuous-current reverse conduction caused abnormal measured efficiency.
+		sys_hal_analog_set(ANALOG_REG14, 0xF4E670EE);
+		sys_hal_analog_set(ANALOG_REG15, 0);
+
+		sys_hal_analog_set(ANALOG_REG16, 0x9E436000);
+		sys_hal_analog_set(ANALOG_REG19, 0xEE1D8033);//tenglong20251231 bit[24:22] = 0 for evm;siqing20260202 bit[13:9] = 0 for Reduce buck ripple
+	}
+
+    sys_ll_set_ana_reg10_spi_latch1v(0);
+
+	/*early init cpu flash time*/
+	sys_hal_dpll_cpu_flash_time_early_init_sleep(chip_id);
+
 }
 void sys_hal_set_7816_int_en(uint32_t core_index, uint32_t value)
 {

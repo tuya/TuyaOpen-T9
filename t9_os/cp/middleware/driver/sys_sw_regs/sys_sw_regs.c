@@ -158,6 +158,17 @@ uint32_t bk_sys_sw_regs_get_hspl_owner(uint8_t res, uint8_t *core, uint32_t *pc)
     return 1U;
 }
 
+uint32_t bk_sys_sw_regs_get_ap_cp_hang_dumping(void)
+{
+#if CONFIG_SUPPORT_CACHEABLE_SRAM
+    __asm volatile ("dsb" ::: "memory");
+    arch_dcache_invd_range((void *)&s_sys_sw_regs.ap_cp_hang_dumping, sizeof(s_sys_sw_regs.ap_cp_hang_dumping));
+    __asm volatile ("dsb" ::: "memory");
+#endif
+
+    return s_sys_sw_regs.ap_cp_hang_dumping;
+}
+
 uint32_t bk_sys_sw_regs_get_adc_key_sample(adc_key_sample_info_t *info)
 {
     uint32_t flags;
@@ -360,6 +371,48 @@ void bk_sys_sw_regs_clear_hspl_owner(uint8_t res)
     __asm volatile ("dsb" ::: "memory");
 #endif
 }
+
+void bk_sys_sw_regs_set_ap_cp_hang_dumping(uint32_t value)
+{
+    /* Emergency path marker: AP writes it, CP reads it from exception context. */
+    s_sys_sw_regs.ap_cp_hang_dumping = (value != 0U) ? 1U : 0U;
+    __asm volatile ("dsb" ::: "memory");
+#if CONFIG_SUPPORT_CACHEABLE_SRAM
+    flush_dcache((void *)&s_sys_sw_regs.ap_cp_hang_dumping, sizeof(s_sys_sw_regs.ap_cp_hang_dumping));
+    __asm volatile ("dsb" ::: "memory");
+#endif
+}
+
+void bk_sys_sw_regs_set_cp_heap_free_ptr(uint32_t addr)
+{
+    /*
+     * Single 32-bit publish of a link-time-constant address (no lock needed).
+     * Called once from the CP heap init path so AP can later read the CP system
+     * heap free counter (xFreeBytesRemaining) directly across cores.
+     */
+    s_sys_sw_regs.cp_heap_size_ptr = addr;
+#if CONFIG_SUPPORT_CACHEABLE_SRAM
+    /* flush_dcache (SCB clean+invalidate by addr) carries its own DSB/ISB,
+     * so the shadow is written back and visible to AP without extra barriers. */
+    flush_dcache((void *)&s_sys_sw_regs.cp_heap_size_ptr, sizeof(s_sys_sw_regs.cp_heap_size_ptr));
+#endif
+}
+
+void bk_sys_sw_regs_set_cp_lwip_mem_info_ptr(uint32_t addr)
+{
+    /*
+     * Single 32-bit publish of a link-time-constant address (no lock needed).
+     * Called once from CP controller init so AP can read the lwIP/heap address
+     * snapshot directly across cores, replacing the old IPC handshake.
+     */
+    s_sys_sw_regs.cp_lwip_mem_info_ptr = addr;
+#if CONFIG_SUPPORT_CACHEABLE_SRAM
+    /* flush_dcache (SCB clean+invalidate by addr) carries its own DSB/ISB,
+     * so the shadow is written back and visible to AP without extra barriers. */
+    flush_dcache((void *)&s_sys_sw_regs.cp_lwip_mem_info_ptr, sizeof(s_sys_sw_regs.cp_lwip_mem_info_ptr));
+#endif
+}
+
 bk_err_t bk_sys_sw_regs_update_pm_shared_info(const pm_shared_info_t *info, uint32_t field_mask, uint8_t use_lock)
 {
     uint32_t flags = 0;

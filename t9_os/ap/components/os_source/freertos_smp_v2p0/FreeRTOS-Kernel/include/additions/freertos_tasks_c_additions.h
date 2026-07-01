@@ -604,3 +604,4 @@ void * pvTaskGetCurrentTCBForCore( BaseType_t xCoreID )
     pvRet = ( void * ) pxCurrentTCBs[ xCoreID ];
     return pvRet;
 }
+
