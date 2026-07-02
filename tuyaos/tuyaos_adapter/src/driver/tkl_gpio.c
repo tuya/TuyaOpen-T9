@@ -67,7 +67,6 @@ static bool tkl_gpio_is_valid_pin(TUYA_GPIO_NUM_E pin_id)
     } while (0)
 
 extern void bk_printf(const char *fmt, ...);
-extern uint32_t platform_is_in_interrupt_context(void);
 
 static OPERATE_RET tkl_gpio_ensure_mutex(void)
 {
@@ -408,22 +407,8 @@ OPERATE_RET tkl_gpio_irq_init(TUYA_GPIO_NUM_E pin_id, CONST TUYA_GPIO_IRQ_T *cfg
 OPERATE_RET tkl_gpio_irq_enable(TUYA_GPIO_NUM_E pin_id)
 {
     OPERATE_RET ret;
-    UINT_T irq_mask;
 
     PIN_DEV_CHECK_ERROR_RETURN(pin_id, OPRT_INVALID_PARM);
-
-    if (platform_is_in_interrupt_context() != 0) {
-        irq_mask = tkl_system_enter_critical();
-        if (!pinmap[pin_id].initialized || !pinmap[pin_id].irq_initialized) {
-            tkl_system_exit_critical(irq_mask);
-            return OPRT_RESOURCE_NOT_READY;
-        }
-
-        bk_gpio_enable_interrupt(pinmap[pin_id].gpio);
-        tkl_system_exit_critical(irq_mask);
-        return OPRT_OK;
-    }
-
     ret = tkl_gpio_lock();
     if (ret != OPRT_OK) {
         return ret;
@@ -449,22 +434,8 @@ OPERATE_RET tkl_gpio_irq_enable(TUYA_GPIO_NUM_E pin_id)
 OPERATE_RET tkl_gpio_irq_disable(TUYA_GPIO_NUM_E pin_id)
 {
     OPERATE_RET ret;
-    UINT_T irq_mask;
 
     PIN_DEV_CHECK_ERROR_RETURN(pin_id, OPRT_INVALID_PARM);
-
-    if (platform_is_in_interrupt_context() != 0) {
-        irq_mask = tkl_system_enter_critical();
-        if (!pinmap[pin_id].initialized || !pinmap[pin_id].irq_initialized) {
-            tkl_system_exit_critical(irq_mask);
-            return OPRT_RESOURCE_NOT_READY;
-        }
-
-        bk_gpio_disable_interrupt(pinmap[pin_id].gpio);
-        tkl_system_exit_critical(irq_mask);
-        return OPRT_OK;
-    }
-
     ret = tkl_gpio_lock();
     if (ret != OPRT_OK) {
         return ret;
