@@ -36,6 +36,7 @@ typedef struct {
     UINT32_T gop;
     UINT32_T codec;                 /* TUYA_VCODEC_TYPE_E, default H264 */
     UINT32_T input_format;          /* bk_pixel_format_t, default NV12 */
+    UINT8_T quality;                /* JPEG encode quality 0..10, default 5; ignored for H264 */
 } TUYA_VENC_CFG_T;
 
 typedef struct {
