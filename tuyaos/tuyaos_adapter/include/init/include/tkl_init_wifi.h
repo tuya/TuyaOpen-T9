@@ -28,6 +28,7 @@ extern "C" {
 typedef struct {
     OPERATE_RET (*init)                         (WIFI_EVENT_CB cb);
     OPERATE_RET (*scan_ap)                      (CONST SCHAR_T *ssid, AP_IF_S **ap_ary, UINT_T *num);
+    OPERATE_RET (*scan_ap_channel)              (CONST SCHAR_T *ssid, CONST UCHAR_T channel, AP_IF_S **ap_ary, UINT_T *num);
     OPERATE_RET (*release_ap)                   (AP_IF_S *ap);
     OPERATE_RET (*start_ap)                     (CONST WF_AP_CFG_IF_S *cfg);
     OPERATE_RET (*stop_ap)                      (VOID_T);
