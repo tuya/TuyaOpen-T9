@@ -10,6 +10,76 @@
 #include "tal_memory.h"
 #include <string.h>
 
+static uint32_t mf_test_idVendor = 0xFFFFFFFF;
+static uint32_t mf_test_idProduct = 0xFFFFFFFF;
+void tkl_mftest_usb_info(uint32_t vid, uint32_t pid)
+{
+    mf_test_idVendor = vid;
+    mf_test_idProduct = pid;
+}
+
+bool tkl_mftest_is_usb_ready(void)
+{
+    int cnt = 0;
+    do {
+        if ((mf_test_idVendor != 0xFFFFFFFF) &&
+           ((mf_test_idProduct != 0xFFFFFFFF))) {
+            // got, next
+            return true;
+        }
+        tkl_system_sleep(50);
+    } while (cnt++ < 20);
+
+    return false;
+}
+
+STATIC OPERATE_RET __pt_mcu_get_usb_info(USHORT_T cmd, UCHAR_T *data, UINT_T len, UCHAR_T **ret_data, USHORT_T *ret_len)
+{
+    CHAR_T *ret_buf = tkl_system_malloc(128);
+    if (ret_buf == NULL) {
+        bk_printf("get usb info, malloc failed\r\n");
+        return OPRT_MALLOC_FAILED;
+    }
+    memset(ret_buf, 0, 128);
+
+    mf_test_idVendor = 0xFFFFFFFF;
+    mf_test_idProduct = 0xFFFFFFFF;
+
+    // power on, 测架使能usb电源
+    // TUYA_GPIO_BASE_CFG_T cfg;
+    // cfg.mode = TUYA_GPIO_PULLUP;
+    // cfg.direct = TUYA_GPIO_OUTPUT;
+    // cfg.level = TUYA_GPIO_LEVEL_HIGH;
+    // tkl_gpio_init(TUYA_GPIO_NUM_28, &cfg);
+    // tkl_gpio_write(TUYA_GPIO_NUM_28, TUYA_GPIO_LEVEL_HIGH);
+
+    // open usb
+    bk_usb_open(0);
+
+    // get value, wait max 500ms
+    tkl_mftest_is_usb_ready();
+
+    bk_printf("usb device: 0x%04x 0x%04x\r\n", mf_test_idVendor, mf_test_idProduct);
+
+    if ((mf_test_idVendor != 0xFFFFFFFF) && (mf_test_idProduct != 0xFFFFFFFF)) {
+        bk_printf("get usb info success\r\n");
+        char *usb_succ_str = "{\"ret\":true}";
+        memcpy(ret_buf, usb_succ_str, strlen(usb_succ_str));
+    } else {
+        bk_printf("get usb info failed\r\n");
+        char *failed_str = "{\"ret\":false}";
+        memcpy(ret_buf, failed_str, strlen(failed_str));
+    }
+
+    *ret_data = (UCHAR_T *)ret_buf;
+    *ret_len = strlen(ret_buf);
+
+    bk_usb_close();
+    // tkl_gpio_write(TUYA_GPIO_NUM_28, TUYA_GPIO_LEVEL_LOW);
+    tkl_system_sleep(100);
+    return OPRT_OK;
+}
+
 /**
  * @brief Dispatch manufacturing test command (stub: link symbol for AP; extend for real audio/USB)
  * @param[in] cmd command from TKL_MFTEST_CMD_E
@@ -36,23 +106,8 @@ OPERATE_RET tkl_mftest_ctrl(USHORT_T cmd, UCHAR_T *in, UINT_T inlen, UCHAR_T **o
     case TKL_AUDIO_TEST_STOP_CMD:
         return OPRT_OK;
 
-    case TKL_USB_INFO_TEST_CMD: {
-        static const CHAR_T k_json[] = "{\"ret\":true,\"usb\":\"stub\"}";
-        UINT_T len = (UINT_T)sizeof(k_json);
-        UCHAR_T *p;
-
-        if (out == NULL || outlen == NULL) {
-            return OPRT_INVALID_PARM;
-        }
-        p = (UCHAR_T *)tal_malloc(len);
-        if (p == NULL) {
-            return OPRT_MALLOC_FAILED;
-        }
-        memcpy(p, k_json, len);
-        *out = p;
-        *outlen = (USHORT_T)(len - 1U);
-        return OPRT_OK;
-    }
+    case TKL_USB_INFO_TEST_CMD:
+        return __pt_mcu_get_usb_info(cmd, in, inlen, out, outlen);
 
     default:
         return OPRT_NOT_SUPPORTED;
