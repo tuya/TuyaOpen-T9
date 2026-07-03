@@ -17,13 +17,20 @@
 #define GPIO_TEST_LEVEL_WAIT_MS      5
 #define GPIO_TEST_IRQ_TIMEOUT_MS     100
 #define GPIO_TEST_RELAY_PERIOD_MS    (10 * 1000)
-/* P0/P1 are reserved for the UART1 log console (tx=P0/rx=P1). tkl_gpio blocks
- * both, so the API self-test drives two free pins instead of the old P1/P2. */
+/* P0/P1 are UART1 log console (tx=P0/rx=P1); init/irq_init prints warning only. */
 #define GPIO_API_TEST_PIN_A          TUYA_GPIO_NUM_2
 #define GPIO_API_TEST_PIN_B          TUYA_GPIO_NUM_3
+#define GPIO_API_TEST_UNAVAILABLE_PIN TUYA_GPIO_NUM_12
 
-#define SYS_ANA_REG_BASE            (0x44010000)
-#define LDO_ANA_REG                 (0x69)
+/* Keep in sync with tkl_gpio.c TKL_GPIO_UNAVAILABLE_MASK */
+#define GPIO_TEST_UNAVAILABLE_MASK \
+    ((UINT64_T)((1ULL << TUYA_GPIO_NUM_12) | (1ULL << TUYA_GPIO_NUM_13) | \
+                (1ULL << TUYA_GPIO_NUM_56) | (1ULL << TUYA_GPIO_NUM_57) | \
+                (1ULL << TUYA_GPIO_NUM_58) | (1ULL << TUYA_GPIO_NUM_61) | \
+                (1ULL << TUYA_GPIO_NUM_62) | (1ULL << TUYA_GPIO_NUM_63) | \
+                (1ULL << TUYA_GPIO_NUM_66) | (1ULL << TUYA_GPIO_NUM_67) | \
+                (1ULL << TUYA_GPIO_NUM_68) | (1ULL << TUYA_GPIO_NUM_69) | \
+                (1ULL << TUYA_GPIO_NUM_70) | (1ULL << TUYA_GPIO_NUM_71)))
 
 extern void bk_printf(const char *fmt, ...);
 
@@ -32,15 +39,6 @@ static volatile TUYA_GPIO_NUM_E s_gpio_irq_last_pin = TUYA_GPIO_NUM_MAX;
 
 static TaskHandle_t s_relay_test_thread = NULL;
 static TUYA_GPIO_NUM_E s_relay_pin = TUYA_GPIO_NUM_MAX;
-
-static void test_gpio_auxldo_enable(void)
-{
-    uint32_t reg = REG_READ(SYS_ANA_REG_BASE + LDO_ANA_REG * 4);
-
-    reg &= ~((0x7 << 23) | (0xF << 19));
-    reg |= (0x2 << 23) | (0x7 << 19) | (0x3 << 30);
-    REG_WRITE(SYS_ANA_REG_BASE + LDO_ANA_REG * 4, reg);
-}
 
 static int gpio_test_is_num_str(const char *s)
 {
@@ -79,9 +77,7 @@ static int gpio_test_parse_pin(const char *s, TUYA_GPIO_NUM_E *pin)
 
 static int gpio_test_is_auto_skip(TUYA_GPIO_NUM_E pin)
 {
-    /* Only P0/P1 are reserved (UART1 log console). P10/P11 are plain GPIOs
-     * here even though the GPIO config still pins them to UART0. */
-    return (pin == TUYA_GPIO_NUM_0) || (pin == TUYA_GPIO_NUM_1);
+    return (GPIO_TEST_UNAVAILABLE_MASK & (1ULL << pin)) != 0;
 }
 
 static void gpio_test_dump_pin_state(const char *tag, TUYA_GPIO_NUM_E pin, OPERATE_RET ret)
@@ -136,7 +132,8 @@ static void gpio_test_usage(void)
 static void gpio_test_list(void)
 {
     bk_printf("gpio test range: P%d ~ P%d\r\n", GPIO_TEST_PIN_MIN, GPIO_TEST_PIN_MAX);
-    bk_printf("auto skip pins in xgpio all: P0 P1 (P0/P1=UART1 log)\r\n");
+    bk_printf("auto skip pins in xgpio all: P12 P13 P56-P58 P61-P63 P66-P71 (not routed out)\r\n");
+    bk_printf("P0/P1 are UART1 log, usable but init/irq_init prints warning\r\n");
     bk_printf("pair/all/irq electrical tests require external wiring\r\n");
     bk_printf("recommended adjacent shorting: P2<->P3, P4<->P5, ...\r\n");
 }
@@ -505,6 +502,12 @@ static void gpio_test_api(void)
     ret = tkl_gpio_irq_init(GPIO_API_TEST_PIN_A, NULL);
     gpio_test_api_expect("irq init null cfg", ret, OPRT_INVALID_PARM, &pass, &fail);
 
+    ret = tkl_gpio_init(GPIO_API_TEST_UNAVAILABLE_PIN, &input_cfg);
+    gpio_test_api_expect("init unavailable pin", ret, OPRT_INVALID_PARM, &pass, &fail);
+
+    ret = tkl_gpio_read(GPIO_API_TEST_UNAVAILABLE_PIN, &level);
+    gpio_test_api_expect("read unavailable pin", ret, OPRT_INVALID_PARM, &pass, &fail);
+
     ret = tkl_gpio_deinit(TUYA_GPIO_NUM_MAX);
     gpio_test_api_expect("deinit invalid pin", ret, OPRT_INVALID_PARM, &pass, &fail);
 
@@ -765,8 +768,6 @@ void cli_gpio_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **arg
 
     (void)pcWriteBuffer;
     (void)xWriteBufferLen;
-
-    test_gpio_auxldo_enable();
 
     if (argc < 2) {
         gpio_test_usage();

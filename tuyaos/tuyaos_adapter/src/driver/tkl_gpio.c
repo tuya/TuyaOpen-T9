@@ -3,6 +3,7 @@
 #include "gpio_driver.h"
 #include "sdkconfig.h"
 #include <driver/uart.h>
+#include "sys_driver.h"
 
 
 
@@ -37,13 +38,46 @@ static pin_dev_map_t pinmap[] = {
 
 #define PINMAP_COUNT (sizeof(pinmap) / sizeof(pinmap[0]))
 
+/* P12/P13/P56-P58/P61-P63/P66-P71: not routed out on this board */
+#define TKL_GPIO_UNAVAILABLE_MASK \
+    ((UINT64_T)((1ULL << TUYA_GPIO_NUM_12) | (1ULL << TUYA_GPIO_NUM_13) | \
+                (1ULL << TUYA_GPIO_NUM_56) | (1ULL << TUYA_GPIO_NUM_57) | \
+                (1ULL << TUYA_GPIO_NUM_58) | (1ULL << TUYA_GPIO_NUM_61) | \
+                (1ULL << TUYA_GPIO_NUM_62) | (1ULL << TUYA_GPIO_NUM_63) | \
+                (1ULL << TUYA_GPIO_NUM_66) | (1ULL << TUYA_GPIO_NUM_67) | \
+                (1ULL << TUYA_GPIO_NUM_68) | (1ULL << TUYA_GPIO_NUM_69) | \
+                (1ULL << TUYA_GPIO_NUM_70) | (1ULL << TUYA_GPIO_NUM_71)))
+
+#define SYS_ANA_REG_BASE            (0x44010000)
+#define LDO_ANA_REG                 (0x69)
+#define TKL_GPIO_AUX_LDO_PIN_MIN    TUYA_GPIO_NUM_56
+
+/**
+ * @brief Enable AUX LDO for P56+ GPIO power domain.
+ * @return none
+ */
+static void tkl_gpio_auxldo_enable(void)
+{
+    uint32_t reg = REG_READ(SYS_ANA_REG_BASE + LDO_ANA_REG * 4);
+
+    reg |= (0xF << 28) | (0x2 << 23) | (0x7 << 19) | (0x7 << 15);
+    reg &= ~(0xF << 11);
+    reg |= (0x8 << 11);
+    REG_WRITE(SYS_ANA_REG_BASE + LDO_ANA_REG * 4, reg);
+}
+
+/**
+ * @brief Check whether the GPIO pin is available on this board.
+ * @param[in] pin_id gpio pin id
+ * @return true if pin is valid and routed out, false otherwise
+ */
 static bool tkl_gpio_is_valid_pin(TUYA_GPIO_NUM_E pin_id)
 {
     if ((uint32_t)pin_id >= PINMAP_COUNT) {
         return false;
     }
 
-    if ((pin_id == TUYA_GPIO_NUM_0) || (pin_id == TUYA_GPIO_NUM_1)) {
+    if ((TKL_GPIO_UNAVAILABLE_MASK & (1ULL << pin_id)) != 0) {
         return false;
     }
 
@@ -77,8 +111,12 @@ OPERATE_RET tkl_gpio_init(TUYA_GPIO_NUM_E pin_id, CONST TUYA_GPIO_BASE_CFG_T *cf
 
     PIN_DEV_CHECK_ERROR_RETURN(pin_id, OPRT_INVALID_PARM);
 
-    if (pin_id == TUYA_GPIO_NUM_0) {
-        bk_printf("WARNING: Init gpio0, LOG will be disabled\r\n");
+    if ((pin_id == TUYA_GPIO_NUM_0) || (pin_id == TUYA_GPIO_NUM_1)) {
+        bk_printf("WARNING: Init gpio%d, UART1 log may be disabled\r\n", pin_id);
+    }
+
+    if (pin_id >= TKL_GPIO_AUX_LDO_PIN_MIN) {
+        tkl_gpio_auxldo_enable();
     }
 
     bk_gpio_driver_init();
@@ -217,8 +255,8 @@ OPERATE_RET tkl_gpio_irq_init(TUYA_GPIO_NUM_E pin_id, CONST TUYA_GPIO_IRQ_T *cfg
         return OPRT_INVALID_PARM;
     }
 
-    if (pin_id == TUYA_GPIO_NUM_0) {
-        bk_printf("WARNING: Init gpio0 irq, LOG will be disabled\r\n");
+    if ((pin_id == TUYA_GPIO_NUM_0) || (pin_id == TUYA_GPIO_NUM_1)) {
+        bk_printf("WARNING: Init gpio%d irq, UART1 log may be disabled\r\n", pin_id);
     }
 
     gpio_int_type_t trigger;
