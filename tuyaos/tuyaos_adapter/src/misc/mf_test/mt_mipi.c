@@ -29,7 +29,7 @@
 #define MT_MIPI_TAG                     "mt_mipi"
 #define MT_MIPI_PANEL_RESET_PIN         GPIO_60
 #define MT_MIPI_CSI_BIST_PASS           3U
-#define MT_MIPI_CSI_BIST_RETRY_MAX      2000
+#define MT_MIPI_CSI_BIST_RETRY_MAX      3000
 #define MT_MIPI_CSI_CLK_EN_REG          0x48000028U
 #define MT_MIPI_CSI_CLK_EN_MASK         0x1200U
 #define MT_MIPI_BASEADDR_CSI            0x4C050000U
