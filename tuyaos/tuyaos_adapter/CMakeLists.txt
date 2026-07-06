@@ -2,6 +2,7 @@ set(incs
     include
     src/test
     src/misc
+    src/misc/mf_test
     src/test/test_lvgl
     src/test/test_ringbuffer
     # src/test/test_face_recognize
@@ -129,6 +130,7 @@ else()
         # src/misc/bk_adapter.c
         src/misc/tuya_dma.c
         src/misc/tkl_mftest.c
+        src/misc/mf_test/mt_mipi.c
         # src/misc/mftest/mt_audio.c
 
         src/system/tkl_fs.c

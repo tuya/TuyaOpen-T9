@@ -20,6 +20,8 @@ typedef enum {
     TKL_USB_INFO_TEST_CMD        = 0x0003,
     TKL_AUDIO_AEC_TEST_START_CMD = 0x0004,
     TKL_AUDIO_AEC_GET_RESULT     = 0x0005,
+    TKL_MIPICN1_TEST_CMD         = 0x0006,
+    TKL_MIPICN2_TEST_CMD         = 0x0007,
 } TKL_MFTEST_CMD_E;
 
 #define AEC_TEST_INIT       0x74757961      // tuya
