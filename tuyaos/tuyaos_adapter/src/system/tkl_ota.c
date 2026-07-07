@@ -1,556 +1,628 @@
 /**
  * @file tkl_ota.c
- * @brief default weak implements of tuya ota, it only used when OS=linux
- *
- * @copyright Copyright 2020-2021 Tuya Inc. All Rights Reserved.
- *
+ * @brief TuyaOS OTA hardware abstraction for Beken T9 platform
+ * @version 1.0
+ * @date 2026-07-03
+ * @copyright Copyright (c) Tuya Inc.
  */
-#include <string.h>
 #include "tkl_ota.h"
-#include "tuya_error_code.h"
-#include "tkl_memory.h"
 #include "tkl_flash.h"
 #include "tkl_system.h"
 #include "tkl_watchdog.h"
-#include "tuya_cloud_types.h"
+#include "sdkconfig.h"
+#include <string.h>
+#include <driver/flash.h>
+#include <driver/flash_partition.h>
+#include <modules/ota.h>
+#if defined(CONFIG_OTA_HASH_FUNCTION) && defined(CONFIG_HTTP_AB_PARTITION)
+#include "bk_private/bk_ota_private.h"
+#endif
 
-#if CONFIG_CPU_INDEX == 1
+/* ---------------------------------------------------------------------------
+ * Macros
+ * --------------------------------------------------------------------------- */
+#define TKL_OTA_FLASH_SECTOR_SIZE       4096U
+#define TKL_OTA_FLASH_BUFFER_LENGTH     1024U
+#define TKL_OTA_PROGRESS_STEP_PCT       10U
 
-#define FLASH_SECTOR_SIZE 4096
-#define BLOCK_SZ FLASH_SECTOR_SIZE
+#ifndef TKL_OTA_MIN
+#define TKL_OTA_MIN(a, b)               (((a) < (b)) ? (a) : (b))
+#endif
 
-#define FIRMWARE_AREA           1
-#define PATCH_AREA              2
-#define BACKUP_AREA             3
-#define MANAGER_AREA            4
-#define LAST_WRITE_FIRMWARE     5
-#define INVALID_ARG             255
-
-#define TO_PHYSICS   1
-#define TO_VIRTUAL   0
-#define BK_ADDR_CHANGE(_TYPE_,_ADDR_)  ((((_TYPE_) == TO_PHYSICS) ? ((_ADDR_) / 32) * 34 : ((_ADDR_) / 34) * 32))
-#define v_to_p(a) ((a / 32) * 34 + a % 32)
-#define VIRTUAL_TO_AB_PHYSICS(addr) (v_to_p(addr) - v_to_p(addr) % BLOCK_SZ)
-
-#define len_v_to_p(a) ((a / 32) * 34 + ((a % 32) ? 34 : 0))
-
-typedef enum {
-    UGS_RECV_HEADER = 0,
-    UGS_RECV_IMG_DATA,
-    UGS_RECV_IMG_DATA_B,
-    UGS_FINISH
-}UG_STAT_E;
-
-typedef enum {
-    TYPE_DIFF = 0,
-    TYPE_SEG_A,
-    TYPE_SEG_B
-}OTA_TYPE_E;
-
-
-typedef struct {
-    UINT_T start_addr;
-    UINT_T cur_addr;
-    UINT_T recv_data_cnt;
-    UINT_T bin_len;
-    UINT_T bin_type;
-    UINT_T offset;
-    UCHAR_T firmware_is_crc;  //0- 固件区不需要加crc校验， 1- 固件区需要加crc校验（bk平台）
-    UG_STAT_E stat;
-    OTA_TYPE_E ota_type;//0-diff; 1-seg_A; 2-seg_B
-}UG_PROC_S;
-
-#define OTA_GAP_SIZE                    (512 * 1024)
-
-/**
- * @brief BK segmented OTA erase headroom check (32B virtual <-> 34B physical).
- * @note Legacy used linker symbols __vector_core0_table and _ty_section_start to get
- *       (tuya_section - vector_base) + 1MiB as raw_size. That ties the adapter to SMP/Tuya
- *       ld layout. Here raw_size is derived only from TUYA_FLASH_TYPE_APP partition size.
- */
-static int inline __tkl_ota_erase_limit_check(UINT32_T patch_size)
-{
-    TUYA_FLASH_BASE_INFO_T info;
-    UINT32_T part_sz;
-    UINT32_T max_v;
-    UINT32_T raw_size;
-    UINT32_T occupy_size;
-    UINT32_T available_space;
-    UINT32_T max_available;
-
-    if (tkl_flash_get_one_type_info(TUYA_FLASH_TYPE_APP, &info) != OPRT_OK) {
-        return 1;
-    }
-
-    part_sz = info.partition[0].size;
-    max_v = (part_sz / 34U) * 32U;
-    raw_size = max_v;
-    if (raw_size > 1048576U) {
-        raw_size -= 1048576U;
-    }
-    occupy_size = (raw_size / 32U) * 34U;
-    if (part_sz > occupy_size) {
-        available_space = part_sz - occupy_size;
-    } else {
-        available_space = 0;
-    }
-    if (available_space > (UINT32_T)OTA_GAP_SIZE) {
-        max_available = available_space - (UINT32_T)OTA_GAP_SIZE;
-    } else {
-        max_available = 0;
-    }
-
-    /* 纯压缩UG包在生成时候就已经校验通过，此处仅判断可覆盖分段包长度是否允许 */
-    if (patch_size < max_available) {
-        return 1;
-    }
-
-    bk_printf("ota package check error, max patch allowed: %d, actually: %d\r\n", max_available, patch_size);
-    return 0;
-}
-
-/***********************************************************
-*************************variable define********************
-***********************************************************/
-#define SEC_B_UNIT (1024)
-#define FLASH_BASE_ADDR (0x02000000)
-
-static UINT_T flash_area = INVALID_ARG;
-static UG_PROC_S *ug_proc = NULL;
-static UCHAR_T tkl_fist_flag = 0;
-static UINT_T flash_crc32 = 0;
-
-extern OPERATE_RET tkl_flash_set_protect(const BOOL_T enable);
 extern void bk_printf(const char *fmt, ...);
 
-__attribute__((section(".iram")))void *mem_cpy(void *dest, const void *src, size_t count)
+#ifdef CONFIG_HTTP_AB_PARTITION
+extern part_flag update_part_flag;
+int bk_ota_update_partition_flag(int input_val);
+#if CONFIG_OTA_POSITION_INDEPENDENT_AB
+uint32_t http_get_sapp_partition_length(bk_partition_t partition);
+#endif
+#endif
+
+/* ---------------------------------------------------------------------------
+ * Type definitions
+ * --------------------------------------------------------------------------- */
+typedef struct {
+    UINT_T              image_size;
+    UINT_T              received_total;
+    UINT_T              wr_last_len;
+    UINT_T              wr_address;
+    UINT_T              partition_start;
+    UINT_T              partition_length;
+    UINT_T              last_progress_pct;
+    UINT_T              flash_protect_type;
+    BOOL_T              protect_saved;
+    BOOL_T              first_packet;
+    TUYA_OTA_TYPE_E     ota_type;
+    TUYA_OTA_PATH_E     ota_path;
+    UCHAR_T            *wr_buf;
+    UCHAR_T            *rd_buf;
+} TKL_OTA_CTX_T;
+
+/* ---------------------------------------------------------------------------
+ * File scope variables
+ * --------------------------------------------------------------------------- */
+STATIC TKL_OTA_CTX_T *s_ota_ctx = NULL;
+
+#if CONFIG_CPU_INDEX == 0
+
+/**
+ * @brief Get OTA ability (CPU0 stub)
+ * @param[out] image_size max firmware image size in bytes
+ * @param[out] type supported OTA type
+ * @return OPRT_NOT_SUPPORTED on CPU0
+ */
+OPERATE_RET tkl_ota_get_ability(UINT_T *image_size, TUYA_OTA_TYPE_E *type)
 {
-	char 		*tmp = dest;
-	const char 	*s = src;
-
-	while (count--)
-		*tmp++ = *s++;
-	return dest;
-}
-
-extern unsigned int hash_crc32i_init(void);
-extern unsigned int hash_crc32i_update(unsigned int hash, const void *data, unsigned int size);
-extern unsigned int hash_crc32i_finish(unsigned int hash);
-UINT_T  _flash_crc32_cal(UINT_T addr, UINT_T size)
-{
-    UINT_T read_block = 4096;
-
-    UCHAR_T *read_buffer = tkl_system_malloc(read_block);
-    if(read_buffer == NULL) {
-        bk_printf("malloc error\r\n");
-        return 0;
-    }
-
-    UINT_T read_len = 0;
-    UINT_T pos = 0;
-
-    UINT_T crc32 = hash_crc32i_init();
-
-    while (1) {
-        read_len = size - pos > read_block ? read_block : size - pos;
-        tkl_flash_set_protect(FALSE);
-        mem_cpy(read_buffer, (UCHAR_T *)(addr + pos)+FLASH_BASE_ADDR, read_len);
-        tkl_flash_set_protect(TRUE);
-
-        crc32 = hash_crc32i_update(crc32, read_buffer, read_len);
-        pos += read_len;
-        if (pos >= size) {
-            break;
-        }
-    }
-    crc32 = hash_crc32i_finish(crc32);
-
-    tkl_system_free(read_buffer);
-    return crc32;
+    (void)image_size;
+    (void)type;
+    return OPRT_NOT_SUPPORTED;
 }
 
 /**
-* @brief erase flash
-*
-* @param[in] addr: flash address
-* @param[in] size: size of flash block
-*
-* @note This API is used for erasing flash.
-*
-* @return OPRT_OK on success. Others on error, please refer to tuya_error_code.h
-*/
-OPERATE_RET tkl_ota_flash_erase(uint32_t addr, uint32_t size, void* arg)
-{
-    uint32_t param = *((uint32_t*)arg);
-    uint32_t real_size = size;
-    uint32_t address = addr;
-
-    if(param == FIRMWARE_AREA) {
-        uint32_t phy_size =  (size % 32) ? (size / 32 * 34 + 34) : (size / 32 * 34);
-        uint32_t off_size = BK_ADDR_CHANGE(TO_PHYSICS, addr) % FLASH_SECTOR_SIZE;
-        real_size = ((off_size+phy_size)%FLASH_SECTOR_SIZE) ? ((((off_size+phy_size)/FLASH_SECTOR_SIZE)+1)*FLASH_SECTOR_SIZE) : (off_size+phy_size);
-        address = BK_ADDR_CHANGE(TO_PHYSICS, addr) - off_size;
-    } else {
-        real_size = (size%FLASH_SECTOR_SIZE) ? ((size/FLASH_SECTOR_SIZE) + 1)*FLASH_SECTOR_SIZE : size;
-    }
-    bk_printf("tkl_ota_flash_erase:%x %p, %d\r\n",address, param, real_size);
-    tkl_watchdog_refresh();
-    //tkl_flash_set_protect(FALSE);
-    tkl_flash_erase(address, real_size);//这里的擦除的size 是否需要改为：off_size+len_v_to_p(size)
-    //tkl_flash_set_protect(TRUE);
-    tkl_watchdog_refresh();
-
-    return OPRT_OK;
-
-}
-
-/**
-* @brief read flash
-*
-* @param[in] addr: flash address
-* @param[out] dst: pointer of buffer
-* @param[in] size: size of buffer
-*
-* @note This API is used for reading flash.
-*
-* @return OPRT_OK on success. Others on error, please refer to tuya_error_code.h
-*/
-OPERATE_RET tkl_ota_flash_read(uint32_t addr, uint8_t *dst, uint32_t size)
-{
-    return tkl_flash_read(addr, dst, size);
-}
-
-extern void ty_calc_crc(uint32_t *buf, uint32_t packet_num);
-extern void ty_get_calc_buf(uint8_t *rx, uint8_t *tx, uint32_t num);
-//extern void ty_encrypt(uint32_t *rx, uint16_t *tx, uint32_t num,uint32_t  addr0);
-
-static uint8_t bbuf[1024 / 32 * 34 + 34];
-static uint8_t tbuf[32];
-OPERATE_RET tkl_ota_flash_write(uint32_t addr, uint8_t *buf, uint32_t len, void* arg)
-{
-    uint32_t param = *((uint32_t*)arg);
-    static uint8_t last_data_cnt = 0;
-    //bk_printf("tkl_ota_flash_write:%x, %d, %d\r\n",addr,len, param);
-
-    if(param == FIRMWARE_AREA || param == LAST_WRITE_FIRMWARE) {//write firmware
-        uint32_t off = 0;
-        uint32_t encrypt_num = 0;
-        uint32_t lcnt = len;
-        uint32_t address = addr;
-        //bk_printf("last cnt:%d, len:%d\r\n",last_data_cnt, len);
-        if(last_data_cnt) {
-            if((lcnt + last_data_cnt) >= 32) {
-                memcpy(tbuf+last_data_cnt, buf, 32-last_data_cnt);
-                ty_get_calc_buf(tbuf, bbuf, 1);
-                ty_calc_crc((uint32_t *)(bbuf), 1);
-                lcnt -= 32-last_data_cnt;
-                off += 32-last_data_cnt;
-                address -= last_data_cnt;
-                last_data_cnt = 0;
-                tkl_watchdog_refresh();
-                //tkl_flash_set_protect(FALSE);
-                if(tkl_flash_write(BK_ADDR_CHANGE(TO_PHYSICS, address), bbuf, 34)) {
-                    //tkl_flash_set_protect(TRUE);
-                    bk_printf("Write sector failed\r\n");
-                    return OPRT_OS_ADAPTER_OTA_PROCESS_FAILED;
-                }
-                //tkl_flash_set_protect(TRUE);
-                tkl_watchdog_refresh();
-                address += 32;
-            }
-        }
-        while(lcnt >= 32) {
-            encrypt_num = (lcnt > SEC_B_UNIT) ? (SEC_B_UNIT / 32) : lcnt / 32;
-            ty_get_calc_buf((buf+off), bbuf, encrypt_num);
-            ty_calc_crc((uint32_t *)bbuf, encrypt_num);
-            tkl_watchdog_refresh();
-
-            //tkl_flash_set_protect(FALSE);
-            if(tkl_flash_write(BK_ADDR_CHANGE(TO_PHYSICS, address), bbuf, encrypt_num*34)) {
-                //tkl_flash_set_protect(TRUE);
-                bk_printf("Write sector failed\r\n");
-                return OPRT_OS_ADAPTER_OTA_PROCESS_FAILED;
-            }
-            //tkl_flash_set_protect(TRUE);
-            tkl_watchdog_refresh();
-            lcnt -= encrypt_num * 32;
-            off += encrypt_num * 32;
-            address += encrypt_num * 32;
-        }
-
-        if(lcnt && param != LAST_WRITE_FIRMWARE) {
-            memcpy(tbuf + last_data_cnt, (buf+off), lcnt);
-            last_data_cnt += lcnt;
-        } else if(lcnt && param == LAST_WRITE_FIRMWARE) {
-            bk_printf("last_data_cnt:%d\r\n", last_data_cnt);
-            uint8_t restbuf[32];
-            memset(restbuf, 0xff, 32);
-            memcpy(restbuf, tbuf, last_data_cnt);
-            memcpy(restbuf + last_data_cnt, buf+off, lcnt);
-
-            ty_get_calc_buf(restbuf, bbuf, 1);
-            ty_calc_crc((uint32_t *)bbuf, 1);
-            tkl_watchdog_refresh();
-            //tkl_flash_set_protect(FALSE);
-            if(tkl_flash_write(BK_ADDR_CHANGE(TO_PHYSICS, address - last_data_cnt), bbuf, 34)) {
-                //tkl_flash_set_protect(TRUE);
-                bk_printf("Write sector failed\r\n");
-                return OPRT_OS_ADAPTER_OTA_PROCESS_FAILED;
-            }
-            //tkl_flash_set_protect(TRUE);
-            tkl_watchdog_refresh();
-        }
-
-    }else {
-        tkl_watchdog_refresh();
-        //tkl_flash_set_protect(FALSE);
-        tkl_flash_write(addr, buf, len);
-        //tkl_flash_set_protect(TRUE);
-        tkl_watchdog_refresh();
-    }
-
-    return OPRT_OK;
-}
-
-/**
-* @brief ota start notify with data
-*
-* @param[in] image_size:  image size
-* @param[in] type:        ota type
-* @param[in] path:        ota path
-*
-* @note This API is used for ota start notify
-*
-* @return OPRT_OK on success. Others on error, please refer to tuya_error_code.h
-*/
-OPERATE_RET tkl_ota_start_notify_with_data(UINT_T image_size, TUYA_OTA_TYPE_E type, TUYA_OTA_PATH_E path)
-{
-    if(image_size == 0) {
-        return OPRT_OS_ADAPTER_INVALID_PARM;
-    }
-    if(NULL == ug_proc) {
-        ug_proc = tkl_system_malloc(sizeof(UG_PROC_S));
-        if(NULL == ug_proc) {
-            return OPRT_MALLOC_FAILED;
-        }
-    }
-    memset(ug_proc, 0,sizeof(UG_PROC_S));
-    ug_proc->bin_len = image_size;
-
-    ug_proc->ota_type = TYPE_DIFF;
-    if(path == TUYA_OTA_PATH_SEC_A) {
-        ug_proc->ota_type = TYPE_SEG_A;
-    } else if(path == TUYA_OTA_PATH_SEC_B) {
-        ug_proc->ota_type = TYPE_SEG_B;
-        ug_proc->stat = UGS_RECV_IMG_DATA_B;
-    }
-
-    // amp delete
-    tkl_flash_erase(0x6c9000, 8192);
-
-    bk_printf("%s %d, image_size %d, type %d, %d, %d\r\n", __func__, __LINE__, image_size, type, ug_proc->bin_len, ug_proc->ota_type,ug_proc->stat);
-    return 0;
-
-    //bk_printf("_ota_start_notify:%d, %d, %d, %d\r\n",type, ug_proc->bin_len, ug_proc->ota_type,ug_proc->stat);
-}
-
-/**
-* @brief ota start notify
-*
-* @param[in] image_size:  image size
-* @param[in] type:        ota type
-* @param[in] path:        ota path
-*
-* @note This API is used for ota start notify
-*
-* @return OPRT_OK on success. Others on error, please refer to tuya_error_code.h
-*/
+ * @brief OTA start notify (CPU0 stub)
+ * @param[in] image_size firmware image size
+ * @param[in] type OTA type
+ * @param[in] path OTA path
+ * @return OPRT_NOT_SUPPORTED on CPU0
+ */
 OPERATE_RET tkl_ota_start_notify(UINT_T image_size, TUYA_OTA_TYPE_E type, TUYA_OTA_PATH_E path)
 {
-    if(image_size == 0) {
-        return OPRT_OS_ADAPTER_INVALID_PARM;
-    }
-
-    if(ug_proc == NULL) {
-        ug_proc = tkl_system_malloc(sizeof(UG_PROC_S));
-        if(NULL == ug_proc) {
-            return OPRT_MALLOC_FAILED;
-        }
-    }
-    memset(ug_proc, 0,sizeof(UG_PROC_S));
-    ug_proc->bin_len = image_size;
-
-    ug_proc->ota_type = TYPE_DIFF;
-    if(path == TUYA_OTA_PATH_SEC_A) {
-        ug_proc->ota_type = TYPE_SEG_A;
-    } else if(path == TUYA_OTA_PATH_SEC_B) {
-        ug_proc->ota_type = TYPE_SEG_B;
-        ug_proc->stat = UGS_RECV_IMG_DATA_B;
-    }
-
-    return 0;
-
-    //bk_printf("_ota_start_notify:%d, %d, %d, %d\r\n",type, ug_proc->bin_len, ug_proc->ota_type,ug_proc->stat);
+    (void)image_size;
+    (void)type;
+    (void)path;
+    return OPRT_NOT_SUPPORTED;
 }
 
+/**
+ * @brief OTA data process (CPU0 stub)
+ * @param[in] pack OTA data packet
+ * @param[out] remain_len unprocessed bytes in current packet
+ * @return OPRT_NOT_SUPPORTED on CPU0
+ */
+OPERATE_RET tkl_ota_data_process(TUYA_OTA_DATA_T *pack, UINT_T *remain_len)
+{
+    (void)pack;
+    (void)remain_len;
+    return OPRT_NOT_SUPPORTED;
+}
 
 /**
-* @brief ota data process
-*
-* @param[in] pack:       point to ota pack
-* @param[in] remain_len: ota pack remain len
-*
-* @note This API is used for ota data process
-*
-* @return OPRT_OK on success. Others on error, please refer to tuya_error_code.h
-*/
-OPERATE_RET tkl_ota_data_process(TUYA_OTA_DATA_T *pack, UINT_T* remain_len)
+ * @brief OTA end notify (CPU0 stub)
+ * @param[in] reset whether to reset after OTA
+ * @return OPRT_NOT_SUPPORTED on CPU0
+ */
+OPERATE_RET tkl_ota_end_notify(BOOL_T reset)
 {
-    if(ug_proc == NULL) {
-        bk_printf("ota don't start or start err,process error!\r\n");
+    (void)reset;
+    return OPRT_NOT_SUPPORTED;
+}
+
+/**
+ * @brief Get old firmware info (CPU0 stub)
+ * @param[out] info old firmware info
+ * @return OPRT_NOT_SUPPORTED on CPU0
+ */
+OPERATE_RET tkl_ota_get_old_firmware_info(TUYA_OTA_FIRMWARE_INFO_T **info)
+{
+    (void)info;
+    return OPRT_NOT_SUPPORTED;
+}
+
+#else /* CONFIG_CPU_INDEX == 1 */
+
+#include <os/os.h>
+
+/* ---------------------------------------------------------------------------
+ * Macros
+ * --------------------------------------------------------------------------- */
+#define TKL_OTA_YIELD_MS                2U
+
+/* ---------------------------------------------------------------------------
+ * Forward declarations
+ * --------------------------------------------------------------------------- */
+STATIC VOID_T __tkl_ota_yield(VOID_T);
+STATIC VOID_T __tkl_ota_ctx_free(VOID_T);
+STATIC OPERATE_RET __tkl_ota_flush_buffer(TKL_OTA_CTX_T *ctx, BOOL_T force);
+STATIC OPERATE_RET __tkl_ota_write_flash(TKL_OTA_CTX_T *ctx, UINT_T len);
+STATIC VOID_T __tkl_ota_log_progress(TKL_OTA_CTX_T *ctx);
+STATIC OPERATE_RET __tkl_ota_select_target_partition(TKL_OTA_CTX_T *ctx);
+#if defined(CONFIG_OTA_HASH_FUNCTION) && defined(CONFIG_HTTP_AB_PARTITION)
+STATIC OPERATE_RET __tkl_ota_verify_rbl_hash(VOID_T);
+#endif
+
+/**
+ * @brief Yield CPU for IPC heartbeat and other low-priority tasks
+ * @return none
+ * @note Same interval as Beken ota_base_drv.c rtos_delay_milliseconds(2)
+ */
+STATIC VOID_T __tkl_ota_yield(VOID_T)
+{
+    rtos_delay_milliseconds(TKL_OTA_YIELD_MS);
+}
+
+/**
+ * @brief Release OTA context and buffers
+ * @return none
+ */
+STATIC VOID_T __tkl_ota_ctx_free(VOID_T)
+{
+    if (s_ota_ctx == NULL) {
+        return;
+    }
+
+    if (s_ota_ctx->protect_saved) {
+        bk_flash_set_protect_type((flash_protect_type_t)s_ota_ctx->flash_protect_type);
+        s_ota_ctx->protect_saved = FALSE;
+    }
+
+    if (s_ota_ctx->wr_buf != NULL) {
+        tkl_system_free(s_ota_ctx->wr_buf);
+        s_ota_ctx->wr_buf = NULL;
+    }
+
+    if (s_ota_ctx->rd_buf != NULL) {
+        tkl_system_free(s_ota_ctx->rd_buf);
+        s_ota_ctx->rd_buf = NULL;
+    }
+
+    tkl_system_free(s_ota_ctx);
+    s_ota_ctx = NULL;
+}
+
+/**
+ * @brief Log OTA progress every 10%
+ * @param[in] ctx OTA context
+ * @return none
+ */
+STATIC VOID_T __tkl_ota_log_progress(TKL_OTA_CTX_T *ctx)
+{
+    UINT_T cur_pct;
+
+    if ((ctx == NULL) || (ctx->image_size == 0)) {
+        return;
+    }
+
+    cur_pct = (ctx->received_total * 100U) / ctx->image_size;
+    if ((cur_pct < ctx->last_progress_pct) ||
+        ((cur_pct - ctx->last_progress_pct) < TKL_OTA_PROGRESS_STEP_PCT && cur_pct != 100U)) {
+        return;
+    }
+
+    bk_printf("[tkl_ota] progress %u%%\r\n", cur_pct);
+    ctx->last_progress_pct = cur_pct;
+}
+
+/**
+ * @brief Select OTA target partition (AB swap or single OTA partition)
+ * @param[in] ctx OTA context
+ * @return OPRT_OK on success
+ */
+STATIC OPERATE_RET __tkl_ota_select_target_partition(TKL_OTA_CTX_T *ctx)
+{
+    bk_logic_partition_t *pt = NULL;
+
+    if (ctx == NULL) {
+        return OPRT_INVALID_PARM;
+    }
+
+#ifdef CONFIG_HTTP_AB_PARTITION
+    exec_flag cur_part = (exec_flag)bk_ota_get_current_partition();
+
+    if (cur_part == EXEC_B_PART) {
+        update_part_flag = UPDATE_A_PART;
+    } else {
+        update_part_flag = UPDATE_B_PART;
+    }
+
+#if CONFIG_OTA_POSITION_INDEPENDENT_AB
+    ctx->partition_length = http_get_sapp_partition_length(BK_PARTITION_S_APP);
+    if (update_part_flag == UPDATE_B_PART) {
+        pt = bk_flash_partition_get_info(BK_PARTITION_S_APP);
+    } else {
+        pt = bk_flash_partition_get_info(BK_PARTITION_APPLICATION);
+    }
+#else
+    pt = bk_flash_partition_get_info(BK_PARTITION_S_APP);
+    ctx->partition_length = pt->partition_length;
+#endif
+#else
+    pt = bk_flash_partition_get_info(BK_PARTITION_OTA);
+    if (pt != NULL) {
+        ctx->partition_length = pt->partition_length;
+    }
+#endif
+
+    if (pt == NULL) {
         return OPRT_COM_ERROR;
     }
 
-    if(ug_proc->ota_type == TYPE_SEG_A)
-        return -1;
+    ctx->partition_start = pt->partition_start_addr;
+    ctx->wr_address = pt->partition_start_addr;
+    return OPRT_OK;
+}
 
-    //bk_printf("ug_proc->stat:%d\r\n",ug_proc->stat);
-    if(ug_proc->stat == UGS_RECV_IMG_DATA_B) {
-        pack->start_addr -= 65536;      // SMP覆盖分段升级时候，压缩包中包含64k bl2，bl2中升级A段时候，丢弃了这部分长度，但是sdk在计算时候未丢弃，此处减去
-        if(!tkl_fist_flag) {
-            tkl_fist_flag = 1;
-            flash_crc32 = hash_crc32i_init();
+#if defined(CONFIG_OTA_HASH_FUNCTION) && defined(CONFIG_HTTP_AB_PARTITION)
+/**
+ * @brief Verify RBL compressed firmware hash after download
+ * @return OPRT_OK on success
+ * @note Requires CONFIG_OTA_HASH_FUNCTION and AB partition; bootloader decompresses RBL payload on reboot
+ */
+STATIC OPERATE_RET __tkl_ota_verify_rbl_hash(VOID_T)
+{
+    if (ota_do_hash_check() != BK_OK) {
+        bk_printf("[tkl_ota] RBL hash verify failed\r\n");
+        return OPRT_OS_ADAPTER_OTA_VERIFY_FAILED;
+    }
 
-            UCHAR_T *temp_buf = NULL;
-            UINT_T off_size = BK_ADDR_CHANGE(pack->start_addr, TO_PHYSICS) % FLASH_SECTOR_SIZE;
-            UINT_T address = BK_ADDR_CHANGE(pack->start_addr, TO_PHYSICS) - off_size;
-            //bk_printf("off_size:%x,%x,%x\r\n",off_size, address, pack->start_addr);
-            if(off_size != 0) {
-                temp_buf = (UCHAR_T *) tkl_system_malloc(off_size);
-                if(NULL == temp_buf) {
-                    return OPRT_MALLOC_FAILED;
-                }
-                tkl_flash_read(address, temp_buf, off_size);
-            }
+    bk_printf("[tkl_ota] RBL hash verify ok\r\n");
+    return OPRT_OK;
+}
+#endif
 
-            flash_area = FIRMWARE_AREA;
+/**
+ * @brief Erase sector and write buffered data to flash
+ * @param[in] ctx OTA context
+ * @param[in] len bytes to write from wr_buf
+ * @return OPRT_OK on success
+ */
+STATIC OPERATE_RET __tkl_ota_write_flash(TKL_OTA_CTX_T *ctx, UINT_T len)
+{
+    OPERATE_RET ret;
 
-            bk_printf("%s %d, b-section, earse %x %x\r\n", __func__, __LINE__, pack->start_addr, ug_proc->bin_len);
-            tkl_ota_flash_erase(pack->start_addr, ug_proc->bin_len, (VOID *)&flash_area);
+    if ((ctx == NULL) || (len == 0) || (ctx->wr_buf == NULL)) {
+        return OPRT_INVALID_PARM;
+    }
 
-            if(off_size != 0) {
-                tkl_flash_write(address, temp_buf, off_size);
-            }
-            if(NULL != temp_buf) {
-                tkl_system_free(temp_buf);
-                temp_buf = NULL;
-            }
+    if ((ctx->wr_address < ctx->partition_start) ||
+        ((ctx->wr_address + len) > (ctx->partition_start + ctx->partition_length))) {
+        return OPRT_OS_ADAPTER_OTA_PROCESS_FAILED;
+    }
+
+    if ((ctx->wr_address % TKL_OTA_FLASH_SECTOR_SIZE) == 0) {
+        tkl_watchdog_refresh();
+        ret = tkl_flash_erase(ctx->wr_address, TKL_OTA_FLASH_SECTOR_SIZE);
+        tkl_watchdog_refresh();
+        if (ret != OPRT_OK) {
+            return OPRT_OS_ADAPTER_OTA_PROCESS_FAILED;
         }
+        __tkl_ota_yield();
+    }
 
-        flash_crc32 = hash_crc32i_update(flash_crc32, pack->data, pack->len);
+    tkl_watchdog_refresh();
+    ret = tkl_flash_write(ctx->wr_address, ctx->wr_buf, len);
+    tkl_watchdog_refresh();
+    if (ret != OPRT_OK) {
+        return OPRT_OS_ADAPTER_OTA_PROCESS_FAILED;
+    }
+    __tkl_ota_yield();
 
-        flash_area = FIRMWARE_AREA;
-        if(ug_proc->recv_data_cnt + pack->len >= ug_proc->bin_len) {
-            pack->len = ug_proc->bin_len - ug_proc->recv_data_cnt;
-            bk_printf("recv finish222222\r\n");
-            flash_area = LAST_WRITE_FIRMWARE;
+    if (ctx->rd_buf != NULL) {
+        ret = tkl_flash_read(ctx->wr_address, ctx->rd_buf, len);
+        if ((ret != OPRT_OK) || (memcmp(ctx->wr_buf, ctx->rd_buf, len) != 0)) {
+            return OPRT_OS_ADAPTER_OTA_PROCESS_FAILED;
         }
+        __tkl_ota_yield();
+    }
 
-        //bk_printf("start_addr:%x\r\n",pack->start_addr);
-        tkl_ota_flash_write(pack->start_addr, pack->data, pack->len, (VOID *)&flash_area);
-        ug_proc->recv_data_cnt += pack->len;
-        *remain_len = 0;
+    ctx->wr_address += len;
+    memset(ctx->wr_buf, 0, len);
+    return OPRT_OK;
+}
 
-        if(flash_area == LAST_WRITE_FIRMWARE) {
-            flash_crc32 = hash_crc32i_finish(flash_crc32);
-            //bk_printf("crc:%x, %x, %x, %x\r\n",pack->start_addr, pack->len, ug_proc->bin_len, pack->start_addr + pack->len - ug_proc->bin_len);
-            UINT_T result_crc32 = _flash_crc32_cal(pack->start_addr + pack->len - ug_proc->bin_len, ug_proc->bin_len);
-            if(result_crc32 != flash_crc32) {
-                bk_printf("Area B crc32 err: %x, %x\r\n", result_crc32, flash_crc32);
-                tkl_system_reset();  //下载B段校验失败直接重启，重新拉取B段
-            }
+/**
+ * @brief Flush internal write buffer to flash
+ * @param[in] ctx OTA context
+ * @param[in] force flush remaining bytes even if less than one block
+ * @return OPRT_OK on success
+ */
+STATIC OPERATE_RET __tkl_ota_flush_buffer(TKL_OTA_CTX_T *ctx, BOOL_T force)
+{
+    OPERATE_RET ret = OPRT_OK;
+
+    if (ctx == NULL) {
+        return OPRT_INVALID_PARM;
+    }
+
+    while (ctx->wr_last_len >= TKL_OTA_FLASH_BUFFER_LENGTH) {
+        ret = __tkl_ota_write_flash(ctx, TKL_OTA_FLASH_BUFFER_LENGTH);
+        if (ret != OPRT_OK) {
+            return ret;
         }
+        ctx->wr_last_len -= TKL_OTA_FLASH_BUFFER_LENGTH;
+        if (ctx->wr_last_len > 0) {
+            memmove(ctx->wr_buf, ctx->wr_buf + TKL_OTA_FLASH_BUFFER_LENGTH, ctx->wr_last_len);
+        }
+    }
+
+    if (force && (ctx->wr_last_len > 0)) {
+        ret = __tkl_ota_write_flash(ctx, ctx->wr_last_len);
+        if (ret != OPRT_OK) {
+            return ret;
+        }
+        ctx->wr_last_len = 0;
+    }
+
+    return ret;
+}
+
+/**
+ * @brief Get OTA ability
+ * @param[out] image_size max firmware image size in bytes
+ * @param[out] type supported OTA type
+ * @return OPRT_OK on success
+ */
+OPERATE_RET tkl_ota_get_ability(UINT_T *image_size, TUYA_OTA_TYPE_E *type)
+{
+    TUYA_FLASH_BASE_INFO_T info;
+    UINT_T fw1_size = 0;
+    UINT_T fw2_size = 0;
+    bk_logic_partition_t *pt = NULL;
+
+    if ((image_size == NULL) || (type == NULL)) {
+        return OPRT_INVALID_PARM;
+    }
+
+#ifdef CONFIG_HTTP_AB_PARTITION
+    pt = bk_flash_partition_get_info(BK_PARTITION_APPLICATION);
+    if (pt != NULL) {
+        fw1_size = pt->partition_length;
+    }
+
+    pt = bk_flash_partition_get_info(BK_PARTITION_S_APP);
+    if (pt != NULL) {
+        fw2_size = pt->partition_length;
+    }
+
+    if ((fw1_size == 0) && (fw2_size == 0)) {
+        return OPRT_COM_ERROR;
+    }
+
+    if ((fw1_size == 0) || (fw2_size == 0)) {
+        *image_size = (fw1_size > fw2_size) ? fw1_size : fw2_size;
     } else {
-        if (!__tkl_ota_erase_limit_check(ug_proc->bin_len)) {
-            return -1;
+        *image_size = TKL_OTA_MIN(fw1_size, fw2_size);
+    }
+#else
+    if (tkl_flash_get_one_type_info(TUYA_FLASH_TYPE_APP, &info) != OPRT_OK) {
+        pt = bk_flash_partition_get_info(BK_PARTITION_OTA);
+        if (pt == NULL) {
+            return OPRT_COM_ERROR;
+        }
+        *image_size = pt->partition_length;
+    } else {
+        *image_size = info.partition[0].size;
+    }
+#endif
+
+    *type = TUYA_OTA_FULL;
+    return OPRT_OK;
+}
+
+/**
+ * @brief OTA start notify
+ * @param[in] image_size firmware image size
+ * @param[in] type OTA type
+ * @param[in] path OTA path
+ * @return OPRT_OK on success
+ */
+OPERATE_RET tkl_ota_start_notify(UINT_T image_size, TUYA_OTA_TYPE_E type, TUYA_OTA_PATH_E path)
+{
+    OPERATE_RET ret;
+    UINT_T max_size = 0;
+    TUYA_OTA_TYPE_E support_type = TUYA_OTA_FULL;
+
+    if (image_size == 0) {
+        return OPRT_INVALID_PARM;
+    }
+
+    if (type == TUYA_OTA_DIFF) {
+        return OPRT_NOT_SUPPORTED;
+    }
+
+    ret = tkl_ota_get_ability(&max_size, &support_type);
+    if ((ret != OPRT_OK) || (image_size > max_size)) {
+        return OPRT_OS_ADAPTER_OTA_PKT_SIZE_FAILED;
+    }
+
+    __tkl_ota_ctx_free();
+
+    s_ota_ctx = (TKL_OTA_CTX_T *)tkl_system_malloc(sizeof(TKL_OTA_CTX_T));
+    if (s_ota_ctx == NULL) {
+        return OPRT_MALLOC_FAILED;
+    }
+    memset(s_ota_ctx, 0, sizeof(TKL_OTA_CTX_T));
+
+    s_ota_ctx->wr_buf = (UCHAR_T *)tkl_system_malloc(TKL_OTA_FLASH_BUFFER_LENGTH);
+    s_ota_ctx->rd_buf = (UCHAR_T *)tkl_system_malloc(TKL_OTA_FLASH_BUFFER_LENGTH);
+    if ((s_ota_ctx->wr_buf == NULL) || (s_ota_ctx->rd_buf == NULL)) {
+        __tkl_ota_ctx_free();
+        return OPRT_MALLOC_FAILED;
+    }
+
+    s_ota_ctx->image_size = image_size;
+    s_ota_ctx->ota_type = type;
+    s_ota_ctx->ota_path = path;
+    s_ota_ctx->first_packet = TRUE;
+    s_ota_ctx->last_progress_pct = 0;
+
+    ret = __tkl_ota_select_target_partition(s_ota_ctx);
+    if (ret != OPRT_OK) {
+        __tkl_ota_ctx_free();
+        return OPRT_OS_ADAPTER_OTA_START_INFORM_FAILED;
+    }
+
+    s_ota_ctx->flash_protect_type = (UINT_T)bk_flash_get_protect_type();
+    s_ota_ctx->protect_saved = TRUE;
+    bk_flash_set_protect_type(FLASH_PROTECT_NONE);
+
+    bk_printf("[tkl_ota] start size=%u target=0x%x len=0x%x path=%u\r\n",
+              image_size, s_ota_ctx->partition_start, s_ota_ctx->partition_length, path);
+    return OPRT_OK;
+}
+
+/**
+ * @brief OTA data process
+ * @param[in] pack OTA data packet
+ * @param[out] remain_len unprocessed bytes in current packet
+ * @return OPRT_OK on success
+ */
+OPERATE_RET tkl_ota_data_process(TUYA_OTA_DATA_T *pack, UINT_T *remain_len)
+{
+    OPERATE_RET ret = OPRT_OK;
+    UINT_T copy_len = 0;
+    UINT_T offset = 0;
+
+    if ((pack == NULL) || (remain_len == NULL)) {
+        return OPRT_INVALID_PARM;
+    }
+
+    if ((pack->data == NULL) || (pack->len == 0)) {
+        *remain_len = 0;
+        return OPRT_INVALID_PARM;
+    }
+
+    if (s_ota_ctx == NULL) {
+        return OPRT_COM_ERROR;
+    }
+
+    *remain_len = 0;
+
+    if (s_ota_ctx->first_packet) {
+        UINT_T base = s_ota_ctx->partition_start;
+
+        if (pack->start_addr != 0) {
+            base = pack->start_addr;
         }
 
-        if(!tkl_fist_flag) {
-            tkl_fist_flag = 1;
-            flash_area = PATCH_AREA;
-            bk_printf("%s %d, a-section, earse %x %x\r\n", __func__, __LINE__, pack->start_addr, ug_proc->bin_len);
-
-            tkl_ota_flash_erase(pack->start_addr, ug_proc->bin_len, (VOID *)&flash_area);
+        if ((base < s_ota_ctx->partition_start) ||
+            (base >= (s_ota_ctx->partition_start + s_ota_ctx->partition_length))) {
+            return OPRT_OS_ADAPTER_OTA_PROCESS_FAILED;
         }
-        flash_area = PATCH_AREA;
-        tkl_ota_flash_write(pack->start_addr, pack->data, pack->len, (VOID *)&flash_area);
+
+        s_ota_ctx->wr_address = base + pack->offset;
+        s_ota_ctx->first_packet = FALSE;
+    } else if (pack->offset != s_ota_ctx->received_total) {
+        UINT_T base = (pack->start_addr != 0) ? pack->start_addr : s_ota_ctx->partition_start;
+
+        s_ota_ctx->wr_address = base + pack->offset;
+        s_ota_ctx->wr_last_len = 0;
+    }
+
+    while (offset < pack->len) {
+        copy_len = pack->len - offset;
+        if (copy_len > (TKL_OTA_FLASH_BUFFER_LENGTH - s_ota_ctx->wr_last_len)) {
+            copy_len = TKL_OTA_FLASH_BUFFER_LENGTH - s_ota_ctx->wr_last_len;
+        }
+
+        memcpy(s_ota_ctx->wr_buf + s_ota_ctx->wr_last_len, pack->data + offset, copy_len);
+        offset += copy_len;
+        s_ota_ctx->wr_last_len += copy_len;
+        s_ota_ctx->received_total += copy_len;
+
+        if (s_ota_ctx->wr_last_len >= TKL_OTA_FLASH_BUFFER_LENGTH) {
+            ret = __tkl_ota_flush_buffer(s_ota_ctx, FALSE);
+            if (ret != OPRT_OK) {
+                return ret;
+            }
+        }
+
+        __tkl_ota_log_progress(s_ota_ctx);
+
+        if (s_ota_ctx->received_total >= s_ota_ctx->image_size) {
+            ret = __tkl_ota_flush_buffer(s_ota_ctx, TRUE);
+            if (ret != OPRT_OK) {
+                return ret;
+            }
+            break;
+        }
     }
 
     return OPRT_OK;
 }
 
 /**
- * @brief firmware ota packet transform success inform, can do verify in this funcion
- *
- * @param[in]        reset       need reset or not
- *
- * @return OPRT_OK on success, others on failed
+ * @brief OTA end notify
+ * @param[in] reset whether to reset after OTA
+ * @return OPRT_OK on success
  */
 OPERATE_RET tkl_ota_end_notify(BOOL_T reset)
 {
-    tkl_fist_flag = 0;
-    return OPRT_OK;
-}
+    OPERATE_RET ret = OPRT_OK;
 
+    if (s_ota_ctx == NULL) {
+        return OPRT_COM_ERROR;
+    }
+
+    if (s_ota_ctx->wr_last_len > 0) {
+        ret = __tkl_ota_flush_buffer(s_ota_ctx, TRUE);
+        if (ret != OPRT_OK) {
+            __tkl_ota_ctx_free();
+            return OPRT_OS_ADAPTER_OTA_PROCESS_FAILED;
+        }
+    }
+
+    if (s_ota_ctx->received_total != s_ota_ctx->image_size) {
+        bk_printf("[tkl_ota] size mismatch recv=%u expect=%u\r\n",
+                  s_ota_ctx->received_total, s_ota_ctx->image_size);
+        __tkl_ota_ctx_free();
+        return OPRT_OS_ADAPTER_OTA_VERIFY_FAILED;
+    }
+
+#if defined(CONFIG_OTA_HASH_FUNCTION) && defined(CONFIG_HTTP_AB_PARTITION)
+    ret = __tkl_ota_verify_rbl_hash();
+    if (ret != OPRT_OK) {
+        __tkl_ota_ctx_free();
+        return ret;
+    }
+#endif
+
+#ifdef CONFIG_HTTP_AB_PARTITION
+    if (bk_ota_update_partition_flag(0) != 0) {
+        __tkl_ota_ctx_free();
+        return OPRT_OS_ADAPTER_OTA_END_INFORM_FAILED;
+    }
+#endif
+
+    bk_printf("[tkl_ota] end success\r\n");
+    __tkl_ota_ctx_free();
+
+    if (reset) {
+        tkl_system_reset();
+    }
+
+    return ret;
+}
 
 /**
-* @brief get ota ability
-*
-* @param[out] image_size:  max image size
-* @param[out] type:        bit0, 1 - support full package upgrade
-                                 0 - dont support full package upgrade
-*                          bit1, 1 - support compress package upgrade
-                                 0 - dont support compress package upgrade
-*                          bit2, 1 - support difference package upgrade
-                                 0 - dont support difference package upgrade
-* @note This API is used for get chip ota ability
-*
-* @return OPRT_OK on success. Others on error, please refer to tuya_error_code.h
-*/
-OPERATE_RET tkl_ota_get_ability(UINT_T *image_size, TUYA_OTA_TYPE_E *type)
-{
-    *image_size = (2040 + 288 + 1700) * 1024;
-
-    *type = TUYA_OTA_FULL;
-
-    return OPRT_OK;
-}
-
-#elif CONFIG_CPU_INDEX == 0
-
-OPERATE_RET tkl_ota_get_ability(UINT_T *image_size, TUYA_OTA_TYPE_E *type)
-{
-    return OPRT_NOT_SUPPORTED;
-}
-
-OPERATE_RET tkl_ota_start_notify(UINT_T image_size, TUYA_OTA_TYPE_E type, TUYA_OTA_PATH_E path)
-{
-    return OPRT_NOT_SUPPORTED;
-}
-
-OPERATE_RET tkl_ota_data_process(TUYA_OTA_DATA_T *pack, UINT_T* remain_len)
-{
-    return OPRT_NOT_SUPPORTED;
-}
-
-OPERATE_RET tkl_ota_end_notify(BOOL_T reset)
-{
-    return OPRT_NOT_SUPPORTED;
-}
-
+ * @brief Get old firmware info for breakpoint resume
+ * @param[out] info old firmware info
+ * @return OPRT_NOT_SUPPORTED
+ */
 OPERATE_RET tkl_ota_get_old_firmware_info(TUYA_OTA_FIRMWARE_INFO_T **info)
 {
+    (void)info;
     return OPRT_NOT_SUPPORTED;
 }
 
-#endif
+#endif /* CONFIG_CPU_INDEX */
