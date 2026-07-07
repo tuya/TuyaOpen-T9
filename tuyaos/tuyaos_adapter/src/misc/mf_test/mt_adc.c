@@ -207,7 +207,7 @@ STATIC OPERATE_RET __mt_adc_run_test(INT32_T *p24_mv, INT32_T *p25_mv)
     if (ret != OPRT_OK) {
         return ret;
     }
-    tkl_system_sleep(2000);
+    tkl_system_sleep(1000);
 
     ret = __mt_adc_read_pin_voltage_mv(MT_ADC_PIN_P24, p24_mv);
     if (ret != OPRT_OK) {
