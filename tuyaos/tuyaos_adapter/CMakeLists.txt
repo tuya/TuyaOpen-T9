@@ -131,6 +131,7 @@ else()
         src/misc/tuya_dma.c
         src/misc/tkl_mftest.c
         src/misc/mf_test/mt_mipi.c
+        src/misc/mf_test/mt_adc.c
         # src/misc/mftest/mt_audio.c
 
         src/system/tkl_fs.c

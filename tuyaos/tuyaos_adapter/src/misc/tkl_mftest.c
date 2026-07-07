@@ -180,6 +180,9 @@ OPERATE_RET tkl_mftest_ctrl(USHORT_T cmd, UCHAR_T *in, UINT_T inlen, UCHAR_T **o
     case TKL_MIPICN2_TEST_CMD:
         return __pt_mipi_test(cmd, in, inlen, out, outlen);
 
+    case TKL_ADC_TEST_CMD:
+        return mt_adc_factory_test_reply(out, outlen);
+
     default:
         return OPRT_NOT_SUPPORTED;
     }
