@@ -60,6 +60,7 @@ void cli_tkl_timer_test(char *pcWriteBuffer, int xWriteBufferLen, int argc, char
 // void cli_timer_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv);
 void cli_usb_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv);
 void cli_sdcard_test_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv);
+void cli_ota_test_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv);
 void cli_tkl_spi_test(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv);
 // void cli_spi_2_3_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv);
 void cli_eth_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv);

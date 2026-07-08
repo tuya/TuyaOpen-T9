@@ -114,6 +114,7 @@ static const struct cli_command tuya_cli_commands[] = {
     {"xgpio",   "gpio test",        cli_gpio_cmd},
     {"xwifi",   "wifi test",        cli_wifi_cmd},
     {"xsd",     "sd card test",     cli_sdcard_test_cmd},
+    {"xota",    "ota sd ug test",   cli_ota_test_cmd},
     {"xtkladc", "tkl saradc test",   cli_tkl_adc_cmd},
     {"xi2c",    "i2c single|smoke|full|pajid [port...]", cli_xi2c_cmd},
     // {"xqspi",   "qspi test",        cli_xqspi_cmd},

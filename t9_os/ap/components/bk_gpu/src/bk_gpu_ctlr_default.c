@@ -29,6 +29,8 @@
 
 #define HDMA_OPEN_ISR_ENABLE 1
 
+#define GPU_HPDMA_TRANSFER_TIMEOUT_MS 3000
+
 // Modified by TUYA Start
 
 #define GPU_DRAW_RECT_LINE_WIDTH  4
@@ -437,9 +439,11 @@ static bool gpu_blit_rotate_degree_is_valid(uint16_t rotate_degree)
            rotate_degree == 180 || rotate_degree == 270;
 }
 
-static void gpu_isp_line_done_handle(uint32_t line, void *arg)
+static void gpu_flexa_event_ready_handle(uint32_t frame_seq, uint32_t line, gpu_vn_ctlr_t *gpu_vn_ctlr)
 {
-    gpu_vn_ctlr_t *gpu_vn_ctlr = (gpu_vn_ctlr_t *)arg;
+    if (gpu_vn_ctlr == NULL) {
+        return;
+    }
 
     if (line == 1)
     {
@@ -450,10 +454,31 @@ static void gpu_isp_line_done_handle(uint32_t line, void *arg)
     }
 
     gpu_vn_ctlr->line_cnt = line;
+    gpu_vn_ctlr->line_frame_seq = frame_seq;
     if (gpu_vn_ctlr->gpu_process_sem)
     {
         rtos_set_semaphore(&gpu_vn_ctlr->gpu_process_sem);
     }
+}
+
+static void gpu_isp_line_done_handle(uint32_t line, void *arg)
+{
+    gpu_vn_ctlr_t *gpu_vn_ctlr = (gpu_vn_ctlr_t *)arg;
+    uint32_t frame_seq;
+
+    if (gpu_vn_ctlr == NULL) {
+        return;
+    }
+
+    frame_seq = gpu_vn_ctlr->line_frame_seq;
+    if ((line == 1) || ((gpu_vn_ctlr->line_cnt != 0) && (line < gpu_vn_ctlr->line_cnt))) {
+        frame_seq++;
+    }
+    if (frame_seq == 0) {
+        frame_seq = 1;
+    }
+
+    gpu_flexa_event_ready_handle(frame_seq, line, gpu_vn_ctlr);
 }
 
 /**
@@ -640,6 +665,9 @@ static inline void gpu_flex_data_init(gpu_flex_data_t *data, gpu_vn_ctlr_t *gpu_
 
     /* Initialize basic parameters */
     gpu_vn_ctlr->line_cnt = 0;
+    gpu_vn_ctlr->line_frame_seq = 0;
+    gpu_vn_ctlr->active_frame_seq = 0;
+    gpu_vn_ctlr->flexa_frame_active = false;
     data->input_width = config->src_width;
     data->input_height = config->src_height;
     data->output_width = config->dst_width;
@@ -744,10 +772,41 @@ static inline void gpu_flex_restart(gpu_vn_ctlr_t *gpu_vn_ctlr)
 
     /* Mark error so main loop will skip current frame and wait for a fresh one. */
     gpu_vn_ctlr->line_err_flag = 1;
+    gpu_vn_ctlr->flexa_frame_active = false;
 
     /* Reset per-frame counters; next frame will start from index 1. */
     flex->flexa_index = 1;
     flex->read_lines = 0;
+}
+
+static inline bool gpu_flex_current_block_has_padding(const gpu_flex_data_t *data, const bk_gpu_ctlr_config_t *config)
+{
+    if (data->output_height <= config->dst_height || (config->dst_height % config->flexa_lines) == 0)
+    {
+        return false;
+    }
+
+    uint16_t last_block_index = data->output_height / config->flexa_lines;
+
+    /*
+    * The aligned tail is contained in one edge block. Clear both edge
+    * blocks so reused ping-pong memory cannot leak into the visible edge
+    * after rotation/cropping policy changes.
+    */
+    return data->flexa_index == 1 || data->flexa_index == last_block_index;
+}
+
+static inline void gpu_flex_abort_current_frame(gpu_vn_ctlr_t *gpu_vn_ctlr)
+{
+    bool notify_frame_fail = gpu_vn_ctlr->flexa_frame_active;
+
+    gpu_flex_restart(gpu_vn_ctlr);
+
+    if (notify_frame_fail &&
+        gpu_vn_ctlr->bond != NULL &&
+        gpu_vn_ctlr->bond->frame_done != NULL) {
+        gpu_vn_ctlr->bond->frame_done(BK_FAIL, gpu_vn_ctlr->bond);
+    }
 }
 
 static inline void gpu_flex_data_dma_transfer(gpu_flex_data_t *data, uint32_t offset,
@@ -774,18 +833,29 @@ static inline void gpu_flex_data_dma_transfer(gpu_flex_data_t *data, uint32_t of
  * @param data GPU flex data structure
  * @param gpu_vn_ctlr GPU controller handle
  */
-static inline void gpu_flex_data_line_pull_out(gpu_flex_data_t *data, gpu_vn_ctlr_t *gpu_vn_ctlr)
+static inline bool gpu_flex_data_line_pull_out(gpu_flex_data_t *data, gpu_vn_ctlr_t *gpu_vn_ctlr)
 {
     const bk_gpu_ctlr_config_t *config = &gpu_vn_ctlr->config;
 
     /* Calculate read lines */
     data->read_lines = data->need_lines / data->output_height;
 #if HDMA_OPEN_ISR_ENABLE
-    rtos_get_semaphore(&data->transfer_sem, BEKEN_WAIT_FOREVER);
+    bk_err_t ret = rtos_get_semaphore(&data->transfer_sem, GPU_HPDMA_TRANSFER_TIMEOUT_MS);
+    if (ret != BK_OK)
+    {
+        LOGE("%s,%d wait hpdma semaphore failed, dma_id=%d ret=%d\n", __func__, __LINE__, data->gdma, ret);
+        gpu_flex_restart(gpu_vn_ctlr);
+        return false;
+    }
 #else
     while(bk_hpdma_get_next_ll_addr(data->gdma));
     while(bk_hpdma_get_enable_status(data->gdma));
 #endif
+    if (gpu_vn_ctlr->flexa_stop)
+    {
+        return false;
+    }
+
     /* Copy processed data based on rotation angle */
     if (config->rotate_degree == 90 || config->rotate_degree == 270)
     {
@@ -819,6 +889,8 @@ static inline void gpu_flex_data_line_pull_out(gpu_flex_data_t *data, gpu_vn_ctl
     data->dst_buf.memory = (vg_lite_pointer)(uintptr_t)data->buffers[data->dst_buf_idx];
     data->dst_buf.address = data->buffers[data->dst_buf_idx];
     data->flexa_index++;
+
+    return true;
 }
 
 static void gpu_flex_data_frame_done_blit(gpu_flex_data_t *flex, const bk_gpu_ctlr_config_t *config, bk_gpu_blit_config_t *blit_config, void *front_frame, void *display_frame)
@@ -921,12 +993,18 @@ static void gpu_flex_data_frame_done_blit(gpu_flex_data_t *flex, const bk_gpu_ct
  * @param data GPU flex data structure
  * @param gpu_vn_ctlr GPU controller handle
  */
-static inline void gpu_flex_data_frame_done(gpu_flex_data_t *data, gpu_vn_ctlr_t *gpu_vn_ctlr)
+static inline bool gpu_flex_data_frame_done(gpu_flex_data_t *data, gpu_vn_ctlr_t *gpu_vn_ctlr)
 {
     const bk_gpu_ctlr_config_t *config = &gpu_vn_ctlr->config;
 
 #if HDMA_OPEN_ISR_ENABLE
-    rtos_get_semaphore(&data->transfer_sem, BEKEN_WAIT_FOREVER);
+    bk_err_t ret = rtos_get_semaphore(&data->transfer_sem, GPU_HPDMA_TRANSFER_TIMEOUT_MS);
+    if (ret != BK_OK)
+    {
+        LOGE("%s,%d wait hpdma semaphore failed, dma_id=%d ret=%d\n", __func__, __LINE__, data->gdma, ret);
+        gpu_flex_restart(gpu_vn_ctlr);
+        return false;
+    }
 #else
     while(bk_hpdma_get_next_ll_addr(data->gdma));
     while(bk_hpdma_get_enable_status(data->gdma));
@@ -986,16 +1064,20 @@ static inline void gpu_flex_data_frame_done(gpu_flex_data_t *data, gpu_vn_ctlr_t
     }
     /* Reset state for next frame */
     uint32_t frame_last_line_count = (data->input_height + config->flexa_lines - 1) / config->flexa_lines;
-    if (gpu_vn_ctlr->line_cnt == frame_last_line_count)
+    if ((gpu_vn_ctlr->line_frame_seq == gpu_vn_ctlr->active_frame_seq) &&
+        (gpu_vn_ctlr->line_cnt == frame_last_line_count))
     {
         rtos_get_semaphore(&gpu_vn_ctlr->gpu_process_sem, BEKEN_NO_WAIT);
     }
     data->flexa_index = 1;
     data->read_lines = 0;
+    gpu_vn_ctlr->flexa_frame_active = false;
 
 #if HDMA_OPEN_ISR_ENABLE
     rtos_set_semaphore(&data->transfer_sem);
 #endif
+
+    return true;
 }
 
 /**
@@ -1013,13 +1095,52 @@ static inline int gpu_flex_has_enough_lines(gpu_flex_data_t *data, uint32_t src_
     return (src_lines >= required_lines) ? 1 : 0;
 }
 
+static inline bool gpu_flex_frame_abort_needed(gpu_flex_data_t *data,
+                                               gpu_vn_ctlr_t *gpu_vn_ctlr,
+                                               uint32_t frame_seq)
+{
+    const bk_gpu_ctlr_config_t *config = &gpu_vn_ctlr->config;
+    uint32_t current_src_lines;
+    uint32_t buffered_lines;
+
+    if (gpu_vn_ctlr->line_frame_seq != frame_seq) {
+        LOGW("%s, flexa frame changed, active %u latest %u latest_line %u\n",
+             __func__,
+             frame_seq,
+             gpu_vn_ctlr->line_frame_seq,
+             gpu_vn_ctlr->line_cnt);
+        return true;
+    }
+
+    current_src_lines = gpu_vn_ctlr->line_cnt * config->flexa_lines;
+    if (current_src_lines > data->input_height) {
+        current_src_lines = data->input_height;
+    }
+    buffered_lines = data->read_lines + config->flexa_lines * config->flexa_buff_cnt;
+    if (current_src_lines > buffered_lines)
+    {
+        uint32_t overrun_lines = current_src_lines - buffered_lines;
+
+        LOGW("%s, flexa overrun, frame %u, line_cnt %u, buff_cnt %u, overrun %u\n",
+             __func__,
+             frame_seq,
+             gpu_vn_ctlr->line_cnt,
+             config->flexa_buff_cnt,
+             overrun_lines);
+        return true;
+    }
+
+    return false;
+}
+
 /**
  * @brief Process a single line block with GPU
  * @param data GPU flex data structure
  * @param gpu_vn_ctlr GPU controller handle
  */
 static bool gpu_flex_process_line_block(gpu_flex_data_t *data,
-                                        gpu_vn_ctlr_t *gpu_vn_ctlr)
+                                        gpu_vn_ctlr_t *gpu_vn_ctlr,
+                                        uint32_t frame_seq)
 {
     const bk_gpu_ctlr_config_t *config = &gpu_vn_ctlr->config;
     GPU_LINE_START();
@@ -1028,21 +1149,17 @@ static bool gpu_flex_process_line_block(gpu_flex_data_t *data,
 
     rtos_lock_mutex(&gpu_vn_ctlr->gpu_mutex);
 
-    uint32_t current_src_lines = gpu_vn_ctlr->line_cnt * config->flexa_lines;
-    uint32_t buffered_lines = data->read_lines + config->flexa_lines * config->flexa_buff_cnt;
-    if (current_src_lines > buffered_lines)
+    if (gpu_flex_frame_abort_needed(data, gpu_vn_ctlr, frame_seq))
     {
-        uint32_t overrun_lines = current_src_lines - buffered_lines;
-
-        LOGW("%s, flexa overrun, line_cnt %u, buff_cnt %u, overrun %u\n",
-             __func__, 
-             gpu_vn_ctlr->line_cnt,
-             config->flexa_buff_cnt,
-             overrun_lines);
-        gpu_flex_restart(gpu_vn_ctlr);
+        gpu_flex_abort_current_frame(gpu_vn_ctlr);
         GPU_LINE_END();
         rtos_unlock_mutex(&gpu_vn_ctlr->gpu_mutex);
         return false;
+    }
+
+    if (gpu_flex_current_block_has_padding(data, config))
+    {
+        vg_lite_clear(&data->dst_buf, NULL, 0x00000000);
     }
 
     /* Perform GPU blit operation */
@@ -1069,14 +1186,20 @@ static bool gpu_flex_process_line_block(gpu_flex_data_t *data,
         }
     }
 // Modified by TUYA End
-
+    if (gpu_flex_frame_abort_needed(data, gpu_vn_ctlr, frame_seq))
+    {
+        gpu_flex_abort_current_frame(gpu_vn_ctlr);
+        GPU_LINE_END();
+        rtos_unlock_mutex(&data->draw_mutex);
+        rtos_unlock_mutex(&gpu_vn_ctlr->gpu_mutex);
+        return false;
+    }
     GPU_LINE_END();
     rtos_unlock_mutex(&data->draw_mutex);
     rtos_unlock_mutex(&gpu_vn_ctlr->gpu_mutex);
     HPDMA_LINE_START();
     /* Pull out processed line data */
-    gpu_flex_data_line_pull_out(data, gpu_vn_ctlr);
-    return true;
+    return gpu_flex_data_line_pull_out(data, gpu_vn_ctlr);
 }
 
 /**
@@ -1090,28 +1213,6 @@ static void gpu_flex_main_entry(void *arg)
     gpu_vn_ctlr_t *gpu_vn_ctlr = (gpu_vn_ctlr_t *)arg;
     const bk_gpu_ctlr_config_t *config = &gpu_vn_ctlr->config;
     gpu_flex_data_t *flex = &gpu_vn_ctlr->flex;
-
-    rtos_init_semaphore_ex(&gpu_vn_ctlr->gpu_process_sem, 1, 0);
-
-    /* Initialize GPU hardware */
-    gpu_flex_data_init(flex, gpu_vn_ctlr);
-
-    /* Initialize face detection matrix */
-    vg_lite_identity(&flex->draw_matrix);
-    vg_lite_rotate((float)config->rotate_degree, &flex->draw_matrix);
-
-    /* Allocate initial frame buffer */
-    flex->dpu_frame_buffers = config->frame_malloc(bk_pixel_size_get(config->dst_format) * (config->compress ? flex->output_width / 4 : flex->output_width) * flex->output_height);
-    if (flex->dpu_frame_buffers == NULL)
-    {
-        LOGE("Failed to allocate flex->dpu_frame_buffers\r\n");
-        goto thread_exit;
-    }
-    AVDK_MONITOR_GPU_ENABLE();
-
-    gpu_vn_ctlr->line_err_flag = 1;
-
-    gpu_vn_ctlr->flexa_stop = false;
 
     bk_err_t ret = rtos_set_semaphore(&gpu_vn_ctlr->gpu_flex_task_sem);
     if (ret != BK_OK) {
@@ -1131,20 +1232,57 @@ static void gpu_flex_main_entry(void *arg)
         }
 
         uint32_t src_line_count = gpu_vn_ctlr->line_cnt;
-        if (src_line_count == 1)
+        uint32_t src_frame_seq = gpu_vn_ctlr->line_frame_seq;
+        bool can_sync_frame = (src_line_count == 1) ||
+                              (!gpu_vn_ctlr->flexa_frame_active &&
+                               (src_line_count > 0) &&
+                               (src_line_count <= config->flexa_buff_cnt));
+        if (can_sync_frame)
         {
-            if ((flex->read_lines > 0) && (flex->read_lines < flex->input_height))
-            {
-                flex->flexa_index = 1;
-                flex->read_lines = 0;
+            if (src_line_count != 1) {
+                LOGW("%s, flexa sync from early block, frame %u line %u\n",
+                     __func__, src_frame_seq, src_line_count);
             }
+            else if (gpu_vn_ctlr->flexa_frame_active &&
+                     (flex->read_lines > 0) &&
+                     (flex->read_lines < flex->input_height) &&
+                     gpu_vn_ctlr->bond != NULL &&
+                     gpu_vn_ctlr->bond->frame_done != NULL) {
+                gpu_vn_ctlr->bond->frame_done(BK_FAIL, gpu_vn_ctlr->bond);
+            }
+            flex->flexa_index = 1;
+            flex->read_lines = 0;
+            gpu_vn_ctlr->line_err_flag = 0;
+            gpu_vn_ctlr->active_frame_seq = src_frame_seq;
+            gpu_vn_ctlr->flexa_frame_active = true;
             GPU_FRAME_START();
+        }
+
+        if (!gpu_vn_ctlr->line_err_flag)
+        {
+            if (!gpu_vn_ctlr->flexa_frame_active)
+            {
+                LOGW("%s, flexa waits frame start, frame %u line %u\n",
+                     __func__, src_frame_seq, src_line_count);
+                gpu_flex_restart(gpu_vn_ctlr);
+            }
+            else if (src_frame_seq != gpu_vn_ctlr->active_frame_seq)
+            {
+                LOGW("%s, flexa frame mismatch, active %u event %u line %u\n",
+                     __func__,
+                     gpu_vn_ctlr->active_frame_seq,
+                     src_frame_seq,
+                     src_line_count);
+                gpu_flex_abort_current_frame(gpu_vn_ctlr);
+            }
         }
 
         /* Handle line error flag */
         if (gpu_vn_ctlr->line_err_flag)
         {
-            if (gpu_vn_ctlr->bond != NULL && gpu_vn_ctlr->bond->flexa_done != NULL) {
+            if (!gpu_vn_ctlr->flexa_stop &&
+                gpu_vn_ctlr->bond != NULL &&
+                gpu_vn_ctlr->bond->flexa_done != NULL) {
                 gpu_vn_ctlr->bond->flexa_done(src_line_count, gpu_vn_ctlr->bond);
             }
 
@@ -1152,13 +1290,25 @@ static void gpu_flex_main_entry(void *arg)
         }
 
         /* Process available line blocks */
-        while (gpu_flex_has_enough_lines(flex, src_line_count, config->flexa_lines))
+        bool frame_aborted = false;
+        while (!gpu_vn_ctlr->flexa_stop && gpu_flex_has_enough_lines(flex, src_line_count, config->flexa_lines))
         {
-            if (!gpu_flex_process_line_block(flex, gpu_vn_ctlr))
+            if (!gpu_flex_process_line_block(flex, gpu_vn_ctlr, src_frame_seq))
             {
+                frame_aborted = true;
                 break;
             }
             AVDK_MONITOR_GPU_LINE_PLUS();
+        }
+
+        if (gpu_vn_ctlr->flexa_stop)
+        {
+            break;
+        }
+
+        if (frame_aborted)
+        {
+            continue;
         }
 
         uint32_t gpu_rd_cnt = flex->read_lines / config->flexa_lines;
@@ -1172,72 +1322,23 @@ static void gpu_flex_main_entry(void *arg)
             gpu_vn_ctlr->config.flexa_line_done(gpu_rd_cnt, gpu_vn_ctlr->config.flexa_line_done_args);
         }
 
+        if (gpu_vn_ctlr->flexa_stop)
+        {
+            break;
+        }
+
         /* Check if frame is complete */
         if (flex->read_lines >= flex->input_height)
         {
-            gpu_flex_data_frame_done(flex, gpu_vn_ctlr);
-            GPU_FRAME_END();
+            if (gpu_flex_data_frame_done(flex, gpu_vn_ctlr))
+            {
+                GPU_FRAME_END();
+            }
         }
     }
 
 thread_exit:
     LOGW("%s,%d exit\n", __func__, __LINE__);
-
-    /*
-     * S0 (HPDMA stability review - GPU thread_exit DMA UAF):
-     *
-     *   The previous order was:
-     *     1) free(dpu_frame_buffers)
-     *     2) disable/unregister ISR
-     *     3) bk_hpdma_free
-     *   If gpu_ctlr_close() unblocked transfer_sem while the GPU thread had
-     *   just kicked off a fresh bk_hpdma_link_transfer in line_pull_out, the
-     *   HPDMA could still be writing into dpu_frame_buffers when (1) freed
-     *   the backing memory -> classic DMA use-after-free; once the channel
-     *   was bk_hpdma_free()-ed, a later allocator could reuse the same
-     *   chnl_id and find it still running.
-     *
-     *   New order:
-     *     1) clear ISR callbacks first, so any pending finish IRQ won't try
-     *        to set transfer_sem after we tear the controller down.
-     *     2) bk_hpdma_free first: it now performs stop + wait-to-idle
-     *        internally (S0 contract), guaranteeing the channel is idle and
-     *        no longer writes into dpu_frame_buffers / link_dma_list_table.
-     *        On timeout it keeps the channel reserved (logged) and skips
-     *        freeing it; we still proceed with the rest of the teardown.
-     *     3) only after the DMA is provably idle do we free the backing
-     *        frame buffer and the descriptor table.
-     */
-#if HDMA_OPEN_ISR_ENABLE
-    if (flex->gdma < HPDMA_ID_MAX) {
-        bk_hpdma_disable_finish_interrupt(flex->gdma);
-        bk_hpdma_register_isr(flex->gdma, NULL, NULL, NULL, NULL);
-    }
-#endif
-
-    if (flex->gdma < HPDMA_ID_MAX) {
-        bk_err_t free_ret = bk_hpdma_free(HPDMA_DEV_DTCM, flex->gdma);
-        if (free_ret != BK_OK) {
-            LOGE("%s,%d bk_hpdma_free(ch=%d) failed ret=%d, DMA may still be active\n",
-                 __func__, __LINE__, flex->gdma, free_ret);
-        }
-    }
-
-    if (flex->dpu_frame_buffers != NULL && config->frame_free != NULL)
-    {
-        config->frame_free(flex->dpu_frame_buffers);
-        flex->dpu_frame_buffers = NULL;
-    }
-
-    if (gpu_vn_ctlr->gpu_process_sem) {
-        rtos_deinit_semaphore(&gpu_vn_ctlr->gpu_process_sem);
-        gpu_vn_ctlr->gpu_process_sem = NULL;
-    }
-
-    bk_hpdma_link_deinit(flex->link_dma_list_table);
-    gpu_flex_deinit_pingpong_buffer(flex);
-
-    gpu_flex_data_deinit(flex, gpu_vn_ctlr);
 
     rtos_set_semaphore(&gpu_vn_ctlr->gpu_flex_task_sem);
 
@@ -1333,15 +1434,49 @@ static avdk_err_t gpu_ctlr_open(bk_gpu_ctlr_handle_t handle)
     AVDK_RETURN_ON_FALSE(control, AVDK_ERR_INVAL, TAG, "control is NULL");
 
     if (control->config.flexa) {
+        const bk_gpu_ctlr_config_t *config = &control->config;
+        gpu_flex_data_t *flex = &control->flex;
+        avdk_err_t ret;
+
         if (control->flexa_thd) {
             LOGW("%s, %d gpu flexa thread is already opened\n", __func__, __LINE__);
             return AVDK_ERR_OK;
         }
 
-        avdk_err_t ret = rtos_init_semaphore_ex(&control->gpu_flex_task_sem, 1, 0);
+        flex->gdma = HPDMA_ID_MAX;
+        flex->link_dma_list_table = NULL;
+        flex->dpu_frame_buffers = NULL;
+
+        ret = rtos_init_semaphore_ex(&control->gpu_process_sem, 1, 0);
+        if (ret != AVDK_ERR_OK) {
+            LOGE("%s, %d rtos_init_semaphore_ex gpu_process_sem failed\n", __func__, __LINE__);
+            return ret;
+        }
+
+        /* Initialize GPU hardware */
+        gpu_flex_data_init(flex, control);
+
+        /* Initialize face detection matrix */
+        vg_lite_identity(&flex->draw_matrix);
+        vg_lite_rotate((float)config->rotate_degree, &flex->draw_matrix);
+
+        /* Allocate initial frame buffer */
+        flex->dpu_frame_buffers = config->frame_malloc(bk_pixel_size_get(config->dst_format) * (config->compress ? flex->output_width / 4 : flex->output_width) * flex->output_height);
+        if (flex->dpu_frame_buffers == NULL)
+        {
+            LOGE("Failed to allocate flex->dpu_frame_buffers\r\n");
+            ret = AVDK_ERR_NOMEM;
+            goto open_fail;
+        }
+        AVDK_MONITOR_GPU_ENABLE();
+
+        control->line_err_flag = 1;
+        control->flexa_stop = false;
+
+        ret = rtos_init_semaphore_ex(&control->gpu_flex_task_sem, 1, 0);
         if (ret != AVDK_ERR_OK) {
             LOGE("%s, %d rtos_init_semaphore_ex failed\n", __func__, __LINE__);
-            return ret;
+            goto open_fail;
         }
 
         ret = rtos_create_hsram_thread(&control->flexa_thd,
@@ -1355,12 +1490,49 @@ static avdk_err_t gpu_ctlr_open(bk_gpu_ctlr_handle_t handle)
             LOGE("%s, %d rtos_create_hsram_thread failed\n", __func__, __LINE__);
             rtos_deinit_semaphore(&control->gpu_flex_task_sem);
             control->gpu_flex_task_sem = NULL;
-            return ret;
+            goto open_fail;
         }
 
         rtos_get_semaphore(&control->gpu_flex_task_sem, BEKEN_WAIT_FOREVER);
 
         LOGI("%s, %d sem get successful\n", __func__, __LINE__);
+        return AVDK_ERR_OK;
+
+open_fail:
+#if HDMA_OPEN_ISR_ENABLE
+        if (flex->gdma < HPDMA_ID_MAX) {
+            bk_hpdma_disable_finish_interrupt(flex->gdma);
+            bk_hpdma_register_isr(flex->gdma, NULL, NULL, NULL, NULL);
+        }
+#endif
+
+        if (flex->gdma < HPDMA_ID_MAX) {
+            bk_err_t free_ret = bk_hpdma_free(HPDMA_DEV_DTCM, flex->gdma);
+            if (free_ret != BK_OK) {
+                LOGE("%s,%d bk_hpdma_free(ch=%d) failed ret=%d, DMA may still be active\n",
+                     __func__, __LINE__, flex->gdma, free_ret);
+            }
+            flex->gdma = HPDMA_ID_MAX;
+        }
+
+        if (flex->dpu_frame_buffers != NULL && config->frame_free != NULL)
+        {
+            config->frame_free(flex->dpu_frame_buffers);
+            flex->dpu_frame_buffers = NULL;
+        }
+
+        if (control->gpu_process_sem) {
+            rtos_deinit_semaphore(&control->gpu_process_sem);
+            control->gpu_process_sem = NULL;
+        }
+
+        if (flex->link_dma_list_table != NULL) {
+            bk_hpdma_link_deinit(flex->link_dma_list_table);
+            flex->link_dma_list_table = NULL;
+        }
+        gpu_flex_deinit_pingpong_buffer(flex);
+        gpu_flex_data_deinit(flex, control);
+        return ret;
     } else {
         LOGE("%s %d flexa is not enabled\r\n", __func__, __LINE__);
         return AVDK_ERR_INVAL;
@@ -1376,6 +1548,9 @@ static avdk_err_t gpu_ctlr_close(bk_gpu_ctlr_handle_t handle)
     AVDK_RETURN_ON_FALSE(control, AVDK_ERR_INVAL, TAG, "control is NULL");
 
     if (control->config.flexa) {
+        const bk_gpu_ctlr_config_t *config = &control->config;
+        gpu_flex_data_t *flex = &control->flex;
+
         if (control->flexa_thd == NULL) {
             LOGW("%s, %d gpu flexa thread is already closed\n", __func__, __LINE__);
             return AVDK_ERR_OK;
@@ -1389,17 +1564,51 @@ static avdk_err_t gpu_ctlr_close(bk_gpu_ctlr_handle_t handle)
         }
 #endif
 
-	    if (control->gpu_process_sem)
-	    {
-	        bk_err_t ret = rtos_set_semaphore(&control->gpu_process_sem);
+        if (control->gpu_process_sem)
+        {
+            bk_err_t ret = rtos_set_semaphore(&control->gpu_process_sem);
             if (ret != BK_OK) {
                 LOGW("%s, %d rtos_set_semaphore failed\n", __func__, __LINE__);
             }
-	    }
+        }
         rtos_get_semaphore(&control->gpu_flex_task_sem, BEKEN_WAIT_FOREVER);
 
         rtos_deinit_semaphore(&control->gpu_flex_task_sem);
         control->gpu_flex_task_sem = NULL;
+
+#if HDMA_OPEN_ISR_ENABLE
+        if (flex->gdma < HPDMA_ID_MAX) {
+            bk_hpdma_disable_finish_interrupt(flex->gdma);
+            bk_hpdma_register_isr(flex->gdma, NULL, NULL, NULL, NULL);
+        }
+#endif
+
+        if (flex->gdma < HPDMA_ID_MAX) {
+            bk_err_t free_ret = bk_hpdma_free(HPDMA_DEV_DTCM, flex->gdma);
+            if (free_ret != BK_OK) {
+                LOGE("%s,%d bk_hpdma_free(ch=%d) failed ret=%d, DMA may still be active\n",
+                     __func__, __LINE__, flex->gdma, free_ret);
+            }
+            flex->gdma = HPDMA_ID_MAX;
+        }
+
+        if (flex->dpu_frame_buffers != NULL && config->frame_free != NULL)
+        {
+            config->frame_free(flex->dpu_frame_buffers);
+            flex->dpu_frame_buffers = NULL;
+        }
+
+        if (control->gpu_process_sem) {
+            rtos_deinit_semaphore(&control->gpu_process_sem);
+            control->gpu_process_sem = NULL;
+        }
+
+        if (flex->link_dma_list_table != NULL) {
+            bk_hpdma_link_deinit(flex->link_dma_list_table);
+            flex->link_dma_list_table = NULL;
+        }
+        gpu_flex_deinit_pingpong_buffer(flex);
+        gpu_flex_data_deinit(flex, control);
 
         LOGI("%s, %d sem get successful, flexa thread has exited\n", __func__, __LINE__);
     } else {
@@ -1420,6 +1629,17 @@ static avdk_err_t gpu_ctlr_ioctl(bk_gpu_ctlr_handle_t handle, uint32_t cmd, void
         case BK_GPU_IOCTL_SET_FLEXA_LINES_READY:
             gpu_isp_line_done_handle((uint32_t)args, control);
             break;
+
+        case BK_GPU_IOCTL_SET_FLEXA_EVENT_READY:
+        {
+            bk_gpu_flexa_event_t *event = (bk_gpu_flexa_event_t *)args;
+            if (event == NULL) {
+                LOGW("%s %d flexa event is NULL\r\n", __func__, __LINE__);
+                return AVDK_ERR_INVAL;
+            }
+            gpu_flexa_event_ready_handle(event->frame_seq, event->line_cnt, control);
+        }
+        break;
 
         case BK_GPU_IOCTL_SET_NOTIFY:
             gpu_flex_restart(control);

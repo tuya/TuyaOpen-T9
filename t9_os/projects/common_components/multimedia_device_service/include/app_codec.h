@@ -23,6 +23,11 @@ extern "C" {
 int app_h264e_turn_off(void);
 int app_h264e_turn_on(void);
 
+int app_jpege_turn_off(void);
+int app_jpege_turn_on(void);
+
+void *app_jpeg_encode_handle_get(void);
+
 bk_err_t doorbell_h264_encode_open(uint16_t width, uint16_t height);
 bk_err_t doorbell_h264_encode_close(void);
 

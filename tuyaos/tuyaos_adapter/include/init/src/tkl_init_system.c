@@ -21,6 +21,7 @@ CONST TKL_OS_T TKL_OS  = {
     .sleep                  = tkl_system_sleep,
     .get_cpu_info           = tkl_system_get_cpu_info,
     .cpu_sleep_mode_set     = tkl_cpu_sleep_mode_set,
+    .cpu_sleep_time_set     = tkl_cpu_sleep_time_set,
     //! log output
     .log_output             = tkl_log_output,
     .log_close              = tkl_log_close,
@@ -134,3 +135,4 @@ TUYA_WEAK_ATTRIBUTE TKL_FS_T* tkl_fs_desc_get()
     return (TKL_FS_T *)&TKL_FS;
 }
 #endif
+

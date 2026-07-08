@@ -1,10 +1,9 @@
 #include "tkl_gpio.h"
-#include "tkl_mutex.h"
-#include "tkl_system.h"
 #include <driver/gpio.h>
 #include "gpio_driver.h"
 #include "sdkconfig.h"
 #include <driver/uart.h>
+#include "sys_driver.h"
 
 
 
@@ -12,14 +11,9 @@ typedef struct {
     gpio_id_t           gpio;
     TUYA_GPIO_IRQ_CB    cb;
     void                *args;
-    bool                initialized;
-    bool                irq_initialized;
-    TUYA_GPIO_DRCT_E    direct;
-    TUYA_GPIO_MODE_E    mode;
-    TUYA_GPIO_LEVEL_E   level;
 } pin_dev_map_t;
 
-#define PINMAP_ENTRY(id) {GPIO_##id, NULL, NULL, false, false, TUYA_GPIO_INPUT, TUYA_GPIO_FLOATING, TUYA_GPIO_LEVEL_NONE}
+#define PINMAP_ENTRY(id) {GPIO_##id, NULL, NULL}
 
 static pin_dev_map_t pinmap[] = {
     PINMAP_ENTRY(0),  PINMAP_ENTRY(1),  PINMAP_ENTRY(2),  PINMAP_ENTRY(3),
@@ -44,15 +38,46 @@ static pin_dev_map_t pinmap[] = {
 
 #define PINMAP_COUNT (sizeof(pinmap) / sizeof(pinmap[0]))
 
-static TKL_MUTEX_HANDLE s_tkl_gpio_mutex = NULL;
+/* P12/P13/P56-P58/P61-P63/P66-P71: not routed out on this board */
+#define TKL_GPIO_UNAVAILABLE_MASK \
+    ((UINT64_T)((1ULL << TUYA_GPIO_NUM_12) | (1ULL << TUYA_GPIO_NUM_13) | \
+                (1ULL << TUYA_GPIO_NUM_56) | (1ULL << TUYA_GPIO_NUM_57) | \
+                (1ULL << TUYA_GPIO_NUM_58) | (1ULL << TUYA_GPIO_NUM_61) | \
+                (1ULL << TUYA_GPIO_NUM_62) | (1ULL << TUYA_GPIO_NUM_63) | \
+                (1ULL << TUYA_GPIO_NUM_66) | (1ULL << TUYA_GPIO_NUM_67) | \
+                (1ULL << TUYA_GPIO_NUM_68) | (1ULL << TUYA_GPIO_NUM_69) | \
+                (1ULL << TUYA_GPIO_NUM_70) | (1ULL << TUYA_GPIO_NUM_71)))
 
+#define SYS_ANA_REG_BASE            (0x44010000)
+#define LDO_ANA_REG                 (0x69)
+#define TKL_GPIO_AUX_LDO_PIN_MIN    TUYA_GPIO_NUM_56
+
+/**
+ * @brief Enable AUX LDO for P56+ GPIO power domain.
+ * @return none
+ */
+static void tkl_gpio_auxldo_enable(void)
+{
+    uint32_t reg = REG_READ(SYS_ANA_REG_BASE + LDO_ANA_REG * 4);
+
+    reg |= (0xF << 28) | (0x2 << 23) | (0x7 << 19) | (0x7 << 15);
+    reg &= ~(0xF << 11);
+    reg |= (0x8 << 11);
+    REG_WRITE(SYS_ANA_REG_BASE + LDO_ANA_REG * 4, reg);
+}
+
+/**
+ * @brief Check whether the GPIO pin is available on this board.
+ * @param[in] pin_id gpio pin id
+ * @return true if pin is valid and routed out, false otherwise
+ */
 static bool tkl_gpio_is_valid_pin(TUYA_GPIO_NUM_E pin_id)
 {
     if ((uint32_t)pin_id >= PINMAP_COUNT) {
         return false;
     }
 
-    if ((pin_id == TUYA_GPIO_NUM_0) || (pin_id == TUYA_GPIO_NUM_1)) {
+    if ((TKL_GPIO_UNAVAILABLE_MASK & (1ULL << pin_id)) != 0) {
         return false;
     }
 
@@ -67,53 +92,6 @@ static bool tkl_gpio_is_valid_pin(TUYA_GPIO_NUM_E pin_id)
     } while (0)
 
 extern void bk_printf(const char *fmt, ...);
-extern uint32_t platform_is_in_interrupt_context(void);
-
-static OPERATE_RET tkl_gpio_ensure_mutex(void)
-{
-    TKL_MUTEX_HANDLE new_mutex = NULL;
-    UINT_T irq_mask;
-    OPERATE_RET ret;
-
-    if (s_tkl_gpio_mutex != NULL) {
-        return OPRT_OK;
-    }
-
-    ret = tkl_mutex_create_init(&new_mutex);
-    if (ret != OPRT_OK) {
-        return ret;
-    }
-
-    irq_mask = tkl_system_enter_critical();
-    if (s_tkl_gpio_mutex == NULL) {
-        s_tkl_gpio_mutex = new_mutex;
-        new_mutex = NULL;
-    }
-    tkl_system_exit_critical(irq_mask);
-
-    if (new_mutex != NULL) {
-        tkl_mutex_release(new_mutex);
-    }
-
-    return OPRT_OK;
-}
-
-static OPERATE_RET tkl_gpio_lock(void)
-{
-    OPERATE_RET ret = tkl_gpio_ensure_mutex();
-    if (ret != OPRT_OK) {
-        return ret;
-    }
-
-    return tkl_mutex_lock(s_tkl_gpio_mutex);
-}
-
-static void tkl_gpio_unlock(void)
-{
-    if (s_tkl_gpio_mutex != NULL) {
-        tkl_mutex_unlock(s_tkl_gpio_mutex);
-    }
-}
 
 /**
  * @brief gpio init
@@ -133,18 +111,12 @@ OPERATE_RET tkl_gpio_init(TUYA_GPIO_NUM_E pin_id, CONST TUYA_GPIO_BASE_CFG_T *cf
 
     PIN_DEV_CHECK_ERROR_RETURN(pin_id, OPRT_INVALID_PARM);
 
-    ret = tkl_gpio_lock();
-    if (ret != OPRT_OK) {
-        return ret;
+    if ((pin_id == TUYA_GPIO_NUM_0) || (pin_id == TUYA_GPIO_NUM_1)) {
+        bk_printf("WARNING: Init gpio%d, UART1 log may be disabled\r\n", pin_id);
     }
 
-    if (pinmap[pin_id].initialized) {
-        tkl_gpio_unlock();
-        return OPRT_INIT_MORE_THAN_ONCE;
-    }
-
-    if (pin_id == TUYA_GPIO_NUM_0) {
-        bk_printf("WARNING: Init gpio0, LOG will be disabled\r\n");
+    if (pin_id >= TKL_GPIO_AUX_LDO_PIN_MIN) {
+        tkl_gpio_auxldo_enable();
     }
 
     bk_gpio_driver_init();
@@ -165,7 +137,6 @@ OPERATE_RET tkl_gpio_init(TUYA_GPIO_NUM_E pin_id, CONST TUYA_GPIO_BASE_CFG_T *cf
                 bk_gpio_disable_pull(pinmap[pin_id].gpio);
             } else {
                 bk_printf("set direct error \r\n");
-                tkl_gpio_unlock();
                 return OPRT_NOT_SUPPORTED;
             }
             break;
@@ -180,19 +151,9 @@ OPERATE_RET tkl_gpio_init(TUYA_GPIO_NUM_E pin_id, CONST TUYA_GPIO_BASE_CFG_T *cf
             }
             break;
         default:
-            tkl_gpio_unlock();
             return OPRT_NOT_SUPPORTED;
     }
 
-    pinmap[pin_id].initialized = true;
-    pinmap[pin_id].irq_initialized = false;
-    pinmap[pin_id].direct = cfg->direct;
-    pinmap[pin_id].mode = cfg->mode;
-    pinmap[pin_id].level = cfg->level;
-    pinmap[pin_id].cb = NULL;
-    pinmap[pin_id].args = NULL;
-
-    tkl_gpio_unlock();
     return ret;
 }
 
@@ -204,19 +165,7 @@ OPERATE_RET tkl_gpio_init(TUYA_GPIO_NUM_E pin_id, CONST TUYA_GPIO_BASE_CFG_T *cf
  */
 OPERATE_RET tkl_gpio_deinit(TUYA_GPIO_NUM_E pin_id)
 {
-    OPERATE_RET ret;
-
     PIN_DEV_CHECK_ERROR_RETURN(pin_id, OPRT_INVALID_PARM);
-
-    ret = tkl_gpio_lock();
-    if (ret != OPRT_OK) {
-        return ret;
-    }
-
-    if (!pinmap[pin_id].initialized) {
-        tkl_gpio_unlock();
-        return OPRT_RESOURCE_NOT_READY;
-    }
 
     gpio_dev_unmap(pinmap[pin_id].gpio);
     //Set gpio to input floating mode
@@ -225,15 +174,6 @@ OPERATE_RET tkl_gpio_deinit(TUYA_GPIO_NUM_E pin_id)
     bk_gpio_enable_input(pinmap[pin_id].gpio);
     bk_gpio_disable_pull(pinmap[pin_id].gpio);
 
-    pinmap[pin_id].initialized = false;
-    pinmap[pin_id].irq_initialized = false;
-    pinmap[pin_id].direct = TUYA_GPIO_INPUT;
-    pinmap[pin_id].mode = TUYA_GPIO_FLOATING;
-    pinmap[pin_id].level = TUYA_GPIO_LEVEL_NONE;
-    pinmap[pin_id].cb = NULL;
-    pinmap[pin_id].args = NULL;
-
-    tkl_gpio_unlock();
     return OPRT_OK;
 }
 
@@ -247,24 +187,7 @@ OPERATE_RET tkl_gpio_deinit(TUYA_GPIO_NUM_E pin_id)
  */
 OPERATE_RET tkl_gpio_write(TUYA_GPIO_NUM_E pin_id, TUYA_GPIO_LEVEL_E level)
 {
-    OPERATE_RET ret;
-
     PIN_DEV_CHECK_ERROR_RETURN(pin_id, OPRT_INVALID_PARM);
-
-    ret = tkl_gpio_lock();
-    if (ret != OPRT_OK) {
-        return ret;
-    }
-
-    if (!pinmap[pin_id].initialized) {
-        tkl_gpio_unlock();
-        return OPRT_RESOURCE_NOT_READY;
-    }
-
-    if (pinmap[pin_id].direct != TUYA_GPIO_OUTPUT) {
-        tkl_gpio_unlock();
-        return OPRT_COM_ERROR;
-    }
 
     if (level == TUYA_GPIO_LEVEL_HIGH) {
         bk_gpio_set_output_high(pinmap[pin_id].gpio);
@@ -272,8 +195,6 @@ OPERATE_RET tkl_gpio_write(TUYA_GPIO_NUM_E pin_id, TUYA_GPIO_LEVEL_E level)
         bk_gpio_set_output_low(pinmap[pin_id].gpio);
     }
 
-    pinmap[pin_id].level = level;
-    tkl_gpio_unlock();
     return OPRT_OK;
 }
 
@@ -287,31 +208,13 @@ OPERATE_RET tkl_gpio_write(TUYA_GPIO_NUM_E pin_id, TUYA_GPIO_LEVEL_E level)
  */
 OPERATE_RET tkl_gpio_read(TUYA_GPIO_NUM_E pin_id, TUYA_GPIO_LEVEL_E *level)
 {
-    OPERATE_RET ret;
-
-    if (level == NULL) {
-        return OPRT_INVALID_PARM;
-    }
-
     PIN_DEV_CHECK_ERROR_RETURN(pin_id, OPRT_INVALID_PARM);
-
-    ret = tkl_gpio_lock();
-    if (ret != OPRT_OK) {
-        return ret;
-    }
-
-    if (!pinmap[pin_id].initialized) {
-        tkl_gpio_unlock();
-        return OPRT_RESOURCE_NOT_READY;
-    }
 
     if(bk_gpio_get_input(pinmap[pin_id].gpio)) {
         *level = TUYA_GPIO_LEVEL_HIGH;
     } else {
         *level = TUYA_GPIO_LEVEL_LOW;
     }
-
-    tkl_gpio_unlock();
     return OPRT_OK;
 }
 
@@ -346,25 +249,14 @@ static void __tkl_gpio_irq_cb(gpio_id_t gpio_id)
  */
 OPERATE_RET tkl_gpio_irq_init(TUYA_GPIO_NUM_E pin_id, CONST TUYA_GPIO_IRQ_T *cfg)
 {
-    OPERATE_RET ret;
     PIN_DEV_CHECK_ERROR_RETURN(pin_id, OPRT_INVALID_PARM);
 
     if (cfg == NULL) {
         return OPRT_INVALID_PARM;
     }
 
-    ret = tkl_gpio_lock();
-    if (ret != OPRT_OK) {
-        return ret;
-    }
-
-    if (!pinmap[pin_id].initialized) {
-        tkl_gpio_unlock();
-        return OPRT_RESOURCE_NOT_READY;
-    }
-
-    if (pin_id == TUYA_GPIO_NUM_0) {
-        bk_printf("WARNING: Init gpio0 irq, LOG will be disabled\r\n");
+    if ((pin_id == TUYA_GPIO_NUM_0) || (pin_id == TUYA_GPIO_NUM_1)) {
+        bk_printf("WARNING: Init gpio%d irq, UART1 log may be disabled\r\n", pin_id);
     }
 
     gpio_int_type_t trigger;
@@ -385,16 +277,13 @@ OPERATE_RET tkl_gpio_irq_init(TUYA_GPIO_NUM_E pin_id, CONST TUYA_GPIO_IRQ_T *cfg
         case TUYA_GPIO_IRQ_RISE_FALL:
         default:
             bk_printf("GPIO_INT_TYPE_HIGH_LEVEL Not supported yet !!!\r\n");
-            tkl_gpio_unlock();
             return OPRT_NOT_SUPPORTED;
     }
 
     pinmap[pin_id].cb = (TUYA_GPIO_IRQ_CB)cfg->cb;
     pinmap[pin_id].args = cfg->arg;
-    pinmap[pin_id].irq_initialized = true;
     bk_gpio_register_isr(pinmap[pin_id].gpio, (gpio_isr_t)__tkl_gpio_irq_cb);
     bk_gpio_set_interrupt_type(pinmap[pin_id].gpio, trigger);
-    tkl_gpio_unlock();
     return OPRT_OK;
 }
 
@@ -407,35 +296,8 @@ OPERATE_RET tkl_gpio_irq_init(TUYA_GPIO_NUM_E pin_id, CONST TUYA_GPIO_IRQ_T *cfg
  */
 OPERATE_RET tkl_gpio_irq_enable(TUYA_GPIO_NUM_E pin_id)
 {
-    OPERATE_RET ret;
-    UINT_T irq_mask;
-
     PIN_DEV_CHECK_ERROR_RETURN(pin_id, OPRT_INVALID_PARM);
-
-    if (platform_is_in_interrupt_context() != 0) {
-        irq_mask = tkl_system_enter_critical();
-        if (!pinmap[pin_id].initialized || !pinmap[pin_id].irq_initialized) {
-            tkl_system_exit_critical(irq_mask);
-            return OPRT_RESOURCE_NOT_READY;
-        }
-
-        bk_gpio_enable_interrupt(pinmap[pin_id].gpio);
-        tkl_system_exit_critical(irq_mask);
-        return OPRT_OK;
-    }
-
-    ret = tkl_gpio_lock();
-    if (ret != OPRT_OK) {
-        return ret;
-    }
-
-    if (!pinmap[pin_id].initialized || !pinmap[pin_id].irq_initialized) {
-        tkl_gpio_unlock();
-        return OPRT_RESOURCE_NOT_READY;
-    }
-
     bk_gpio_enable_interrupt(pinmap[pin_id].gpio);
-    tkl_gpio_unlock();
     return OPRT_OK;
 }
 
@@ -448,34 +310,7 @@ OPERATE_RET tkl_gpio_irq_enable(TUYA_GPIO_NUM_E pin_id)
  */
 OPERATE_RET tkl_gpio_irq_disable(TUYA_GPIO_NUM_E pin_id)
 {
-    OPERATE_RET ret;
-    UINT_T irq_mask;
-
     PIN_DEV_CHECK_ERROR_RETURN(pin_id, OPRT_INVALID_PARM);
-
-    if (platform_is_in_interrupt_context() != 0) {
-        irq_mask = tkl_system_enter_critical();
-        if (!pinmap[pin_id].initialized || !pinmap[pin_id].irq_initialized) {
-            tkl_system_exit_critical(irq_mask);
-            return OPRT_RESOURCE_NOT_READY;
-        }
-
-        bk_gpio_disable_interrupt(pinmap[pin_id].gpio);
-        tkl_system_exit_critical(irq_mask);
-        return OPRT_OK;
-    }
-
-    ret = tkl_gpio_lock();
-    if (ret != OPRT_OK) {
-        return ret;
-    }
-
-    if (!pinmap[pin_id].initialized || !pinmap[pin_id].irq_initialized) {
-        tkl_gpio_unlock();
-        return OPRT_RESOURCE_NOT_READY;
-    }
-
     bk_gpio_disable_interrupt(pinmap[pin_id].gpio);
-    tkl_gpio_unlock();
     return OPRT_OK;
 }

@@ -981,6 +981,20 @@ OPERATE_RET tkl_wifi_scan_ap(CONST SCHAR_T *ssid, AP_IF_S **ap_ary, UINT_T *num)
 }
 
 /**
+ * @brief Scan APs on a specified channel.
+ *
+ * @param[in]       ssid        the specific ssid, NULL means scan all ap
+ * @param[in]       channel     the specified channel, 0 means scan all channel
+ * @param[out]      ap_ary      ap info array
+ * @param[out]      num         the num of ap_ary
+ * @return OPRT_NOT_SUPPORTED until a per-channel scan is wired to the chip SDK.
+ */
+OPERATE_RET tkl_wifi_scan_ap_channel(CONST SCHAR_T *ssid, CONST UCHAR_T channel, AP_IF_S **ap_ary, UINT_T *num)
+{
+    return OPRT_NOT_SUPPORTED;
+}
+
+/**
  * @brief Release scan results allocated by tkl_wifi_scan_ap().
  * @param[in] ap scan result pointer
  * @return OPRT_OK on success, error code on failure
@@ -1640,18 +1654,15 @@ OPERATE_RET tkl_wifi_set_country_code(CONST COUNTRY_CODE_E ccode)
  */
 OPERATE_RET tkl_wifi_set_rf_calibrated(VOID_T)
 {
-    bk_err_t bk_ret = BK_OK;
+    int stat = bk_wifi_manual_cal_rfcali_status();
 
-    if (s_wifi.inited == FALSE) {
-        return OPRT_RESOURCE_NOT_READY;
+    bk_printf("tkl_wifi_set_rf_calibrated stat: %d\r\n", stat);
+
+    if(stat == BK_OK) {
+        return true;
     }
 
-    bk_ret = bk_wifi_manual_cal_rfcali_status();
-    if (bk_ret != BK_OK) {
-        return __wifi_map_ret(bk_ret, OPRT_COM_ERROR);
-    }
-
-    return OPRT_OK;
+    return false;
 }
 
 /**

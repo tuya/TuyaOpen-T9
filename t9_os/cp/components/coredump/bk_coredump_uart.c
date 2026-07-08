@@ -1,4 +1,5 @@
 #include <stdint.h>
+#include <stdbool.h>
 #include <stdarg.h>
 #include <string.h>
 #include <stdio.h>
@@ -12,6 +13,8 @@
 #include "common/bk_crc.h"
 #include "base_64.h"
 #include "wdt_driver.h"
+#include "hspl/hspl_res_lock.h"
+#include "sys_sw_regs.h"
 
 #if CONFIG_SUPPORT_WWDT
 #include "wwdt_driver.h"
@@ -30,7 +33,9 @@ void bk_coredump_write_prompt_data(uint8_t *data, uint32_t size) __attribute__((
 
 #define MEM_DUMP_MAX_LEN 4096
 #define COREDUMP_WDT_FEED_BYTES 256
+
 static uint32_t s_coredump_uart_locked = 0;
+static uint32_t s_coredump_uart_force_write = 0;
 
 static inline void coredump_feed_watchdogs(void)
 {
@@ -42,19 +47,34 @@ static inline void coredump_feed_watchdogs(void)
 #endif
 }
 
-static void bk_coredump_uart_lock(void)
+static bool bk_coredump_uart_lock(void)
 {
     if (s_coredump_uart_locked == 0U) {
-        bk_aspl_uart_log_lock();
+        if (bk_hspl_res_must_lock(BK_HSPL_RES_UART_LOG) != BK_OK) {
+            if (bk_sys_sw_regs_get_ap_cp_hang_dumping() != 0U) {
+                return false;
+            }
+            s_coredump_uart_force_write = 1U;
+            s_coredump_uart_locked = 1U;
+            return true;
+        }
+        s_coredump_uart_force_write = 0U;
         s_coredump_uart_locked = 1U;
     }
+
+    return true;
 }
 
 static void bk_coredump_uart_unlock(void)
 {
     if (s_coredump_uart_locked != 0U) {
+        uint32_t force_write = s_coredump_uart_force_write;
+
+        s_coredump_uart_force_write = 0U;
         s_coredump_uart_locked = 0U;
-        bk_aspl_uart_log_unlock();
+        if (force_write == 0U) {
+            bk_hspl_res_unlock(BK_HSPL_RES_UART_LOG);
+        }
     }
 }
 
@@ -77,6 +97,10 @@ static void bk_coredump_uart_deinit(void)
 
 static void bk_coredump_uart_write_data(uint8_t *data, uint32_t size)
 {
+    if (s_coredump_uart_locked == 0U) {
+        return;
+    }
+
     coredump_feed_watchdogs();
     for (uint32_t i = 0; i < size; i++) {
         if ((i != 0U) && ((i & (COREDUMP_WDT_FEED_BYTES - 1U)) == 0U)) {

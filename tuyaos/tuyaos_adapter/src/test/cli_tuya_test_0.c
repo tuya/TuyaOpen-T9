@@ -24,13 +24,7 @@ static void cli_rf_set_cali_cmd(char *pcWriteBuffer, int xWriteBufferLen, int ar
     char *arg[5];
     arg[0] = "txevm";
     arg[1] = "-e";
-    arg[2] = "2\r\n";
-    tx_evm_cmd_test(pcWriteBuffer, xWriteBufferLen, 3, arg);
-    tkl_system_sleep(200);
-
-    arg[0] = "txevm";
-    arg[1] = "-g";
-    arg[2] = "8\r\n";
+    arg[2] = "1\r\n";
     tx_evm_cmd_test(pcWriteBuffer, xWriteBufferLen, 3, arg);
     tkl_system_sleep(200);
 
@@ -41,16 +35,18 @@ static void cli_rf_set_cali_cmd(char *pcWriteBuffer, int xWriteBufferLen, int ar
     tkl_system_sleep(200);
 
     arg[0] = "txevm";
-    arg[1] = "-e";
-    arg[2] = "1\r\n";
-    tx_evm_cmd_test(pcWriteBuffer, xWriteBufferLen, 3, arg);
+    arg[1] = "-s";
+    arg[2] = "11";
+    arg[3] = "1";
+    arg[4] = "17\r\n";
+    tx_evm_cmd_test(pcWriteBuffer, xWriteBufferLen, 5, arg);
     tkl_system_sleep(200);
 
     arg[0] = "txevm";
     arg[1] = "-s";
-    arg[2] = "11";
+    arg[2] = "54";
     arg[3] = "1";
-    arg[4] = "20\r\n";
+    arg[4] = "17\r\n";
     tx_evm_cmd_test(pcWriteBuffer, xWriteBufferLen, 5, arg);
     tkl_system_sleep(200);
 
@@ -65,12 +61,6 @@ static void cli_rf_set_cali_cmd(char *pcWriteBuffer, int xWriteBufferLen, int ar
     arg[2] = "4";
     arg[3] = "1\r\n";
     tx_evm_cmd_test(pcWriteBuffer, xWriteBufferLen, 4, arg);
-    tkl_system_sleep(200);
-
-    arg[0] = "txevm";
-    arg[1] = "-g";
-    arg[2] = "8\r\n";
-    tx_evm_cmd_test(pcWriteBuffer, xWriteBufferLen, 3, arg);
     tkl_system_sleep(200);
 
     bk_printf("set rf calibration flag end\r\n");

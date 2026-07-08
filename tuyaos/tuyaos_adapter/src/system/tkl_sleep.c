@@ -41,3 +41,9 @@ OPERATE_RET tkl_cpu_sleep_mode_set(BOOL_T enable, TUYA_CPU_SLEEP_MODE_E mode)
     /* TODO: confirm pinmux, clock, interrupt, DMA, and error-code mapping. */
     return OPRT_NOT_SUPPORTED;
 }
+
+OPERATE_RET tkl_cpu_sleep_time_set(CONST UINT32_T sleep_ms)
+{
+    return OPRT_NOT_SUPPORTED;
+}
+

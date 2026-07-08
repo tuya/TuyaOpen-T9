@@ -52,18 +52,27 @@
 #define __SHAREDRAM
 //#endif
 
+// Modified by TUYA Start
+#ifndef CONFIG_WIFI_IRAM_OPT_LEVEL
+#define CONFIG_WIFI_IRAM_OPT_LEVEL 1
+#endif
+// Modified by TUYA End
+
 #if CONFIG_SOC_BK7256XX
 /////bk7256 32K ITCM,important and normal function can pick to ITCM
 #define __ITCM __attribute__((section(".itcm_sec_code ")))
 #define __ITCM_N __attribute__((section(".itcm_sec_code ")))
 #else
 ////other only 16K ITCM,pick the important one to ITCM
+// Modified by TUYA Start
 #define __ITCM __attribute__((section(".itcm_sec_code ")))
+/* __ITCM_N (normal-priority ITCM funcs): resident in ITCM only when level >= 2 */
+#if (CONFIG_WIFI_IRAM_OPT_LEVEL >= 2)
 #define __ITCM_N __attribute__((section(".itcm_sec_code ")))
+#else
+#define __ITCM_N
 #endif
-
-#ifndef CONFIG_WIFI_IRAM_OPT_LEVEL
-#define CONFIG_WIFI_IRAM_OPT_LEVEL 2
+// Modified by TUYA End
 #endif
 
 /* Tier1 WiFi critical path: always resident, never trimmed by level. */

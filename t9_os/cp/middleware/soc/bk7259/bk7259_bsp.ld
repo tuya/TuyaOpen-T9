@@ -15,9 +15,11 @@
 #include "sdkconfig.h"
 #include "ram_regions.h"
 
+// Modified by TUYA Start
 #ifndef CONFIG_WIFI_IRAM_OPT_LEVEL
-#define CONFIG_WIFI_IRAM_OPT_LEVEL 2
+#define CONFIG_WIFI_IRAM_OPT_LEVEL 1
 #endif
+// Modified by TUYA End
 
 
 OUTPUT_FORMAT("elf32-littlearm", "elf32-bigarm", "elf32-littlearm")
@@ -136,8 +138,15 @@ SECTIONS
         __app_init_end = .;
         . = ALIGN(8);
 
+        // Modified by TUYA Start
+        /*
+         * Keep this exclusion list in sync with the .iram placement below:
+         * any file pulled into IRAM there must be excluded from FLASH here,
+         * otherwise it ends up duplicated or as an unplaced orphan section.
+         */
+#if (CONFIG_WIFI_IRAM_OPT_LEVEL >= 2)
         EXCLUDE_FILE (
-            /* OS (FreeRTOS) */
+            /* WiFi Tier2 (level >= 2): OS (FreeRTOS) + interrupt + WiFi RX */
             *libos_source.a:tasks.c.obj
             *libos_source.a:queue.c.obj
             *libos_source.a:list.c.obj
@@ -146,17 +155,22 @@ SECTIONS
             *rtos_pub.c.obj
             *heap_4.c.obj
             *mem_arch.c.obj
-            /* Interrupt handling */
             *arch_interrupt.c.obj
             *interrupts.c.obj
             *rxl_hwdesc.c.obj
             *rxl_cntrl.c.obj
             *co_list.c.obj
             *rf_cntrl.c.obj
-            /* lwIP (lib-qualified to avoid over-matching) */
+#if (CONFIG_WIFI_IRAM_OPT_LEVEL >= 3)
+            /* WiFi Tier3 (level >= 3): lwIP (lib-qualified to avoid over-matching) */
             *liblwip_intf_v2_1.a:wlanif.c.obj
             *liblwip_intf_v2_1.a:pbuf.c.obj
+#endif
         ) *(.text .text.* .rodata .rodata.*)
+#else
+        *(.text .text.* .rodata .rodata.*)
+#endif
+        // Modified by TUYA End
 
         . = ALIGN(4);
         __devconfig_start = .;
@@ -259,6 +273,7 @@ SECTIONS
         *(.itcm)
         *(.itcm_sec_code)
         *(.iram)
+        // Modified by TUYA Start
 #if (CONFIG_WIFI_IRAM_OPT_LEVEL >= 2)
         *(.iram2)    /* WiFi Tier2: resident in SRAM when level >= 2 */
 #endif
@@ -268,7 +283,8 @@ SECTIONS
         *(.interrupt)
         KEEP(*(.interrupt.text*))
 
-       /* OS (FreeRTOS) */
+#if (CONFIG_WIFI_IRAM_OPT_LEVEL >= 2)
+       /* OS (FreeRTOS) (WiFi Tier2: resident in SRAM when level >= 2) */
         *libos_source.a:tasks.c.obj*(.text .text.* .rodata .rodata.*)
         *libos_source.a:queue.c.obj*(.text .text.* .rodata .rodata.*)
         *libos_source.a:list.c.obj*(.text .text.* .rodata .rodata.*)
@@ -285,11 +301,13 @@ SECTIONS
         *rxl_cntrl.c.obj*(.text .text.* .rodata .rodata.*)
         *co_list.c.obj*(.text .text.* .rodata .rodata.*)
         *rf_cntrl.c.obj*(.text .text.* .rodata .rodata.*)
+#endif
         /* lwIP WLAN netif + pbuf (WiFi Tier3: resident in SRAM when level >= 3) */
 #if (CONFIG_WIFI_IRAM_OPT_LEVEL >= 3)
         *liblwip_intf_v2_1.a:wlanif.c.obj*(.text .text.* .rodata .rodata.*)
         *liblwip_intf_v2_1.a:pbuf.c.obj*(.text .text.* .rodata .rodata.*)
 #endif
+        // Modified by TUYA End
 
         . = ALIGN(4);
         __iram_end__ = .;

@@ -439,7 +439,7 @@ static uint8_t spd2010_cmd[4] = {0x32, 0x00, 0x2c, 0x00};
 
 static const lcd_qspi_t lcd_qspi_spd2010_config =
 {
-	.clk = LCD_QSPI_80M,
+	.clk = LCD_QSPI_48M,
 	.refresh_method = LCD_QSPI_REFRESH_BY_FRAME,
 	.reg_write_cmd = LCD_QSPI_SPD2010_REGISTER_WRITE_COMMAND,
 	.reg_read_cmd = LCD_QSPI_SPD2010_REGISTER_READ_COMMAND,
@@ -453,11 +453,9 @@ static const lcd_qspi_t lcd_qspi_spd2010_config =
 	.frame_len = 412 * 412 * CONFIG_LCD_QSPI_COLOR_DEPTH_BYTE,
 };
 
-const lcd_device_t lcd_device_spd2010 =
+const bk_display_qspi_panel_t lcd_device_spd2010 =
 {
-    .id = LCD_DEVICE_SPD2010,
     .name = "spd2010",
-    .type = LCD_TYPE_QSPI,
     .width = 412,
     .height = 412,
     .qspi = &lcd_qspi_spd2010_config,

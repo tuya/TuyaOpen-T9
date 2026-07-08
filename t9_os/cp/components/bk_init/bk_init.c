@@ -22,9 +22,7 @@
 #include "aon_pmu_driver.h"
 #include <driver/pwr_clk.h>
 #include "bk_pm_internal_api.h"
-#if CONFIG_ROSC_CALIB_SW
-#include <driver/rosc_32k.h>
-#endif
+
 #if CONFIG_BLUETOOTH
 #include "components/bluetooth/bk_dm_bluetooth.h"
 #include "components/bluetooth/bk_ble.h"
@@ -60,6 +58,10 @@ extern void bk_ota_confirm_update_partition(ota_confirm_flag ota_confirm_val);
 #if CONFIG_SHELL_ASYNCLOG
 #include "bk_api_cli.h"
 #endif
+#endif
+
+#if CONFIG_SUPPORT_MULTICORE
+#include "multicore_driver.h"
 #endif
 
 #if defined(CONFIG_WIFI_AT_ENABLE) && defined(CONFIG_WIFI_ENABLE)
@@ -340,10 +342,6 @@ int bk_init(void)
 	save_mtime_point(CPU_FINISH_WIFI_INIT_TIME);
 #endif
 
-#if CONFIG_ROSC_CALIB_SW
-	bk_rosc_32k_calib();
-#endif
-
 #if (CONFIG_TEMP_DETECT || CONFIG_VOLT_DETECT)
 	bk_sensor_start();
 #endif
@@ -355,6 +353,11 @@ int bk_init(void)
 
 
 	app_cli_init();
+
+#if CONFIG_CPU_HP_GOVERNOR
+	bk_cpu_hp_governor_init();
+#endif
+
 #if CONFIG_AT
 	extern int atsvr_app_init(void);
 	if(0 != atsvr_app_init())

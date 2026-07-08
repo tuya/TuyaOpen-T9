@@ -2,6 +2,7 @@ set(incs
     include
     src/test
     src/misc
+    src/misc/mf_test
     src/test/test_lvgl
     src/test/test_ringbuffer
     # src/test/test_face_recognize
@@ -129,6 +130,8 @@ else()
         # src/misc/bk_adapter.c
         src/misc/tuya_dma.c
         src/misc/tkl_mftest.c
+        src/misc/mf_test/mt_mipi.c
+        src/misc/mf_test/mt_adc.c
         # src/misc/mftest/mt_audio.c
 
         src/system/tkl_fs.c
@@ -220,6 +223,7 @@ else()
             src/test/test_gpio.c
             src/test/test_sdcard.c
             src/test/test_memory.c
+            src/test/test_ota.c
             # src/test/test_face_recognize/AvdkDetectionModel.cc
             # src/test/test_face_recognize/box.c
             # src/test/test_face_recognize/YolofaceDetectionModel.cc
