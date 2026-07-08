@@ -51,7 +51,7 @@ static aud_dac_config_t aud_dac_cfg = DEFAULT_AUD_DAC_CONFIG();
 dma_id_t test_dma_id = DMA_ID_MAX;
 
 #if CONFIG_AUD_DRIVER_V2
-#define TKL_AUD_DAC_DMA_SOURCE      AUD_DAC_SOURCE_CALL
+#define TKL_AUD_DAC_DMA_SOURCE      AUD_DAC_SOURCE_A2DP
 #define TKL_AUD_DAC_DMA_CH          (0U)
 #endif
 
@@ -81,7 +81,7 @@ static void __tkl_aud_dac_dma_finish_isr(void)
 
 /* ---------------------- DMA config / deconfig ------------------------------ */
 
-static bk_err_t __tkl_aud_dac_dma_deconfig(void)
+static bk_err_t __tkl_aud_dac_dma_deconfig(TUYA_AUDIO_DAC_PORT_E port)
 {
     if (gl_dac_ctx == NULL) {
         return BK_OK;
@@ -99,7 +99,7 @@ static bk_err_t __tkl_aud_dac_dma_deconfig(void)
     return BK_OK;
 }
 
-static bk_err_t __tkl_aud_dac_dma_config(void)
+static bk_err_t __tkl_aud_dac_dma_config(TUYA_AUDIO_DAC_PORT_E port)
 {
     bk_err_t ret = BK_OK;
     dma_config_t dma_config = {0};
@@ -160,12 +160,13 @@ static bk_err_t __tkl_aud_dac_dma_config(void)
         default:
             break;
     }
-
+    bk_printf("port: %d, chan_num: %d, sample_bits: %d, frame_size: %d\n",
+              port, gl_dac_ctx->cfg.chan_num, gl_dac_ctx->cfg.sample_bits, frame_size);
     #if CONFIG_AUD_DRIVER_V1
     ret = bk_aud_dac_get_fifo_addr(&dac_port_addr);
     #elif CONFIG_AUD_DRIVER_V2
     ret = bk_aud_dac_get_fifo_addr(TKL_AUD_DAC_DMA_SOURCE,
-                                   TKL_AUD_DAC_DMA_CH,
+                                   port,
                                    &dma_config.dst.dev,
                                    &dac_port_addr);
     #endif
@@ -177,7 +178,7 @@ static bk_err_t __tkl_aud_dac_dma_config(void)
     dma_config.dst.addr_loop_en = DMA_ADDR_LOOP_ENABLE;
     dma_config.dst.start_addr = dac_port_addr;
     dma_config.dst.end_addr = dac_port_addr + 4;
-
+    bk_printf("port: %d, dac fifo addr: 0x%08x\n", port,dac_port_addr);
     ret = bk_dma_init(gl_dac_ctx->spk_dma_id, &dma_config);
     if (ret != BK_OK) {
         TKL_DAC_LOG("dma_init fail\n");
@@ -201,7 +202,7 @@ static bk_err_t __tkl_aud_dac_dma_config(void)
     return BK_OK;
 
 exit:
-    __tkl_aud_dac_dma_deconfig();
+    __tkl_aud_dac_dma_deconfig(port);
     return BK_FAIL;
 }
 
@@ -219,7 +220,7 @@ exit:
  */
 OPERATE_RET tkl_aud_dac_init(TUYA_AUDIO_DAC_PORT_E port, TKL_AUD_DAC_CFG_T *config)
 {
-    if (config == NULL) {
+    if (config == NULL || port > TUYA_AUDIO_DAC_PORT_MAX) {
         return OPRT_INVALID_PARM;
     }
 
@@ -240,6 +241,8 @@ OPERATE_RET tkl_aud_dac_init(TUYA_AUDIO_DAC_PORT_E port, TKL_AUD_DAC_CFG_T *conf
 
     bk_err_t ret = BK_OK;
 
+    bk_printf("dac init, sample_rate %d, sample_bits %d",
+              config->sample_rate, config->sample_bits);
     gl_dac_ctx = (tkl_aud_dac_ctx_t *)tkl_system_malloc(sizeof(tkl_aud_dac_ctx_t));
     if (gl_dac_ctx == NULL) {
         TKL_DAC_LOG("malloc dac context fail\n");
@@ -256,12 +259,19 @@ OPERATE_RET tkl_aud_dac_init(TUYA_AUDIO_DAC_PORT_E port, TKL_AUD_DAC_CFG_T *conf
         gl_dac_ctx->cfg.chan_num = 1;
     }
 
+    bk_printf("dac init, sample_rate %d, sample_bits %d",
+              config->sample_rate, config->sample_bits);
     /* DAC init */
 #if CONFIG_AUD_DRIVER_V2
     if (gl_dac_ctx->cfg.chan_num == 1) {
-        aud_dac_cfg.dac_chl = AUD_DAC_CHL_LR;
+        if (port == TUYA_AUDIO_DAC_PORT_0) {
+            aud_dac_cfg.dac_chl = AUD_DAC_CHL_L;
+        } else {
+            aud_dac_cfg.dac_chl = AUD_DAC_CHL_R;
+        }
     } else if (gl_dac_ctx->cfg.chan_num == 2) {
         aud_dac_cfg.dac_chl = AUD_DAC_CHL_LR;
+        port = 0;  // For stereo, use port 0 for DAC FIFO access
     } else {
         TKL_DAC_LOG("unsupported channel num: %d\n", gl_dac_ctx->cfg.chan_num);
         ret = BK_FAIL;
@@ -269,12 +279,20 @@ OPERATE_RET tkl_aud_dac_init(TUYA_AUDIO_DAC_PORT_E port, TKL_AUD_DAC_CFG_T *conf
     }
 #else
     if (gl_dac_ctx->cfg.chan_num == 1) {
-        aud_dac_cfg.dac_chl = AUD_DAC_CHL_L;
+        if (port == TUYA_AUDIO_DAC_PORT_0) {
+            aud_dac_cfg.dac_chl = AUD_DAC_CHL_L;
+        } else {
+            aud_dac_cfg.dac_chl = AUD_DAC_CHL_R;
+        }
     } else {
         aud_dac_cfg.dac_chl = AUD_DAC_CHL_LR;
+        port = 0;  // For stereo, use port 0 for DAC FIFO access
     }
 #endif
 
+    bk_printf("dac init, sample_rate %d, sample_bits %d, frame_time_ms %d, volume %d, chan_num %d\n",
+              config->sample_rate, config->sample_bits, config->frame_time_ms,
+              config->volume, config->chan_num);
 #if CONFIG_AUD_DRIVER_V1
     aud_dac_cfg.samp_rate = config->sample_rate;
     aud_dac_cfg.dac_gain = __tkl_aud_dac_map_volume_to_gain(config->volume);
@@ -286,12 +304,13 @@ OPERATE_RET tkl_aud_dac_init(TUYA_AUDIO_DAC_PORT_E port, TKL_AUD_DAC_CFG_T *conf
     aud_dac_cfg.work_mode = AUD_DAC_WORK_MODE_DIFFEN;
     aud_dac_cfg.clk_src = AUD_CLK_APLL;
 
+    bk_printf("dac init, sample_rate %d, sample_bits %d, dac_cfg.sample_rate %d, dac_cfg.bits %d, dac_cfg.ana_gain %d\n",
+              config->sample_rate, config->sample_bits, aud_dac_cfg.sample_rate, aud_dac_cfg.bits, aud_dac_cfg.ana_gain);
 #if CONFIG_AUD_DRIVER_V1
     TKL_DAC_LOG("dac config, chl %d, vol 0x%02x, samp_rate: %d\n",
                  aud_dac_cfg.dac_chl, aud_dac_cfg.dac_gain, aud_dac_cfg.samp_rate);
 #elif CONFIG_AUD_DRIVER_V2
-    TKL_DAC_LOG("dac config, chl %d, dig_gain 0x%08x, ana_gain 0x%02x, sample_rate %d, bits %d\n",
-                 aud_dac_cfg.dac_chl, aud_dac_cfg.dig_gain, aud_dac_cfg.ana_gain,
+    bk_printf("dac config, sample_rate %d, bits %d\n",
                  aud_dac_cfg.sample_rate, aud_dac_cfg.bits);
 #endif
 
@@ -333,7 +352,7 @@ OPERATE_RET tkl_aud_dac_init(TUYA_AUDIO_DAC_PORT_E port, TKL_AUD_DAC_CFG_T *conf
     }
 
     /* DMA config */
-    ret = __tkl_aud_dac_dma_config();
+    ret = __tkl_aud_dac_dma_config(port);
     if (ret != BK_OK) {
         TKL_DAC_LOG("dma config fail\n");
         goto __dac_init_exit;
@@ -348,7 +367,7 @@ __dac_init_exit:
 
     gl_dac_ctx->stat = TKL_AUD_DAC_STAT_IDLE;
 
-    __tkl_aud_dac_dma_deconfig();
+    __tkl_aud_dac_dma_deconfig(port);
     bk_aud_dac_deinit();
 
     if (gl_dac_ctx) {
@@ -418,14 +437,15 @@ OPERATE_RET tkl_aud_dac_start(TUYA_AUDIO_DAC_PORT_E port)
 
     bk_err_t ret = BK_OK;
 
+    bk_printf("port: %d \n", gl_dac_ctx->port);
     if (gl_dac_ctx->stat == TKL_AUD_DAC_STAT_STOP) {
         /*
          * Reinit DMA (reset read pointer) and DAC hardware (was fully
          * deinitialized in stop). Going through deinit+init avoids the V2
          * HAL bug where bk_aud_dac_stop→bk_aud_dac_start alone kills ADC.
          */
-        __tkl_aud_dac_dma_deconfig();
-        ret = __tkl_aud_dac_dma_config();
+        __tkl_aud_dac_dma_deconfig(gl_dac_ctx->port);
+        ret = __tkl_aud_dac_dma_config(gl_dac_ctx->port);
         if (ret != BK_OK) {
             TKL_DAC_LOG("dma reconfig fail on restart\n");
             return OPRT_COM_ERROR;
@@ -473,10 +493,10 @@ OPERATE_RET tkl_aud_dac_start(TUYA_AUDIO_DAC_PORT_E port)
     }
 
 #if CONFIG_AUD_DRIVER_V2
-    ret = bk_aud_dac_source_enable(TKL_AUD_DAC_DMA_CH, TKL_AUD_DAC_DMA_SOURCE, 1);
+    ret = bk_aud_dac_source_enable(gl_dac_ctx->port, TKL_AUD_DAC_DMA_SOURCE, 1);
     if (ret != BK_OK) {
         TKL_DAC_LOG("source enable fail, ch=%d, source=%d\n",
-                    TKL_AUD_DAC_DMA_CH, TKL_AUD_DAC_DMA_SOURCE);
+                    gl_dac_ctx->port, TKL_AUD_DAC_DMA_SOURCE);
         return OPRT_COM_ERROR;
     }
 #endif
@@ -485,7 +505,7 @@ OPERATE_RET tkl_aud_dac_start(TUYA_AUDIO_DAC_PORT_E port)
     if (ret != BK_OK) {
         TKL_DAC_LOG("dma start fail\n");
 #if CONFIG_AUD_DRIVER_V2
-        (void)bk_aud_dac_source_enable(TKL_AUD_DAC_DMA_CH, TKL_AUD_DAC_DMA_SOURCE, 0);
+        (void)bk_aud_dac_source_enable(gl_dac_ctx->port, TKL_AUD_DAC_DMA_SOURCE, 0);
 #endif
         return OPRT_COM_ERROR;
     }
@@ -493,13 +513,13 @@ OPERATE_RET tkl_aud_dac_start(TUYA_AUDIO_DAC_PORT_E port)
 #if CONFIG_AUD_DRIVER_V1
     ret = bk_aud_dac_start();
 #elif CONFIG_AUD_DRIVER_V2
-    ret = bk_aud_dac_start(aud_dac_cfg.dac_chl);
+    ret = bk_aud_dac_start(AUD_DAC_CHL_LR);
 #endif
     if (ret != BK_OK) {
         TKL_DAC_LOG("dac start fail\n");
         bk_dma_stop(gl_dac_ctx->spk_dma_id);
 #if CONFIG_AUD_DRIVER_V2
-        (void)bk_aud_dac_source_enable(TKL_AUD_DAC_DMA_CH, TKL_AUD_DAC_DMA_SOURCE, 0);
+        (void)bk_aud_dac_source_enable(gl_dac_ctx->port, TKL_AUD_DAC_DMA_SOURCE, 0);
 #endif
         return OPRT_COM_ERROR;
     }
@@ -554,8 +574,8 @@ OPERATE_RET tkl_aud_dac_stop(TUYA_AUDIO_DAC_PORT_E port)
     bk_aud_dac_mute();
 
 #if CONFIG_AUD_DRIVER_V2
-    (void)bk_aud_dac_source_enable(TKL_AUD_DAC_DMA_CH, TKL_AUD_DAC_DMA_SOURCE, 0);
-    (void)bk_aud_dac_stop(aud_dac_cfg.dac_chl);
+    (void)bk_aud_dac_source_enable(gl_dac_ctx->port, TKL_AUD_DAC_DMA_SOURCE, 0);
+    (void)bk_aud_dac_stop(AUD_DAC_CHL_LR);
 #elif CONFIG_AUD_DRIVER_V1
     (void)bk_aud_dac_stop();
 #endif
@@ -674,16 +694,16 @@ OPERATE_RET tkl_aud_dac_deinit(TUYA_AUDIO_DAC_PORT_E port)
     }
 
     if (gl_dac_ctx->stat == TKL_AUD_DAC_STAT_START) {
-        tkl_aud_dac_stop(port);
+        tkl_aud_dac_stop(gl_dac_ctx->port);
     }
 
     gl_dac_ctx->stat = TKL_AUD_DAC_STAT_DEINIT;
     gl_dac_ctx->frame_cb = NULL;
     gl_dac_ctx->frame_cb_arg = NULL;
 
-    __tkl_aud_dac_dma_deconfig();
+    __tkl_aud_dac_dma_deconfig(gl_dac_ctx->port);
 #if CONFIG_AUD_DRIVER_V2
-    (void)bk_aud_dac_source_enable(TKL_AUD_DAC_DMA_CH, TKL_AUD_DAC_DMA_SOURCE, 0);
+    (void)bk_aud_dac_source_enable(gl_dac_ctx->port, TKL_AUD_DAC_DMA_SOURCE, 0);
     (void)bk_aud_dac_stop(aud_dac_cfg.dac_chl);
 #elif CONFIG_AUD_DRIVER_V1
     (void)bk_aud_dac_stop();

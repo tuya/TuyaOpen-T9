@@ -21,7 +21,7 @@ typedef enum {
 } TKL_MFTEST_CMD_E;
 
 OPERATE_RET tkl_mftest_ctrl(USHORT_T cmd, UCHAR_T *in, UINT_T inlen, UCHAR_T **out, USHORT_T *outlen);
-
+VOID tkl_mftest_auto_run(VOID);
 
 #ifdef __cplusplus
 }
