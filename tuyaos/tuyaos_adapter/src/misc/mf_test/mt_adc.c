@@ -28,7 +28,6 @@
 #define MT_ADC_MAX_CONV_CNT             32U
 #define MT_ADC_P24_EXPECT_MV            1200
 #define MT_ADC_P25_EXPECT_MV            1800
-#define MT_ADC_VOLT_TOLERANCE_PCT       10U
 #define MT_ADC_REPLY_BUF_SIZE           160U
 
 #define MT_ADC_LOGI(...)                bk_printf("[I][" MT_ADC_TAG "] " __VA_ARGS__)
@@ -71,19 +70,36 @@ STATIC INT32_T __mt_adc_pin_to_channel(UINT32_T pin)
 }
 
 /**
+ * @brief Sanitize tolerance percent from host configuration
+ * @param[in] tolerance_pct requested tolerance percent
+ * @return valid tolerance percent
+ */
+STATIC UINT32_T __mt_adc_sanitize_tolerance_pct(UINT32_T tolerance_pct)
+{
+    if (tolerance_pct == 0U) {
+        return MT_ADC_VOLT_TOLERANCE_PCT_DEFAULT;
+    }
+    if (tolerance_pct > 100U) {
+        return 100U;
+    }
+    return tolerance_pct;
+}
+
+/**
  * @brief Check whether measured voltage is within tolerance of expected rail
  * @param[in] measured_mv measured voltage in millivolts
  * @param[in] expect_mv expected rail voltage in millivolts
+ * @param[in] tolerance_pct allowed deviation in percent
  * @return TRUE if within tolerance
  */
-STATIC BOOL_T __mt_adc_voltage_in_range(INT32_T measured_mv, UINT32_T expect_mv)
+STATIC BOOL_T __mt_adc_voltage_in_range(INT32_T measured_mv, UINT32_T expect_mv, UINT32_T tolerance_pct)
 {
     UINT32_T margin_mv;
 
     if (measured_mv < 0) {
         return FALSE;
     }
-    margin_mv = (expect_mv * MT_ADC_VOLT_TOLERANCE_PCT) / 100U;
+    margin_mv = (expect_mv * tolerance_pct) / 100U;
     if ((UINT32_T)measured_mv < (expect_mv - margin_mv)) {
         return FALSE;
     }
@@ -191,13 +207,15 @@ STATIC OPERATE_RET __mt_adc_read_pin_voltage_mv(UINT32_T pin, INT32_T *volt_mv)
  * @brief Read P24/P25 and verify against expected rails on test socket
  * @param[out] p24_mv average P24 voltage in millivolts
  * @param[out] p25_mv average P25 voltage in millivolts
+ * @param[in] tolerance_pct allowed deviation in percent
  * @return OPRT_OK on pass, OPRT_COM_ERROR on out-of-range, other errors on ADC failure
  */
-STATIC OPERATE_RET __mt_adc_run_test(INT32_T *p24_mv, INT32_T *p25_mv)
+STATIC OPERATE_RET __mt_adc_run_test(INT32_T *p24_mv, INT32_T *p25_mv, UINT32_T tolerance_pct)
 {
     OPERATE_RET ret = OPRT_OK;
     BOOL_T p24_ok;
     BOOL_T p25_ok;
+    UINT32_T tol_pct = __mt_adc_sanitize_tolerance_pct(tolerance_pct);
 
     if ((p24_mv == NULL) || (p25_mv == NULL)) {
         return OPRT_INVALID_PARM;
@@ -219,13 +237,12 @@ STATIC OPERATE_RET __mt_adc_run_test(INT32_T *p24_mv, INT32_T *p25_mv)
         goto cleanup;
     }
 
-    p24_ok = __mt_adc_voltage_in_range(*p24_mv, MT_ADC_P24_EXPECT_MV);
-    p25_ok = __mt_adc_voltage_in_range(*p25_mv, MT_ADC_P25_EXPECT_MV);
+    p24_ok = __mt_adc_voltage_in_range(*p24_mv, MT_ADC_P24_EXPECT_MV, tol_pct);
+    p25_ok = __mt_adc_voltage_in_range(*p25_mv, MT_ADC_P25_EXPECT_MV, tol_pct);
 
     if ((p24_ok == FALSE) || (p25_ok == FALSE)) {
         MT_ADC_LOGE("voltage check FAIL, P24=%d mV(expect %u), P25=%d mV(expect %u), tol=%u%%\r\n",
-                    *p24_mv, MT_ADC_P24_EXPECT_MV, *p25_mv, MT_ADC_P25_EXPECT_MV,
-                    MT_ADC_VOLT_TOLERANCE_PCT);
+                    *p24_mv, MT_ADC_P24_EXPECT_MV, *p25_mv, MT_ADC_P25_EXPECT_MV, tol_pct);
         ret = OPRT_COM_ERROR;
         goto cleanup;
     }
@@ -239,23 +256,25 @@ cleanup:
 
 /**
  * @brief Run ADC factory test on P24(1V2) and P25(1V8)
+ * @param[in] tolerance_pct allowed deviation in percent
  * @return OPRT_OK on pass, OPRT_COM_ERROR on test failure
  */
-OPERATE_RET mt_adc_factory_test(VOID_T)
+OPERATE_RET mt_adc_factory_test(UINT32_T tolerance_pct)
 {
     INT32_T p24_mv = 0;
     INT32_T p25_mv = 0;
 
-    return __mt_adc_run_test(&p24_mv, &p25_mv);
+    return __mt_adc_run_test(&p24_mv, &p25_mv, tolerance_pct);
 }
 
 /**
  * @brief Run ADC factory test and fill JSON reply buffer for mftest framework
  * @param[out] ret_data heap buffer with JSON result (caller frees)
  * @param[out] ret_len length of @p ret_data
+ * @param[in] tolerance_pct allowed deviation in percent
  * @return OPRT_OK on dispatch success, OPRT_MALLOC_FAILED on alloc failure
  */
-OPERATE_RET mt_adc_factory_test_reply(UCHAR_T **ret_data, USHORT_T *ret_len)
+OPERATE_RET mt_adc_factory_test_reply(UCHAR_T **ret_data, USHORT_T *ret_len, UINT32_T tolerance_pct)
 {
     CHAR_T *ret_buf = NULL;
     INT32_T p24_mv = -1;
@@ -276,7 +295,7 @@ OPERATE_RET mt_adc_factory_test_reply(UCHAR_T **ret_data, USHORT_T *ret_len)
     }
     os_memset(ret_buf, 0, MT_ADC_REPLY_BUF_SIZE);
 
-    test_ret = __mt_adc_run_test(&p24_mv, &p25_mv);
+    test_ret = __mt_adc_run_test(&p24_mv, &p25_mv, tolerance_pct);
     if (test_ret == OPRT_OK) {
         written = snprintf(ret_buf, MT_ADC_REPLY_BUF_SIZE,
                            "{\"ret\":true,\"p24_mv\":%d,\"p25_mv\":%d}",
