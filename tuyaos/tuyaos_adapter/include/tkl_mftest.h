@@ -36,6 +36,11 @@ typedef enum {
 // = 16000 * 20/1000 * 2 * 2 = 1280 字节 (= 640 个 int16 = L/R 各 320 点)
 #define ADC_FRAME_SIZE    (AEC_SAMPLE_RATE * AEC_FRAME_MS / 1000 * 2 * 2)
 
+/** Hardware loopback modes for product test (tkl_mftest_ctrl TKL_AUDIO_TEST_START_CMD in[0]) */
+#define TKL_MFTEST_HWLOOP_MIC1_SPK1     0U   /**< MIC1 <-> SPK1 */
+#define TKL_MFTEST_HWLOOP_MIC2_SPK2     1U   /**< MIC2 <-> SPK2 (diff DAC) */
+#define TKL_MFTEST_HWLOOP_MIC3_AEC      3U   /**< AEC ref MIC3 <-> SPK1 */
+
 OPERATE_RET tkl_mftest_ctrl(USHORT_T cmd, UCHAR_T *in, UINT_T inlen, UCHAR_T **out, USHORT_T *outlen);
 VOID tkl_mftest_auto_run(VOID);
 

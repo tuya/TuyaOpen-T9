@@ -16,6 +16,10 @@
 #include "tuya_cloud_types.h"
 #include "tkl_aud_adc.h"
 
+#ifndef TUYA_AUDIO_ADC_CHANNEL_MIC3
+#define TUYA_AUDIO_ADC_CHANNEL_MIC3   ((TUYA_AUDIO_ADC_CHAN_E)3)
+#endif
+
 extern void bk_printf(const char *fmt, ...);
 
 #define MODULE_LOG_HELPER(fmt, ...) \
@@ -250,11 +254,20 @@ static void __tkl_aud_adc_dma_finish_isr(void)
          * Mixed 3ch layout from reference pipeline:
          * [ref, mic1, mic2, ref, mic1, mic2, ...]
          * For single-channel request:
-         *   L -> mic1
-         *   R -> mic2
+         *   MIC3 -> ref (AEC reference, index 0)
+         *   L    -> mic1
+         *   R    -> mic2
          */
         if (raw_ch_num == 3U) {
-            uint32_t mic_idx = (gl_adc_ctx->cfg.chan == TUYA_AUDIO_ADC_CHANNEL_R) ? 2U : 1U;
+            uint32_t mic_idx;
+
+            if (gl_adc_ctx->cfg.chan == TUYA_AUDIO_ADC_CHANNEL_MIC3) {
+                mic_idx = 0U;
+            } else if (gl_adc_ctx->cfg.chan == TUYA_AUDIO_ADC_CHANNEL_R) {
+                mic_idx = 2U;
+            } else {
+                mic_idx = 1U;
+            }
             for (uint32_t i = 0; i < frame_pts; i++) {
                 dst[i] = src[i * 3U + mic_idx];
             }
@@ -293,6 +306,14 @@ static void __tkl_aud_adc_dma_finish_isr(void)
                 dst[i] = src[2 * i + 1];
             }
         }
+        else if (gl_adc_ctx->cfg.chan == TUYA_AUDIO_ADC_CHANNEL_MIC3)
+        {
+            TKL_AUD_ADC_LOG("MIC3(AEC ref) not supported on V1 ADC, fallback to L\r\n");
+            for (uint32_t i = 0; i < samples; i++)
+            {
+                dst[i] = src[2 * i];
+            }
+        }
         else
         {
             // 默认左声道数据
@@ -307,7 +328,12 @@ static void __tkl_aud_adc_dma_finish_isr(void)
     else
     {
 #if CONFIG_AUD_DRIVER_V2
-        if (gl_adc_ctx->raw_ch_num == 3U) {
+        if ((gl_adc_ctx->raw_ch_num == 3U) && (gl_adc_ctx->chl_num == 3U)) {
+            gl_adc_ctx->cfg.upper_cb(TUYA_AUDIO_FRAME_EVENT_ADC_RX,
+                                     gl_adc_ctx->read_buf,
+                                     read_size,
+                                     gl_adc_ctx->cfg.args);
+        } else if (gl_adc_ctx->raw_ch_num == 3U) {
             int16_t *src = (int16_t *)gl_adc_ctx->read_buf;
             int16_t *dst = (int16_t *)gl_adc_ctx->output_buf;
             uint32_t frame_pts;
@@ -473,10 +499,10 @@ exit:
 *                    frame_size, vol, upper_aud_adc_cb
 *
 * @note This API allocates context, configures ADC hardware, DMA ring buffer,
-*       and registers flash operation notify handler. ADC always configures LR channel
-*       internally; mic_mode selects which mic is active. For single channel, DMA
-*       frame_size is doubled to capture interleaved L+R data, then L channel is
-*       extracted in ISR. Must be called before tkl_aud_adc_start.
+*       and registers flash operation notify handler. On BK7259 V2 the onboard
+*       frame layout is [ref, mic1, mic2]: CHANNEL_L/R/LR select mic1/mic2/both,
+*       CHANNEL_MIC3 selects the AEC reference lane (index 0). Must be called
+*       before tkl_aud_adc_start.
 *
 * @return OPRT_OK on success. Others on error, please refer to tuya_error_code.h
 */
@@ -535,6 +561,21 @@ OPERATE_RET tkl_aud_adc_init(TUYA_AUDIO_ADC_PORT_E port, TKL_AUD_ADC_CFG_T *conf
             chl_num = 2;
             raw_ch_num = 3;
             break;
+        case TUYA_AUDIO_ADC_CHANNEL_MIC3:
+            /* AEC ref lane: same 3ch DMA as LR, strip index 0 in ISR. */
+            adc_ch_bitmap = (1U << AUD_ADC_CHL_0) | (1U << AUD_ADC_CHL_1) | (1U << AUD_ADC_CHL_2);
+            adc_mode = AUD_ADC_MODE_DIFFEN;
+            chl_num = 1;
+            raw_ch_num = 3;
+            TKL_AUD_ADC_LOG("chan MIC3(AEC ref): 3ch DMA [ref,mic1,mic2], output ref lane\r\n");
+            break;
+        case TUYA_AUDIO_ADC_CHANNEL_RAW3:
+            /* Pass through full [ref,mic1,mic2] frame for dump/analysis. */
+            adc_ch_bitmap = (1U << AUD_ADC_CHL_0) | (1U << AUD_ADC_CHL_1) | (1U << AUD_ADC_CHL_2);
+            adc_mode = AUD_ADC_MODE_DIFFEN;
+            chl_num = 3;
+            raw_ch_num = 3;
+            break;
         default:
             TKL_AUD_ADC_LOG("chan %d not support\n", config->chan);
             goto __adc_init_exit;
@@ -543,6 +584,7 @@ OPERATE_RET tkl_aud_adc_init(TUYA_AUDIO_ADC_PORT_E port, TKL_AUD_ADC_CFG_T *conf
     switch (config->chan) {
         case TUYA_AUDIO_ADC_CHANNEL_L:
         case TUYA_AUDIO_ADC_CHANNEL_R:
+        case TUYA_AUDIO_ADC_CHANNEL_MIC3:
             /* V1 ADC always outputs LR interleaved data on one fifo bus. */
             chl_num = 1;
             break;

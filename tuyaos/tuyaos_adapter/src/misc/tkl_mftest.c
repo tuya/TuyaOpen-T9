@@ -3,12 +3,12 @@
  * @brief Platform manufacturing-test hooks for Tuya SDK (T5-aligned stub API)
  *
  * Supports:
- * - Left channel loopback   (mode 0)
- * - Right channel loopback  (mode 1)
- * - Stereo loopback         (mode 2)
- * - SPK1 -> MIC3 AEC loopback (mode 3)
+ * - Left channel loopback   (mode 0): mono DAC SPK1 -> MIC1
+ * - Right channel loopback  (mode 1): stereo DAC L/R anti-phase, judge MIC2 only
+ * - Stereo loopback         (mode 2): stereo DAC L/R diff ref -> MIC1/MIC2
+ * - SPK1 -> MIC3 AEC loopback (mode 3): mono DAC SPK1 -> AEC ref mic
  * - MIC1 + MIC2 stereo loopback with different L/R reference (mode 4)
- * - MIC3 loopback via stereo DAC (mode 5)
+ * - MIC3 (AEC ref) loopback via mono DAC (mode 5)
  * - Combined MIC1/MIC2/MIC3 test (mode 6)
  *
  * @version 2.1
@@ -280,7 +280,14 @@ STATIC OPERATE_RET __pt_adc_test(USHORT_T cmd, UCHAR_T *data, UINT_T len, UCHAR_
 #define ADC_TEST_DEFAULT_GAIN          0x2DU
 #define ADC_TEST_DEFAULT_REC_MS        2000U
 #define ADC_TEST_DEFAULT_DAC_PORT      TUYA_AUDIO_DAC_PORT_0
+#define ADC_TEST_DAC_PORT_SPK1         TUYA_AUDIO_DAC_PORT_0
+#ifndef TUYA_AUDIO_DAC_PORT_1
+#define TUYA_AUDIO_DAC_PORT_1          ((TUYA_AUDIO_DAC_PORT_E)1)
+#endif
+#define ADC_TEST_DAC_PORT_SPK2         TUYA_AUDIO_DAC_PORT_1
 #define ADC_TEST_DEFAULT_DAC_VOLUME    70U
+#define HWLOOP_MIN_PEAK_ABS            (800)
+#define HWLOOP_CORR_THRESHOLD_PCT      (80)
 #define ADC_TEST_DUMP_MAX_SAMPLES      32U
 #define ADC_TEST_DUMP_DEFAULT_SAMPLES  12U
 
@@ -293,13 +300,6 @@ STATIC OPERATE_RET __pt_adc_test(USHORT_T cmd, UCHAR_T *data, UINT_T len, UCHAR_
 #define HWLOOP_MODE_MIC3           3
 #define HWLOOP_MODE_STEREO_DIFF    4
 #define HWLOOP_MODE_MIC3_STEREO    5
-
-/* -------------------------------------------------------------------------- */
-/*              AEC MIC3 ADC channel override (adjust per hardware)           */
-/* -------------------------------------------------------------------------- */
-#ifndef TUYA_AUDIO_ADC_CHANNEL_MIC3
-#define TUYA_AUDIO_ADC_CHANNEL_MIC3   TUYA_AUDIO_ADC_CHANNEL_L
-#endif
 
 /* -------------------------------------------------------------------------- */
 /*                          ADC test context                                  */
@@ -371,8 +371,8 @@ static test_adc_ctx_t s_adc_ctx = {
 /* -------------------------------------------------------------------------- */
 /*                    Hardware loop test static resources                     */
 /* -------------------------------------------------------------------------- */
-#define HWLOOP_REF_SAMPLES  (2400U)        /* 100 ms @ 24 kHz (but now 48k -> 200ms? adjust) */
-// Note: original 1600 for 16k/100ms, now 4800 for 48k/100ms. Keep 2400 for compatibility.
+#define HWLOOP_REF_SAMPLES  (2400U)        /* 50 ms tail window @ 48 kHz */
+#define HWLOOP_DAC_WRITE_RETRY_MAX       (8U)
 static int16_t s_hwloop_ref[HWLOOP_REF_SAMPLES];
 static int16_t s_hwloop_ref_R[HWLOOP_REF_SAMPLES];
 static int16_t s_hwloop_cap_L[HWLOOP_REF_SAMPLES * 4];
@@ -383,8 +383,6 @@ static volatile uint32_t s_hwloop_ref_play_idx_L = 0;
 static volatile uint32_t s_hwloop_ref_play_idx_R = 0;
 static volatile bool s_hwloop_testing = false;
 static volatile uint8_t s_hwloop_mode = HWLOOP_MODE_STEREO;
-static volatile bool s_hwloop_stereo_dac = false;
-
 /* -------------------------------------------------------------------------- */
 /*                     Forward declarations                                   */
 /* -------------------------------------------------------------------------- */
@@ -418,6 +416,28 @@ static double calc_rms(const int16_t *buf, uint32_t count)
     return sqrt(sum / count);
 }
 
+/**
+ * @brief Get absolute peak of PCM buffer
+ * @param[in] buf PCM samples
+ * @param[in] count sample count
+ * @return peak absolute value, 0 if count is 0
+ */
+static int32_t calc_peak_abs(const int16_t *buf, uint32_t count)
+{
+    int32_t peak = 0;
+
+    for (uint32_t i = 0; i < count; i++) {
+        int32_t v = buf[i];
+        if (v < 0) {
+            v = -v;
+        }
+        if (v > peak) {
+            peak = v;
+        }
+    }
+    return peak;
+}
+
 /* -------------------------------------------------------------------------- */
 /*                Cross-correlation helper (unchanged)                        */
 /* -------------------------------------------------------------------------- */
@@ -448,6 +468,97 @@ static float hwloop_calc_correlation(const int16_t *ref, const int16_t *cap_buf,
     return best_corr;
 }
 
+/**
+ * @brief Evaluate capture tail segment against reference for loopback pass
+ * @param[in] ref reference sine buffer
+ * @param[in] cap capture buffer
+ * @param[in] cap_cnt captured sample count
+ * @param[out] peak_abs peak of tail segment
+ * @param[out] corr_pct best correlation in percent (-100 if invalid)
+ * @return true when peak and correlation both meet threshold
+ */
+static bool hwloop_eval_channel(const int16_t *ref, const int16_t *cap, uint32_t cap_cnt,
+                                int32_t *peak_abs, int32_t *corr_pct)
+{
+    const int16_t *seg;
+    float corr;
+
+    if (peak_abs != NULL) {
+        *peak_abs = 0;
+    }
+    if (corr_pct != NULL) {
+        *corr_pct = -100;
+    }
+    if ((ref == NULL) || (cap == NULL) || (cap_cnt < HWLOOP_REF_SAMPLES)) {
+        return false;
+    }
+
+    seg = &cap[cap_cnt - HWLOOP_REF_SAMPLES];
+    if (peak_abs != NULL) {
+        *peak_abs = calc_peak_abs(seg, HWLOOP_REF_SAMPLES);
+    }
+    if ((peak_abs != NULL) && (*peak_abs < HWLOOP_MIN_PEAK_ABS)) {
+        return false;
+    }
+
+    corr = hwloop_calc_correlation(ref, cap, cap_cnt);
+    if (corr_pct != NULL) {
+        *corr_pct = (int32_t)(corr * 100.0f);
+    }
+    return (corr >= ((float)HWLOOP_CORR_THRESHOLD_PCT / 100.0f));
+}
+
+/**
+ * @brief Log last N PCM samples (aligned with peak/corr tail window)
+ * @param[in] label log prefix, e.g. "CAP_L"
+ * @param[in] buf PCM buffer
+ * @param[in] cnt total sample count in buffer
+ * @return none
+ */
+static void hwloop_log_dump_tail(const char *label, const int16_t *buf, uint32_t cnt)
+{
+    uint32_t off;
+    uint32_t dump_cnt = ADC_TEST_DUMP_MAX_SAMPLES;
+
+    if ((label == NULL) || (buf == NULL) || (cnt == 0U)) {
+        tkl_log_output("%s(tail): (empty)\r\n", (label != NULL) ? label : "CAP");
+        return;
+    }
+    if (cnt <= dump_cnt) {
+        off = 0U;
+    } else {
+        off = cnt - dump_cnt;
+    }
+    tkl_log_output("%s(tail): ", label);
+    for (uint32_t i = off; i < cnt; i++) {
+        tkl_log_output("%d ", buf[i]);
+    }
+    tkl_log_output("\r\n");
+}
+
+/**
+ * @brief Write PCM to DAC ring buffer with retry on busy
+ * @param[in] port DAC port
+ * @param[in] buf PCM buffer
+ * @param[in] len length in bytes
+ * @return OPRT_OK on success
+ */
+static OPERATE_RET hwloop_dac_write_retry(TUYA_AUDIO_DAC_PORT_E port, uint8_t *buf, uint32_t len)
+{
+    for (uint32_t retry = 0U; retry < HWLOOP_DAC_WRITE_RETRY_MAX; retry++) {
+        OPERATE_RET ret = tkl_aud_dac_write(port, buf, len);
+
+        if (ret == OPRT_OK) {
+            return OPRT_OK;
+        }
+        if (ret != OPRT_OS_ADAPTER_DAC_BUSY) {
+            return ret;
+        }
+        tal_system_sleep(1U);
+    }
+    return OPRT_OS_ADAPTER_DAC_BUSY;
+}
+
 /* -------------------------------------------------------------------------- */
 /*                          Reference signal generators                       */
 /* -------------------------------------------------------------------------- */
@@ -467,6 +578,39 @@ static void hwloop_gen_ref_pair(void)
         double t = (double)i / ADC_TEST_DEFAULT_SAMPLE_RATE;
         s_hwloop_ref[i]   = (int16_t)(20000.0 * sin(2.0 * M_PI * 1000.0 * t));
         s_hwloop_ref_R[i] = (int16_t)(20000.0 * sin(2.0 * M_PI * 1000.0 * t + M_PI)); // 反相
+    }
+}
+
+/**
+ * @brief Generate reference waveform(s) for the given loopback mode
+ * @param[in] mode HWLOOP_MODE_* value
+ * @return none
+ * @note STEREO/RIGHT use L/R anti-phase pair (diff DAC needs both lanes active)
+ */
+static void hwloop_gen_ref_for_mode(uint8_t mode)
+{
+    if (mode == HWLOOP_MODE_STEREO || mode == HWLOOP_MODE_RIGHT) {
+        hwloop_gen_ref_pair();
+    } else {
+        hwloop_gen_ref();
+    }
+}
+
+/**
+ * @brief Fill one stereo DAC frame (interleaved L/R different reference)
+ * @param[out] p frame buffer as int16 stereo samples
+ * @param[in] dac_frame_samples samples per channel in this frame
+ * @param[in,out] ref_idx reference sample index, advanced per sample
+ * @return none
+ */
+static void hwloop_fill_stereo_frame(int16_t *p, uint32_t dac_frame_samples, uint32_t *ref_idx)
+{
+    for (uint32_t i = 0; i < dac_frame_samples; i++) {
+        uint32_t ri = (*ref_idx) % HWLOOP_REF_SAMPLES;
+
+        p[i * 2]     = s_hwloop_ref[ri];
+        p[i * 2 + 1] = s_hwloop_ref_R[ri];
+        (*ref_idx)++;
     }
 }
 
@@ -499,39 +643,29 @@ static void adc_upper_cb(TUYA_AUDIO_FRAME_EVT_E event, void *p_buf,
 {
     (void)event;
     (void)args;
-    if (!s_hwloop_testing) return;
+    if (!s_hwloop_testing) {
+        return;
+    }
 
     int16_t *samples = (int16_t *)p_buf;
-    uint32_t sample_cnt = buf_len / 2;  // 16-bit mono or stereo interleaved
-
-    uint8_t mode = s_hwloop_mode;
+    uint32_t sample_cnt = buf_len / 2U;
     bool is_stereo_adc = (s_adc_ctx.chan == TUYA_AUDIO_ADC_CHANNEL_LR);
 
-    for (uint32_t i = 0; i < sample_cnt; i++) {
-        if (is_stereo_adc) {
-            // 立体声采集：L/R 交替
-            if (i % 2 == 0) {
-                if (s_hwloop_cap_idx_L < HWLOOP_REF_SAMPLES * 4)
-                    s_hwloop_cap_L[s_hwloop_cap_idx_L++] = samples[i];
-                if (s_hwloop_cap_idx_R < HWLOOP_REF_SAMPLES * 4)
-                    s_hwloop_cap_R[s_hwloop_cap_idx_R++] = samples[i + 1];
+    if (is_stereo_adc) {
+        uint32_t pairs = sample_cnt / 2U;
+
+        for (uint32_t i = 0; i < pairs; i++) {
+            if (s_hwloop_cap_idx_L < HWLOOP_REF_SAMPLES * 4) {
+                s_hwloop_cap_L[s_hwloop_cap_idx_L++] = samples[i * 2U];
             }
-        } else {
-            // 单声道采集
-            if (mode == HWLOOP_MODE_MIC3 && s_hwloop_stereo_dac) {
-                // MIC3 立体声 DAC 测试：数据同时存入 L/R 缓冲区以便对比
-                if (s_hwloop_cap_idx_L < HWLOOP_REF_SAMPLES * 4)
-                    s_hwloop_cap_L[s_hwloop_cap_idx_L++] = samples[i];
-                if (s_hwloop_cap_idx_R < HWLOOP_REF_SAMPLES * 4)
-                    s_hwloop_cap_R[s_hwloop_cap_idx_R++] = samples[i];
-            } else if (mode == HWLOOP_MODE_RIGHT) {
-                // 右声道单声道：存入 cap_R，与 hwloop_compare_test 的 need_right 对齐
-                if (s_hwloop_cap_idx_R < HWLOOP_REF_SAMPLES * 4)
-                    s_hwloop_cap_R[s_hwloop_cap_idx_R++] = samples[i];
-            } else {
-                // 普通单声道（左/MIC3）
-                if (s_hwloop_cap_idx_L < HWLOOP_REF_SAMPLES * 4)
-                    s_hwloop_cap_L[s_hwloop_cap_idx_L++] = samples[i];
+            if (s_hwloop_cap_idx_R < HWLOOP_REF_SAMPLES * 4) {
+                s_hwloop_cap_R[s_hwloop_cap_idx_R++] = samples[i * 2U + 1U];
+            }
+        }
+    } else {
+        for (uint32_t i = 0; i < sample_cnt; i++) {
+            if (s_hwloop_cap_idx_L < HWLOOP_REF_SAMPLES * 4) {
+                s_hwloop_cap_L[s_hwloop_cap_idx_L++] = samples[i];
             }
         }
     }
@@ -637,8 +771,7 @@ static OPERATE_RET test_adc_init(uint32_t port, uint32_t chan, uint32_t sample_r
     TKL_AUD_ADC_CFG_T cfg;
     uint32_t chan_num;
 
-    if (port >= TUYA_AUDIO_ADC_PORT_MAX || chan >= TUYA_AUDIO_ADC_CHANNEL_MAX ||
-        sample_rate == 0U || frame_time_ms == 0U || gain > 0x3FU) {
+    if (port >= TUYA_AUDIO_ADC_PORT_MAX || sample_rate == 0U || frame_time_ms == 0U || gain > 0x3FU) {
         return OPRT_INVALID_PARM;
     }
 
@@ -772,18 +905,15 @@ static OPERATE_RET test_adc_loop_stop(void)
 }
 static inline bool dac_is_stereo_for_mode(uint8_t mode)
 {
-    return (mode == HWLOOP_MODE_STEREO ||
-            mode == HWLOOP_MODE_STEREO_DIFF ||
-            mode == HWLOOP_MODE_MIC3_STEREO);
+    return (mode == HWLOOP_MODE_STEREO || mode == HWLOOP_MODE_STEREO_DIFF);
 }
 /* -------------------------------------------------------------------------- */
 /*           Hardware loop compare test (modes 0~3) with energy check         */
 /* -------------------------------------------------------------------------- */
 static OPERATE_RET hwloop_compare_test(uint8_t mode)
 {
-    hwloop_gen_ref();
+    hwloop_gen_ref_for_mode(mode);
     s_hwloop_mode = mode;
-    s_hwloop_stereo_dac = false;
 
     s_hwloop_cap_idx_L = 0;
     s_hwloop_cap_idx_R = 0;
@@ -795,9 +925,11 @@ static OPERATE_RET hwloop_compare_test(uint8_t mode)
     if (mode == HWLOOP_MODE_LEFT) {
         adc_chan = TUYA_AUDIO_ADC_CHANNEL_L;
     } else if (mode == HWLOOP_MODE_RIGHT) {
-        adc_chan = TUYA_AUDIO_ADC_CHANNEL_R;
+        /* BK7259 V2: MIC2 only works in 3-ch [ref,mic1,mic2] frame; use LR not R-only */
+        adc_chan = TUYA_AUDIO_ADC_CHANNEL_LR;
     } else if (mode == HWLOOP_MODE_MIC3) {
         adc_chan = TUYA_AUDIO_ADC_CHANNEL_MIC3;
+        tkl_log_output("MIC3 test: ADC ref lane + mono DAC SPK1\r\n");
     } else {
         adc_chan = TUYA_AUDIO_ADC_CHANNEL_LR;
     }
@@ -812,16 +944,24 @@ static OPERATE_RET hwloop_compare_test(uint8_t mode)
 
     s_adc_ctx.loop_on = false;
 
-    /* DAC 初始化 */
+    /* DAC: SPK2 only routes via PORT_0 stereo DAC R-ch on this board */
     bool stereo = dac_is_stereo_for_mode(mode);
+
+    if (mode == HWLOOP_MODE_RIGHT) {
+        stereo = true;
+        tkl_log_output("RIGHT test: ADC LR + diff-DAC L/R pair, judge MIC2\r\n");
+    } else if (mode == HWLOOP_MODE_LEFT || mode == HWLOOP_MODE_MIC3) {
+        stereo = false;
+    }
+
     if (!stereo) {
-        ret = test_adc_dac_init_start(ADC_TEST_DEFAULT_DAC_PORT,
+        ret = test_adc_dac_init_start(ADC_TEST_DAC_PORT_SPK1,
                                       ADC_TEST_DEFAULT_SAMPLE_RATE,
                                       ADC_TEST_DEFAULT_FRAME_TIME_MS,
                                       ADC_TEST_DEFAULT_DAC_VOLUME,
                                       s_adc_ctx.frame_size);
     } else {
-        ret = hwloop_dac_init_start(ADC_TEST_DEFAULT_DAC_PORT,
+        ret = hwloop_dac_init_start(ADC_TEST_DAC_PORT_SPK1,
                                     ADC_TEST_DEFAULT_SAMPLE_RATE,
                                     ADC_TEST_DEFAULT_FRAME_TIME_MS,
                                     ADC_TEST_DEFAULT_DAC_VOLUME);
@@ -844,14 +984,9 @@ static OPERATE_RET hwloop_compare_test(uint8_t mode)
                     ref_idx++;
                 }
             } else {
-                int16_t *p = (int16_t *)dac_buf;
-                for (uint32_t i = 0; i < dac_frame_samples; i++) {
-                    p[i * 2]     = s_hwloop_ref[ref_idx % HWLOOP_REF_SAMPLES];
-                    p[i * 2 + 1] = s_hwloop_ref_R[ref_idx % HWLOOP_REF_SAMPLES];
-                    ref_idx++;
-                }
+                hwloop_fill_stereo_frame((int16_t *)dac_buf, dac_frame_samples, &ref_idx);
             }
-            tkl_aud_dac_write(s_adc_ctx.dac_port, dac_buf, dac_frame_bytes);
+            (void)hwloop_dac_write_retry(s_adc_ctx.dac_port, dac_buf, dac_frame_bytes);
             tal_system_sleep(ADC_TEST_DEFAULT_FRAME_TIME_MS);
         }
         tal_free(dac_buf);
@@ -868,60 +1003,63 @@ static OPERATE_RET hwloop_compare_test(uint8_t mode)
 
     /* ---- 打印参考和采集数据 ---- */
     uint32_t dump_cnt = 32;
-    tkl_log_output("[HWLOOP MODE %u] REF: ", mode);
+    tkl_log_output("[HWLOOP MODE %u] REF_L: ", mode);
     for (uint32_t i = 0; i < dump_cnt && i < HWLOOP_REF_SAMPLES; i++) {
         tkl_log_output("%d ", s_hwloop_ref[i]);
     }
     tkl_log_output("\r\n");
+    if (mode == HWLOOP_MODE_STEREO || mode == HWLOOP_MODE_RIGHT) {
+        tkl_log_output("REF_R: ");
+        for (uint32_t i = 0; i < dump_cnt && i < HWLOOP_REF_SAMPLES; i++) {
+            tkl_log_output("%d ", s_hwloop_ref_R[i]);
+        }
+        tkl_log_output("\r\n");
+    }
 
     bool need_left = (mode == HWLOOP_MODE_LEFT || mode == HWLOOP_MODE_STEREO || mode == HWLOOP_MODE_MIC3);
     bool need_right = (mode == HWLOOP_MODE_RIGHT || mode == HWLOOP_MODE_STEREO);
     if (need_left) {
-        tkl_log_output("CAP_L: ");
-        for (uint32_t i = 0; i < dump_cnt && i < s_hwloop_cap_idx_L; i++) {
-            tkl_log_output("%d ", s_hwloop_cap_L[i]);
-        }
-        tkl_log_output("\r\n");
+        hwloop_log_dump_tail("CAP_L", s_hwloop_cap_L, s_hwloop_cap_idx_L);
     }
     if (need_right) {
-        tkl_log_output("CAP_R: ");
-        for (uint32_t i = 0; i < dump_cnt && i < s_hwloop_cap_idx_R; i++) {
-            tkl_log_output("%d ", s_hwloop_cap_R[i]);
-        }
-        tkl_log_output("\r\n");
+        hwloop_log_dump_tail("CAP_R", s_hwloop_cap_R, s_hwloop_cap_idx_R);
     }
 
-    /* ---- 能量检测 ---- */
-    const double min_rms = 100.0;
-    double rms_L = 0, rms_R = 0;
+    /* ---- 能量检测（尾段，与相关性窗口一致） ---- */
+    int32_t peak_L = 0;
+    int32_t peak_R = 0;
+    int32_t corr_L_pct = -100;
+    int32_t corr_R_pct = -100;
+    bool pass_L = false;
+    bool pass_R = false;
+
     if (need_left) {
-        rms_L = calc_rms(s_hwloop_cap_L, s_hwloop_cap_idx_L > HWLOOP_REF_SAMPLES ? HWLOOP_REF_SAMPLES : s_hwloop_cap_idx_L);
-        tkl_log_output("CAP_L RMS: %.1f\r\n", rms_L);
+        pass_L = hwloop_eval_channel(s_hwloop_ref, s_hwloop_cap_L, s_hwloop_cap_idx_L,
+                                     &peak_L, &corr_L_pct);
+        tkl_log_output("CAP_L peak=%d corr=%d%%\r\n", peak_L, corr_L_pct);
     }
     if (need_right) {
-        rms_R = calc_rms(s_hwloop_cap_R, s_hwloop_cap_idx_R > HWLOOP_REF_SAMPLES ? HWLOOP_REF_SAMPLES : s_hwloop_cap_idx_R);
-        tkl_log_output("CAP_R RMS: %.1f\r\n", rms_R);
+        const int16_t *ref_R = (mode == HWLOOP_MODE_STEREO || mode == HWLOOP_MODE_RIGHT) ?
+                               s_hwloop_ref_R : s_hwloop_ref;
+
+        pass_R = hwloop_eval_channel(ref_R, s_hwloop_cap_R, s_hwloop_cap_idx_R,
+                                     &peak_R, &corr_R_pct);
+        tkl_log_output("CAP_R peak=%d corr=%d%%\r\n", peak_R, corr_R_pct);
     }
 
-    /* ---- 相关性计算与最终判决 ---- */
-    float corr_L = -1.0f, corr_R = -1.0f;
-    if (need_left && rms_L >= min_rms) {
-        corr_L = hwloop_calc_correlation(s_hwloop_ref, s_hwloop_cap_L, s_hwloop_cap_idx_L);
-    }
-    if (need_right && rms_R >= min_rms) {
-        corr_R = hwloop_calc_correlation(s_hwloop_ref, s_hwloop_cap_R, s_hwloop_cap_idx_R);
-    }
-
-    const float threshold = 0.8f;
     bool pass = false;
-    if (mode == HWLOOP_MODE_LEFT && corr_L >= threshold) {
+    if (mode == HWLOOP_MODE_LEFT && pass_L) {
         pass = true;
-    } else if (mode == HWLOOP_MODE_RIGHT && corr_R >= threshold) {
+    } else if (mode == HWLOOP_MODE_RIGHT && pass_R) {
         pass = true;
-    } else if (mode == HWLOOP_MODE_MIC3 && corr_L >= threshold) {
+    } else if (mode == HWLOOP_MODE_MIC3 && pass_L) {
         pass = true;
-    } else if (mode == HWLOOP_MODE_STEREO && corr_L >= threshold && corr_R >= threshold) {
+    } else if (mode == HWLOOP_MODE_STEREO && pass_L && pass_R) {
         pass = true;
+    }
+
+    if (mode == HWLOOP_MODE_STEREO) {
+        tkl_log_output("STEREO result L=%s R=%s\r\n", pass_L ? "PASS" : "FAIL", pass_R ? "PASS" : "FAIL");
     }
 
     return pass ? OPRT_OK : OPRT_COM_ERROR;
@@ -946,7 +1084,6 @@ static OPERATE_RET do_stereo_diff_loopback(bool *pass_mic1, bool *pass_mic2)
 
     hwloop_gen_ref_pair();
     s_hwloop_mode = HWLOOP_MODE_STEREO_DIFF;
-    s_hwloop_stereo_dac = false;
 
     s_hwloop_cap_idx_L = 0;
     s_hwloop_cap_idx_R = 0;
@@ -967,7 +1104,7 @@ static OPERATE_RET do_stereo_diff_loopback(bool *pass_mic1, bool *pass_mic2)
     }
 
     s_adc_ctx.loop_on = false;
-    ret = hwloop_dac_init_start(ADC_TEST_DEFAULT_DAC_PORT,
+    ret = hwloop_dac_init_start(ADC_TEST_DAC_PORT_SPK1,
                                 ADC_TEST_DEFAULT_SAMPLE_RATE,
                                 ADC_TEST_DEFAULT_FRAME_TIME_MS,
                                 ADC_TEST_DEFAULT_DAC_VOLUME);
@@ -985,13 +1122,8 @@ static OPERATE_RET do_stereo_diff_loopback(bool *pass_mic1, bool *pass_mic2)
     if (dac_buf != NULL) {
         uint32_t ref_idx = 0;
         for (int f = 0; f < 100; f++) {   // 100 帧 = 2 秒
-            int16_t *p = (int16_t *)dac_buf;
-            for (uint32_t i = 0; i < dac_frame_samples; i++) {
-                p[i * 2]     = s_hwloop_ref[ref_idx % HWLOOP_REF_SAMPLES];
-                p[i * 2 + 1] = s_hwloop_ref_R[ref_idx % HWLOOP_REF_SAMPLES];
-                ref_idx++;
-            }
-            tkl_aud_dac_write(s_adc_ctx.dac_port, dac_buf, dac_frame_bytes);
+            hwloop_fill_stereo_frame((int16_t *)dac_buf, dac_frame_samples, &ref_idx);
+            (void)hwloop_dac_write_retry(s_adc_ctx.dac_port, dac_buf, dac_frame_bytes);
             tal_system_sleep(ADC_TEST_DEFAULT_FRAME_TIME_MS);
         }
         tal_free(dac_buf);
@@ -1015,46 +1147,36 @@ static OPERATE_RET do_stereo_diff_loopback(bool *pass_mic1, bool *pass_mic2)
     for (uint32_t i = 0; i < dump_cnt && i < HWLOOP_REF_SAMPLES; i++) {
         tkl_log_output("%d ", s_hwloop_ref_R[i]);
     }
-    tkl_log_output("\r\nCAP_L: ");
-    for (uint32_t i = 0; i < dump_cnt && i < s_hwloop_cap_idx_L; i++) {
-        tkl_log_output("%d ", s_hwloop_cap_L[i]);
-    }
-    tkl_log_output("\r\nCAP_R: ");
-    for (uint32_t i = 0; i < dump_cnt && i < s_hwloop_cap_idx_R; i++) {
-        tkl_log_output("%d ", s_hwloop_cap_R[i]);
-    }
-    tkl_log_output("\r\n");
+    hwloop_log_dump_tail("CAP_L", s_hwloop_cap_L, s_hwloop_cap_idx_L);
+    hwloop_log_dump_tail("CAP_R", s_hwloop_cap_R, s_hwloop_cap_idx_R);
 
     /* ---- 能量 / 相关性检测 ---- */
-    const double min_rms = 100.0;
-    double rms_L = calc_rms(s_hwloop_cap_L, s_hwloop_cap_idx_L > HWLOOP_REF_SAMPLES ? HWLOOP_REF_SAMPLES : s_hwloop_cap_idx_L);
-    double rms_R = calc_rms(s_hwloop_cap_R, s_hwloop_cap_idx_R > HWLOOP_REF_SAMPLES ? HWLOOP_REF_SAMPLES : s_hwloop_cap_idx_R);
-    tkl_log_output("CAP_L RMS: %.1f, CAP_R RMS: %.1f\r\n", rms_L, rms_R);
+    int32_t peak_L = 0;
+    int32_t peak_R = 0;
+    int32_t corr_L_pct = -100;
+    int32_t corr_R_pct = -100;
 
-    float corr_L = (rms_L >= min_rms) ? hwloop_calc_correlation(s_hwloop_ref, s_hwloop_cap_L, s_hwloop_cap_idx_L) : -1.0f;
-    float corr_R = (rms_R >= min_rms) ? hwloop_calc_correlation(s_hwloop_ref_R, s_hwloop_cap_R, s_hwloop_cap_idx_R) : -1.0f;
-
-    const float threshold = 0.8f;
-    *pass_mic1 = (corr_L >= threshold);
-    *pass_mic2 = (corr_R >= threshold);
+    *pass_mic1 = hwloop_eval_channel(s_hwloop_ref, s_hwloop_cap_L, s_hwloop_cap_idx_L,
+                                     &peak_L, &corr_L_pct);
+    *pass_mic2 = hwloop_eval_channel(s_hwloop_ref_R, s_hwloop_cap_R, s_hwloop_cap_idx_R,
+                                     &peak_R, &corr_R_pct);
+    tkl_log_output("DIFF MIC1 peak=%d corr=%d%% MIC2 peak=%d corr=%d%%\r\n",
+                   peak_L, corr_L_pct, peak_R, corr_R_pct);
 
     return (*pass_mic1 && *pass_mic2) ? OPRT_OK : OPRT_COM_ERROR;
 }
 
 /* -------------------------------------------------------------------------- */
-/*   MIC3 loopback test using stereo DAC with energy check                    */
+/*   MIC3 (AEC ref) loopback test via mono DAC SPK1                           */
 /* -------------------------------------------------------------------------- */
 static OPERATE_RET do_mic3_stereo_dac_loopback(bool *pass_mic3)
 {
     if (pass_mic3 == NULL) return OPRT_INVALID_PARM;
     *pass_mic3 = false;
 
-    hwloop_gen_ref();                         // 使用单声道参考
-    /* 因为用立体声 DAC 播放同一信号，将 s_hwloop_ref 复制到 R 通道 */
-    memcpy(s_hwloop_ref_R, s_hwloop_ref, sizeof(s_hwloop_ref_R));
+    hwloop_gen_ref();
 
     s_hwloop_mode = HWLOOP_MODE_MIC3_STEREO;
-    s_hwloop_stereo_dac = true;
 
     s_hwloop_cap_idx_L = 0;
     s_hwloop_ref_play_idx_L = 0;
@@ -1073,10 +1195,11 @@ static OPERATE_RET do_mic3_stereo_dac_loopback(bool *pass_mic3)
     }
 
     s_adc_ctx.loop_on = false;
-    ret = hwloop_dac_init_start(ADC_TEST_DEFAULT_DAC_PORT,
-                                ADC_TEST_DEFAULT_SAMPLE_RATE,
-                                ADC_TEST_DEFAULT_FRAME_TIME_MS,
-                                ADC_TEST_DEFAULT_DAC_VOLUME);
+    ret = test_adc_dac_init_start(ADC_TEST_DAC_PORT_SPK1,
+                                  ADC_TEST_DEFAULT_SAMPLE_RATE,
+                                  ADC_TEST_DEFAULT_FRAME_TIME_MS,
+                                  ADC_TEST_DEFAULT_DAC_VOLUME,
+                                  s_adc_ctx.frame_size);
     if (ret != OPRT_OK) {
         test_adc_stop();
         test_adc_deinit();
@@ -1084,20 +1207,19 @@ static OPERATE_RET do_mic3_stereo_dac_loopback(bool *pass_mic3)
     }
     s_adc_ctx.dac_started = true;
 
-    /* ---------- 主动写入 2s 立体声参考（左右相同） ---------- */
+    /* ---------- Play 2s mono reference on SPK1 ---------- */
     const uint32_t dac_frame_samples = (ADC_TEST_DEFAULT_SAMPLE_RATE * ADC_TEST_DEFAULT_FRAME_TIME_MS) / 1000;
-    const uint32_t dac_frame_bytes = dac_frame_samples * 2 * 2;  // 立体声
+    const uint32_t dac_frame_bytes = dac_frame_samples * 2;
     uint8_t *dac_buf = (uint8_t *)tal_malloc(dac_frame_bytes);
     if (dac_buf != NULL) {
         uint32_t ref_idx = 0;
-        for (int f = 0; f < 100; f++) {   // 100 帧 = 2 秒
+        for (int f = 0; f < 100; f++) {
             int16_t *p = (int16_t *)dac_buf;
             for (uint32_t i = 0; i < dac_frame_samples; i++) {
-                p[i * 2]     = s_hwloop_ref[ref_idx % HWLOOP_REF_SAMPLES];
-                p[i * 2 + 1] = s_hwloop_ref_R[ref_idx % HWLOOP_REF_SAMPLES];
+                p[i] = s_hwloop_ref[ref_idx % HWLOOP_REF_SAMPLES];
                 ref_idx++;
             }
-            tkl_aud_dac_write(s_adc_ctx.dac_port, dac_buf, dac_frame_bytes);
+            (void)hwloop_dac_write_retry(s_adc_ctx.dac_port, dac_buf, dac_frame_bytes);
             tal_system_sleep(ADC_TEST_DEFAULT_FRAME_TIME_MS);
         }
         tal_free(dac_buf);
@@ -1107,35 +1229,25 @@ static OPERATE_RET do_mic3_stereo_dac_loopback(bool *pass_mic3)
     /* ----------------------------------------------------------- */
 
     s_hwloop_testing = false;
-    s_hwloop_stereo_dac = false;
     test_adc_dac_deinit();
     test_adc_stop();
     test_adc_deinit();
 
-    /* ---- 打印数据 ---- */
+    /* ---- Print capture data ---- */
     uint32_t dump_cnt = 32;
-    tkl_log_output("[HWLOOP MIC3 STEREO] REF: ");
+    tkl_log_output("[HWLOOP MIC3 AEC] REF: ");
     for (uint32_t i = 0; i < dump_cnt && i < HWLOOP_REF_SAMPLES; i++) {
         tkl_log_output("%d ", s_hwloop_ref[i]);
     }
-    tkl_log_output("\r\nCAP_L: ");
-    for (uint32_t i = 0; i < dump_cnt && i < s_hwloop_cap_idx_L; i++) {
-        tkl_log_output("%d ", s_hwloop_cap_L[i]);
-    }
-    tkl_log_output("\r\n");
-    tkl_log_output("\r\nCAP_R: ");
-    for (uint32_t i = 0; i < dump_cnt && i < s_hwloop_cap_idx_L; i++) {   // 注意：此处原代码用的 s_hwloop_cap_idx_L 打印两个缓冲区，保持
-        tkl_log_output("%d ", s_hwloop_cap_R[i]);
-    }
-    tkl_log_output("\r\n");
+    hwloop_log_dump_tail("CAP_REF", s_hwloop_cap_L, s_hwloop_cap_idx_L);
 
     /* ---- 能量 / 相关性检测 ---- */
-    const double min_rms = 100.0;
-    double rms = calc_rms(s_hwloop_cap_L, s_hwloop_cap_idx_L > HWLOOP_REF_SAMPLES ? HWLOOP_REF_SAMPLES : s_hwloop_cap_idx_L);
-    tkl_log_output("CAP_L RMS: %.1f\r\n", rms);
+    int32_t peak = 0;
+    int32_t corr_pct = -100;
 
-    float corr = (rms >= min_rms) ? hwloop_calc_correlation(s_hwloop_ref, s_hwloop_cap_L, s_hwloop_cap_idx_L) : -1.0f;
-    *pass_mic3 = (corr >= 0.8f);
+    *pass_mic3 = hwloop_eval_channel(s_hwloop_ref, s_hwloop_cap_L, s_hwloop_cap_idx_L,
+                                     &peak, &corr_pct);
+    tkl_log_output("MIC3(AEC) peak=%d corr=%d%%\r\n", peak, corr_pct);
 
     return (*pass_mic3) ? OPRT_OK : OPRT_COM_ERROR;
 }
@@ -1181,6 +1293,102 @@ static OPERATE_RET do_all_mic_loopback(char **json_out)
     return all_pass ? OPRT_OK : OPRT_COM_ERROR;
 }
 
+/**
+ * @brief Allocate standard product-test JSON reply
+ * @param[in] pass TRUE for {\"ret\":true}
+ * @param[out] ret_data reply buffer
+ * @param[out] ret_len reply length
+ * @return OPRT_OK on success
+ */
+STATIC OPERATE_RET __pt_reply_bool(bool pass, UCHAR_T **ret_data, USHORT_T *ret_len)
+{
+    const char *json_str = pass ? "{\"ret\":true}" : "{\"ret\":false}";
+    size_t json_len = strlen(json_str);
+    UCHAR_T *p = NULL;
+
+    if ((ret_data == NULL) || (ret_len == NULL)) {
+        return OPRT_INVALID_PARM;
+    }
+
+    p = (UCHAR_T *)tal_malloc(json_len + 1U);
+    if (p == NULL) {
+        return OPRT_MALLOC_FAILED;
+    }
+    memcpy(p, json_str, json_len);
+    p[json_len] = '\0';
+    *ret_data = p;
+    *ret_len = (USHORT_T)json_len;
+    return OPRT_OK;
+}
+
+/**
+ * @brief Parse audio loopback mode from 1-byte payload or JSON testItem string
+ * @param[in] in input payload (raw JSON from host or single mode byte)
+ * @param[in] inlen input length
+ * @param[out] mode hardware loopback mode
+ * @return OPRT_OK on success
+ */
+STATIC OPERATE_RET __pt_audio_parse_mode(const UCHAR_T *in, UINT_T inlen, uint8_t *mode)
+{
+    CHAR_T json_buf[128];
+    const CHAR_T *item_key = NULL;
+    const CHAR_T *val = NULL;
+
+    if (mode == NULL) {
+        return OPRT_INVALID_PARM;
+    }
+
+    if ((in == NULL) || (inlen == 0U)) {
+        *mode = HWLOOP_MODE_STEREO;
+        return OPRT_OK;
+    }
+
+    /* Legacy: host sends mode as single byte */
+    if ((inlen == 1U) && (in[0] <= HWLOOP_MODE_MIC3_STEREO)) {
+        *mode = in[0];
+        return OPRT_OK;
+    }
+
+    if (inlen >= sizeof(json_buf)) {
+        return OPRT_INVALID_PARM;
+    }
+
+    memcpy(json_buf, in, inlen);
+    json_buf[inlen] = '\0';
+
+    /* Product test JSON: {"testItem":"SPK1MIC1_LP"} */
+    item_key = strstr(json_buf, "\"testItem\"");
+    if (item_key == NULL) {
+        return OPRT_INVALID_PARM;
+    }
+
+    val = strchr(item_key, ':');
+    if (val == NULL) {
+        return OPRT_INVALID_PARM;
+    }
+    val = strchr(val, '"');
+    if (val == NULL) {
+        return OPRT_INVALID_PARM;
+    }
+    val++;
+
+    if (strncmp(val, "SPK1MIC1_LP", strlen("SPK1MIC1_LP")) == 0) {
+        *mode = TKL_MFTEST_HWLOOP_MIC1_SPK1;
+        return OPRT_OK;
+    }
+    if (strncmp(val, "SPK2MIC2_LP", strlen("SPK2MIC2_LP")) == 0) {
+        *mode = TKL_MFTEST_HWLOOP_MIC2_SPK2;
+        return OPRT_OK;
+    }
+    if (strncmp(val, "SPK3MIC3_REF", strlen("SPK3MIC3_REF")) == 0) {
+        *mode = TKL_MFTEST_HWLOOP_MIC3_AEC;
+        return OPRT_OK;
+    }
+
+    bk_printf("mftest: unknown audio testItem: %s\r\n", val);
+    return OPRT_INVALID_PARM;
+}
+
 /* -------------------------------------------------------------------------- */
 /*                   Public manufacturing test dispatch                       */
 /* -------------------------------------------------------------------------- */
@@ -1197,96 +1405,53 @@ OPERATE_RET tkl_mftest_ctrl(USHORT_T cmd, UCHAR_T *in, UINT_T inlen,
     switch (cmd) {
     case TKL_AUDIO_TEST_START_CMD: {
         uint8_t mode = HWLOOP_MODE_STEREO;
-        if (in != NULL && inlen >= 1) {
-            mode = in[0];
+        OPERATE_RET parse_ret = __pt_audio_parse_mode(in, inlen, &mode);
+
+        if (parse_ret != OPRT_OK) {
+            return __pt_reply_bool(false, out, outlen);
         }
 
         /* Handle new modes */
         if (mode == HWLOOP_MODE_STEREO_DIFF) {
-            bool mic1_pass = false, mic2_pass = false;
+            bool mic1_pass = false;
+            bool mic2_pass = false;
             OPERATE_RET ret = do_stereo_diff_loopback(&mic1_pass, &mic2_pass);
+
             if (ret != OPRT_OK && ret != OPRT_COM_ERROR) {
                 return ret;
             }
-            bool overall_pass = (ret == OPRT_OK);
-            const char *json_fmt = "{\"ret\":%s,\"data\":{\"mic1\":%s,\"mic2\":%s}}";
-            static char out_json[128];
-            snprintf(out_json, sizeof(out_json), json_fmt,
-                     overall_pass ? "true" : "false",
-                     mic1_pass ? "true" : "false",
-                     mic2_pass ? "true" : "false");
-            size_t len = strlen(out_json);
-            UCHAR_T *p = (UCHAR_T *)tal_malloc(len);
-            if (p == NULL) return OPRT_MALLOC_FAILED;
-            memcpy(p, out_json, len);
-            *out = p;
-            *outlen = (USHORT_T)len;
-            return OPRT_OK;
+            return __pt_reply_bool((ret == OPRT_OK), out, outlen);
         } else if (mode == HWLOOP_MODE_MIC3_STEREO) {
             bool mic3_pass = false;
             OPERATE_RET ret = do_mic3_stereo_dac_loopback(&mic3_pass);
+
             if (ret != OPRT_OK && ret != OPRT_COM_ERROR) {
                 return ret;
             }
-            bool overall_pass = (ret == OPRT_OK);
-            const char *json_fmt = "{\"ret\":%s,\"data\":{\"mic3\":%s}}";
-            static char out_json[64];
-            snprintf(out_json, sizeof(out_json), json_fmt,
-                     overall_pass ? "true" : "false",
-                     mic3_pass ? "true" : "false");
-            size_t len = strlen(out_json);
-            UCHAR_T *p = (UCHAR_T *)tal_malloc(len);
-            if (p == NULL) return OPRT_MALLOC_FAILED;
-            memcpy(p, out_json, len);
-            *out = p;
-            *outlen = (USHORT_T)len;
-            return OPRT_OK;
-        } else if (mode == 6) {
+            return __pt_reply_bool((ret == OPRT_OK), out, outlen);
+        } else if (mode == 6U) {
             char *json_str = NULL;
             OPERATE_RET ret = do_all_mic_loopback(&json_str);
+            bool pass = false;
+
             if (ret == OPRT_MALLOC_FAILED || json_str == NULL) {
                 return ret;
             }
-            size_t len = strlen(json_str);
-            *out = (UCHAR_T *)json_str;
-            *outlen = (USHORT_T)len;
-            return OPRT_OK;
+            pass = (ret == OPRT_OK);
+            tal_free(json_str);
+            return __pt_reply_bool(pass, out, outlen);
         }
 
-        /* Original modes 0~3 */
+        /* Original modes 0~3: MIC1/SPK1, MIC2/SPK2, stereo, MIC3/AEC */
         if (mode > HWLOOP_MODE_MIC3) {
             mode = HWLOOP_MODE_STEREO;
         }
-        OPERATE_RET ret = hwloop_compare_test(mode);
-        const char *json_str = NULL;
-        if (ret == OPRT_OK) {
-            static const char k_pass[] = "{\"ret\":true,\"data\":\"Loopback_Pass\"}";
-            json_str = k_pass;
-        } else {
-            static const char k_err_left[]   = "{\"ret\":false,\"errcode\":500001,\"errMsg\":\"MIC1 No signal\"}";
-            static const char k_err_right[]  = "{\"ret\":false,\"errcode\":500002,\"errMsg\":\"MIC2 No signal\"}";
-            static const char k_err_stereo[] = "{\"ret\":false,\"errcode\":500003,\"errMsg\":\"Stereo loopback failed\"}";
-            static const char k_err_mic3[]   = "{\"ret\":false,\"errcode\":500004,\"errMsg\":\"AEC MIC3 No signal\"}";
-            switch (mode) {
-                case HWLOOP_MODE_LEFT:   json_str = k_err_left;   break;
-                case HWLOOP_MODE_RIGHT:  json_str = k_err_right;  break;
-                case HWLOOP_MODE_STEREO: json_str = k_err_stereo; break;
-                case HWLOOP_MODE_MIC3:   json_str = k_err_mic3;   break;
-                default:                 json_str = k_err_stereo; break;
-            }
+        {
+            OPERATE_RET ret = hwloop_compare_test(mode);
+            bool pass = (ret == OPRT_OK);
+
+            return __pt_reply_bool(pass, out, outlen);
         }
-        size_t json_len = strlen(json_str);
-        if (out == NULL || outlen == NULL) {
-            return OPRT_INVALID_PARM;
-        }
-        UCHAR_T *p = (UCHAR_T *)tal_malloc(json_len);
-        if (p == NULL) {
-            return OPRT_MALLOC_FAILED;
-        }
-        memcpy(p, json_str, json_len);
-        *out = p;
-        *outlen = (USHORT_T)json_len;
-        return OPRT_OK;
     }
 
     case TKL_AUDIO_TEST_STOP_CMD:
@@ -1343,7 +1508,7 @@ VOID tkl_mftest_auto_run(VOID)
 
     // 模式 5 - MIC3 立体声 DAC
     (void)do_mic3_stereo_dac_loopback(&mic3_pass);
-    tkl_log_output("MFT mode 5 (MIC3 Stereo): %s\r\n", mic3_pass ? "PASS" : "FAIL");
+    tkl_log_output("MFT mode 5 (MIC3 AEC): %s\r\n", mic3_pass ? "PASS" : "FAIL");
 
     // 模式 6 实际就是 4+5 的联合，已在上面执行，可直接用上面结果
     bool all_pass = pass[0] && pass[1] && pass[2] && pass[3] &&
@@ -1373,6 +1538,7 @@ static uint32_t test_adc_channel_count(TUYA_AUDIO_ADC_CHAN_E chan)
     switch (chan) {
         case TUYA_AUDIO_ADC_CHANNEL_L:
         case TUYA_AUDIO_ADC_CHANNEL_R:
+        case TUYA_AUDIO_ADC_CHANNEL_MIC3:
             return 1U;
         case TUYA_AUDIO_ADC_CHANNEL_LR:
             return 2U;
