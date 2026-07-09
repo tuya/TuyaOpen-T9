@@ -39,6 +39,13 @@ menu "DSI LCD"
 		bool "Enable LCD_JD9855_MIPI_320x385 API"
 		default n
 
+	# Modified by TUYA Start
+	config LCD_JD9165T_MIPI_1024x600
+		depends on LCD_DSI
+		bool "Enable LCD_JD9165T_MIPI_1024x600 API"
+		default n
+	# Modified by TUYA End
+
 	config LCD_ST7701SN_MIPI_360x640
 		depends on LCD_DSI
 		bool "Enable LCD_ST7701SN_MIPI_360x640 API"
