@@ -25,6 +25,9 @@ typedef enum {
     TKL_ADC_TEST_CMD             = 0x0008,
 } TKL_MFTEST_CMD_E;
 
+//! Í¨ÓÃÍ¸´«
+#define TKL_PLATFORM_BOOL_TEST_CMD        (0xFF03)
+
 #define AEC_TEST_INIT       0x74757961      // tuya
 #define AEC_TEST_START      0x74757962
 #define AEC_TEST_RUNNING    0x74757962
