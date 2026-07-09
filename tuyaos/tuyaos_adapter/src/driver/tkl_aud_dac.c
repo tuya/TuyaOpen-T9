@@ -53,8 +53,85 @@ dma_id_t test_dma_id = DMA_ID_MAX;
 #if CONFIG_AUD_DRIVER_V2
 #define TKL_AUD_DAC_DMA_SOURCE      AUD_DAC_SOURCE_A2DP
 #define TKL_AUD_DAC_DMA_CH          (0U)
+#define TKL_AUD_DAC_DIG_GAIN_DB_MIN (-7.0f)   /* OEM DEFAULT_AUD_DAC_CONFIG dig_gain */
+
+typedef struct {
+    float dig_db;
+    int32_t ana_db;
+} tkl_aud_dac_gain_db_t;
+
+/**
+ * @brief Clamp user volume to 0..100
+ * @param[in] volume user volume
+ * @return clamped volume
+ */
+static UINT32_T __tkl_aud_dac_clamp_volume(UINT32_T volume)
+{
+    if (volume > 100U) {
+        return 100U;
+    }
+    return volume;
+}
+
+/**
+ * @brief Map user volume 0..100 to OEM DAC dig/ana gain in dB
+ * @param[in] volume user volume, 0=mute
+ * @return dig_db in [-7,+12], ana_db in [0,7]
+ */
+static tkl_aud_dac_gain_db_t __tkl_aud_dac_volume_to_gain_db(UINT32_T volume)
+{
+    tkl_aud_dac_gain_db_t out = {0};
+    UINT32_T vol;
+
+    if (volume == 0U) {
+        out.dig_db = BK_AUD_DAC_DIG_GAIN_DB_SILENCE;
+        out.ana_db = 0;
+        return out;
+    }
+
+    vol = __tkl_aud_dac_clamp_volume(volume);
+    out.dig_db = TKL_AUD_DAC_DIG_GAIN_DB_MIN +
+                 ((float)(vol - 1U) * (BK_AUD_DAC_DIG_GAIN_DB_MAX - TKL_AUD_DAC_DIG_GAIN_DB_MIN)) / 99.0f;
+    if (out.dig_db > BK_AUD_DAC_DIG_GAIN_DB_MAX) {
+        out.dig_db = BK_AUD_DAC_DIG_GAIN_DB_MAX;
+    }
+    out.ana_db = (int32_t)((vol * (UINT32_T)BK_AUD_DAC_ANA_GAIN_DB_MAX) / 100U);
+    if (out.ana_db > BK_AUD_DAC_ANA_GAIN_DB_MAX) {
+        out.ana_db = BK_AUD_DAC_ANA_GAIN_DB_MAX;
+    }
+    return out;
+}
+
+/**
+ * @brief Apply user volume via OEM dB gain APIs (V2)
+ * @param[in] volume user volume 0..100
+ * @return OPRT_OK on success
+ */
+static OPERATE_RET __tkl_aud_dac_apply_v2_volume(UINT32_T volume)
+{
+    tkl_aud_dac_gain_db_t gain = __tkl_aud_dac_volume_to_gain_db(volume);
+
+    if (volume == 0U) {
+        bk_aud_dac_mute();
+    } else {
+        bk_aud_dac_unmute();
+        if (bk_aud_dac_set_dig_gain_db(gain.dig_db) != BK_OK) {
+            TKL_DAC_LOG("set dac dig gain fail\n");
+            return OPRT_COM_ERROR;
+        }
+        if (bk_aud_dac_set_ana_gain_db(gain.ana_db) != BK_OK) {
+            TKL_DAC_LOG("set dac ana gain fail\n");
+            return OPRT_COM_ERROR;
+        }
+    }
+
+    gl_dac_ctx->cfg.volume = (uint8_t)__tkl_aud_dac_clamp_volume(volume);
+    bk_printf("dac volume user=%u dig=%.1fdB ana=%ddB\r\n", volume, gain.dig_db, gain.ana_db);
+    return OPRT_OK;
+}
 #endif
 
+#if !CONFIG_AUD_DRIVER_V2
 static uint8_t __tkl_aud_dac_map_volume_to_gain(uint32_t volume)
 {
     if (volume > 100) {
@@ -69,6 +146,7 @@ static uint8_t __tkl_aud_dac_map_volume_to_gain(uint32_t volume)
 
     return (uint8_t)(volume * 0x3F / 100);
 }
+#endif
 /* ---------------------- DMA ISR -------------------------------------------- */
 
 static void __tkl_aud_dac_dma_finish_isr(void)
@@ -297,21 +375,27 @@ OPERATE_RET tkl_aud_dac_init(TUYA_AUDIO_DAC_PORT_E port, TKL_AUD_DAC_CFG_T *conf
     aud_dac_cfg.samp_rate = config->sample_rate;
     aud_dac_cfg.dac_gain = __tkl_aud_dac_map_volume_to_gain(config->volume);
 #elif CONFIG_AUD_DRIVER_V2
-    aud_dac_cfg.sample_rate = config->sample_rate;
-    aud_dac_cfg.bits = config->sample_bits;
-    aud_dac_cfg.ana_gain = __tkl_aud_dac_map_volume_to_gain(config->volume);
+    {
+        tkl_aud_dac_gain_db_t gain = __tkl_aud_dac_volume_to_gain_db(config->volume);
+
+        aud_dac_cfg.sample_rate = config->sample_rate;
+        aud_dac_cfg.bits = config->sample_bits;
+        aud_dac_cfg.dig_gain = gain.dig_db;
+        aud_dac_cfg.ana_gain = gain.ana_db;
+    }
 #endif
     aud_dac_cfg.work_mode = AUD_DAC_WORK_MODE_DIFFEN;
     aud_dac_cfg.clk_src = AUD_CLK_APLL;
 
-    bk_printf("dac init, sample_rate %d, sample_bits %d, dac_cfg.sample_rate %d, dac_cfg.bits %d, dac_cfg.ana_gain %d\n",
-              config->sample_rate, config->sample_bits, aud_dac_cfg.sample_rate, aud_dac_cfg.bits, aud_dac_cfg.ana_gain);
+    bk_printf("dac init, sample_rate %d, sample_bits %d, dac_cfg.sample_rate %d, dac_cfg.bits %d\r\n",
+              config->sample_rate, config->sample_bits, aud_dac_cfg.sample_rate, aud_dac_cfg.bits);
 #if CONFIG_AUD_DRIVER_V1
     TKL_DAC_LOG("dac config, chl %d, vol 0x%02x, samp_rate: %d\n",
                  aud_dac_cfg.dac_chl, aud_dac_cfg.dac_gain, aud_dac_cfg.samp_rate);
 #elif CONFIG_AUD_DRIVER_V2
-    bk_printf("dac config, sample_rate %d, bits %d\n",
-                 aud_dac_cfg.sample_rate, aud_dac_cfg.bits);
+    bk_printf("dac config, sample_rate %d, bits %d, dig=%.1fdB ana=%ddB\r\n",
+              aud_dac_cfg.sample_rate, aud_dac_cfg.bits,
+              aud_dac_cfg.dig_gain, aud_dac_cfg.ana_gain);
 #endif
 
     /*
@@ -589,11 +673,8 @@ OPERATE_RET tkl_aud_dac_stop(TUYA_AUDIO_DAC_PORT_E port)
 /**
  * @brief Update the DAC output volume.
  * @param[in] port DAC output port. This parameter is ignored on T5.
- * @param[in] volume Logical volume value in the range `0x00` to `0x3F`.
+ * @param[in] volume User volume 0..100 (0=mute)
  * @return OPRT_OK on success, other error codes on failure.
- * @note The input volume is remapped to a non-linear hardware gain curve
- *       before calling the underlying DAC gain API.
- * @note A volume value of `0` mutes the DAC output. Non-zero values unmute it.
  */
 OPERATE_RET tkl_aud_dac_set_volume(TUYA_AUDIO_DAC_PORT_E port, UINT32_T volume)
 {
@@ -608,6 +689,9 @@ OPERATE_RET tkl_aud_dac_set_volume(TUYA_AUDIO_DAC_PORT_E port, UINT32_T volume)
         return OPRT_COM_ERROR;
     }
 
+#if CONFIG_AUD_DRIVER_V2
+    return __tkl_aud_dac_apply_v2_volume(volume);
+#else
     uint32_t input_volume = volume;
     uint32_t hw_gain = __tkl_aud_dac_map_volume_to_gain(volume);
 
@@ -619,21 +703,15 @@ OPERATE_RET tkl_aud_dac_set_volume(TUYA_AUDIO_DAC_PORT_E port, UINT32_T volume)
         bk_aud_dac_unmute();
     }
 
-#if CONFIG_AUD_DRIVER_V1
     if (bk_aud_dac_set_dig_gain(hw_gain) != BK_OK) {
         TKL_DAC_LOG("set dac gain fail\n");
         return OPRT_COM_ERROR;
     }
-#elif CONFIG_AUD_DRIVER_V2
-    if (bk_aud_dac_set_ana_gain(hw_gain) != BK_OK) {
-        TKL_DAC_LOG("set dac analog gain fail\n");
-        return OPRT_COM_ERROR;
-    }
-#endif
 
     gl_dac_ctx->cfg.volume = (uint8_t)(input_volume > 100 ? 100 : input_volume);
 
     return OPRT_OK;
+#endif
 }
 
 /**
