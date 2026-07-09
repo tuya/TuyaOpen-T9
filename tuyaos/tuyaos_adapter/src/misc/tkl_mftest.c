@@ -35,6 +35,7 @@
  * --------------------------------------------------------------------------- */
 #define MFTEST_MIPI_LOOPBACK_SEL_PIN    GPIO_27
 #define PT_ADC_JSON_BUF_SIZE            160U
+#define PT_JSON_BUF_SIZE                160U
 
 static uint32_t mf_test_idVendor = 0xFFFFFFFF;
 static uint32_t mf_test_idProduct = 0xFFFFFFFF;
@@ -1389,6 +1390,118 @@ STATIC OPERATE_RET __pt_audio_parse_mode(const UCHAR_T *in, UINT_T inlen, uint8_
     return OPRT_INVALID_PARM;
 }
 
+/**
+ * @brief Extract testItem string from product-test JSON payload
+ * @param[in] in JSON payload, e.g. {"testItem":"ADC_10"}
+ * @param[in] inlen payload length in bytes
+ * @param[out] item output buffer for testItem value
+ * @param[in] item_size size of @p item buffer
+ * @return OPRT_OK on success, OPRT_INVALID_PARM on parse failure
+ */
+STATIC OPERATE_RET __pt_parse_test_item(const UCHAR_T *in, UINT_T inlen, CHAR_T *item, UINT_T item_size)
+{
+    CHAR_T json_buf[PT_JSON_BUF_SIZE];
+    const CHAR_T *key = NULL;
+    const CHAR_T *val_start = NULL;
+    const CHAR_T *p = NULL;
+    UINT_T copy_len = 0U;
+
+    if ((item == NULL) || (item_size == 0U)) {
+        return OPRT_INVALID_PARM;
+    }
+    item[0] = '\0';
+
+    if ((in == NULL) || (inlen == 0U)) {
+        return OPRT_INVALID_PARM;
+    }
+    if (inlen >= PT_JSON_BUF_SIZE) {
+        return OPRT_INVALID_PARM;
+    }
+
+    memcpy(json_buf, in, inlen);
+    json_buf[inlen] = '\0';
+
+    key = strstr(json_buf, "\"testItem\"");
+    if (key == NULL) {
+        return OPRT_INVALID_PARM;
+    }
+
+    p = strchr(key, ':');
+    if (p == NULL) {
+        return OPRT_INVALID_PARM;
+    }
+    p++;
+    while ((*p == ' ') || (*p == '\t')) {
+        p++;
+    }
+    if (*p != '"') {
+        return OPRT_INVALID_PARM;
+    }
+    p++;
+    val_start = p;
+    while ((*p != '\0') && (*p != '"')) {
+        p++;
+    }
+    if (*p != '"') {
+        return OPRT_INVALID_PARM;
+    }
+
+    copy_len = (UINT_T)(p - val_start);
+    if ((copy_len == 0U) || (copy_len >= item_size)) {
+        return OPRT_INVALID_PARM;
+    }
+    memcpy(item, val_start, copy_len);
+    item[copy_len] = '\0';
+    return OPRT_OK;
+}
+
+OPERATE_RET tkl_mftest_ctrl(USHORT_T cmd, UCHAR_T *in, UINT_T inlen, UCHAR_T **out, USHORT_T *outlen);
+
+/**
+ * @brief Dispatch MF_BOOL_TEST JSON to concrete platform test command
+ * @param[in] in JSON payload with testItem field
+ * @param[in] inlen payload length in bytes
+ * @param[out] out optional heap buffer for JSON reply
+ * @param[out] outlen output length when @p out is set
+ * @return OPRT_OK on dispatch success
+ */
+STATIC OPERATE_RET __pt_platform_bool_test(UCHAR_T *in, UINT_T inlen, UCHAR_T **out, USHORT_T *outlen)
+{
+    CHAR_T test_item[64];
+    USHORT_T sub_cmd = 0U;
+    OPERATE_RET ret;
+
+    ret = __pt_parse_test_item(in, inlen, test_item, sizeof(test_item));
+    if (ret != OPRT_OK) {
+        return ret;
+    }
+
+    bk_printf("mftest bool test, testItem=%s\r\n", test_item);
+
+    if (strcmp(test_item, "usb") == 0) {
+        sub_cmd = TKL_USB_INFO_TEST_CMD;
+    } else if ((strcmp(test_item, "audioStart") == 0) ||
+               (strcmp(test_item, "readresult") == 0)) {
+        return __pt_reply_bool(true, out, outlen);
+    } else if (strcmp(test_item, "MIPI_CN1") == 0) {
+        sub_cmd = TKL_MIPICN1_TEST_CMD;
+    } else if (strcmp(test_item, "MIPI_CN2") == 0) {
+        sub_cmd = TKL_MIPICN2_TEST_CMD;
+    } else if ((strcmp(test_item, "ADC") == 0) ||
+               (strncmp(test_item, "ADC_", 4) == 0)) {
+        sub_cmd = TKL_ADC_TEST_CMD;
+    } else if ((strcmp(test_item, "SPK1MIC1_LP") == 0) ||
+               (strcmp(test_item, "SPK2MIC2_LP") == 0) ||
+               (strcmp(test_item, "SPK3MIC3_REF") == 0)) {
+        sub_cmd = TKL_AUDIO_TEST_START_CMD;
+    } else {
+        bk_printf("mftest: unknown bool testItem: %s\r\n", test_item);
+        return OPRT_NOT_SUPPORTED;
+    }
+
+    return tkl_mftest_ctrl(sub_cmd, in, inlen, out, outlen);
+}
+
 /* -------------------------------------------------------------------------- */
 /*                   Public manufacturing test dispatch                       */
 /* -------------------------------------------------------------------------- */
@@ -1472,6 +1585,9 @@ OPERATE_RET tkl_mftest_ctrl(USHORT_T cmd, UCHAR_T *in, UINT_T inlen,
 
     case TKL_ADC_TEST_CMD:
         return __pt_adc_test(cmd, in, inlen, out, outlen);
+
+    case TKL_PLATFORM_BOOL_TEST_CMD:
+        return __pt_platform_bool_test(in, inlen, out, outlen);
 
     default:
         return OPRT_NOT_SUPPORTED;

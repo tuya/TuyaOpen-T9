@@ -23,6 +23,7 @@ typedef enum {
     TKL_MIPICN1_TEST_CMD         = 0x0006,
     TKL_MIPICN2_TEST_CMD         = 0x0007,
     TKL_ADC_TEST_CMD             = 0x0008,
+    TKL_PLATFORM_BOOL_TEST_CMD   = 0x00FF,
 } TKL_MFTEST_CMD_E;
 
 #define AEC_TEST_INIT       0x74757961      // tuya
