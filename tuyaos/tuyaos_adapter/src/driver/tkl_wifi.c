@@ -981,6 +981,20 @@ OPERATE_RET tkl_wifi_scan_ap(CONST SCHAR_T *ssid, AP_IF_S **ap_ary, UINT_T *num)
 }
 
 /**
+ * @brief Scan APs on a specified channel.
+ *
+ * @param[in]       ssid        the specific ssid, NULL means scan all ap
+ * @param[in]       channel     the specified channel, 0 means scan all channel
+ * @param[out]      ap_ary      ap info array
+ * @param[out]      num         the num of ap_ary
+ * @return OPRT_NOT_SUPPORTED until a per-channel scan is wired to the chip SDK.
+ */
+OPERATE_RET tkl_wifi_scan_ap_channel(CONST SCHAR_T *ssid, CONST UCHAR_T channel, AP_IF_S **ap_ary, UINT_T *num)
+{
+    return OPRT_NOT_SUPPORTED;
+}
+
+/**
  * @brief Release scan results allocated by tkl_wifi_scan_ap().
  * @param[in] ap scan result pointer
  * @return OPRT_OK on success, error code on failure

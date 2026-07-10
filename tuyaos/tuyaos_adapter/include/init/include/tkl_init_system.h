@@ -46,6 +46,7 @@ typedef struct {
     TUYA_RESET_REASON_E (*get_reset_reason)        (CHAR_T** describe);
     VOID                (*sleep)                    (CONST UINT_T num_ms);
     OPERATE_RET         (*cpu_sleep_mode_set)       (BOOL_T enable, TUYA_CPU_SLEEP_MODE_E mode);
+    OPERATE_RET         (*cpu_sleep_time_set)       (CONST UINT_T num_ms);
     OPERATE_RET         (*get_cpu_info)             (TUYA_CPU_INFO_T **cpu_ary, INT_T *cpu_cnt);
     //! output     
     VOID_T              (*log_output)               (CONST CHAR_T *log, ...);
@@ -173,4 +174,5 @@ TKL_FS_T* tkl_fs_desc_get(VOID_T);
 #endif
 
 #endif // __TKL_INIT_SYSTEM_H__
+
 

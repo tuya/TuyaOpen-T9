@@ -20,8 +20,8 @@ typedef struct
 
 // total: 800000
 // Name     Begin       End         Length
-// boot     0x0         0x11000     68k
-// cp       0x11000     0x143000    1224k
+// boot     0x0         0x10000     64k
+// cp       0x10000     0x143000    1228k
 // ap       0x143000    0x4EA000    3740k
 // ota      0x4EA000    0x7C9000    2940k
 // otam     0x7C9000    0x7CB000    8k
@@ -39,7 +39,7 @@ typedef struct
 
 
 #define APPLICATION_START               0x10000
-#define APPLICATION_SIZE                ((1224 + 3740 + 2940)* 1024)
+#define APPLICATION_SIZE                ((1228 + 3740 + 2940)* 1024)
 
 #define OTA_START                       0x7C9000
 #define OTA_SIZE                        (8 * 1024)

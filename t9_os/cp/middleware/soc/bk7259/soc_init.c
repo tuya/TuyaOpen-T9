@@ -118,8 +118,12 @@ void _soc_start(void)
 #endif
 
 #if CONFIG_DCACHE
-    SCB_EnableDCache();
-    SCB_CleanInvalidateDCache();
+    /* Discard any stale L1/L2 lines left by a warm reset, then enable through the
+     * L1+L2 cache abstraction (arch_dcache_* branch on CONFIG_L2_CACHE_ENABLE).
+     * Invalidate-only: a clean here could write stale L2 lines back over the
+     * freshly relocated .data/.iram and corrupt them. Matches the AP boot path. */
+    arch_dcache_invd_all();
+    arch_dcache_enable();
 #endif
 
     core_init();
@@ -145,7 +149,9 @@ void _soc_start(void)
 	__DSB();
 	flush_dcache((void *)&bk_sys_sw_regs_ptr()->flash_init_done, sizeof(bk_sys_sw_regs_ptr()->flash_init_done));
 	__DSB();
-	bk_start_ap_system();
+	if (bk_start_ap_system() != BK_OK) {
+		BK_LOGE(TAG, "start ap system failed\r\n");
+	}
 #endif
 
     entry_main();
@@ -241,7 +247,7 @@ void enable_dcache(int enable)
 
 #if CONFIG_DEEP_LV
 /* Direct AON GPIO register access: GPIO_20 -> JTAG_TCK(SWCLK), GPIO_21 -> JTAG_TMS(SWDIO).
- * Equivalent to gpio_dev_unprotect_map(GPIO_20, GPIO_DEV_JTAG_TCK) and gpio_dev_unprotect_map(GPIO_21, GPIO_DEV_JTAG_TMS).
+ * Equivalent to gpio_dev_unprotect_map(GPIO_20, GPIO_DEV_SWCLK) and gpio_dev_unprotect_map(GPIO_21, GPIO_DEV_SWDIO).
  * gpio_fun_sel is in cfg register bit[24:31], FUNC_CODE_SWCLK=30, FUNC_CODE_SWDIO=31.
  */
 #include "soc/reg_base.h"
@@ -260,6 +266,8 @@ static inline void early_jtag_gpio_map(void)
 }
 uint32_t  g_debug_jtag_enable = 1;
 #endif
+extern void bk_wdt_force_feed(void);
+
 void dlv_hook(void)
 {
 #if CONFIG_DEEP_LV

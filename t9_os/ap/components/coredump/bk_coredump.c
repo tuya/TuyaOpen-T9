@@ -7,11 +7,13 @@
 #include "os/mem.h"
 #include "reg_base.h"
 #include "bk_rtos_debug.h"
+#include <driver/aon_rtc.h>
 #include "multicore_driver.h"
 #include "mb_ipc_cmd.h"
 #include "sys_sw_regs.h"
 #include "memory.h"
 #include "cache.h"
+#include <components/log.h>
 
 #if CONFIG_SUPPORT_WWDT
 #include <driver/wwdt.h>
@@ -38,6 +40,11 @@ static inline void coredump_feed_watchdogs(void)
 #if CONFIG_SUPPORT_WWDT
     bk_wwdt_force_feed();
 #endif
+}
+
+void bk_coredump_dump_time(uint64_t time_us)
+{
+    BK_DUMP_OUT("@Dump-time(AON-RTC): %llu us\r\n", (unsigned long long)time_us);
 }
 
 bool bk_check_assert(void)
@@ -91,8 +98,11 @@ static void bk_exception_preprocess(bk_exception_t *self)
 
     coredump_feed_watchdogs();
     bk_misc_set_reset_reason(self->reset_reason);
-    
-    bk_set_printf_sync(true);  // set printf sync
+
+    bk_set_printf_sync(true);
+#if CONFIG_SHELL_ASYNCLOG
+    BK_LOG_FLUSH();
+#endif
 }
 
 // print fault type
@@ -333,6 +343,7 @@ static void bk_exception_dump_main(bk_exception_t *self)
     bk_coredump_writer_init();
 
     bk_coredump_meta_info();
+    bk_coredump_dump_time(self->exception_time_us);
 
     bk_coredump_registers(self);
 
@@ -374,6 +385,10 @@ static void bk_exception_postprocess(bk_exception_t *self)
 
 void bk_exception_handler(uint32_t reset_reason, uint32_t lr, uint32_t sp)
 {
+    /* Capture the AON-RTC time first, so it reflects the exception moment as
+     * closely as possible (before peer-core stop / wdt feed in preprocess). */
+    uint64_t exception_time_us = bk_aon_rtc_get_us();
+
     if (bk_check_assert()) {
         reset_reason = RESET_SOURCE_CRASH_ASSERT;
     }
@@ -388,6 +403,7 @@ void bk_exception_handler(uint32_t reset_reason, uint32_t lr, uint32_t sp)
         .basepri = __get_BASEPRI(),
         .faultmask = __get_FAULTMASK(),
         .control = __get_CONTROL(),
+        .exception_time_us = exception_time_us,
     };
     bk_exception_preprocess(&exception);
 #if CONFIG_DEBUG_VERSION || CONFIG_DUMP_ENABLE

@@ -73,6 +73,9 @@ OPERATE_RET tkl_cpu_sleep_mode_set(BOOL_T enable, TUYA_CPU_SLEEP_MODE_E mode);
 
 
 
+OPERATE_RET tkl_cpu_sleep_time_set(CONST UINT32_T sleep_ms);
+
+
 #ifdef __cplusplus
 }
 #endif

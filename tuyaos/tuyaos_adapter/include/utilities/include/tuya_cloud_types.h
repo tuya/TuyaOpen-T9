@@ -260,17 +260,63 @@ typedef struct {
 
 #define IPADDR4_FMT           "%d.%d.%d.%d"
 #define IPADDR4_PR(__addr)    (UINT8_T)((__addr)->ipaddr4 >> 24), (UINT8_T)((__addr)->ipaddr4 >> 16), (UINT8_T)((__addr)->ipaddr4 >> 8), (__addr)->ipaddr4 & 0xFF
+#define TUYA_IP_ADDR_SET_TYPE(addr, t)   do { (addr).type = (t); } while (0)
+#define TUYA_IP_ADDR_GET_TYPE(addr)      (((addr).type == 0) ? TY_AF_INET : (addr).type)
+#define TUYA_IP_ADDR_GET_IP4(addr)       ((addr).ipaddr4)
+#define TUYA_IP_ADDR_SET_IP4(addr, v)   do { (addr).ipaddr4 = (v); } while (0)
+#define TUYA_IP_ADDR_IS_ANY(addr)       ((addr).u_addr.ip6[0] == 0 && (addr).u_addr.ip6[1] == 0 && \
+                                         (addr).u_addr.ip6[2] == 0 && (addr).u_addr.ip6[3] == 0)
+#define TY_IPADDR_ANY          ((TUYA_IP_ADDR_T){ .u_addr = { .ip4 = 0 }, .type = TY_AF_INET })
+#define TY_IPADDR_BROADCAST    ((TUYA_IP_ADDR_T){ .u_addr = { .ip4 = 0xffffffffUL }, .type = TY_AF_INET })
+#define TY_IPADDR_LOOPBACK     ((TUYA_IP_ADDR_T){ .u_addr = { .ip4 = 0x7f000001UL }, .type = TY_AF_INET })
+#define TY_IP6_ADDR_ANY        ((TUYA_IP_ADDR_T){ .type = TY_AF_INET6 })
+
+/* Portable TUYA_IP_ADDR_T / NW_IP_S helpers (keep component code free of ENABLE_IPv6) */
+#define TUYA_IP_ADDR_IS_IPV4(addr)       (TUYA_IP_ADDR_GET_TYPE(addr) == TY_AF_INET)
+#define TUYA_IP_ADDR_IS_IPV6(addr)       (TUYA_IP_ADDR_GET_TYPE(addr) == TY_AF_INET6)
+#define TUYA_IP_ADDR_IP4_EQ(a, b)        (TUYA_IP_ADDR_GET_IP4(a) == TUYA_IP_ADDR_GET_IP4(b))
+#define TUYA_IP_ADDR_IPV6_UADDR_EQ(a, b) \
+    (0 == memcmp(&(a).u_addr.ip6[0], &(b).u_addr.ip6[0], sizeof((a).u_addr.ip6)))
+#define NW_IP_S_IPV6_IP_STR(_nw)         ((CHAR_T *)(_nw)->addr.ip6.ip)
+#define TUYA_IP_ADDR_MAKE_IP4(val)       ((TUYA_IP_ADDR_T){ .u_addr = { .ip4 = (val) }, .type = TY_AF_INET })
+
 #else
 typedef struct
 {
+    #define nwipstr        ip
+    #define nwmaskstr      mask
+    #define nwgwstr        gw
     char ip[16];    /* ip addr:  xxx.xxx.xxx.xxx  */
     char mask[16];  /* net mask: xxx.xxx.xxx.xxx  */
     char gw[16];    /* gateway:  xxx.xxx.xxx.xxx  */
-    char dns[16];    /* dns server:  xxx.xxx.xxx.xxx  */
+    char dns[16];   /* dns server:  xxx.xxx.xxx.xxx  */
     BOOL_T dhcpen;  /* enable dhcp or not */
+    IP_ADDR_TYPE type;
 } NW_IP_S;
 /* tuyaos definition of IP addr */
 typedef UINT_T TUYA_IP_ADDR_T;
+
+#define IPADDR4_FMT           "%d.%d.%d.%d"
+#define IPADDR4_PR(__addr)    (UINT8_T)((*(__addr)) >> 24), (UINT8_T)((*(__addr)) >> 16), (UINT8_T)((*(__addr)) >> 8), (*(__addr)) & 0xFF
+#define TUYA_IP_ADDR_SET_TYPE(addr, t)   do { (void)(t); } while (0)
+#define TUYA_IP_ADDR_GET_TYPE(addr)      (TY_AF_INET)
+#define TUYA_IP_ADDR_GET_IP4(addr)       (addr)
+#define TUYA_IP_ADDR_SET_IP4(addr, v)   do { (addr) = (v); } while (0)
+#define TUYA_IP_ADDR_IS_ANY(addr)       ((addr) == 0)
+#define TY_IPADDR_ANY          ((TUYA_IP_ADDR_T)0x00000000UL)
+#define TY_IPADDR_BROADCAST    ((TUYA_IP_ADDR_T)0xffffffffUL)
+#define TY_IPADDR_LOOPBACK     ((TUYA_IP_ADDR_T)0x7f000001UL)
+#define TY_IP6_ADDR_ANY        ((TUYA_IP_ADDR_T)0)
+
+#define IS_NW_IPV4_ADDR(ip)              (TY_AF_INET == (ip)->type)
+#define IS_NW_IPV6_ADDR(ip)              (0)
+#define TUYA_IP_ADDR_IS_IPV4(addr)       (TUYA_IP_ADDR_GET_TYPE(addr) == TY_AF_INET)
+#define TUYA_IP_ADDR_IS_IPV6(addr)       (TUYA_IP_ADDR_GET_TYPE(addr) == TY_AF_INET6)
+#define TUYA_IP_ADDR_IP4_EQ(a, b)        (TUYA_IP_ADDR_GET_IP4(a) == TUYA_IP_ADDR_GET_IP4(b))
+#define TUYA_IP_ADDR_IPV6_UADDR_EQ(a, b) (0)
+#define NW_IP_S_IPV6_IP_STR(_nw)         ((CHAR_T *)(_nw)->ip)
+#define TUYA_IP_ADDR_MAKE_IP4(val)       ((TUYA_IP_ADDR_T)(val))
+
 #endif
 
 #define MAC_ADDR_LEN 6
@@ -1003,6 +1049,8 @@ typedef enum {
     TUYA_SPI_NUM_1,		    // SPI 1
     TUYA_SPI_NUM_2,	        // SPI 2
     TUYA_SPI_NUM_3,	        // SPI 3
+    TUYA_SPI_NUM_4,	        // SPI 4
+    TUYA_SPI_NUM_5,	        // SPI 5
     TUYA_SPI_NUM_MAX,
 } TUYA_SPI_NUM_E;
 
@@ -1648,6 +1696,8 @@ typedef enum {
     TUYA_AUDIO_ADC_CHANNEL_L,
     TUYA_AUDIO_ADC_CHANNEL_R,
     TUYA_AUDIO_ADC_CHANNEL_LR,
+    TUYA_AUDIO_ADC_CHANNEL_MIC3,   /**< AEC reference lane, index 0 in [ref,mic1,mic2] frame */
+    TUYA_AUDIO_ADC_CHANNEL_RAW3, /**< Full 3ch interleaved [ref,mic1,mic2] to upper_cb */
     TUYA_AUDIO_ADC_CHANNEL_MAX
 } TUYA_AUDIO_ADC_CHAN_E;
 
@@ -1861,14 +1911,21 @@ typedef enum {
     TUYA_NETIF_NUM
 } TUYA_NETIF_TYPE_E;
 
-/* tuyaos definition of IP addr */
-typedef UINT_T TUYA_IP_ADDR_T;
-
 /* MTD 接口类型枚举 */
 typedef enum {
     MTD_IF_SPI,        // 标准SPI接口
     MTD_IF_QSPI,       // Quad-SPI接口
 } MTD_INTERFACE_E;
+
+/* CELLULAR */
+typedef enum {
+    TUYA_CELLULAR_IF_USB = 0,
+    TUYA_CELLULAR_IF_UART,
+}TUYA_CELLULAR_IF_E;
+
+typedef enum {
+    TUYA_CELLULAR_PROTOCOL_PPP = 0,
+}TUYA_CELLULAR_PROTOCOL_E;
 
 /* tuyaos errorno */
 typedef INT_T TUYA_ERRNO;
@@ -1923,3 +1980,4 @@ typedef INT_T TUYA_ERRNO;
 #endif
 
 #endif // TUYA_CLOUD_TYPES_H
+

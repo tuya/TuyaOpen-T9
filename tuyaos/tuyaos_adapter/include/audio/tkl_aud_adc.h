@@ -47,10 +47,10 @@ typedef struct {
 *                    frame_size, vol, upper_aud_adc_cb
 *
 * @note This API allocates context, configures ADC hardware, DMA ring buffer,
-*       and registers flash operation notify handler. ADC always configures LR channel
-*       internally; mic_mode selects which mic is active. For single channel, DMA
-*       frame_size is doubled to capture interleaved L+R data, then L channel is
-*       extracted in ISR. Must be called before tkl_aud_adc_start.
+*       and registers flash operation notify handler. On BK7259 V2 the onboard
+*       frame layout is [ref, mic1, mic2]: CHANNEL_L/R/LR select mic1/mic2/both,
+*       CHANNEL_MIC3 selects the AEC reference lane (index 0). Must be called
+*       before tkl_aud_adc_start.
 *
 * @return OPRT_OK on success. Others on error, please refer to tuya_error_code.h
 */

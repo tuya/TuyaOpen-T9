@@ -381,16 +381,16 @@ class TuyaPackager:
         print_info(f"生成OTA文件 (模式: {ota_mode}, OTA分区大小: {ota_size})...")
 
         if ota_mode == "compress":
-            # 生成SMP OTA文件（使用仓库内 Python 脚本，避免预编译 create_ug_file 与宿主环境不兼容）
+            # Beken RBL：纯 RBL 写入 OTA 分区，无涂鸦包头（配合 tkl_ota 直写路径）
             cmd = [
                 'python3', self.tools['smp_ota'],
                 self.files['ua_bin'],
                 '-o', self.files['smp_ty_ota'],
-                '--total-size', '8024064',
                 '--ota-size', str(ota_size),
-                '--a-size', str(split_point),
-                '--gap-size', '524288',
-                '-m', '1'
+                '--armino-path', self.work_dir,
+                '--project-dir', self.tuya_app_demo_path,
+                '--soc', self.platform,
+                '-m', '1',
             ]
             if self.verbose:
                 cmd.append('-v')

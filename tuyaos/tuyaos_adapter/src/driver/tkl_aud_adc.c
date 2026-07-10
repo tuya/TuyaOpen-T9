@@ -16,6 +16,10 @@
 #include "tuya_cloud_types.h"
 #include "tkl_aud_adc.h"
 
+#ifndef TUYA_AUDIO_ADC_CHANNEL_MIC3
+#define TUYA_AUDIO_ADC_CHANNEL_MIC3   ((TUYA_AUDIO_ADC_CHAN_E)3)
+#endif
+
 extern void bk_printf(const char *fmt, ...);
 
 #define MODULE_LOG_HELPER(fmt, ...) \
@@ -37,11 +41,11 @@ extern void bk_printf(const char *fmt, ...);
 #define DMA_BUF_FRAME_CNT        (8)
 
 #if CONFIG_AUD_DRIVER_V2
-#define TKL_AUD_ADC_LOGICAL_GAIN_DB0       (0x2D)      /* 0 dB point */
-#define TKL_AUD_ADC_V2_DIG_GAIN_DB0_REG    (0x4000U)   /* unity gain */
-#define TKL_AUD_ADC_V2_DIG_GAIN_MAX        (0x1FFFFU)  /* 17-bit gain field */
-#define TKL_AUD_ADC_V2_DIG_GAIN_SAFE_MAX   (0x2AU)     /* -3 dB safety ceiling for speech headroom */
-#define TKL_AUD_ADC_V2_ANA_GAIN_DEFAULT    (0x07U)     /* SDK default analog preamp */
+#define TKL_AUD_ADC_LOGICAL_GAIN_DB0       (0x2D)      /* 0 dB point, matches OEM logical gain */
+#define TKL_AUD_ADC_V2_DIG_GAIN_DB0_REG    (0x4000U)   /* unity gain register */
+#define TKL_AUD_ADC_V2_DIG_GAIN_MAX          (0x1FFFFU)  /* 17-bit gain field */
+#define TKL_AUD_ADC_V2_DIG_GAIN_SAFE_MAX    (0x3FU)     /* +18 dB logical max, align OEM dig headroom */
+#define TKL_AUD_ADC_V2_ANA_GAIN_DB_DEFAULT   (20)        /* OEM DEFAULT_AUD_ADC_CONFIG ana_gain */
 #endif
 
 typedef struct {
@@ -83,6 +87,63 @@ static uint32_t __tkl_aud_adc_map_gain_to_dig_reg(uint32_t gain)
         reg = TKL_AUD_ADC_V2_DIG_GAIN_MAX;
     }
     return reg;
+}
+
+/**
+ * @brief Clamp logical ADC gain to valid range
+ * @param[in] gain logical gain 0..0x3F
+ * @return clamped logical gain
+ */
+static uint32_t __tkl_aud_adc_clamp_logical_gain(uint32_t gain)
+{
+    if (gain > TKL_AUD_ADC_V2_DIG_GAIN_SAFE_MAX) {
+        return TKL_AUD_ADC_V2_DIG_GAIN_SAFE_MAX;
+    }
+    return gain;
+}
+
+/**
+ * @brief Convert logical ADC gain to digital gain in dB (OEM convention)
+ * @param[in] logical_gain logical gain, 0x2D = 0 dB
+ * @return digital gain in dB
+ */
+static float __tkl_aud_adc_logical_to_dig_db(uint32_t logical_gain)
+{
+    return (float)((int32_t)logical_gain - (int32_t)TKL_AUD_ADC_LOGICAL_GAIN_DB0);
+}
+
+/**
+ * @brief Apply V2 digital/ana gain to active ADC channels via dB API
+ * @param[in] logical_gain logical digital gain
+ * @return OPRT_OK on success
+ */
+static OPERATE_RET __tkl_aud_adc_apply_v2_gain(uint32_t logical_gain)
+{
+    uint32_t apply_gain = __tkl_aud_adc_clamp_logical_gain(logical_gain);
+    float dig_db = __tkl_aud_adc_logical_to_dig_db(apply_gain);
+
+    if (dig_db > BK_AUD_ADC_DIG_GAIN_DB_MAX) {
+        dig_db = BK_AUD_ADC_DIG_GAIN_DB_MAX;
+    }
+
+    for (uint32_t ch = 0; ch < AUD_ADC_CHL_MAX; ch++) {
+        if (!(gl_adc_ctx->adc_ch_bitmap & (1U << ch))) {
+            continue;
+        }
+        if (bk_aud_adc_set_ana_gain_db((aud_adc_chl_t)ch, TKL_AUD_ADC_V2_ANA_GAIN_DB_DEFAULT) != BK_OK) {
+            TKL_AUD_ADC_LOG("set ana gain fail, ch=%u\n", ch);
+            return OPRT_COM_ERROR;
+        }
+        if (bk_aud_adc_set_dig_gain_db((aud_adc_chl_t)ch, dig_db) != BK_OK) {
+            TKL_AUD_ADC_LOG("set dig gain fail, ch=%u\n", ch);
+            return OPRT_COM_ERROR;
+        }
+    }
+
+    gl_adc_ctx->cfg.vol = (uint8_t)apply_gain;
+    TKL_AUD_ADC_LOG("adc gain apply logical=0x%02x dig_db=%.1f ana_db=%d\n",
+                    apply_gain, dig_db, TKL_AUD_ADC_V2_ANA_GAIN_DB_DEFAULT);
+    return OPRT_OK;
 }
 #endif
 
@@ -250,11 +311,20 @@ static void __tkl_aud_adc_dma_finish_isr(void)
          * Mixed 3ch layout from reference pipeline:
          * [ref, mic1, mic2, ref, mic1, mic2, ...]
          * For single-channel request:
-         *   L -> mic1
-         *   R -> mic2
+         *   MIC3 -> ref (AEC reference, index 0)
+         *   L    -> mic1
+         *   R    -> mic2
          */
         if (raw_ch_num == 3U) {
-            uint32_t mic_idx = (gl_adc_ctx->cfg.chan == TUYA_AUDIO_ADC_CHANNEL_R) ? 2U : 1U;
+            uint32_t mic_idx;
+
+            if (gl_adc_ctx->cfg.chan == TUYA_AUDIO_ADC_CHANNEL_MIC3) {
+                mic_idx = 0U;
+            } else if (gl_adc_ctx->cfg.chan == TUYA_AUDIO_ADC_CHANNEL_R) {
+                mic_idx = 2U;
+            } else {
+                mic_idx = 1U;
+            }
             for (uint32_t i = 0; i < frame_pts; i++) {
                 dst[i] = src[i * 3U + mic_idx];
             }
@@ -293,6 +363,14 @@ static void __tkl_aud_adc_dma_finish_isr(void)
                 dst[i] = src[2 * i + 1];
             }
         }
+        else if (gl_adc_ctx->cfg.chan == TUYA_AUDIO_ADC_CHANNEL_MIC3)
+        {
+            TKL_AUD_ADC_LOG("MIC3(AEC ref) not supported on V1 ADC, fallback to L\r\n");
+            for (uint32_t i = 0; i < samples; i++)
+            {
+                dst[i] = src[2 * i];
+            }
+        }
         else
         {
             // 默认左声道数据
@@ -307,7 +385,12 @@ static void __tkl_aud_adc_dma_finish_isr(void)
     else
     {
 #if CONFIG_AUD_DRIVER_V2
-        if (gl_adc_ctx->raw_ch_num == 3U) {
+        if ((gl_adc_ctx->raw_ch_num == 3U) && (gl_adc_ctx->chl_num == 3U)) {
+            gl_adc_ctx->cfg.upper_cb(TUYA_AUDIO_FRAME_EVENT_ADC_RX,
+                                     gl_adc_ctx->read_buf,
+                                     read_size,
+                                     gl_adc_ctx->cfg.args);
+        } else if (gl_adc_ctx->raw_ch_num == 3U) {
             int16_t *src = (int16_t *)gl_adc_ctx->read_buf;
             int16_t *dst = (int16_t *)gl_adc_ctx->output_buf;
             uint32_t frame_pts;
@@ -473,10 +556,10 @@ exit:
 *                    frame_size, vol, upper_aud_adc_cb
 *
 * @note This API allocates context, configures ADC hardware, DMA ring buffer,
-*       and registers flash operation notify handler. ADC always configures LR channel
-*       internally; mic_mode selects which mic is active. For single channel, DMA
-*       frame_size is doubled to capture interleaved L+R data, then L channel is
-*       extracted in ISR. Must be called before tkl_aud_adc_start.
+*       and registers flash operation notify handler. On BK7259 V2 the onboard
+*       frame layout is [ref, mic1, mic2]: CHANNEL_L/R/LR select mic1/mic2/both,
+*       CHANNEL_MIC3 selects the AEC reference lane (index 0). Must be called
+*       before tkl_aud_adc_start.
 *
 * @return OPRT_OK on success. Others on error, please refer to tuya_error_code.h
 */
@@ -498,7 +581,6 @@ OPERATE_RET tkl_aud_adc_init(TUYA_AUDIO_ADC_PORT_E port, TKL_AUD_ADC_CFG_T *conf
     uint8_t raw_ch_num = 2;
     aud_adc_config_t aud_adc_cfg = DEFAULT_AUD_ADC_CONFIG();
 #if CONFIG_AUD_DRIVER_V2
-    uint32_t hw_dig_gain = 0;
     uint32_t adc_ch_bitmap = (1U << AUD_ADC_CHL_0);
     aud_adc_mode_t adc_mode = AUD_ADC_MODE_SIGNAL_END;
 #else
@@ -535,6 +617,21 @@ OPERATE_RET tkl_aud_adc_init(TUYA_AUDIO_ADC_PORT_E port, TKL_AUD_ADC_CFG_T *conf
             chl_num = 2;
             raw_ch_num = 3;
             break;
+        case TUYA_AUDIO_ADC_CHANNEL_MIC3:
+            /* AEC ref lane: same 3ch DMA as LR, strip index 0 in ISR. */
+            adc_ch_bitmap = (1U << AUD_ADC_CHL_0) | (1U << AUD_ADC_CHL_1) | (1U << AUD_ADC_CHL_2);
+            adc_mode = AUD_ADC_MODE_DIFFEN;
+            chl_num = 1;
+            raw_ch_num = 3;
+            TKL_AUD_ADC_LOG("chan MIC3(AEC ref): 3ch DMA [ref,mic1,mic2], output ref lane\r\n");
+            break;
+        case TUYA_AUDIO_ADC_CHANNEL_RAW3:
+            /* Pass through full [ref,mic1,mic2] frame for dump/analysis. */
+            adc_ch_bitmap = (1U << AUD_ADC_CHL_0) | (1U << AUD_ADC_CHL_1) | (1U << AUD_ADC_CHL_2);
+            adc_mode = AUD_ADC_MODE_DIFFEN;
+            chl_num = 3;
+            raw_ch_num = 3;
+            break;
         default:
             TKL_AUD_ADC_LOG("chan %d not support\n", config->chan);
             goto __adc_init_exit;
@@ -543,6 +640,7 @@ OPERATE_RET tkl_aud_adc_init(TUYA_AUDIO_ADC_PORT_E port, TKL_AUD_ADC_CFG_T *conf
     switch (config->chan) {
         case TUYA_AUDIO_ADC_CHANNEL_L:
         case TUYA_AUDIO_ADC_CHANNEL_R:
+        case TUYA_AUDIO_ADC_CHANNEL_MIC3:
             /* V1 ADC always outputs LR interleaved data on one fifo bus. */
             chl_num = 1;
             break;
@@ -578,13 +676,12 @@ OPERATE_RET tkl_aud_adc_init(TUYA_AUDIO_ADC_PORT_E port, TKL_AUD_ADC_CFG_T *conf
 #endif
 
 #if CONFIG_AUD_DRIVER_V2
-    uint32_t apply_gain = config->vol;
-    if (apply_gain > TKL_AUD_ADC_V2_DIG_GAIN_SAFE_MAX) {
-        TKL_AUD_ADC_LOG("adc vol=%u too high, clamp to safe max=%u\n",
-                        config->vol, (unsigned int)TKL_AUD_ADC_V2_DIG_GAIN_SAFE_MAX);
-        apply_gain = TKL_AUD_ADC_V2_DIG_GAIN_SAFE_MAX;
+    uint32_t apply_gain = __tkl_aud_adc_clamp_logical_gain(config->vol);
+    float dig_db = __tkl_aud_adc_logical_to_dig_db(apply_gain);
+
+    if (dig_db > BK_AUD_ADC_DIG_GAIN_DB_MAX) {
+        dig_db = BK_AUD_ADC_DIG_GAIN_DB_MAX;
     }
-    hw_dig_gain = __tkl_aud_adc_map_gain_to_dig_reg(apply_gain);
     gl_adc_ctx->cfg.vol = (uint8_t)apply_gain;
     aud_adc_cfg.chl_num = raw_ch_num;
     aud_adc_cfg.adc_chl = AUD_ADC_CHL_0;
@@ -594,13 +691,13 @@ OPERATE_RET tkl_aud_adc_init(TUYA_AUDIO_ADC_PORT_E port, TKL_AUD_ADC_CFG_T *conf
         if (adc_ch_bitmap & (1U << ch)) {
             aud_adc_cfg.chl_cfg[ch].bits = config->sample_bits;
             aud_adc_cfg.chl_cfg[ch].adc_mode = adc_mode;
-            aud_adc_cfg.chl_cfg[ch].dig_gain = hw_dig_gain;
-            aud_adc_cfg.chl_cfg[ch].ana_gain = TKL_AUD_ADC_V2_ANA_GAIN_DEFAULT;
+            aud_adc_cfg.chl_cfg[ch].dig_gain = dig_db;
+            aud_adc_cfg.chl_cfg[ch].ana_gain = TKL_AUD_ADC_V2_ANA_GAIN_DB_DEFAULT;
         }
     }
-    TKL_AUD_ADC_LOG("adc config(v2): bitmap=0x%x chl_num=%u raw_ch=%u samp_rate=%u mode=%u vol_req=%u vol_apply=%u dig=0x%x ana=0x%x\n",
+    TKL_AUD_ADC_LOG("adc config(v2): bitmap=0x%x chl_num=%u raw_ch=%u samp_rate=%u mode=%u vol_req=%u vol_apply=%u dig_db=%.1f ana_db=%d\n",
                     adc_ch_bitmap, chl_num, raw_ch_num, aud_adc_cfg.sample_rate, adc_mode, config->vol, apply_gain,
-                    hw_dig_gain, (unsigned int)TKL_AUD_ADC_V2_ANA_GAIN_DEFAULT);
+                    dig_db, TKL_AUD_ADC_V2_ANA_GAIN_DB_DEFAULT);
 #else
     aud_adc_cfg.adc_chl = AUD_ADC_CHL_LR;
     aud_adc_cfg.samp_rate = config->sample_rate;
@@ -634,8 +731,9 @@ OPERATE_RET tkl_aud_adc_init(TUYA_AUDIO_ADC_PORT_E port, TKL_AUD_ADC_CFG_T *conf
             TKL_AUD_ADC_LOG("bk_aud_adc_set_mic_mode fail, ret=%d ch=%u mode=%d\n", ret, ch, adc_mode);
             goto __adc_init_exit;
         }
-        (void)bk_aud_adc_set_ana_gain((aud_adc_chl_t)ch, TKL_AUD_ADC_V2_ANA_GAIN_DEFAULT);
-        (void)bk_aud_adc_set_dig_gain((aud_adc_chl_t)ch, hw_dig_gain);
+    }
+    if (__tkl_aud_adc_apply_v2_gain(apply_gain) != OPRT_OK) {
+        goto __adc_init_exit;
     }
 #else
     ret = bk_aud_adc_set_mic_mode(mic_id, adc_mode);
@@ -773,37 +871,16 @@ OPERATE_RET tkl_aud_adc_set_vol(TUYA_AUDIO_ADC_PORT_E port, UINT32_T gain)
     }
 
 #if CONFIG_AUD_DRIVER_V2
-    uint32_t apply_gain = gain;
-    if (apply_gain > TKL_AUD_ADC_V2_DIG_GAIN_SAFE_MAX) {
-        TKL_AUD_ADC_LOG("set vol=%u too high, clamp to safe max=%u\n",
-                        gain, (unsigned int)TKL_AUD_ADC_V2_DIG_GAIN_SAFE_MAX);
-        apply_gain = TKL_AUD_ADC_V2_DIG_GAIN_SAFE_MAX;
-    }
-    uint32_t hw_dig_gain = __tkl_aud_adc_map_gain_to_dig_reg(apply_gain);
-    TKL_AUD_ADC_LOG("set vol req=%u apply=%u dig=0x%x\n", gain, apply_gain, hw_dig_gain);
-    for (uint32_t ch = 0; ch < AUD_ADC_CHL_MAX; ch++) {
-        if (!(gl_adc_ctx->adc_ch_bitmap & (1U << ch))) {
-            continue;
-        }
-        if (bk_aud_adc_set_dig_gain((aud_adc_chl_t)ch, hw_dig_gain) != BK_OK) {
-            TKL_AUD_ADC_LOG("set digital gain fail, ch=%u\n", ch);
-            return OPRT_COM_ERROR;
-        }
-    }
+    return __tkl_aud_adc_apply_v2_gain(gain);
 #else
     if (bk_aud_adc_set_gain(gain) != BK_OK) {
         TKL_AUD_ADC_LOG("set digital gain fail\n");
         return OPRT_COM_ERROR;
     }
-#endif
 
-#if CONFIG_AUD_DRIVER_V2
-    gl_adc_ctx->cfg.vol = (uint8_t)apply_gain;
-#else
     gl_adc_ctx->cfg.vol = (uint8_t)gain;
-#endif
-
     return OPRT_OK;
+#endif
 }
 
 /**
