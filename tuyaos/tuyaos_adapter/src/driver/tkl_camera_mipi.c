@@ -17,6 +17,8 @@ typedef struct {
     BOOL_T initialized;
     BOOL_T started;
     TUYA_CAMERA_MIPI_CFG_T cfg;
+    UINT16_T active_output_width;
+    UINT16_T active_output_height;
     VOID *isp_handle;
     bk_camera_bus_t *bus_handle;
     bk_camera_sensor_handle_t sensor_handle;
@@ -379,6 +381,52 @@ err_init:
     return ret;
 }
 
+static OPERATE_RET tkl_camera_mipi_output_validate(UINT16_T width, UINT16_T height)
+{
+    if (width == 0U || height == 0U) {
+        return OPRT_INVALID_PARM;
+    }
+
+    if (s_cam_ctx.initialized != TRUE) {
+        return OPRT_RESOURCE_NOT_READY;
+    }
+
+    if (width > s_cam_ctx.cfg.sensor_width || height > s_cam_ctx.cfg.sensor_height) {
+        tkl_log_output("ISP output %ux%u exceeds sensor %ux%u\r\n",
+                width, height,
+                s_cam_ctx.cfg.sensor_width,
+                s_cam_ctx.cfg.sensor_height);
+        return OPRT_INVALID_PARM;
+    }
+
+    return OPRT_OK;
+}
+
+/**
+ * @brief Set ISP output resolution (main path)
+ * @param[in] width ISP output width in pixels
+ * @param[in] height ISP output height in pixels
+ * @return OPRT_OK on success
+ */
+OPERATE_RET tkl_camera_mipi_set_output(UINT16_T width, UINT16_T height)
+{
+    OPERATE_RET ret;
+
+    if (s_cam_ctx.started == TRUE) {
+        tkl_log_output("set_output rejected: camera is started, stop first\r\n");
+        return OPRT_RESOURCE_NOT_READY;
+    }
+
+    ret = tkl_camera_mipi_output_validate(width, height);
+    if (ret != OPRT_OK) {
+        return ret;
+    }
+
+    s_cam_ctx.cfg.output_width = width;
+    s_cam_ctx.cfg.output_height = height;
+    return OPRT_OK;
+}
+
 OPERATE_RET tkl_camera_mipi_deinit(void)
 {
     if (s_cam_ctx.started == TRUE) {
@@ -409,6 +457,16 @@ OPERATE_RET tkl_camera_mipi_start(void)
 
     if (s_cam_ctx.started == TRUE) {
         return OPRT_OK;
+    }
+
+    if (s_cam_ctx.active_output_width != 0U &&
+        (s_cam_ctx.active_output_width != s_cam_ctx.cfg.output_width ||
+         s_cam_ctx.active_output_height != s_cam_ctx.cfg.output_height)) {
+        tkl_log_output("camera ISP output changed: %ux%u -> %ux%u\r\n",
+                s_cam_ctx.active_output_width,
+                s_cam_ctx.active_output_height,
+                s_cam_ctx.cfg.output_width,
+                s_cam_ctx.cfg.output_height);
     }
 
     tkl_camera_mipi_cleanup_handles();
@@ -479,7 +537,16 @@ OPERATE_RET tkl_camera_mipi_start(void)
         goto err_start;
     }
 
+    s_cam_ctx.active_output_width = s_cam_ctx.cfg.output_width;
+    s_cam_ctx.active_output_height = s_cam_ctx.cfg.output_height;
     s_cam_ctx.started = TRUE;
+    tkl_log_output("camera start ok, sensor=%ux%u@%u, isp_output=%ux%u fmt=%u\r\n",
+            s_cam_ctx.cfg.sensor_width,
+            s_cam_ctx.cfg.sensor_height,
+            s_cam_ctx.cfg.sensor_fps,
+            s_cam_ctx.cfg.output_width,
+            s_cam_ctx.cfg.output_height,
+            (unsigned int)s_cam_ctx.cfg.output_format);
     return OPRT_OK;
 
 err_start:

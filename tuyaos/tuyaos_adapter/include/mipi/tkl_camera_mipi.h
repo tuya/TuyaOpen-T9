@@ -77,6 +77,7 @@ OPERATE_RET tkl_camera_mipi_init(TUYA_CAMERA_MIPI_CFG_T *config);
 OPERATE_RET tkl_camera_mipi_deinit(void);
 OPERATE_RET tkl_camera_mipi_start(void);
 OPERATE_RET tkl_camera_mipi_stop(void);
+OPERATE_RET tkl_camera_mipi_set_output(UINT16_T width, UINT16_T height);
 OPERATE_RET tkl_camera_mipi_get_frame(TUYA_CAMERA_MIPI_FRAME_T *frame);
 OPERATE_RET tkl_camera_mipi_get_isp_handle(VOID **isp_handle);
 OPERATE_RET tkl_camera_mipi_get_flexa_source(TUYA_CAMERA_MIPI_FLEXA_SOURCE_T *source);

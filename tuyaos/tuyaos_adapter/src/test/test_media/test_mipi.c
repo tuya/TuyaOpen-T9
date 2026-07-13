@@ -1052,6 +1052,63 @@ static OPERATE_RET test_mipi_camera_mipi_stop(void)
     return OPRT_OK;
 }
 
+static OPERATE_RET test_mipi_camera_mipi_switch_output(uint16_t output_width, uint16_t output_height)
+{
+    OPERATE_RET ret;
+    uint64_t t_total;
+    uint64_t t_phase;
+    uint64_t t_stop_ms = 0U;
+    uint64_t t_set_ms = 0U;
+    uint64_t t_start_ms = 0U;
+
+    if (s_mipi_camera_inited != true) {
+        tkl_log_output("camera switch failed: camera is not open\r\n");
+        return OPRT_RESOURCE_NOT_READY;
+    }
+
+    t_total = (uint64_t)tkl_system_get_millisecond();
+
+    if (s_mipi_camera_started == true) {
+        t_phase = (uint64_t)tkl_system_get_millisecond();
+        ret = tkl_camera_mipi_stop();
+        if (ret != OPRT_OK) {
+            tkl_log_output("camera switch stop failed: %d\r\n", ret);
+            return ret;
+        }
+        s_mipi_camera_started = false;
+        t_stop_ms = (uint64_t)tkl_system_get_millisecond() - t_phase;
+    }
+
+    t_phase = (uint64_t)tkl_system_get_millisecond();
+    ret = tkl_camera_mipi_set_output(output_width, output_height);
+    if (ret != OPRT_OK) {
+        tkl_log_output("camera switch set_output failed: %d\r\n", ret);
+        return ret;
+    }
+    s_mipi_camera_cfg.output_width = output_width;
+    s_mipi_camera_cfg.output_height = output_height;
+    t_set_ms = (uint64_t)tkl_system_get_millisecond() - t_phase;
+
+    t_phase = (uint64_t)tkl_system_get_millisecond();
+    ret = tkl_camera_mipi_start();
+    if (ret != OPRT_OK) {
+        tkl_log_output("camera switch start failed: %d\r\n", ret);
+        return ret;
+    }
+    s_mipi_camera_started = true;
+    t_start_ms = (uint64_t)tkl_system_get_millisecond() - t_phase;
+
+    tkl_log_output(
+            "camera switch ok, output=%ux%u, stop=%llums set=%llums start=%llums total=%llums\r\n",
+            output_width,
+            output_height,
+            (unsigned long long)t_stop_ms,
+            (unsigned long long)t_set_ms,
+            (unsigned long long)t_start_ms,
+            (unsigned long long)((uint64_t)tkl_system_get_millisecond() - t_total));
+    return OPRT_OK;
+}
+
 static OPERATE_RET test_mipi_camera_mipi_get_frame(void)
 {
     OPERATE_RET ret;
@@ -1127,7 +1184,7 @@ void cli_tuya_mipi_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char 
 
     if (argc < 3) {
         snprintf(pcWriteBuffer, xWriteBufferLen,
-                 "Usage: xmipi lcd <open [panel]|open_gpu [panel] [compress]|flush|stop_flush|close>; xmipi camera <open [sw sh fps ow oh]|open_gpu [sw sh fps ow oh]|open_gpu_sp [sw sh fps ow oh spw sph]|start|get_frame|stop|close>");
+                 "Usage: xmipi lcd <open [panel]|open_gpu [panel] [compress]|flush|stop_flush|close>; xmipi camera <open [sw sh fps ow oh]|open_gpu [sw sh fps ow oh]|open_gpu_sp [sw sh fps ow oh spw sph]|start|switch <ow> <oh>|get_frame|stop|close>");
         return;
     }
 
@@ -1252,16 +1309,32 @@ void cli_tuya_mipi_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char 
             ret = test_mipi_camera_mipi_stop();
             snprintf(pcWriteBuffer, xWriteBufferLen,
                      "xmipi camera stop %s (%d)\r\n", (ret == OPRT_OK) ? "ok" : "failed", ret);
+        } else if (os_strcmp(cmd, "switch") == 0) {
+            if (argc < 5) {
+                snprintf(pcWriteBuffer, xWriteBufferLen,
+                         "Usage: xmipi camera switch <ow> <oh>\r\n");
+                return;
+            }
+
+            output_width = (uint16_t)os_strtoul(argv[3], NULL, 10);
+            output_height = (uint16_t)os_strtoul(argv[4], NULL, 10);
+            ret = test_mipi_camera_mipi_switch_output(output_width, output_height);
+            snprintf(pcWriteBuffer, xWriteBufferLen,
+                     "xmipi camera switch %s (%d), output=%ux%u\r\n",
+                     (ret == OPRT_OK) ? "ok" : "failed",
+                     ret,
+                     output_width,
+                     output_height);
         } else if (os_strcmp(cmd, "close") == 0) {
             ret = test_mipi_camera_mipi_close();
             snprintf(pcWriteBuffer, xWriteBufferLen,
                      "xmipi camera close %s (%d)\r\n", (ret == OPRT_OK) ? "ok" : "failed", ret);
         } else {
             snprintf(pcWriteBuffer, xWriteBufferLen,
-                     "Usage: xmipi camera <open [sw sh fps ow oh]|open_gpu [sw sh fps ow oh]|open_gpu_sp [sw sh fps ow oh spw sph]|start|get_frame|stop|close>");
+                     "Usage: xmipi camera <open [sw sh fps ow oh]|open_gpu [sw sh fps ow oh]|open_gpu_sp [sw sh fps ow oh spw sph]|start|switch <ow> <oh>|get_frame|stop|close>");
         }
     } else {
         snprintf(pcWriteBuffer, xWriteBufferLen,
-                 "Usage: xmipi lcd <open [panel]|open_gpu [panel] [compress]|flush|stop_flush|close>; xmipi camera <open [sw sh fps ow oh]|open_gpu [sw sh fps ow oh]|open_gpu_sp [sw sh fps ow oh spw sph]|start|get_frame|stop|close>");
+                 "Usage: xmipi lcd <open [panel]|open_gpu [panel] [compress]|flush|stop_flush|close>; xmipi camera <open [sw sh fps ow oh]|open_gpu [sw sh fps ow oh]|open_gpu_sp [sw sh fps ow oh spw sph]|start|switch <ow> <oh>|get_frame|stop|close>");
     }
 }
