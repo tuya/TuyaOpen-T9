@@ -36,8 +36,17 @@ typedef struct {
     UINT32_T gop;
     UINT32_T codec;                 /* TUYA_VCODEC_TYPE_E, default H264 */
     UINT32_T input_format;          /* bk_pixel_format_t, default NV12 */
-    UINT8_T quality;                /* JPEG encode quality 0..10, default 5; ignored for H264 */
+    UINT8_T quality;                /* JPEG encode quality 0..10 (lower=higher quality), default 2; ignored for H264 */
 } TUYA_VENC_CFG_T;
+
+typedef struct {
+    UINT32_T bitrate;               /* target bitrate in bps; 0 selects fixed-QP mode */
+    UINT8_T qp_min_i;               /* 0 uses adapter default when bitrate > 0 */
+    UINT8_T qp_max_i;
+    UINT8_T qp_min_p;
+    UINT8_T qp_max_p;
+    BOOL_T force_idr;               /* request IDR after rate ctrl update */
+} TUYA_VENC_RATE_CTRL_T;
 
 typedef struct {
     TUYA_VENC_STREAM_CB stream_cb;
@@ -67,6 +76,7 @@ OPERATE_RET tkl_venc_set_source(TUYA_VENC_HANDLE handle, const TUYA_VENC_SOURCE_
 OPERATE_RET tkl_venc_set_sink(TUYA_VENC_HANDLE handle, const TUYA_VENC_SINK_T *sink);
 OPERATE_RET tkl_venc_start(TUYA_VENC_HANDLE handle);
 OPERATE_RET tkl_venc_stop(TUYA_VENC_HANDLE handle);
+OPERATE_RET tkl_venc_set_rate_ctrl(TUYA_VENC_HANDLE handle, const TUYA_VENC_RATE_CTRL_T *rate_ctrl);
 OPERATE_RET tkl_venc_request_idr(TUYA_VENC_HANDLE handle);
 OPERATE_RET tkl_venc_submit_frame(TUYA_VENC_HANDLE handle, const TUYA_VCODEC_FRAME_T *frame);
 OPERATE_RET tkl_venc_get_handle(TUYA_VENC_HANDLE handle, VOID **backend_handle);

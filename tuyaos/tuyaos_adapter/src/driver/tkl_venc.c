@@ -21,7 +21,13 @@
 #include "tkl_venc.h"
 
 #define TKL_VENC_STOP_DRAIN_MS          300U
-#define TKL_VENC_JPEG_DEFAULT_QUALITY   5U
+#define TKL_VENC_JPEG_DEFAULT_QUALITY   2U
+#define TKL_VENC_H264_DEFAULT_GOP       40U
+#define TKL_VENC_H264_DEFAULT_BITRATE   1500000U
+#define TKL_VENC_H264_QP_MIN_I          20U
+#define TKL_VENC_H264_QP_MAX_I          51U
+#define TKL_VENC_H264_QP_MIN_P          26U
+#define TKL_VENC_H264_QP_MAX_P          51U
 
 typedef enum {
     TKL_VENC_BACKEND_NONE = 0,
@@ -34,6 +40,7 @@ typedef struct {
     BOOL_T backend_opened;
     TKL_VENC_BACKEND_E backend_type;
     TUYA_VENC_CFG_T cfg;
+    TUYA_VENC_RATE_CTRL_T rate_ctrl;
     TUYA_VENC_SOURCE_T source;
     TUYA_VENC_SINK_T sink;
     union {
@@ -64,7 +71,132 @@ static UINT32_T tkl_venc_gop_resolve(const TUYA_VENC_CTX_T *ctx)
         return ctx->cfg.gop;
     }
 
-    return 30U;
+    return TKL_VENC_H264_DEFAULT_GOP;
+}
+
+static VOID tkl_venc_h264_rate_ctrl_default(TUYA_VENC_RATE_CTRL_T *rate_ctrl)
+{
+    if (rate_ctrl == NULL) {
+        return;
+    }
+
+    tkl_system_memset(rate_ctrl, 0, sizeof(*rate_ctrl));
+    rate_ctrl->bitrate = TKL_VENC_H264_DEFAULT_BITRATE;
+    rate_ctrl->qp_min_i = TKL_VENC_H264_QP_MIN_I;
+    rate_ctrl->qp_max_i = TKL_VENC_H264_QP_MAX_I;
+    rate_ctrl->qp_min_p = TKL_VENC_H264_QP_MIN_P;
+    rate_ctrl->qp_max_p = TKL_VENC_H264_QP_MAX_P;
+}
+
+static VOID tkl_venc_h264_rate_ctrl_build(const TUYA_VENC_RATE_CTRL_T *src,
+                                          bk_h264_encode_rate_ctrl_t *rate_ctrl)
+{
+    if (src == NULL || rate_ctrl == NULL) {
+        return;
+    }
+
+    tkl_system_memset(rate_ctrl, 0, sizeof(*rate_ctrl));
+    rate_ctrl->bitrate = src->bitrate;
+    rate_ctrl->qp_min_i = src->qp_min_i;
+    rate_ctrl->qp_max_i = src->qp_max_i;
+    rate_ctrl->qp_min_p = src->qp_min_p;
+    rate_ctrl->qp_max_p = src->qp_max_p;
+
+    if (rate_ctrl->bitrate > 0U) {
+        if (rate_ctrl->qp_min_i == 0U) {
+            rate_ctrl->qp_min_i = TKL_VENC_H264_QP_MIN_I;
+        }
+        if (rate_ctrl->qp_max_i == 0U) {
+            rate_ctrl->qp_max_i = TKL_VENC_H264_QP_MAX_I;
+        }
+        if (rate_ctrl->qp_min_p == 0U) {
+            rate_ctrl->qp_min_p = TKL_VENC_H264_QP_MIN_P;
+        }
+        if (rate_ctrl->qp_max_p == 0U) {
+            rate_ctrl->qp_max_p = TKL_VENC_H264_QP_MAX_P;
+        }
+    }
+}
+
+static VOID tkl_venc_h264_rate_ctrl_store(TUYA_VENC_CTX_T *ctx,
+                                          const bk_h264_encode_rate_ctrl_t *rate_ctrl)
+{
+    if (ctx == NULL || rate_ctrl == NULL) {
+        return;
+    }
+
+    ctx->rate_ctrl.bitrate = rate_ctrl->bitrate;
+    ctx->rate_ctrl.qp_min_i = rate_ctrl->qp_min_i;
+    ctx->rate_ctrl.qp_max_i = rate_ctrl->qp_max_i;
+    ctx->rate_ctrl.qp_min_p = rate_ctrl->qp_min_p;
+    ctx->rate_ctrl.qp_max_p = rate_ctrl->qp_max_p;
+}
+
+static OPERATE_RET tkl_venc_h264_apply_rate_ctrl(TUYA_VENC_CTX_T *ctx,
+                                                const TUYA_VENC_RATE_CTRL_T *req,
+                                                BOOL_T log_result)
+{
+    bk_h264_encode_rate_ctrl_t rate_ctrl;
+    TUYA_VENC_RATE_CTRL_T local;
+    const TUYA_VENC_RATE_CTRL_T *src = req;
+    avdk_err_t ret;
+    BOOL_T force_idr = FALSE;
+
+    if (ctx == NULL) {
+        return OPRT_INVALID_PARM;
+    }
+
+    if (req != NULL) {
+        tkl_system_memcpy(&local, req, sizeof(local));
+        if (local.bitrate == 0U &&
+            local.qp_min_i == 0U && local.qp_max_i == 0U &&
+            local.qp_min_p == 0U && local.qp_max_p == 0U) {
+            return OPRT_INVALID_PARM;
+        }
+        force_idr = local.force_idr;
+        src = &local;
+    } else {
+        src = &ctx->rate_ctrl;
+    }
+
+    tkl_venc_h264_rate_ctrl_build(src, &rate_ctrl);
+    if (rate_ctrl.bitrate == 0U &&
+        (rate_ctrl.qp_min_i == 0U || rate_ctrl.qp_max_i == 0U ||
+         rate_ctrl.qp_min_p == 0U || rate_ctrl.qp_max_p == 0U)) {
+        return OPRT_INVALID_PARM;
+    }
+
+    tkl_venc_h264_rate_ctrl_store(ctx, &rate_ctrl);
+
+    if (ctx->backend.h264 == NULL || ctx->backend_opened != TRUE) {
+        return OPRT_OK;
+    }
+
+    ret = bk_h264_encode_set_rate_ctrl(ctx->backend.h264, &rate_ctrl);
+    if (ret != AVDK_ERR_OK) {
+        tkl_log_output("tkl_venc: bk_h264_encode_set_rate_ctrl failed (%d), bitrate=%u\r\n",
+                ret, (unsigned int)rate_ctrl.bitrate);
+        return OPRT_COM_ERROR;
+    }
+
+    if (log_result == TRUE) {
+        tkl_log_output("tkl_venc: h264 rate ctrl bitrate=%u qp_i=%u..%u qp_p=%u..%u\r\n",
+                (unsigned int)rate_ctrl.bitrate,
+                (unsigned int)rate_ctrl.qp_min_i,
+                (unsigned int)rate_ctrl.qp_max_i,
+                (unsigned int)rate_ctrl.qp_min_p,
+                (unsigned int)rate_ctrl.qp_max_p);
+    }
+
+    if (force_idr == TRUE) {
+        ret = bk_h264_encode_force_idr(ctx->backend.h264);
+        if (ret != AVDK_ERR_OK) {
+            tkl_log_output("tkl_venc: force idr after rate ctrl failed (%d)\r\n", ret);
+            return OPRT_COM_ERROR;
+        }
+    }
+
+    return OPRT_OK;
 }
 
 static UINT8_T tkl_venc_jpeg_quality_resolve(const TUYA_VENC_CTX_T *ctx)
@@ -485,6 +617,7 @@ static OPERATE_RET tkl_venc_backend_create(TUYA_VENC_CTX_T *ctx)
 static OPERATE_RET tkl_venc_backend_open(TUYA_VENC_CTX_T *ctx)
 {
     avdk_err_t ret;
+    OPERATE_RET op_ret;
 
     if (ctx == NULL) {
         return OPRT_RESOURCE_NOT_READY;
@@ -500,6 +633,14 @@ static OPERATE_RET tkl_venc_backend_open(TUYA_VENC_CTX_T *ctx)
             tkl_log_output("tkl_venc: bk_h264_encode_open failed (%d)\r\n", ret);
             return OPRT_COM_ERROR;
         }
+
+        ctx->backend_opened = TRUE;
+        op_ret = tkl_venc_h264_apply_rate_ctrl(ctx, NULL, TRUE);
+        if (op_ret != OPRT_OK) {
+            ctx->backend_opened = FALSE;
+            (void)bk_h264_encode_close(ctx->backend.h264);
+            return op_ret;
+        }
     } else if (ctx->backend_type == TKL_VENC_BACKEND_JPEG) {
         if (ctx->backend.jpeg == NULL) {
             return OPRT_RESOURCE_NOT_READY;
@@ -510,11 +651,10 @@ static OPERATE_RET tkl_venc_backend_open(TUYA_VENC_CTX_T *ctx)
             tkl_log_output("tkl_venc: bk_jpeg_encode_open failed (%d)\r\n", ret);
             return OPRT_COM_ERROR;
         }
+        ctx->backend_opened = TRUE;
     } else {
         return OPRT_RESOURCE_NOT_READY;
     }
-
-    ctx->backend_opened = TRUE;
     return OPRT_OK;
 }
 
@@ -686,6 +826,9 @@ OPERATE_RET tkl_venc_init(TUYA_VENC_HANDLE *handle, const TUYA_VENC_CFG_T *confi
     if (ctx->cfg.codec == TUYA_VCODEC_TYPE_NONE) {
         ctx->cfg.codec = TUYA_VCODEC_TYPE_H264;
     }
+    if (tkl_venc_is_h264_codec(ctx->cfg.codec) == TRUE) {
+        tkl_venc_h264_rate_ctrl_default(&ctx->rate_ctrl);
+    }
     *handle = (TUYA_VENC_HANDLE)ctx;
 
     return OPRT_OK;
@@ -840,6 +983,29 @@ OPERATE_RET tkl_venc_stop(TUYA_VENC_HANDLE handle)
     ret = tkl_venc_backend_close(ctx);
     ctx->started = FALSE;
     return ret;
+}
+
+/**
+ * @brief Update H264 rate control
+ * @param[in] handle encoder handle
+ * @param[in] rate_ctrl rate control parameters
+ * @return OPRT_OK on success
+ * @note May be called before start to preset RC; applied to hardware at backend open.
+ */
+OPERATE_RET tkl_venc_set_rate_ctrl(TUYA_VENC_HANDLE handle, const TUYA_VENC_RATE_CTRL_T *rate_ctrl)
+{
+    TUYA_VENC_CTX_T *ctx = tkl_venc_ctx_get(handle);
+
+    if (ctx == NULL || rate_ctrl == NULL) {
+        return OPRT_INVALID_PARM;
+    }
+
+    if (ctx->backend_type != TKL_VENC_BACKEND_H264 &&
+        tkl_venc_is_h264_codec(ctx->cfg.codec) != TRUE) {
+        return OPRT_NOT_SUPPORTED;
+    }
+
+    return tkl_venc_h264_apply_rate_ctrl(ctx, rate_ctrl, TRUE);
 }
 
 OPERATE_RET tkl_venc_request_idr(TUYA_VENC_HANDLE handle)

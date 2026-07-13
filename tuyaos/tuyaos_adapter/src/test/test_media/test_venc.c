@@ -16,8 +16,10 @@
 #include "tkl_venc.h"
 
 #define VENC_TEST_DEFAULT_FPS         15U
-#define VENC_TEST_DEFAULT_GOP         30U
-#define VENC_TEST_DEFAULT_QUALITY     5U
+#define VENC_TEST_DEFAULT_GOP         40U
+#define VENC_TEST_DEFAULT_QUALITY     2U
+#define VENC_TEST_DEFAULT_BITRATE     1500000U
+#define VENC_TEST_STATUS_MIN_WINDOW_MS 100U
 #define VENC_TEST_LOG_INTERVAL        30U
 #define VENC_TEST_RECORD_DEFAULT_SEC  3U
 #define VENC_TEST_RECORD_POLL_MS      20U
@@ -57,6 +59,7 @@ typedef struct {
     uint8_t fps;
     uint32_t gop;
     uint8_t quality;
+    uint32_t bitrate;
     uint16_t width;
     uint16_t height;
     uint32_t format;
@@ -68,6 +71,11 @@ typedef struct {
     uint32_t last_frame_size;
     uint32_t last_frame_type;
     uint64_t total_bytes;
+    uint64_t session_start_ms;
+    uint64_t status_mark_ms;
+    uint64_t status_mark_bytes;
+    uint32_t status_mark_frames;
+    bool session_timing_valid;
 } test_venc_ctx_t;
 
 static test_venc_ctx_t s_venc_ctx = {
@@ -79,6 +87,7 @@ static test_venc_ctx_t s_venc_ctx = {
     .fps = VENC_TEST_DEFAULT_FPS,
     .gop = VENC_TEST_DEFAULT_GOP,
     .quality = VENC_TEST_DEFAULT_QUALITY,
+    .bitrate = VENC_TEST_DEFAULT_BITRATE,
     .width = 0U,
     .height = 0U,
     .format = BK_PIXEL_FORMAT_INVALID,
@@ -90,6 +99,11 @@ static test_venc_ctx_t s_venc_ctx = {
     .last_frame_size = 0U,
     .last_frame_type = TUYA_VCODEC_FRAME_UNKNOWN,
     .total_bytes = 0U,
+    .session_start_ms = 0U,
+    .status_mark_ms = 0U,
+    .status_mark_bytes = 0U,
+    .status_mark_frames = 0U,
+    .session_timing_valid = false,
 };
 
 typedef struct {
@@ -170,6 +184,47 @@ static void test_venc_stream_stats_reset(void)
     s_venc_ctx.total_bytes = 0U;
 }
 
+static uint32_t test_venc_elapsed_ms(uint64_t start_ms, uint64_t now_ms)
+{
+    if (now_ms >= start_ms) {
+        return (uint32_t)(now_ms - start_ms);
+    }
+
+    return (uint32_t)(((UINT64_MAX - start_ms) + now_ms + 1U));
+}
+
+static uint32_t test_venc_calc_kbps(uint64_t bytes, uint32_t elapsed_ms)
+{
+    uint64_t bit_rate_kbps;
+
+    if (elapsed_ms < VENC_TEST_STATUS_MIN_WINDOW_MS || bytes == 0U) {
+        return 0U;
+    }
+
+    bit_rate_kbps = (bytes * 8U * 1000U) / (uint64_t)elapsed_ms;
+    return (uint32_t)(bit_rate_kbps / 1024U);
+}
+
+static uint32_t test_venc_calc_fps(uint32_t frames, uint32_t elapsed_ms)
+{
+    if (elapsed_ms < VENC_TEST_STATUS_MIN_WINDOW_MS || frames == 0U) {
+        return 0U;
+    }
+
+    return (frames * 1000U + elapsed_ms / 2U) / elapsed_ms;
+}
+
+static void test_venc_timing_mark_start(void)
+{
+    uint64_t now_ms = (uint64_t)tkl_system_get_millisecond();
+
+    s_venc_ctx.session_start_ms = now_ms;
+    s_venc_ctx.status_mark_ms = now_ms;
+    s_venc_ctx.status_mark_bytes = 0U;
+    s_venc_ctx.status_mark_frames = 0U;
+    s_venc_ctx.session_timing_valid = true;
+}
+
 static void test_venc_stats_reset(void)
 {
     s_venc_ctx.width = 0U;
@@ -188,6 +243,8 @@ static void test_venc_runtime_reset(void)
     s_venc_ctx.fps = VENC_TEST_DEFAULT_FPS;
     s_venc_ctx.gop = VENC_TEST_DEFAULT_GOP;
     s_venc_ctx.quality = VENC_TEST_DEFAULT_QUALITY;
+    s_venc_ctx.bitrate = VENC_TEST_DEFAULT_BITRATE;
+    s_venc_ctx.session_timing_valid = false;
     test_venc_stats_reset();
 }
 
@@ -695,12 +752,11 @@ static void test_venc_stream_cb(const TUYA_VCODEC_STREAM_T *stream, VOID *arg)
     if (s_venc_ctx.total_frames <= 3U ||
         (s_venc_ctx.total_frames % VENC_TEST_LOG_INTERVAL) == 0U) {
         tkl_log_output(
-                "venc frame[%u]: codec=%s type=%s size=%u pts=%llu total_bytes=%llu\r\n",
+                "venc frame[%u]: codec=%s type=%s size=%u total_bytes=%llu\r\n",
                 (unsigned int)s_venc_ctx.total_frames,
                 test_venc_codec_name(s_venc_ctx.codec),
                 test_venc_frame_type_name(stream->frame_type),
                 (unsigned int)stream->size,
-                (unsigned long long)stream->pts,
                 (unsigned long long)s_venc_ctx.total_bytes);
     }
 }
@@ -837,7 +893,8 @@ static OPERATE_RET test_venc_init(test_venc_source_t source_type,
                                   test_venc_codec_t codec_type,
                                   uint8_t fps,
                                   uint32_t gop,
-                                  uint8_t quality)
+                                  uint8_t quality,
+                                  uint32_t bitrate)
 {
     OPERATE_RET ret;
     TUYA_VENC_CFG_T cfg;
@@ -899,6 +956,20 @@ static OPERATE_RET test_venc_init(test_venc_source_t source_type,
         return ret;
     }
 
+    if (codec_type == VENC_TEST_CODEC_H264 && bitrate != VENC_TEST_DEFAULT_BITRATE) {
+        TUYA_VENC_RATE_CTRL_T rc;
+
+        os_memset(&rc, 0, sizeof(rc));
+        rc.bitrate = bitrate;
+        ret = tkl_venc_set_rate_ctrl(s_venc_ctx.handle, &rc);
+        if (ret != OPRT_OK) {
+            tkl_log_output("venc set rate ctrl failed: %d\r\n", ret);
+            (void)tkl_venc_deinit(s_venc_ctx.handle);
+            test_venc_runtime_reset();
+            return ret;
+        }
+    }
+
     s_venc_ctx.initialized = true;
     s_venc_ctx.started = false;
     s_venc_ctx.source = source_type;
@@ -906,6 +977,7 @@ static OPERATE_RET test_venc_init(test_venc_source_t source_type,
     s_venc_ctx.fps = fps;
     s_venc_ctx.gop = gop;
     s_venc_ctx.quality = quality;
+    s_venc_ctx.bitrate = bitrate;
     test_venc_stream_stats_reset();
 
     if (codec_type == VENC_TEST_CODEC_JPEG) {
@@ -917,13 +989,14 @@ static OPERATE_RET test_venc_init(test_venc_source_t source_type,
                 (unsigned int)fps,
                 (unsigned int)quality);
     } else {
-        tkl_log_output("venc init ok, codec=H264 source=%s src=%ux%u fmt=%u fps=%u gop=%u\r\n",
+        tkl_log_output("venc init ok, codec=H264 source=%s src=%ux%u fmt=%u fps=%u gop=%u bitrate=%u\r\n",
                 test_venc_source_name(source_type),
                 s_venc_ctx.width,
                 s_venc_ctx.height,
                 (unsigned int)s_venc_ctx.format,
                 (unsigned int)fps,
-                (unsigned int)gop);
+                (unsigned int)gop,
+                (unsigned int)bitrate);
     }
     return OPRT_OK;
 }
@@ -933,7 +1006,7 @@ static OPERATE_RET test_venc_start(void)
     OPERATE_RET ret;
 
     if (s_venc_ctx.initialized != true || s_venc_ctx.handle == NULL) {
-        tkl_log_output("venc is not initialized, use: xvenc init [camera|vdec] [h264|jpeg] [fps] [gop|quality]\r\n");
+        tkl_log_output("venc is not initialized, use: xvenc init [camera|vdec] [h264|jpeg] [fps] [gop|quality] [bitrate]\r\n");
         return OPRT_RESOURCE_NOT_READY;
     }
 
@@ -952,13 +1025,14 @@ static OPERATE_RET test_venc_start(void)
                 (unsigned int)s_venc_ctx.fps,
                 (unsigned int)s_venc_ctx.quality);
     } else {
-        tkl_log_output("venc start request: codec=H264 source=%s src=%ux%u fmt=%u fps=%u gop=%u\r\n",
+        tkl_log_output("venc start request: codec=H264 source=%s src=%ux%u fmt=%u fps=%u gop=%u bitrate=%u\r\n",
                 test_venc_source_name(s_venc_ctx.source),
                 s_venc_ctx.width,
                 s_venc_ctx.height,
                 (unsigned int)s_venc_ctx.format,
                 (unsigned int)s_venc_ctx.fps,
-                (unsigned int)s_venc_ctx.gop);
+                (unsigned int)s_venc_ctx.gop,
+                (unsigned int)s_venc_ctx.bitrate);
     }
 
     ret = tkl_venc_start(s_venc_ctx.handle);
@@ -967,6 +1041,7 @@ static OPERATE_RET test_venc_start(void)
         return ret;
     }
 
+    test_venc_timing_mark_start();
     s_venc_ctx.started = true;
     tkl_log_output("venc started, source=%s src=%ux%u fmt=%u -> %s\r\n",
             test_venc_source_name(s_venc_ctx.source),
@@ -1034,8 +1109,53 @@ static OPERATE_RET test_venc_request_idr(void)
     return tkl_venc_request_idr(s_venc_ctx.handle);
 }
 
+static OPERATE_RET test_venc_set_bitrate(uint32_t bitrate, bool force_idr)
+{
+    TUYA_VENC_RATE_CTRL_T rc;
+    OPERATE_RET ret;
+
+    if (s_venc_ctx.initialized != true || s_venc_ctx.handle == NULL) {
+        tkl_log_output("venc is not initialized\r\n");
+        return OPRT_RESOURCE_NOT_READY;
+    }
+
+    if (s_venc_ctx.codec != VENC_TEST_CODEC_H264) {
+        tkl_log_output("bitrate is only supported for h264\r\n");
+        return OPRT_NOT_SUPPORTED;
+    }
+
+    if (bitrate == 0U) {
+        tkl_log_output("bitrate must be > 0\r\n");
+        return OPRT_INVALID_PARM;
+    }
+
+    os_memset(&rc, 0, sizeof(rc));
+    rc.bitrate = bitrate;
+    rc.force_idr = force_idr ? TRUE : FALSE;
+    ret = tkl_venc_set_rate_ctrl(s_venc_ctx.handle, &rc);
+    if (ret != OPRT_OK) {
+        return ret;
+    }
+
+    s_venc_ctx.bitrate = bitrate;
+    tkl_log_output("venc bitrate set to %u bps%s\r\n",
+            (unsigned int)bitrate,
+            force_idr ? ", idr requested" : "");
+    return OPRT_OK;
+}
+
 static void test_venc_status_dump(void)
 {
+    uint64_t now_ms = (uint64_t)tkl_system_get_millisecond();
+    uint32_t session_elapsed_ms = 0U;
+    uint32_t window_elapsed_ms = 0U;
+    uint64_t window_bytes = 0U;
+    uint32_t window_frames = 0U;
+    uint32_t avg_kbps = 0U;
+    uint32_t window_kbps = 0U;
+    uint32_t avg_fps = 0U;
+    uint32_t window_fps = 0U;
+
     tkl_log_output("xvenc status:\r\n");
     tkl_log_output("  venc_init=%u venc_start=%u codec=%s source=%s camera_init=%u camera_start=%u camera_flexa=%u\r\n",
             (unsigned int)s_venc_ctx.initialized,
@@ -1053,12 +1173,13 @@ static void test_venc_status_dump(void)
                 (unsigned int)s_venc_ctx.fps,
                 (unsigned int)s_venc_ctx.quality);
     } else {
-        tkl_log_output("  src=%ux%u fmt=%u fps=%u gop=%u\r\n",
+        tkl_log_output("  src=%ux%u fmt=%u fps=%u gop=%u target_bitrate=%u\r\n",
                 s_venc_ctx.width,
                 s_venc_ctx.height,
                 (unsigned int)s_venc_ctx.format,
                 (unsigned int)s_venc_ctx.fps,
-                (unsigned int)s_venc_ctx.gop);
+                (unsigned int)s_venc_ctx.gop,
+                (unsigned int)s_venc_ctx.bitrate);
     }
     tkl_log_output("  frames=%u i=%u p=%u hdr=%u unk=%u last_type=%s last_size=%u total_bytes=%llu\r\n",
             (unsigned int)s_venc_ctx.total_frames,
@@ -1069,6 +1190,39 @@ static void test_venc_status_dump(void)
             test_venc_frame_type_name(s_venc_ctx.last_frame_type),
             (unsigned int)s_venc_ctx.last_frame_size,
             (unsigned long long)s_venc_ctx.total_bytes);
+
+    if (s_venc_ctx.codec != VENC_TEST_CODEC_H264 ||
+        s_venc_ctx.session_timing_valid != true ||
+        s_venc_ctx.started != true) {
+        return;
+    }
+
+    session_elapsed_ms = test_venc_elapsed_ms(s_venc_ctx.session_start_ms, now_ms);
+    window_elapsed_ms = test_venc_elapsed_ms(s_venc_ctx.status_mark_ms, now_ms);
+    if (s_venc_ctx.total_bytes >= s_venc_ctx.status_mark_bytes) {
+        window_bytes = s_venc_ctx.total_bytes - s_venc_ctx.status_mark_bytes;
+    }
+    if (s_venc_ctx.total_frames >= s_venc_ctx.status_mark_frames) {
+        window_frames = s_venc_ctx.total_frames - s_venc_ctx.status_mark_frames;
+    }
+
+    avg_kbps = test_venc_calc_kbps(s_venc_ctx.total_bytes, session_elapsed_ms);
+    window_kbps = test_venc_calc_kbps(window_bytes, window_elapsed_ms);
+    avg_fps = test_venc_calc_fps(s_venc_ctx.total_frames, session_elapsed_ms);
+    window_fps = test_venc_calc_fps(window_frames, window_elapsed_ms);
+
+    tkl_log_output("  avg_bitrate=%u kbps avg_fps=%u session_ms=%u\r\n",
+            avg_kbps,
+            avg_fps,
+            session_elapsed_ms);
+    tkl_log_output("  window_bitrate=%u kbps window_fps=%u window_ms=%u\r\n",
+            window_kbps,
+            window_fps,
+            window_elapsed_ms);
+
+    s_venc_ctx.status_mark_ms = now_ms;
+    s_venc_ctx.status_mark_bytes = s_venc_ctx.total_bytes;
+    s_venc_ctx.status_mark_frames = s_venc_ctx.total_frames;
 }
 
 static test_venc_codec_t test_venc_parse_codec(const char *token)
@@ -1102,6 +1256,7 @@ void cli_tuya_venc_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char 
     uint32_t gop = VENC_TEST_DEFAULT_GOP;
     uint32_t record_sec = VENC_TEST_RECORD_DEFAULT_SEC;
     uint8_t quality = VENC_TEST_DEFAULT_QUALITY;
+    uint32_t bitrate = VENC_TEST_DEFAULT_BITRATE;
     test_venc_source_t source_type = VENC_TEST_SOURCE_CAMERA;
     test_venc_codec_t codec_type = VENC_TEST_CODEC_H264;
     int arg_idx = 2;
@@ -1112,7 +1267,7 @@ void cli_tuya_venc_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char 
 
     if (argc < 2) {
         snprintf(pcWriteBuffer, xWriteBufferLen,
-                 "Usage: xvenc <init [camera|vdec] [h264|jpeg] [fps] [gop|quality]|start|stop|record [sec] [file]|deinit|close|idr|status>");
+                 "Usage: xvenc <init [camera|vdec] [h264|jpeg] [fps] [gop|quality] [bitrate]|start|stop|bitrate <bps> [idr]|record [sec] [file]|deinit|close|idr|status>");
         return;
     }
 
@@ -1144,9 +1299,13 @@ void cli_tuya_venc_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char 
             } else {
                 gop = os_strtoul(argv[arg_idx], NULL, 10);
             }
+            arg_idx++;
+        }
+        if (argc > arg_idx && codec_type == VENC_TEST_CODEC_H264) {
+            bitrate = os_strtoul(argv[arg_idx], NULL, 10);
         }
 
-        ret = test_venc_init(source_type, codec_type, fps, gop, quality);
+        ret = test_venc_init(source_type, codec_type, fps, gop, quality, bitrate);
         if (codec_type == VENC_TEST_CODEC_JPEG) {
             snprintf(pcWriteBuffer, xWriteBufferLen,
                      "xvenc init %s (%d), source=%s codec=jpeg fps=%u quality=%u\r\n",
@@ -1157,12 +1316,13 @@ void cli_tuya_venc_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char 
                      (unsigned int)quality);
         } else {
             snprintf(pcWriteBuffer, xWriteBufferLen,
-                     "xvenc init %s (%d), source=%s codec=h264 fps=%u gop=%u\r\n",
+                     "xvenc init %s (%d), source=%s codec=h264 fps=%u gop=%u bitrate=%u\r\n",
                      (ret == OPRT_OK) ? "ok" : "failed",
                      ret,
                      test_venc_source_name(source_type),
                      (unsigned int)fps,
-                     (unsigned int)gop);
+                     (unsigned int)gop,
+                     (unsigned int)bitrate);
         }
     } else if (os_strcmp(cmd, "start") == 0) {
         ret = test_venc_start();
@@ -1176,6 +1336,27 @@ void cli_tuya_venc_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char 
                  "xvenc stop %s (%d)\r\n",
                  (ret == OPRT_OK) ? "ok" : "failed",
                  ret);
+    } else if (os_strcmp(cmd, "bitrate") == 0) {
+        bool force_idr = false;
+
+        if (argc < 3) {
+            snprintf(pcWriteBuffer, xWriteBufferLen,
+                     "Usage: xvenc bitrate <bps> [idr]\r\n");
+            return;
+        }
+
+        bitrate = os_strtoul(argv[2], NULL, 10);
+        if (argc >= 4 && os_strcmp(argv[3], "idr") == 0) {
+            force_idr = true;
+        }
+
+        ret = test_venc_set_bitrate(bitrate, force_idr);
+        snprintf(pcWriteBuffer, xWriteBufferLen,
+                 "xvenc bitrate %s (%d), bps=%u%s\r\n",
+                 (ret == OPRT_OK) ? "ok" : "failed",
+                 ret,
+                 (unsigned int)bitrate,
+                 force_idr ? " idr=1" : "");
     } else if (os_strcmp(cmd, "record") == 0) {
         if (argc >= 3) {
             record_sec = os_strtoul(argv[2], NULL, 10);
@@ -1211,6 +1392,6 @@ void cli_tuya_venc_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char 
                  "xvenc status ok, see logs\r\n");
     } else {
         snprintf(pcWriteBuffer, xWriteBufferLen,
-                 "Usage: xvenc <init [camera|vdec] [h264|jpeg] [fps] [gop|quality]|start|stop|record [sec] [file]|deinit|close|idr|status>");
+                 "Usage: xvenc <init [camera|vdec] [h264|jpeg] [fps] [gop|quality] [bitrate]|start|stop|bitrate <bps> [idr]|record [sec] [file]|deinit|close|idr|status>");
     }
 }
