@@ -28,6 +28,7 @@
 #define TKL_VENC_H264_QP_MAX_I          51U
 #define TKL_VENC_H264_QP_MIN_P          26U
 #define TKL_VENC_H264_QP_MAX_P          51U
+#define TKL_VENC_ISP_FLEXA_LINES        16U
 
 typedef enum {
     TKL_VENC_BACKEND_NONE = 0,
@@ -254,6 +255,36 @@ static UINT32_T tkl_venc_input_cnt_resolve(const TUYA_VENC_CTX_T *ctx)
     default:
         return 0U;
     }
+}
+
+/**
+ * @brief Resolve ISP flexa ring buffer byte size for H264 HW encoder
+ * @param[in] ctx encoder context
+ * @return ring buffer size in bytes, 0 if unavailable
+ * @note Matches doorbell app_codec_isp_channel_buffer_size() semantics.
+ */
+static UINT32_T tkl_venc_isp_flexa_buffer_size_resolve(const TUYA_VENC_CTX_T *ctx)
+{
+    UINT32_T y_size;
+    UINT32_T width;
+    UINT32_T buf_cnt;
+
+    if (ctx == NULL || ctx->source.type != TUYA_VENC_SOURCE_ISP_FLEXA) {
+        return 0U;
+    }
+
+    if (ctx->source.isp.flexa.u_addr > ctx->source.isp.flexa.y_addr) {
+        y_size = ctx->source.isp.flexa.u_addr - ctx->source.isp.flexa.y_addr;
+        return y_size + y_size / 2U;
+    }
+
+    width = ctx->source.isp.flexa.width;
+    buf_cnt = ctx->source.isp.flexa.buf_cnt;
+    if (width == 0U || buf_cnt == 0U) {
+        return 0U;
+    }
+
+    return width * TKL_VENC_ISP_FLEXA_LINES * buf_cnt * 3U / 2U;
 }
 
 static VOID tkl_venc_size_resolve(const TUYA_VENC_CTX_T *ctx, UINT16_T *width, UINT16_T *height)
@@ -498,6 +529,7 @@ static OPERATE_RET tkl_venc_h264_backend_create(TUYA_VENC_CTX_T *ctx)
         ret = bk_h264_encode_sw_flexa_new(&ctx->backend.h264, &sw_cfg);
     } else {
         bk_h264_encode_hw_flexa_config_t hw_cfg;
+        UINT32_T input_buffer_size;
 
         tkl_system_memset(&hw_cfg, 0, sizeof(hw_cfg));
         hw_cfg.width = width;
@@ -506,7 +538,11 @@ static OPERATE_RET tkl_venc_h264_backend_create(TUYA_VENC_CTX_T *ctx)
         hw_cfg.input_format = tkl_venc_input_format_resolve(ctx);
         hw_cfg.input_flexa_cnt = tkl_venc_input_cnt_resolve(ctx);
         hw_cfg.input_buf = tkl_venc_input_buf_resolve(ctx);
-        hw_cfg.input_size = tkl_venc_input_cnt_resolve(ctx);
+        input_buffer_size = tkl_venc_isp_flexa_buffer_size_resolve(ctx);
+        if (input_buffer_size == 0U) {
+            return OPRT_INVALID_PARM;
+        }
+        hw_cfg.input_size = input_buffer_size;
         hw_cfg.outbuf_malloc = tkl_venc_outbuf_malloc;
         hw_cfg.outbuf_malloc_args = ctx;
         hw_cfg.outbuf_complete = tkl_venc_h264_outbuf_complete;
