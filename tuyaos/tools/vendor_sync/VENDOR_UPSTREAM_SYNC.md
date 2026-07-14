@@ -1,7 +1,8 @@
 # T9 原厂 `t9_os` Upstream 同步操作手册
 
 配套设计：仓库外 `tuyaos-iot` 文档 `docs/superpowers/specs/2026-07-14-t9-vendor-upstream-sync-design.md`  
-配套工具：本目录脚本（路径：`tuyaos/tools/vendor_sync/`）
+配套工具：本目录脚本（路径：`tuyaos/tools/vendor_sync/`）  
+工具详解：[`VENDOR_SYNC_GUIDE.md`](VENDOR_SYNC_GUIDE.md)
 
 本手册假设工作目录为 **vendor/T9 仓库根**（该目录自身为 git root）。
 
