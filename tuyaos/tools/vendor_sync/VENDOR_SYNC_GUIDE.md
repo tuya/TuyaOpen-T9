@@ -31,7 +31,7 @@
 | `VENDOR_SYNC_GUIDE.md` | 工具详解与场景流程（本文） |
 | `README.md` | 短用法 |
 
-**依赖：** `bash`、`git`、`rsync`、`rg`（ripgrep）
+**依赖：** `bash`、`git`、`rsync`；`rg`（ripgrep）可选，未安装时标注扫描回退到 `grep`
 
 **工作方式：**
 

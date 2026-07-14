@@ -16,10 +16,19 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-vs_need_cmd rg
 ROOT="$(vs_resolve_repo_root "${REPO_ROOT}")"
 cd "$ROOT"
 
-rg -l --glob '!**/bk_tflite_micro/**' \
-  -e 'Modified by TUYA' -e 'Modified by Tuya' -e 'Added by TUYA' \
-  t9_os 2>/dev/null | LC_ALL=C sort -u || true
+# Prefer ripgrep; fall back to grep -R if rg is not installed.
+if command -v rg >/dev/null 2>&1; then
+  rg -l --glob '!**/bk_tflite_micro/**' \
+    -e 'Modified by TUYA' -e 'Modified by Tuya' -e 'Added by TUYA' \
+    t9_os 2>/dev/null | LC_ALL=C sort -u || true
+else
+  vs_need_cmd grep
+  # Exclude tflite micro tree; keep path style relative to repo root
+  grep -RIl \
+    -e 'Modified by TUYA' -e 'Modified by Tuya' -e 'Added by TUYA' \
+    --exclude-dir=bk_tflite_micro \
+    t9_os 2>/dev/null | LC_ALL=C sort -u || true
+fi

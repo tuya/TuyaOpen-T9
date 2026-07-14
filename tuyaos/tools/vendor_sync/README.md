@@ -8,7 +8,7 @@
 - bash
 - git
 - rsync
-- ripgrep（`rg`）
+- ripgrep（`rg`，可选；未安装时 `list_tuya_marked.sh` 回退到 `grep`）
 
 ## 工作方式
 
