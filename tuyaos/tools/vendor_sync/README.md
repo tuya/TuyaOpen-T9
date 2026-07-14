@@ -33,26 +33,26 @@
 cd /path/to/vendor/T9
 
 # 扫描 TUYA 标注
-./tools/vendor_sync/list_tuya_marked.sh
+./tuyaos/tools/vendor_sync/list_tuya_marked.sh
 
 # 业务相对某基线的完整 delta（含新增文件）
-./tools/vendor_sync/list_business_delta.sh --upstream upstream/bk-4.0.1.4
+./tuyaos/tools/vendor_sync/list_business_delta.sh --upstream upstream/bk-4.0.1.4
 
 # 在 upstream/bk 分支上导入干净原厂（先手动 checkout upstream 分支）
-./tools/vendor_sync/import_pristine.sh --src /path/to/oem_checkout --commit \
+./tuyaos/tools/vendor_sync/import_pristine.sh --src /path/to/oem_checkout --commit \
   --message "Import pristine BK/Armino t9_os 4.0.1.5"
 
 # 升级影响报告
-./tools/vendor_sync/report_upgrade.sh \
+./tuyaos/tools/vendor_sync/report_upgrade.sh \
   --old upstream/bk-4.0.1.4 \
   --new upstream/bk-4.0.1.5 \
   --out /tmp/t9_upgrade_report.md
 
 # 合并后人工队列
-./tools/vendor_sync/merge_assist.sh \
+./tuyaos/tools/vendor_sync/merge_assist.sh \
   --old upstream/bk-4.0.1.4 \
   --new upstream/bk-4.0.1.5
 
 # 回归测试
-./tools/vendor_sync/tests/run_tests.sh
+./tuyaos/tools/vendor_sync/tests/run_tests.sh
 ```

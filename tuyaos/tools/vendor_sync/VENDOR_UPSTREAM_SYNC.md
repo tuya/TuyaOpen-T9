@@ -1,7 +1,7 @@
 # T9 原厂 `t9_os` Upstream 同步操作手册
 
 配套设计：仓库外 `tuyaos-iot` 文档 `docs/superpowers/specs/2026-07-14-t9-vendor-upstream-sync-design.md`  
-配套工具：同目录下脚本（`import_pristine.sh` / `report_upgrade.sh` / `merge_assist.sh` 等）
+配套工具：本目录脚本（路径：`tuyaos/tools/vendor_sync/`）
 
 本手册假设工作目录为 **vendor/T9 仓库根**（该目录自身为 git root）。
 
@@ -27,11 +27,11 @@ git rm -rf .   # 谨慎：确认已备份
 
 # 2) 只导入干净 t9_os（排除原厂 .git）
 mkdir -p t9_os
-./tools/vendor_sync/import_pristine.sh --src /path/to/oem_clean_N --commit \
+./tuyaos/tools/vendor_sync/import_pristine.sh --src /path/to/oem_clean_N --commit \
   --message "Import pristine BK/Armino t9_os ${N}"
 
 # 如 orphan 后工具脚本已被 git rm，先从业务分支取出工具再执行 import：
-# git checkout feature/vendor_sync-tools -- tools/vendor_sync
+# git checkout feature/vendor_sync-tools -- tuyaos/tools/vendor_sync
 
 # 3) tag 并推送（人工确认后）
 git tag -a "upstream/bk-${N}" -m "Pristine OEM t9_os ${N}; oem_sha=<SHA>"
@@ -70,7 +70,7 @@ git merge "upstream/bk-${N}" -m "Merge pristine upstream/bk-${N} as vendor basel
 
 ```bash
 git checkout upstream/bk
-./tools/vendor_sync/import_pristine.sh --src /path/to/oem_clean_N+1 --commit \
+./tuyaos/tools/vendor_sync/import_pristine.sh --src /path/to/oem_clean_N+1 --commit \
   --message "Import pristine BK/Armino t9_os ${N+1}"
 git tag -a "upstream/bk-${N+1}" -m "Pristine OEM t9_os ${N+1}; oem_sha=<SHA>"
 git push origin upstream/bk "upstream/bk-${N+1}"
@@ -87,12 +87,12 @@ git merge "upstream/bk-${N+1}"
 ### 3.3 报告与人工队列
 
 ```bash
-./tools/vendor_sync/report_upgrade.sh \
+./tuyaos/tools/vendor_sync/report_upgrade.sh \
   --old "upstream/bk-${N}" \
   --new "upstream/bk-${N+1}" \
   --out "t9_os/TUYA_BK_SDK_UPDATE_${N+1}_NOTES.md"
 
-./tools/vendor_sync/merge_assist.sh \
+./tuyaos/tools/vendor_sync/merge_assist.sh \
   --old "upstream/bk-${N}" \
   --new "upstream/bk-${N+1}"
 ```
@@ -124,5 +124,5 @@ git merge "upstream/bk-${N+1}"
 ## 5. 回归测试
 
 ```bash
-./tools/vendor_sync/tests/run_tests.sh
+./tuyaos/tools/vendor_sync/tests/run_tests.sh
 ```
