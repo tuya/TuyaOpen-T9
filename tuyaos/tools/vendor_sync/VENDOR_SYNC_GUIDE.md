@@ -294,15 +294,23 @@ upstream/bk-N 、 upstream/bk-N+1
 3. **`import_pristine.sh --src <原厂N> --commit`**  
 4. `git tag upstream/bk-N` 并 push。  
 5. 回到业务分支（或特性分支如 `feature/vendor_sync-tools`）挂接基线。  
-   orphan 与业务无共同祖先，首次合并会报 `refusing to merge unrelated histories`，需：
+   orphan 与业务无共同祖先；且 `t9_os/` 上常出现海量 **add/add**。正确做法：
 
    ```bash
    git merge upstream/bk-N \
      --allow-unrelated-histories \
+     -s ours \
      -m "Merge pristine upstream/bk-N as vendor baseline"
    ```
 
-   之后升级再 `git merge upstream/bk-N+1` 时，一般**不再**需要该参数。  
+   - `--allow-unrelated-histories`：允许无关历史合并。  
+   - **`-s ours`（不是 `-X ours`）**：双亲 merge + 结果树完全等于业务侧，无冲突；挂祖先并保住 TUYA。  
+   - `-X ours` 对 add/add **往往无效**（Git 2.x 仍会剩数千冲突），勿用于首次挂接。  
+   - 若已合进一半卡住：`git merge --abort` 后按上面重来。  
+
+   之后升级再 `git merge upstream/bk-N+1` 时：一般不再需要 `--allow-unrelated-histories`，也**不要**用 `-s ours` / 默认 `-X ours`（会丢掉原厂改动）；按 §5.2 用 `merge_assist` / `report_upgrade` 处理。  
+
+   验收（zsh 给 `HEAD^` 加引号）：`'HEAD^2'` 应等于 `upstream/bk-N^{commit}`（不要拿裸 tag SHA 比较）；`git diff --stat 'HEAD^1' HEAD` 应为空。  
 6. 可选：`list_business_delta.sh --upstream upstream/bk-N` 核对业务相对基线的改动。  
 
 此阶段一般还用不上「两版原厂」的 `report_upgrade`（还没有 N+1）。

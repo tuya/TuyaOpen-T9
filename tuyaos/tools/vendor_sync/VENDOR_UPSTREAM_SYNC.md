@@ -56,26 +56,75 @@ git push origin "upstream/bk-${N}"
 
 `upstream/bk` 由 **orphan** 创建，与业务分支**没有共同祖先**（`git merge-base` 为空）。首次挂接时 Git 会拒绝合并，这是预期现象，不是 tag 做错了。
 
-### 2.2 首次挂接命令（必须加 `--allow-unrelated-histories`）
+### 2.2 首次挂接命令（用 merge 策略 `-s ours`）
 
 ```bash
 git checkout feature/t9_smp   # 或 feature/vendor_sync-tools 等业务/特性分支
 git merge "upstream/bk-${N}" \
   --allow-unrelated-histories \
+  -s ours \
   -m "Merge pristine upstream/bk-${N} as vendor baseline"
 ```
 
-冲突原则：
+说明：
 
-- 纯原厂文件 → 取 upstream
-- 已有 TUYA 定制 → 保留业务侧，确认标注仍在
-- `tuyaos/` 仅业务侧存在 → 保留业务侧
+- `--allow-unrelated-histories`：允许合并 orphan 与业务两套无关历史。
+- **`-s ours`（首次挂接请用这个，不是 `-X ours`）**：  
+  - 生成双亲 merge commit（业务 + upstream），从而挂上公共祖先。  
+  - **结果树完全等于当前业务分支**，不改任何工作区文件，也**不会**出现数千冲突。  
+  - 首次目标就是：挂祖先 + **保住 TUYA 定制**；不是把干净原厂合进工作区。
+
+#### 为何不要用 `-X ours`
+
+`-X ours` 只是 recursive/ort 策略下的「冲突块偏向我们」选项。  
+orphan 首次合入时，`t9_os/` 多为 **add/add**（两边都像“新加”文件）；在 Git 2.x 上 **`-X ours` 通常不会自动消掉 add/add**，仍会留下两三千个冲突。这是策略限制，不是参数写错。
+
+#### 若已经合进一半、满屏 add/add 冲突
+
+```bash
+# 方案 A：中止后按正确方式重来（推荐）
+git merge --abort
+git merge "upstream/bk-${N}" \
+  --allow-unrelated-histories \
+  -s ours \
+  -m "Merge pristine upstream/bk-${N} as vendor baseline"
+
+# 方案 B：不中止，强制保留业务侧并完成合并（效果接近 -s ours）
+git checkout --ours -- t9_os
+git add t9_os
+# 若还有未合并路径：git diff --name-only --diff-filter=U | xargs -r git checkout --ours --
+# git add -u
+git commit -m "Merge pristine upstream/bk-${N} as vendor baseline"
+```
+
+冲突原则（仅少数非自动 / 升版场景）：
+
+- 已有 TUYA 定制 → 保留业务侧
+- `tuyaos/` → 保留业务侧
+- 首次挂接用 `-s ours` 后无需逐文件处理 `t9_os`
 
 ### 2.3 挂接之后
 
-- 业务历史已与 `upstream/bk` 相连；**以后**合并 `upstream/bk-${N+1}` 时**一般不再需要** `--allow-unrelated-histories`。
-- 该参数**仅用于**「orphan 干净基线 ↔ 业务」的这一次首次挂接，不要用于其它无关分支乱合。
+- 业务历史已与 `upstream/bk` 相连；**以后**合并 `upstream/bk-${N+1}` 时**一般不再需要** `--allow-unrelated-histories`，也**不要**再用 `-s ours`。
+- `--allow-unrelated-histories` **仅用于**「orphan 干净基线 ↔ 业务」的这一次首次挂接，不要用于其它无关分支乱合。
 - 可选核对：`./tuyaos/tools/vendor_sync/list_business_delta.sh --upstream upstream/bk-${N} | head`
+
+#### 挂接成功验收（zsh 下请给 `HEAD^` 加引号）
+
+annotated tag 有两层对象：`git rev-parse upstream/bk-${N}` 可能得到 **tag 对象** SHA；与 merge 第二父比较时要用剥到的 **commit**：
+
+```bash
+# zsh：务必给含 ^ 的参数加引号，否则会报 no matches found
+git rev-parse 'HEAD^2'
+git rev-parse "upstream/bk-${N}^{commit}"
+# 两者应相同
+
+git diff --stat 'HEAD^1' HEAD
+# -s ours 成功时这里应为空（树未改，业务逻辑未被 merge 改写）
+
+git merge-base HEAD "upstream/bk-${N}^{commit}"
+# 应等于 upstream/bk-${N} 指向的 commit
+```
 
 ---
 
