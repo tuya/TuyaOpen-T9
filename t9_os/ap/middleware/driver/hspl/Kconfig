@@ -1,0 +1,58 @@
+menu "HSPL"
+	config HSPL
+		bool "Enable HSPL (Hardware Spin Lock)"
+		default y
+		help
+			Enable HSPL hardware spinlock driver.
+
+	config HSPL_TEST
+		depends on HSPL && DRIVER_TEST
+		bool "Enable HSPL test"
+		default n
+		help
+			Enable HSPL driver CLI test commands.
+
+	config HSPL_LEAK_DEBUG
+		depends on HSPL
+		bool "Enable HSPL leak debug before AP powerdown"
+		default n
+		help
+			Record AP HSPL owner core and caller PC in shared memory, and let
+			CP assert before AP powerdown if AP still owns a lock.
+
+	config HSPL_TIMEOUT_MONITOR_MS
+		depends on HSPL
+		int "HSPL timeout monitor threshold in ms"
+		range 1 1000
+		default 1
+		help
+			Timeout threshold used by the local HSPL timeout monitor.
+			If a lock is held longer than this threshold, the HSPL timeout
+			interrupt dumps state and triggers BK_ASSERT(0).
+
+	config HSPL_TIMEOUT_MONITOR_CHANNEL
+		depends on HSPL
+		int "HSPL timeout monitor channel"
+		range 0 15
+		default 8
+		help
+			Channel selected in the local HSPL timeout monitor. The hardware
+			timeout monitor can track one selected channel per HSPL instance.
+
+	config HSPL_MUST_LOCK_TIMEOUT_MS_DEFAULT
+		depends on HSPL
+		int "must_lock timeout for non-FLASH resources (ms)"
+		range 0 60000
+		default 500
+		help
+			Timeout for all HSPL resources except FLASH. 0 means wait forever.
+
+	config HSPL_MUST_LOCK_TIMEOUT_MS_FLASH
+		depends on HSPL
+		int "must_lock timeout for FLASH resource (ms)"
+		range 0 5000
+		default 5000
+		help
+			FLASH erase/program may take longer; max 5000 ms. 0 means wait forever.
+endmenu
+

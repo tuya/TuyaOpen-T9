@@ -1,0 +1,28 @@
+menu "PWM"
+	config PWM
+		bool "Enable pwm"
+		default n
+
+	config PWM_PM_CB_SUPPORT
+		bool "PWM PM Support"
+		default n
+
+	config PWM_PHASE_SHIFT
+		bool "PWM phase shift Support"
+		default n
+
+	config PWM_FADE
+		bool "PWM fade mode support"
+		default n
+
+	config PWM_TEST
+		depends on PWM && DRIVER_TEST
+		bool "Enable pwm test"
+		default y
+
+	config PWM_API_TEST
+		depends on PWM && DRIVER_TEST
+		bool "Enable pwm api test"
+		default n
+endmenu
+

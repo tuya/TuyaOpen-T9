@@ -1,0 +1,106 @@
+menu "LVGL"
+    config LVGL
+        bool "Enable Lvgl"
+        default n
+
+    choice LVGL_VERSION
+        depends on LVGL
+        prompt "Select LVGL Version"
+        default LVGL_V8
+
+        config LVGL_V8
+            bool "LVGL V8"
+        config LVGL_V9
+            bool "LVGL V9"
+    endchoice
+
+    config LV_USE_DRAW_VG_LITE
+        depends on LVGL_V9
+        bool "Enable LVGL Drawing with VG-Lite GPU"
+        default n
+
+    config LV_VG_LITE_USE_GPU_INIT
+        depends on LV_USE_DRAW_VG_LITE
+        bool "Enable VG-Lite custom external 'gpu_init()' function"
+        default n
+
+    config LV_VG_LITE_USE_ASSERT
+        depends on LV_USE_DRAW_VG_LITE
+        bool "Enable VG-Lite assert"
+        default n
+
+    config LV_VG_LITE_FLUSH_MAX_COUNT
+        depends on LV_USE_DRAW_VG_LITE
+        int "Set VG-Lite flush commit trigger threshold"
+        default 8
+        help
+            GPU will try to batch these many draw tasks
+
+    config LV_VG_LITE_USE_BOX_SHADOW
+        depends on LV_USE_DRAW_VG_LITE
+        bool "Enable border to simulate shadow"
+        default n
+
+    config LV_VG_LITE_GRAD_CACHE_CNT
+        depends on LV_USE_DRAW_VG_LITE
+        int "Set VG-Lite gradient image maximum cache number"
+        default 32
+
+    config LV_VG_LITE_STROKE_CACHE_CNT
+        depends on LV_USE_DRAW_VG_LITE
+        int "Set VG-Lite stroke image maximum cache number"
+        default 32
+
+    config LV_USE_PERF_MONITOR
+        bool "Enable Lv Use Perf Monitor"
+        default n
+        help
+            Show CPU usage and FPS count
+
+    config LV_COLOR_16_SWAP
+        depends on LVGL
+        bool "Enable Swap the 2 bytes of RGB565 color"
+        default n
+
+    config LV_ATTRIBUTE_FAST_MEM
+        depends on LVGL
+        bool "Enable Lv Attribute Fast Mem"
+        default n
+
+    config LV_IMG_UTILITY_CUSTOMIZE
+        depends on LVGL
+        bool "Enable LVGL use customized image decoding method"
+        default n
+
+    config LVGL_TASK_PRIORITY
+        depends on LVGL
+        int "Set lvgl task priority"
+        default 4
+
+    config LVGL_TASK_STACK_SIZE
+        depends on LVGL
+        int "Set lvgl task stack size"
+        default 8192
+        help
+            If LV_USE_DRAW_VG_LITE is enabled, the stack size require a larger size.
+
+    config LVGL_TASK_SLEEP_TIME_CUSTOMIZE
+        depends on LVGL
+        bool "Enable lvgl task sleep time custimize"
+        default n
+
+    config LVGL_TASK_SLEEP_TIME
+        depends on LVGL_TASK_SLEEP_TIME_CUSTOMIZE
+        int "Set lvgl task sleep time"
+        default 10
+
+    config LVGL_FRAME_BUFFER_NUM
+        depends on LVGL
+        int "Set the display frame buffer number"
+        default 2
+
+    config LVGL_USE_GPU_ROTATE
+        depends on LVGL
+        bool "Enable LVGL Use GPU Rotate"
+        default n
+endmenu

@@ -1,0 +1,16 @@
+menu "Watchdog"
+	config TASK_WDT
+		bool "Enable Task Watchdog"
+		default n
+
+	config TASK_WDT_PERIOD_MS
+		depends on TASK_WDT
+		int "Task Watchdog Period(ms)"
+		default 60000
+
+	config TASK_WDT_TEST
+		depends on TASK_WDT && DRIVER_TEST
+		bool "Enable task watchdog test"
+		default y
+endmenu
+

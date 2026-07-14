@@ -1,0 +1,88 @@
+menu "Bk Network Transfer"
+
+	config BK_NTWK_TRANSFER
+		bool "Enable BK Network Transfer"
+		default y
+		help
+			Enable BK Network Transfer
+
+	config MEDIA_DROP_STRATEGY_ENABLE
+		bool "Enable Media Drop Strategy"
+		default y
+		help
+			Enable media drop strategy
+
+	config NTWK_VIDEO_FPS_CALC_ENABLE
+		bool "Enable Network Video FPS Calculation"
+		default y
+		help
+			Enable the common video transfer FPS calculation strategy.
+
+	config NTWK_H264_DROP_POLICY
+		bool "Enable Network H264 Backpressure Drop Policy"
+		depends on BK_NTWK_TRANSFER
+		default y
+		help
+			Enable H264 encoded frame dropping when the encoded-frame free queue is low.
+
+	config DATA_NODE_SIZE
+		int "Video RX Node Size"
+		default 1472
+		help
+			Video receive node size in bytes
+
+	config DATA_POOL_LEN
+		int "Video Pool Length"
+		default 51520
+		help
+			Video pool length in bytes (default: 1472 * 35 = 51520)
+
+	config NTWK_USE_PSARM_MEM
+		bool "Use PSRAM for Network Transfer Memory Allocation"
+		depends on PSRAM
+		default n
+		help
+			Use PSRAM for memory allocation in network transfer component
+
+	config NTWK_CLIENT_SERVICE_ENABLE
+		bool "Enable Network Client Service"
+		default n
+		help
+			Enable network client service
+
+	config NTWK_CTRL_CHAN_JSON
+		bool "Enable control channel JSON framing"
+		depends on BK_NTWK_TRANSFER
+		default n
+		help
+			Frame control-channel JSON methods in the common network transfer layer.
+			When enabled, one application JSON method can be split across multiple
+			transport packets and is reassembled before the application callback.
+			When disabled, the existing control-channel pack/unpack path is used.
+
+	config NTWK_CTRL_JSON_RX_MAX_SIZE
+		int "Control channel max JSON method size"
+		depends on NTWK_CTRL_CHAN_JSON
+		default 8192
+		help
+			Maximum complete JSON method size accepted by the common JSON
+			reassembly layer.
+
+	config NTWK_PKT_USE_PSARM_MEM
+		bool "Use PSRAM for Network Transfer Packet Memory Allocation"
+		depends on PSRAM
+		default y
+		help
+			Use PSRAM for packet memory allocation in network transfer component
+
+	config KVS_NTWK_BRIDGE
+		bool "Bridge KVS WebRTC to bk_network_transfer (cmd=data channel, A/V=RTP)"
+		depends on BK_NTWK_TRANSFER
+		depends on KVS_AWS
+		depends on KVS_AWS_DATA_CHANNEL
+		default n
+		help
+			Maps SampleStreamingSession to ntwk_trans_* (passthrough payloads).
+			Enables hooks in projects/kvs_aws_sample/ap/Common.c.
+
+endmenu

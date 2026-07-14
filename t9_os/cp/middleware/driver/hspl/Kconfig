@@ -1,0 +1,39 @@
+menu "HSPL"
+	config HSPL
+		bool "Enable HSPL (Hardware Spin Lock)"
+		default y
+		help
+			Enable HSPL hardware spinlock driver.
+
+	config HSPL_TEST
+		depends on HSPL && DRIVER_TEST
+		bool "Enable HSPL test"
+		default n
+		help
+			Enable HSPL driver CLI test commands.
+
+	config HSPL_LEAK_DEBUG
+		depends on HSPL
+		bool "Enable HSPL leak debug before AP powerdown"
+		default n
+		help
+			Read the AP HSPL owner shadow from shared memory and assert before
+			AP powerdown if AP still owns a lock.
+
+	config HSPL_MUST_LOCK_TIMEOUT_MS_DEFAULT
+		depends on HSPL
+		int "must_lock timeout for non-FLASH resources (ms)"
+		range 0 60000
+		default 500
+		help
+			Timeout for all HSPL resources except FLASH. 0 means wait forever.
+
+	config HSPL_MUST_LOCK_TIMEOUT_MS_FLASH
+		depends on HSPL
+		int "must_lock timeout for FLASH resource (ms)"
+		range 0 5000
+		default 5000
+		help
+			FLASH erase/program may take longer; max 5000 ms. 0 means wait forever.
+endmenu
+

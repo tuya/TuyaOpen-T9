@@ -1,0 +1,85 @@
+menu "Bk_video_player"
+
+    config AVI_PLAYER
+        bool "Enable AVI Player"
+        default n
+
+    if AVI_PLAYER
+
+    config BK_VIDEO_PLAYER_ENABLE_AVI_PARSER
+        bool "Enable AVI container parser"
+        default y
+
+    config BK_VIDEO_PLAYER_ENABLE_MP4_PARSER
+        bool "Enable MP4 container parser"
+        default y
+    
+    config BK_VIDEO_PLAYER_ENABLE_HW_JPEG_VIDEO_DECODER
+        bool "Enable HW JPEG video decoder"
+        default y
+    config BK_VIDEO_PLAYER_ENABLE_HW_H264_VIDEO_DECODER
+        bool "Enable HW H264 video decoder"
+        default n
+        help
+            Enable the hardware H264 video decoder for bk_video_player.
+            Requires CONFIG_BK_DECODER and BK7259-class SoC. The decoder
+            wraps bk_h264_decode_ctlr (frame mode) and outputs NV12 with
+            optional CPU conversion to YUYV/RGB565/RGB888.
+
+    config BK_VIDEO_PLAYER_ENABLE_AAC_AUDIO_DECODER
+        bool "Enable AAC software audio decoder"
+        default n
+        help
+            Enable the Helix-based AAC software audio decoder for bk_video_player.
+            Required to play the audio stream of typical MP4 (mp4a) files such
+            as those produced by ffmpeg with the AAC encoder. Decoded output is
+            16-bit PCM, interleaved when stereo. Pulls in the aacdec library
+            from properties/modules/audio_codec/aacdec.
+
+    endif # AVI_PLAYER
+
+    config AVI_PLAYER_MAX_JPEG_FRAME_LEN
+        depends on AVI_PLAYER
+        int "Set AVI Player max jpeg frame length"
+        default 102400
+
+    config BK_VIDEO_PLAYER_VIDEO_PARSE_THREAD_PRIORITY
+        int "video parse thread priority (vp_video_parse)"
+        default 6
+
+    config BK_VIDEO_PLAYER_VIDEO_PARSE_THREAD_STACK_SIZE
+        int "video parse thread stack size (bytes)"
+        default 2048
+
+    config BK_VIDEO_PLAYER_AUDIO_PARSE_THREAD_PRIORITY
+        int "audio parse thread priority (vp_audio_parse)"
+        default 6
+
+    config BK_VIDEO_PLAYER_AUDIO_PARSE_THREAD_STACK_SIZE
+        int "audio parse thread stack size (bytes)"
+        default 2048
+
+    config BK_VIDEO_PLAYER_AUDIO_DECODE_THREAD_PRIORITY
+        int "audio decode thread priority (audio_decode)"
+        default 6
+
+    config BK_VIDEO_PLAYER_AUDIO_DECODE_THREAD_STACK_SIZE
+        int "audio decode thread stack size (bytes)"
+        default 2048
+
+    config BK_VIDEO_PLAYER_VIDEO_DECODE_THREAD_PRIORITY
+        int "video decode thread priority (video_decode)"
+        default 6
+
+    config BK_VIDEO_PLAYER_VIDEO_DECODE_THREAD_STACK_SIZE
+        int "video decode thread stack size (bytes)"
+        default 2048
+
+    config BK_VIDEO_PLAYER_EVENT_THREAD_PRIORITY
+        int "event notify thread priority (vp_evt)"
+        default 6
+
+    config BK_VIDEO_PLAYER_EVENT_THREAD_STACK_SIZE
+        int "event notify thread stack size (bytes)"
+        default 4096
+endmenu

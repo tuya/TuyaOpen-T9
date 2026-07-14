@@ -1,0 +1,44 @@
+menu "SDCARD"
+	config SDCARD
+		bool "Enable SDCARD"
+		default y
+
+	config SDCARD_HOST_ID
+		int "SDIO host controller the SD card is wired to (0=SDIO0, 1=SDIO1)"
+		depends on SDCARD
+		default 0
+		help
+		  Single source of truth for which of the two BK7259 SDIO host
+		  controllers the SD card is connected to. 0 = SDIO0
+		  (GPIO2/3/4/5/10/11), 1 = SDIO1 (GPIO14~23). Applied at runtime via
+		  the generic bk_sdio_host_*() API. Boards wiring the SD card to
+		  SDIO1 (e.g. BK7259 Robot V1 AI kit) should set this to 1.
+
+	config SDCARD_CHECK_INSERTION_EN
+		bool "Whether to use pin to determine whether the sdcard is connected"
+		default n
+
+	menu "SDCARD_CHECK_INSERTION_EN"
+		depends on SDCARD_CHECK_INSERTION_EN
+
+		config SDCARD_CHECK_INSERTION_GPIO_ID
+			int "Detect whether to connect the GPIO ID of the sdcard"
+			default 0
+	endmenu
+
+	config SDCARD_POWER_GPIO_CTRL
+		depends on SDCARD
+		bool "Enable SDcard power gpio ctrl"
+		default n
+
+    config SDCARD_POWER_GPIO_CTRL_AUTO_POWERDOWN_WHEN_IDLE
+        depends on SDCARD_POWER_GPIO_CTRL
+        bool "Enable SDcard auto powerdown when idle"
+        default n
+
+	config SDCARD_DEBUG_SUPPORT
+		bool "Enable SDcard debug"
+		default n
+		help
+			enable SDCARD debug, it will dump write and read data with SDCARD
+endmenu

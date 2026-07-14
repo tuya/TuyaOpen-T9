@@ -1,0 +1,70 @@
+menu "PSA Mbedtls"
+	config PSA_MBEDTLS
+		bool "Enable psa mbedtls v3.6.6"
+		default n
+		help
+			enable psa mbedtls v3.6.6
+
+	menu "PSA Mbedtls Options"
+		depends on PSA_MBEDTLS
+
+		config PSA_MBEDTLS_TEST
+			bool "Enable psa interface test"
+			default n
+			help
+				control PSA interface cli testing code
+
+		config MBEDTLS_SSL_IN_CONTENT_LEN
+			int "Config MBEDTLS_SSL_IN_CONTENT_LEN"
+			default 4096
+
+		config MBEDTLS_SSL_OUT_CONTENT_LEN
+			int "Config MBEDTLS_SSL_OUT_CONTENT_LEN"
+			default 4096
+
+		config TRUSTENGINE
+			bool "Enable TrustEngine hardware crypto"
+			help
+				Enable TrustEngine hardware acceleration for mbedtls.
+				Mutually exclusive with SW_CRYPTO.
+
+		config SW_CRYPTO
+			bool "Enable software crypto"
+			default y
+			depends on !TRUSTENGINE
+			help
+				Pure software mbedtls crypto implementation.
+				Cannot be enabled together with TRUSTENGINE.
+
+		config TE200_ENTROPY
+			bool "Enable TE200 entropy"
+			depends on TRUSTENGINE
+			default n
+
+		config TRUSTENGINE_TEST
+			bool "Enable psa mbedtls cli test"
+			depends on PSA_MBEDTLS
+			default n
+			help
+				control mbedtls cli testing code
+
+		config MBEDTLS_USE_PSA_CRYPTO
+			bool "Enable use PSA crypto"
+			default n
+			help
+				tls use PSA interface to implement encryption
+
+		config FULL_MBEDTLS
+			bool "Enable Full Mbedtls"
+			default n
+			help
+				mbedtls support more algorithms(enabled in xxx_config.h)
+
+		config MBEDTLS_LOG_LEVEL
+			string "Set Mbedtls Log Level"
+			default "INFO"
+			help
+				Set mbedtls log level: OFF/ERROR/WARNING/INFO/DEBUG
+	endmenu
+
+endmenu

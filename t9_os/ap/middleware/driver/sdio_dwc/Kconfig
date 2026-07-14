@@ -1,0 +1,16 @@
+menu "SDIO_DWC"
+	config SUPPORT_SDIO_DWC
+		bool "Enable SDIO DWC"
+		default n
+
+	config SDIO_DWC_TEST
+		bool "Enable SDIO DWC Test"
+		depends on SUPPORT_SDIO_DWC
+		default n
+
+	config SDIO_V3P0
+		bool "SDIO Version V3P0"
+		depends on SUPPORT_SDIO_DWC
+		default y
+
+endmenu
