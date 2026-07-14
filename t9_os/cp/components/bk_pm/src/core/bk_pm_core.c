@@ -22,6 +22,7 @@
 #include "pm_sleep.h"
 #include "pm_wakeup_source.h"
 #include "pm_debug.h"
+#include "sys_pm_hal_debug.h"
 
 
 #if CONFIG_PM_PROTECT_TIME_CHECK
@@ -40,22 +41,6 @@ static uint64_t s_pm_enter_normal_sleep_modules = 0;
 static uint64_t s_pm_enter_low_vol_modules    = 0;
 static uint32_t s_pm_enter_deep_sleep_modules = 0;
 
-#if CONFIG_PM_POWER_VOTE_RECORD
-#define PM_POWER_VOTE_RECORD_NUM             (64)
-
-typedef struct {
-	uint32_t module;
-	uint32_t domain;
-	uint32_t submodule;
-	uint32_t power_state;
-	uint32_t return_address;
-	uint32_t power_status;
-} pm_power_vote_record_t;
-
-static volatile uint32_t s_pm_power_vote_record_idx = 0;
-static volatile pm_power_vote_record_t s_pm_power_vote_records[PM_POWER_VOTE_RECORD_NUM];
-#endif
-
 #if CONFIG_PM_PROTECT_TIME_CHECK
 static uint64_t s_bt_need_wakeup_time         = 0;
 static system_wakeup_param_t s_bt_system_wakeup_param;
@@ -67,31 +52,6 @@ static void pm_enter_normal_sleep_modules_config(void);
 static void pm_enter_low_vol_modules_config(void);
 static void pm_enter_deep_sleep_modules_config(void);
 static void pm_core_debug(void);
-
-#if CONFIG_PM_POWER_VOTE_RECORD
-static void pm_power_vote_record(uint32_t module, uint32_t power_state, uint32_t return_address, uint32_t filter_domain)
-{
-	uint32_t domain = module / PM_MODULE_SUB_POWER_DOMAIN_MAX;
-	uint32_t submodule = module % PM_MODULE_SUB_POWER_DOMAIN_MAX;
-	uint32_t index = s_pm_power_vote_record_idx;
-
-	if ((domain > PM_POWER_DOMAIN_4) || (domain != filter_domain))
-	{
-		return;
-	}
-
-	s_pm_power_vote_records[index].module = module;
-	s_pm_power_vote_records[index].domain = domain;
-	s_pm_power_vote_records[index].submodule = submodule;
-	s_pm_power_vote_records[index].power_state = power_state;
-	s_pm_power_vote_records[index].return_address = return_address;
-	s_pm_power_vote_records[index].power_status = sys_drv_module_power_state_get(domain);
-	s_pm_power_vote_record_idx = (s_pm_power_vote_record_idx + 1) % PM_POWER_VOTE_RECORD_NUM;
-
-	BK_LOGV(NULL, "pm_pow_vote_rec: mod = %d, dom = %d, sub = %d, op = %d, ret = %p, pow_sta = %d\n",
-		module, domain, submodule, power_state, return_address, s_pm_power_vote_records[index].power_status);
-}
-#endif
 
 void pm_hardware_init(void)
 {
@@ -311,13 +271,18 @@ bk_err_t bk_pm_module_vote_power_ctrl(pm_power_module_name_e module, pm_power_mo
 		BK_LOGD(NULL, "cpu0 vote power 0x%X 0x%X\r\n", s_pm_on_modules, s_pm_off_modules);
 
 #if CONFIG_PM_POWER_VOTE_RECORD
-	pm_power_vote_record(module, power_state, (uint32_t)__builtin_return_address(0), PM_POWER_DOMAIN_2);
+	sys_hal_pm_power_vote_record(module, power_state, (uint32_t)__builtin_return_address(0), PM_POWER_DOMAIN_2);
 #endif
 	return BK_OK;
 }
 
 bk_err_t bk_pm_module_vote_sleep_ctrl(pm_sleep_module_name_e module, uint32_t sleep_state, uint32_t sleep_time)
 {
+	if (module >= PM_SLEEP_MODULE_NAME_MAX)
+	{
+		return BK_ERR_PARAM;
+	}
+
 	if((module == PM_SLEEP_MODULE_NAME_AT) && (sleep_state == PM_POWER_MODULE_STATE_ON))
 	{
 		return BK_OK;
@@ -398,11 +363,21 @@ uint32_t bk_pm_low_vol_vote_state_get(void)
 
 int32_t bk_pm_module_sleep_state_get(pm_sleep_module_name_e module)
 {
+	if (module >= PM_SLEEP_MODULE_NAME_MAX)
+	{
+		return 0;
+	}
+
 	return !!(s_pm_sleeped_modules & (0x1ULL << module));
 }
 
 bk_err_t bk_pm_clear_deep_sleep_modules_config(pm_power_module_name_e module_name)
 {
+	if (module_name >= 32)
+	{
+		return BK_ERR_PARAM;
+	}
+
 	s_pm_enter_deep_sleep_modules &= ~(0x1 << module_name);
 	return BK_OK;
 }
@@ -410,7 +385,7 @@ bk_err_t bk_pm_clear_deep_sleep_modules_config(pm_power_module_name_e module_nam
 
 /*=========================PM FEATURE START========================*/
 #if CONFIG_PM_LIGHT_SLEEP
-bk_err_t pm_light_sleep(uint32_t sleep_ticks)
+uint64_t pm_light_sleep(uint32_t sleep_ticks)
 {
 	uint64_t previous_tick = 0;
 	uint64_t current_tick = 0;
@@ -418,18 +393,18 @@ bk_err_t pm_light_sleep(uint32_t sleep_ticks)
 	int ret = 0;
 	if (bk_pm_mcu_pm_state_get())
 	{
-		return BK_OK;
+		return 0ULL;
 	}
 
 	if ((s_pm_light_sleep_enter_cb_conf.cb == NULL) || (s_pm_light_sleep_exit_cb_conf.cb == NULL))
 	{
 
-		return BK_FAIL;
+		return 0ULL;
 	}
 	ret = s_pm_light_sleep_enter_cb_conf.cb(sleep_ticks * rtos_get_ms_per_tick(), s_pm_light_sleep_enter_cb_conf.args);
 	if (ret)
 	{
-		return BK_FAIL;
+		return 0ULL;
 	}
 	previous_tick = bk_aon_rtc_get_current_tick(AON_RTC_ID_1);
 	current_tick = previous_tick;
@@ -444,6 +419,7 @@ bk_err_t pm_light_sleep(uint32_t sleep_ticks)
 	// bk_update_tick(missed_ticks);
 
 	s_pm_light_sleep_exit_cb_conf.cb(sleep_ticks * rtos_get_ms_per_tick(), s_pm_light_sleep_exit_cb_conf.args);
+	return missed_ticks;
 }
 #endif
 

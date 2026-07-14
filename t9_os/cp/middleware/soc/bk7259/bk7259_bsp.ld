@@ -15,10 +15,6 @@
 #include "sdkconfig.h"
 #include "ram_regions.h"
 
-#ifndef CONFIG_WIFI_IRAM_OPT_LEVEL
-#define CONFIG_WIFI_IRAM_OPT_LEVEL 2
-#endif
-
 
 OUTPUT_FORMAT("elf32-littlearm", "elf32-bigarm", "elf32-littlearm")
 
@@ -136,8 +132,9 @@ SECTIONS
         __app_init_end = .;
         . = ALIGN(8);
 
+#if (CONFIG_WIFI_IRAM_OPT_LEVEL >= 2)
         EXCLUDE_FILE (
-            /* OS (FreeRTOS) */
+            /* OS (FreeRTOS) (WiFi Tier2: resident in SRAM when level >= 2) */
             *libos_source.a:tasks.c.obj
             *libos_source.a:queue.c.obj
             *libos_source.a:list.c.obj
@@ -149,14 +146,26 @@ SECTIONS
             /* Interrupt handling */
             *arch_interrupt.c.obj
             *interrupts.c.obj
+            /* WiFi RX / list / RF */
             *rxl_hwdesc.c.obj
             *rxl_cntrl.c.obj
             *co_list.c.obj
             *rf_cntrl.c.obj
-            /* lwIP (lib-qualified to avoid over-matching) */
+#if (CONFIG_WIFI_IRAM_OPT_LEVEL >= 3)
+            /* lwIP (WiFi Tier3: resident in SRAM when level >= 3) */
             *liblwip_intf_v2_1.a:wlanif.c.obj
             *liblwip_intf_v2_1.a:pbuf.c.obj
+#endif
         ) *(.text .text.* .rodata .rodata.*)
+#else
+        *(.text .text.* .rodata .rodata.*)
+#endif
+#if (CONFIG_WIFI_IRAM_OPT_LEVEL < 2)
+        *(.iram2 .iram2.*)    /* Tier2 stays in FLASH below level 2 */
+#endif
+#if (CONFIG_WIFI_IRAM_OPT_LEVEL < 3)
+        *(.iram3 .iram3.*)    /* Tier3 stays in FLASH below level 3 */
+#endif
 
         . = ALIGN(4);
         __devconfig_start = .;
@@ -260,15 +269,16 @@ SECTIONS
         *(.itcm_sec_code)
         *(.iram)
 #if (CONFIG_WIFI_IRAM_OPT_LEVEL >= 2)
-        *(.iram2)    /* WiFi Tier2: resident in SRAM when level >= 2 */
+        *(.iram2 .iram2.*)    /* WiFi Tier2: resident in SRAM when level >= 2 */
 #endif
 #if (CONFIG_WIFI_IRAM_OPT_LEVEL >= 3)
-        *(.iram3)    /* WiFi Tier3: resident in SRAM when level >= 3 */
+        *(.iram3 .iram3.*)    /* WiFi Tier3: resident in SRAM when level >= 3 */
 #endif
         *(.interrupt)
         KEEP(*(.interrupt.text*))
 
-       /* OS (FreeRTOS) */
+#if (CONFIG_WIFI_IRAM_OPT_LEVEL >= 2)
+       /* OS (FreeRTOS) (WiFi Tier2: resident in SRAM when level >= 2) */
         *libos_source.a:tasks.c.obj*(.text .text.* .rodata .rodata.*)
         *libos_source.a:queue.c.obj*(.text .text.* .rodata .rodata.*)
         *libos_source.a:list.c.obj*(.text .text.* .rodata .rodata.*)
@@ -285,8 +295,9 @@ SECTIONS
         *rxl_cntrl.c.obj*(.text .text.* .rodata .rodata.*)
         *co_list.c.obj*(.text .text.* .rodata .rodata.*)
         *rf_cntrl.c.obj*(.text .text.* .rodata .rodata.*)
-        /* lwIP WLAN netif + pbuf (WiFi Tier3: resident in SRAM when level >= 3) */
+#endif
 #if (CONFIG_WIFI_IRAM_OPT_LEVEL >= 3)
+        /* lwIP WLAN netif + pbuf (WiFi Tier3: resident in SRAM when level >= 3) */
         *liblwip_intf_v2_1.a:wlanif.c.obj*(.text .text.* .rodata .rodata.*)
         *liblwip_intf_v2_1.a:pbuf.c.obj*(.text .text.* .rodata .rodata.*)
 #endif

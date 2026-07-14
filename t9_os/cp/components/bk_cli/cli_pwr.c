@@ -18,7 +18,8 @@
 #include <driver/pwr_clk.h>
 #include <driver/rosc_32k.h>
 #include <driver/rosc_ppm.h>
-
+#include "sys_pm_hal_debug.h"
+#include "pm_debug.h"
 
 #if 1//CONFIG_SYSTEM_CTRL
 #define PM_MANUAL_LOW_VOL_VOTE_ENABLE          (0)
@@ -94,22 +95,22 @@ void cli_pm_gpio_callback(gpio_id_t gpio_id)
 #if (CONFIG_CPU_CNT > 1)
 extern int mb_ipc_cpu_is_power_off(u32 cpu_id);
 
-#define PM_BOOT_CP1_STRESS_MAX_TASKS        (8)
-#define PM_BOOT_CP1_STRESS_TASK_STACK       (2048)
-#define PM_BOOT_CP1_STRESS_TASK_PRIO        (5)
-#define PM_BOOT_CP1_STRESS_CHECK_TIMEOUT_MS (3000)
-#define PM_BOOT_CP1_STRESS_CHECK_STEP_MS    (10)
+#define PM_BOOT_AP_STRESS_MAX_TASKS        (8)
+#define PM_BOOT_AP_STRESS_TASK_STACK       (2048)
+#define PM_BOOT_AP_STRESS_TASK_PRIO        (5)
+#define PM_BOOT_AP_STRESS_CHECK_TIMEOUT_MS (3000)
+#define PM_BOOT_AP_STRESS_CHECK_STEP_MS    (10)
 
 typedef struct {
 	UINT32 module_name;
 	UINT32 power_state;
 	bk_err_t ret;
 	uint32_t worker_id;
-} pm_boot_cp1_stress_worker_t;
+} pm_boot_ap_stress_worker_t;
 
-static beken_semaphore_t s_pm_boot_cp1_stress_sema = NULL;
+static beken_semaphore_t s_pm_boot_ap_stress_sema = NULL;
 
-static bool cli_pm_boot_cp1_wait_state(UINT32 power_state, UINT32 timeout_ms)
+static bool cli_pm_boot_ap_wait_state(UINT32 power_state, UINT32 timeout_ms)
 {
 	UINT32 elapsed_ms = 0;
 	bool ap_boot = false;
@@ -130,25 +131,25 @@ static bool cli_pm_boot_cp1_wait_state(UINT32 power_state, UINT32 timeout_ms)
 			return true;
 		}
 
-		rtos_delay_milliseconds(PM_BOOT_CP1_STRESS_CHECK_STEP_MS);
-		elapsed_ms += PM_BOOT_CP1_STRESS_CHECK_STEP_MS;
+		rtos_delay_milliseconds(PM_BOOT_AP_STRESS_CHECK_STEP_MS);
+		elapsed_ms += PM_BOOT_AP_STRESS_CHECK_STEP_MS;
 	}
 
-	BK_LOGW(NULL, "pm_boot_cp1 stress wait timeout: state=%u timeout=%u ap_boot=%d ap_off=%d\r\n",
+	BK_LOGW(NULL, "pm_boot_ap stress wait timeout: state=%u timeout=%u ap_boot=%d ap_off=%d\r\n",
 		power_state, timeout_ms, ap_boot, ap_off);
 	return false;
 }
 
-static void cli_pm_boot_cp1_stress_worker(void *arg)
+static void cli_pm_boot_ap_stress_worker(void *arg)
 {
-	pm_boot_cp1_stress_worker_t *worker = (pm_boot_cp1_stress_worker_t *)arg;
+	pm_boot_ap_stress_worker_t *worker = (pm_boot_ap_stress_worker_t *)arg;
 
 	worker->ret = bk_pm_module_vote_boot_ap_ctrl(worker->module_name, worker->power_state);
-	rtos_set_semaphore(&s_pm_boot_cp1_stress_sema);
+	rtos_set_semaphore(&s_pm_boot_ap_stress_sema);
 	rtos_delete_thread(NULL);
 }
 
-static uint32_t cli_pm_boot_cp1_stress_run_phase(pm_boot_cp1_stress_worker_t *workers,
+static uint32_t cli_pm_boot_ap_stress_run_phase(pm_boot_ap_stress_worker_t *workers,
 	UINT32 start_module, UINT32 task_count, UINT32 power_state)
 {
 	uint32_t created_count = 0;
@@ -164,13 +165,13 @@ static uint32_t cli_pm_boot_cp1_stress_run_phase(pm_boot_cp1_stress_worker_t *wo
 		workers[index].worker_id = index;
 
 		if (rtos_create_thread(&handle,
-			PM_BOOT_CP1_STRESS_TASK_PRIO,
-			"pm_cp1_stress",
-			(beken_thread_function_t)cli_pm_boot_cp1_stress_worker,
-			PM_BOOT_CP1_STRESS_TASK_STACK,
+			PM_BOOT_AP_STRESS_TASK_PRIO,
+			"pm_ap_stress",
+			(beken_thread_function_t)cli_pm_boot_ap_stress_worker,
+			PM_BOOT_AP_STRESS_TASK_STACK,
 			(beken_thread_arg_t)&workers[index]) != BK_OK)
 		{
-			BK_LOGE(NULL, "pm_boot_cp1 stress create task failed, idx=%u module=%u state=%u\r\n",
+			BK_LOGE(NULL, "pm_boot_ap stress create task failed, idx=%u module=%u state=%u\r\n",
 				index, workers[index].module_name, power_state);
 			continue;
 		}
@@ -180,13 +181,13 @@ static uint32_t cli_pm_boot_cp1_stress_run_phase(pm_boot_cp1_stress_worker_t *wo
 
 	for (index = 0; index < created_count; index++)
 	{
-		rtos_get_semaphore(&s_pm_boot_cp1_stress_sema, BEKEN_WAIT_FOREVER);
+		rtos_get_semaphore(&s_pm_boot_ap_stress_sema, BEKEN_WAIT_FOREVER);
 	}
 
 	return created_count;
 }
 
-static void cli_pm_boot_cp1_stress(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv)
+static void cli_pm_boot_ap_stress(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv)
 {
 	UINT32 start_module = 0;
 	UINT32 task_count = 0;
@@ -197,11 +198,11 @@ static void cli_pm_boot_cp1_stress(char *pcWriteBuffer, int xWriteBufferLen, int
 	uint32_t total_count = 0;
 	uint32_t success_count = 0;
 	uint32_t fail_count = 0;
-	pm_boot_cp1_stress_worker_t workers[PM_BOOT_CP1_STRESS_MAX_TASKS] = {0};
+	pm_boot_ap_stress_worker_t workers[PM_BOOT_AP_STRESS_MAX_TASKS] = {0};
 
 	if ((argc != 6) && (argc != 7))
 	{
-		BK_LOGI(NULL, "usage: pm_boot_cp1 stress [start_module] [task_count] [loop_count] [on_hold_ms] [off_hold_ms]\r\n");
+		BK_LOGI(NULL, "usage: pm_boot_ap stress [start_module] [task_count] [loop_count] [on_hold_ms] [off_hold_ms]\r\n");
 		return;
 	}
 
@@ -214,27 +215,27 @@ static void cli_pm_boot_cp1_stress(char *pcWriteBuffer, int xWriteBufferLen, int
 		off_hold_ms = os_strtoul(argv[6], NULL, 10);
 	}
 
-	if ((task_count == 0) || (task_count > PM_BOOT_CP1_STRESS_MAX_TASKS) ||
+	if ((task_count == 0) || (task_count > PM_BOOT_AP_STRESS_MAX_TASKS) ||
 		(loop_count == 0) || ((start_module + task_count) > PM_BOOT_AP_MODULE_NAME_MAX))
 	{
-		BK_LOGE(NULL, "pm_boot_cp1 stress invalid param: start=%u tasks=%u loops=%u max_tasks=%u module_max=%u\r\n",
-			start_module, task_count, loop_count, PM_BOOT_CP1_STRESS_MAX_TASKS, PM_BOOT_AP_MODULE_NAME_MAX);
+		BK_LOGE(NULL, "pm_boot_ap stress invalid param: start=%u tasks=%u loops=%u max_tasks=%u module_max=%u\r\n",
+			start_module, task_count, loop_count, PM_BOOT_AP_STRESS_MAX_TASKS, PM_BOOT_AP_MODULE_NAME_MAX);
 		return;
 	}
 
-	if (s_pm_boot_cp1_stress_sema != NULL)
+	if (s_pm_boot_ap_stress_sema != NULL)
 	{
-		BK_LOGE(NULL, "pm_boot_cp1 stress already running\r\n");
+		BK_LOGE(NULL, "pm_boot_ap stress already running\r\n");
 		return;
 	}
 
-	if (rtos_init_semaphore_ex(&s_pm_boot_cp1_stress_sema, task_count, 0) != BK_OK)
+	if (rtos_init_semaphore_ex(&s_pm_boot_ap_stress_sema, task_count, 0) != BK_OK)
 	{
-		BK_LOGE(NULL, "pm_boot_cp1 stress init semaphore failed\r\n");
+		BK_LOGE(NULL, "pm_boot_ap stress init semaphore failed\r\n");
 		return;
 	}
 
-	BK_LOGI(NULL, "pm_boot_cp1 stress start: start_module=%u tasks=%u loops=%u on_hold_ms=%u off_hold_ms=%u\r\n",
+	BK_LOGI(NULL, "pm_boot_ap stress start: start_module=%u tasks=%u loops=%u on_hold_ms=%u off_hold_ms=%u\r\n",
 		start_module, task_count, loop_count, on_hold_ms, off_hold_ms);
 
 	for (loop = 0; loop < loop_count; loop++)
@@ -243,9 +244,9 @@ static void cli_pm_boot_cp1_stress(char *pcWriteBuffer, int xWriteBufferLen, int
 		uint32_t created_count;
 		bool phase_ok;
 
-		created_count = cli_pm_boot_cp1_stress_run_phase(workers, start_module, task_count, PM_POWER_MODULE_STATE_ON);
+		created_count = cli_pm_boot_ap_stress_run_phase(workers, start_module, task_count, PM_POWER_MODULE_STATE_ON);
 		phase_ok = (created_count == task_count) &&
-			cli_pm_boot_cp1_wait_state(PM_POWER_MODULE_STATE_ON, PM_BOOT_CP1_STRESS_CHECK_TIMEOUT_MS);
+			cli_pm_boot_ap_wait_state(PM_POWER_MODULE_STATE_ON, PM_BOOT_AP_STRESS_CHECK_TIMEOUT_MS);
 
 		for (index = 0; index < task_count; index++)
 		{
@@ -260,7 +261,7 @@ static void cli_pm_boot_cp1_stress(char *pcWriteBuffer, int xWriteBufferLen, int
 			}
 		}
 
-		BK_LOGI(NULL, "pm_boot_cp1 stress loop=%u ON result=%d total=%u success=%u fail=%u\r\n",
+		BK_LOGI(NULL, "pm_boot_ap stress loop=%u ON result=%d total=%u success=%u fail=%u\r\n",
 			loop, phase_ok, total_count, success_count, fail_count);
 
 		if (on_hold_ms)
@@ -268,9 +269,9 @@ static void cli_pm_boot_cp1_stress(char *pcWriteBuffer, int xWriteBufferLen, int
 			rtos_delay_milliseconds(on_hold_ms);
 		}
 
-		created_count = cli_pm_boot_cp1_stress_run_phase(workers, start_module, task_count, PM_POWER_MODULE_STATE_OFF);
+		created_count = cli_pm_boot_ap_stress_run_phase(workers, start_module, task_count, PM_POWER_MODULE_STATE_OFF);
 		phase_ok = (created_count == task_count) &&
-			cli_pm_boot_cp1_wait_state(PM_POWER_MODULE_STATE_OFF, PM_BOOT_CP1_STRESS_CHECK_TIMEOUT_MS);
+			cli_pm_boot_ap_wait_state(PM_POWER_MODULE_STATE_OFF, PM_BOOT_AP_STRESS_CHECK_TIMEOUT_MS);
 
 		for (index = 0; index < task_count; index++)
 		{
@@ -285,7 +286,7 @@ static void cli_pm_boot_cp1_stress(char *pcWriteBuffer, int xWriteBufferLen, int
 			}
 		}
 
-		BK_LOGI(NULL, "pm_boot_cp1 stress loop=%u OFF result=%d total=%u success=%u fail=%u\r\n",
+		BK_LOGI(NULL, "pm_boot_ap stress loop=%u OFF result=%d total=%u success=%u fail=%u\r\n",
 			loop, phase_ok, total_count, success_count, fail_count);
 
 		if (off_hold_ms && ((loop + 1) < loop_count))
@@ -294,11 +295,11 @@ static void cli_pm_boot_cp1_stress(char *pcWriteBuffer, int xWriteBufferLen, int
 		}
 	}
 
-	BK_LOGI(NULL, "pm_boot_cp1 stress done: total=%u success=%u fail=%u\r\n",
+	BK_LOGI(NULL, "pm_boot_ap stress done: total=%u success=%u fail=%u\r\n",
 		total_count, success_count, fail_count);
 
-	rtos_deinit_semaphore(&s_pm_boot_cp1_stress_sema);
-	s_pm_boot_cp1_stress_sema = NULL;
+	rtos_deinit_semaphore(&s_pm_boot_ap_stress_sema);
+	s_pm_boot_ap_stress_sema = NULL;
 }
 #endif
 
@@ -518,13 +519,19 @@ static void cli_pm_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char 
 static void cli_pm_debug(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv)
 {
 	UINT32 pm_debug  = 0;
-	if (argc != 2)
+	UINT32 aon_flush = 0;
+
+	if ((argc != 2) && (argc != 3))
 	{
 		BK_LOGD(NULL,"set low power debug parameter invalid %d\r\n",argc);
 		return;
 	}
 
 	pm_debug = os_strtoul(argv[1], NULL, 10);
+	if (argc == 3)
+	{
+		aon_flush = os_strtoul(argv[2], NULL, 10);
+	}
 
 	pm_debug_ctrl(pm_debug);
 
@@ -533,6 +540,11 @@ static void cli_pm_debug(char *pcWriteBuffer, int xWriteBufferLen, int argc, cha
 		pm_debug_pwr_clk_state();
 		pm_debug_lv_state();
 		bk_pm_cpu_freq_dump();
+
+		if(aon_flush == 1)
+		{
+			pm_debug_lv_aon_flush();
+		}
 	}
 	/*for temp debug*/
 	if(pm_debug == 16)
@@ -1283,7 +1295,7 @@ static void cli_pm_rosc_accuracy(char *pcWriteBuffer, int xWriteBufferLen, int a
 	}
 
 	timer_count_interval   = os_strtoul(argv[1], NULL, 10);
-	bk_timer_start(0, timer_count_interval, cli_pm_timer_isr);
+	bk_timer_start(TIMER_ID1, timer_count_interval, cli_pm_timer_isr);
 #endif
 }
 static void cli_pm_rosc_cali(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv)
@@ -1456,42 +1468,27 @@ static void cli_pm_rosc_ppm(char *pcWriteBuffer, int xWriteBufferLen, int argc, 
 #endif
 }
 
-static void cli_pm_cp1_ctrl(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv)
+static void cli_pm_boot_ap(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv)
 {
 #if 1 && (CONFIG_CPU_CNT > 1)
-	UINT32 cp1_ctrl = 0;
-
-	if (argc != 2)
-	{
-		BK_LOGD(NULL,"cp1 ctrl parameter invalid %d\r\n",argc);
-		return;
-	}
-
-	cp1_ctrl   = os_strtoul(argv[1], NULL, 10);
-	bk_pm_cp1_auto_power_down_state_set(cp1_ctrl);
-#endif
-}
-static void cli_pm_boot_cp1(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv)
-{
-#if 1 && (CONFIG_CPU_CNT > 1)
-	UINT32 boot_cp1_state = 0;
+	UINT32 boot_ap_state = 0;
 	UINT32 module_name    = 0;
 
 	if ((argc >= 2) && (os_strcmp(argv[1], "stress") == 0))
 	{
-		cli_pm_boot_cp1_stress(pcWriteBuffer, xWriteBufferLen, argc, argv);
+		cli_pm_boot_ap_stress(pcWriteBuffer, xWriteBufferLen, argc, argv);
 		return;
 	}
 
 	if (argc != 3)
 	{
-		BK_LOGD(NULL,"usage: pm_boot_cp1 [module_name] [ctrl_state:0:on 1:off]\r\n");
-		BK_LOGD(NULL,"usage: pm_boot_cp1 stress [start_module] [task_count] [loop_count] [on_hold_ms] [off_hold_ms]\r\n");
+		BK_LOGD(NULL,"usage: pm_boot_ap [module_name] [ctrl_state:0:on 1:off]\r\n");
+		BK_LOGD(NULL,"usage: pm_boot_ap stress [start_module] [task_count] [loop_count] [on_hold_ms] [off_hold_ms]\r\n");
 		return;
 	}
 	module_name   = os_strtoul(argv[1], NULL, 10);
-	boot_cp1_state   = os_strtoul(argv[2], NULL, 10);
-	bk_pm_module_vote_boot_ap_ctrl(module_name,boot_cp1_state);
+	boot_ap_state   = os_strtoul(argv[2], NULL, 10);
+	bk_pm_module_vote_boot_ap_ctrl(module_name,boot_ap_state);
 #endif
 }
 #if (CONFIG_CPU_CNT > 2)
@@ -1588,8 +1585,7 @@ static const struct cli_command s_pwr_commands[] = {
 	{"pm_rosc_pin", "pm_rosc_pin [lpo_clk:0:ana;1:dig]", cli_pm_clk_pin},
 	{"pm_wakeup_source", "pm_wakeup_source [pm_sleep_mode]", cli_pm_wakeup_source},
 	{"pm_rosc_ppm", "pm_rosc_ppm [interval] [count]", cli_pm_rosc_ppm},
-	{"pm_cp1_ctrl", "pm_cp1_ctrl [cp1_auto_pw_ctrl]", cli_pm_cp1_ctrl},
-	{"pm_boot_cp1", "pm_boot_cp1 [module_name] [ctrl_state:0:on 1:off] | pm_boot_cp1 stress [start_module] [task_count] [loop_count] [on_hold_ms] [off_hold_ms]", cli_pm_boot_cp1},
+	{"pm_boot_ap", "pm_boot_ap [module_name] [ctrl_state:0:on 1:off] | pm_boot_ap stress [start_module] [task_count] [loop_count] [on_hold_ms] [off_hold_ms]", cli_pm_boot_ap},
 #if (CONFIG_CPU_CNT > 2)
 	{"pm_boot_cp2", "pm_boot_cp2 [module_name] [ctrl_state:0x0:bootup; 0x1:shutdowm]", cli_pm_boot_cp2},
 #endif

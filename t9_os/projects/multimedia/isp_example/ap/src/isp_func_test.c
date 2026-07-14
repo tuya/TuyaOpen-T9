@@ -20,8 +20,14 @@ typedef struct {
     bk_isp_camera_ctlr_handle_t camera_ctlr_handle;
     uint32_t mp_frame_size;
     uint32_t sp_frame_size;
+    /* Per-channel output geometry/format, recorded at channel open time. */
+    uint16_t mp_width;
+    uint16_t mp_height;
+    uint16_t sp_width;
+    uint16_t sp_height;
+    bk_pixel_format_t mp_fmt;
+    bk_pixel_format_t sp_fmt;
     uint8_t is_initialized;  // Flag to indicate if camera is initialized
-    uint8_t is_mipi;        // Flag to indicate MIPI or DVP
     uint8_t is_sensor_started;  // Flag to indicate if sensor streaming is started
 } isp_camera_handle_t;
 
@@ -33,10 +39,10 @@ static avdk_err_t isp_close_channel(uint8_t is_mp);
 
 /**
  * @brief Detect sensor on a specific camera port and print its information
- * @param port Camera port (DVP_CAMERA_PORT or CSI_CAMERA_PORT)
+ * @param port Camera port (CSI_CAMERA_PORT)
  * @param bus_config Bus configuration for the port
  * @param sensor_config Sensor configuration
- * @param port_name Port name string for logging (e.g., "DVP" or "CSI")
+ * @param port_name Port name string for logging (e.g., "CSI")
  * @return 1 if sensor detected, 0 otherwise
  */
 static int isp_detect_sensor_on_port(bk_camera_port_t port,
@@ -115,7 +121,7 @@ static int isp_detect_sensor_on_port(bk_camera_port_t port,
 }
 
 /**
- * @brief Detect all sensors on DVP and CSI ports
+ * @brief Detect CSI sensor
  * @return Number of sensors detected
  */
 int isp_detect_all_sensors(void)
@@ -124,17 +130,8 @@ int isp_detect_all_sensors(void)
     bk_camera_bus_config_t bus_config;
     bk_camera_sensor_config_t sensor_config;
 
-    LOGI("Starting sensor detection...\n");
+    LOGI("Starting CSI sensor detection...\n");
 
-    // Detect DVP sensor
-    bus_config = (bk_camera_bus_config_t)DVP_CAM_BUS_I2C1_8BIT_2000TIMEOUT();
-    os_memset(&sensor_config, 0, sizeof(sensor_config));
-    sensor_config.pin_reset = GPIO_13;
-    sensor_config.pin_pwdn = 0xFF;
-    sensor_config.pin_xclk = GPIO_27;
-    sensor_count += isp_detect_sensor_on_port(DVP_CAMERA_PORT, &bus_config, &sensor_config, "DVP");
-
-    // Detect CSI sensor
     bus_config = (bk_camera_bus_config_t)CSI_CAM_BUS_I2C1_8BIT_2000TIMEOUT();
     os_memset(&sensor_config, 0, sizeof(sensor_config));
     sensor_config.pin_reset = GPIO_71;
@@ -142,7 +139,7 @@ int isp_detect_all_sensors(void)
     sensor_config.pin_xclk = GPIO_59;
     sensor_count += isp_detect_sensor_on_port(CSI_CAMERA_PORT, &bus_config, &sensor_config, "CSI");
 
-    LOGI("Sensor detection complete. Found %d sensor(s).\n", sensor_count);
+    LOGI("CSI sensor detection complete. Found %d sensor(s).\n", sensor_count);
 
     return sensor_count;
 }
@@ -355,7 +352,6 @@ static avdk_err_t isp_init_mipi_camera(uint16_t width, uint16_t height, uint16_t
 
     s_isp_camera_handle.bus = bus;
     s_isp_camera_handle.is_initialized = 1;
-    s_isp_camera_handle.is_mipi = 1;
     LOGI("MIPI CSI camera initialized successfully\n");
 
     return AVDK_ERR_OK;
@@ -397,9 +393,7 @@ static avdk_err_t isp_create_instance(uint8_t chnl_id, uint16_t width, uint16_t 
                                       uint8_t flexa_mode, bk_pixel_format_t output_fmt)
 {
     avdk_err_t ret = AVDK_ERR_OK;
-    uint8_t port_id = s_isp_camera_handle.is_mipi ? ISP_MIPI_PORT_ID : ISP_DVP_PORT_ID;
-    // there is a bug for use dvp frame buffer mode, need to fix it in the future
-    port_id = 0;
+    uint8_t port_id = ISP_MIPI_PORT_ID;
     const char *chnl_name = (chnl_id == 0) ? "MP" : "SP";
 
     if (!s_isp_camera_handle.is_initialized || !s_isp_camera_handle.camera_ctlr_handle)
@@ -422,9 +416,15 @@ static avdk_err_t isp_create_instance(uint8_t chnl_id, uint16_t width, uint16_t 
 
     if (chnl_id == 0) {
         s_isp_camera_handle.mp_frame_size = bk_image_size_get(width, height, output_fmt);
+        s_isp_camera_handle.mp_width = width;
+        s_isp_camera_handle.mp_height = height;
+        s_isp_camera_handle.mp_fmt = output_fmt;
     }
     else {
         s_isp_camera_handle.sp_frame_size = bk_image_size_get(width, height, output_fmt);
+        s_isp_camera_handle.sp_width = width;
+        s_isp_camera_handle.sp_height = height;
+        s_isp_camera_handle.sp_fmt = output_fmt;
     }
 
     LOGI("Creating %s instance: %dx%d, flexa=%d, fmt=%d, mp_frame_size=%d, sp_frame_size=%d\n",
@@ -525,232 +525,6 @@ static avdk_err_t isp_open_mipi_camera(uint16_t sensor_width, uint16_t sensor_he
 }
 
 /**
- * @brief Initialize DVP camera (bus, sensor, controller, port)
- * @param width Output width
- * @param height Output height
- * @param fps Frame rate
- * @return AVDK_ERR_OK on success, error code otherwise
- */
-static avdk_err_t isp_init_dvp_camera(uint16_t width, uint16_t height, uint16_t fps)
-{
-    avdk_err_t ret = AVDK_ERR_OK;
-    bk_camera_bus_t *bus = NULL;
-    bk_camera_bus_config_t bus_config = (bk_camera_bus_config_t)DVP_CAM_BUS_I2C1_8BIT_2000TIMEOUT();
-    bk_camera_sensor_config_t sensor_config = {
-        .pin_reset = GPIO_13,
-        .pin_pwdn = 0xFF,
-        .pin_xclk = GPIO_27,
-    };
-    bk_isp_camera_ctlr_config_t isp_ctlr_config = CAM_DVP_DEFAULT_RAW8_CONFIG(width, height, fps);
-
-    LOGI("Initializing DVP camera: %dx%d @ %dfps\n", width, height, fps);
-
-    // Step 1: Create and enable bus
-    bus = bk_camera_bus_new(&bus_config);
-    if (!bus)
-    {
-        LOGE("Failed to create camera bus\n");
-        ret = AVDK_ERR_GENERIC;
-        goto err;
-    }
-
-    ret = bk_camera_bus_enable(bus);
-    if (ret != AVDK_ERR_OK)
-    {
-        LOGE("Failed to enable camera bus\n");
-        goto err;
-    }
-
-    // Step 2: Detect sensor
-    sensor_config.bus = bus;
-    s_isp_camera_handle.sensor_handle = bk_camera_sensor_auto_detect(&sensor_config, DVP_CAMERA_PORT);
-    if (!s_isp_camera_handle.sensor_handle)
-    {
-        LOGE("No sensor detected on DVP port\n");
-        ret = AVDK_ERR_NODEV;
-        goto err;
-    }
-
-    // Step 3: Check sensor resolution
-    ret = isp_check_sensor_resolution(s_isp_camera_handle.sensor_handle, width, height, fps);
-    if (ret != AVDK_ERR_OK)
-    {
-        goto err;
-    }
-
-    // Step 4: Get sensor object
-    const void *sensor_object = bk_camera_sensor_get_sensor_object(s_isp_camera_handle.sensor_handle);
-    if (!sensor_object)
-    {
-        LOGE("Failed to get sensor object\n");
-        ret = AVDK_ERR_GENERIC;
-        goto err;
-    }
-    isp_ctlr_config.sensor_object = sensor_object;
-
-    /* Pull the raw pixel format from the matched sensor mode (the macro no
-     * longer hard-codes it); falls back to the first entry if no exact
-     * (w,h,fps) match is found. */
-    {
-        bk_camera_sensor_format_array_t fmt_arr = {0};
-        if (bk_camera_sensor_query_support_formats(s_isp_camera_handle.sensor_handle, &fmt_arr) == AVDK_ERR_OK
-            && fmt_arr.size > 0)
-        {
-            uint32_t i;
-            isp_ctlr_config.input_pixel_fmt = fmt_arr.format_array[0].output_pixel_fmt;
-            for (i = 0; i < fmt_arr.size; i++)
-            {
-                if (fmt_arr.format_array[i].width == width
-                    && fmt_arr.format_array[i].height == height
-                    && fmt_arr.format_array[i].fps == fps)
-                {
-                    isp_ctlr_config.input_pixel_fmt = fmt_arr.format_array[i].output_pixel_fmt;
-                    break;
-                }
-            }
-        }
-    }
-
-    // Step 5: Create and init camera controller
-    ret = bk_camera_isp_ctlr_new(&s_isp_camera_handle.camera_ctlr_handle);
-    if (ret != AVDK_ERR_OK)
-    {
-        LOGE("Failed to create camera controller\n");
-        goto err;
-    }
-
-    ret = bk_isp_camera_dev_init(s_isp_camera_handle.camera_ctlr_handle);
-    if (ret != AVDK_ERR_OK)
-    {
-        LOGE("Failed to init camera device\n");
-        goto err;
-    }
-
-    // Step 6: Init camera port
-    ret = bk_isp_camera_port_init(s_isp_camera_handle.camera_ctlr_handle, &isp_ctlr_config);
-    if (ret != AVDK_ERR_OK)
-    {
-        LOGE("Failed to init camera port\n");
-        goto err;
-    }
-
-    // Step 7: Init and set sensor format
-    ret = bk_camera_sensor_init(s_isp_camera_handle.sensor_handle);
-    if (ret != AVDK_ERR_OK)
-    {
-        LOGE("Failed to init sensor\n");
-        goto err;
-    }
-
-    bk_camera_sensor_format_t format = {
-        .width = width,
-        .height = height,
-        .fps = fps,
-    };
-    ret = bk_camera_sensor_set_format(s_isp_camera_handle.sensor_handle, &format);
-    if (ret != AVDK_ERR_OK)
-    {
-        LOGE("Failed to set sensor format\n");
-        goto err;
-    }
-
-    s_isp_camera_handle.bus = bus;
-    s_isp_camera_handle.is_initialized = 1;
-    s_isp_camera_handle.is_mipi = 0;
-    s_isp_camera_handle.is_sensor_started = 1;
-    LOGI("DVP camera initialized successfully\n");
-
-    return AVDK_ERR_OK;
-
-err:
-    if (s_isp_camera_handle.camera_ctlr_handle)
-    {
-        bk_isp_camera_deinit(s_isp_camera_handle.camera_ctlr_handle);
-        bk_isp_camera_delete(s_isp_camera_handle.camera_ctlr_handle);
-        s_isp_camera_handle.camera_ctlr_handle = NULL;
-    }
-
-    if (s_isp_camera_handle.sensor_handle)
-    {
-        bk_camera_sensor_destroy(s_isp_camera_handle.sensor_handle);
-        s_isp_camera_handle.sensor_handle = NULL;
-    }
-
-    if (bus)
-    {
-        bk_camera_bus_disable(bus);
-        bk_camera_bus_delete(bus);
-    }
-
-    s_isp_camera_handle.is_sensor_started = 0;
-    return ret;
-}
-
-/**
- * @brief Open DVP camera (legacy function, kept for compatibility)
- * @param sensor_width Sensor output width
- * @param sensor_height Sensor output height
- * @param fps Frame rate
- * @param chnl_id Channel ID (0 for MP, 1 for SP)
- * @param flexa_mode Flexa mode (0: frame, 1: flexa mode)
- * @param output_fmt Output pixel format
- * @param isp_output_width ISP output width
- * @param isp_output_height ISP output height
- * @return AVDK_ERR_OK on success, error code otherwise
- */
-static avdk_err_t isp_open_dvp_camera(uint16_t sensor_width, uint16_t sensor_height, uint16_t fps,
-                                      uint8_t chnl_id, uint8_t flexa_mode, bk_pixel_format_t output_fmt,
-                                      uint16_t isp_output_width, uint16_t isp_output_height)
-{
-    avdk_err_t ret;
-
-    // Initialize camera if not already initialized (use sensor resolution)
-    if (!s_isp_camera_handle.is_initialized)
-    {
-        ret = isp_init_dvp_camera(sensor_width, sensor_height, fps);
-        if (ret != AVDK_ERR_OK)
-        {
-            return ret;
-        }
-    }
-
-    // Create and start instance (use ISP output resolution)
-    return isp_create_instance(chnl_id, isp_output_width, isp_output_height, flexa_mode, output_fmt);
-}
-
-/**
- * @brief Open ISP camera based on parameters
- * @param is_mipi True for MIPI CSI, false for DVP
- * @param is_mp True for MP channel, false for SP channel
- * @param sensor_width Sensor output width
- * @param sensor_height Sensor output height
- * @param fps Frame rate
- * @param flexa_mode Flexa mode (0: frame, 1: flexa)
- * @param output_fmt Output pixel format
- * @param isp_output_width ISP output width
- * @param isp_output_height ISP output height
- * @return AVDK_ERR_OK on success, error code otherwise
- */
-static avdk_err_t isp_open_camera(uint8_t is_mipi, uint8_t is_mp,
-                                   uint16_t sensor_width, uint16_t sensor_height, uint16_t fps,
-                                   uint8_t flexa_mode, bk_pixel_format_t output_fmt,
-                                   uint16_t isp_output_width, uint16_t isp_output_height)
-{
-    uint8_t chnl_id = is_mp ? 0 : 1; // 0: MP, 1: SP
-
-    if (is_mipi)
-    {
-        return isp_open_mipi_camera(sensor_width, sensor_height, fps, chnl_id, flexa_mode, output_fmt,
-                                     isp_output_width, isp_output_height);
-    }
-    else
-    {
-        return isp_open_dvp_camera(sensor_width, sensor_height, fps, chnl_id, flexa_mode, output_fmt,
-                                   isp_output_width, isp_output_height);
-    }
-}
-
-/**
  * @brief Cleanup all ISP resources (callbacks, timer, controller, etc.)
  * @return AVDK_ERR_OK on success, error code otherwise
  */
@@ -805,6 +579,12 @@ static avdk_err_t isp_cleanup_all_resources(void)
     // Reset handle state
     s_isp_camera_handle.is_initialized = 0;
     s_isp_camera_handle.is_sensor_started = 0;
+    s_isp_camera_handle.mp_frame_size = 0;
+    s_isp_camera_handle.sp_frame_size = 0;
+    s_isp_camera_handle.mp_width = 0;
+    s_isp_camera_handle.mp_height = 0;
+    s_isp_camera_handle.sp_width = 0;
+    s_isp_camera_handle.sp_height = 0;
 
     LOGI("All ISP resources cleaned up\n");
     return AVDK_ERR_OK;
@@ -828,6 +608,19 @@ static avdk_err_t isp_close_channel(uint8_t is_mp)
     {
         LOGE("Failed to stop %s instance: %d\n", chnl_name, ret);
         return ret;  // Return error, keep instance_handle for retry
+    }
+
+    if (is_mp)
+    {
+        s_isp_camera_handle.mp_frame_size = 0;
+        s_isp_camera_handle.mp_width = 0;
+        s_isp_camera_handle.mp_height = 0;
+    }
+    else
+    {
+        s_isp_camera_handle.sp_frame_size = 0;
+        s_isp_camera_handle.sp_width = 0;
+        s_isp_camera_handle.sp_height = 0;
     }
 
     // Check if both channels are closed, if so, cleanup all resources
@@ -906,54 +699,34 @@ void cli_isp_func_test_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, c
 
     if (os_strcmp(argv[1], "open") == 0)
     {
-        // Parse command: isp open mipi mp 1920 1080 20 1920 1080 frame [output_fmt]
-        // Parameter order: sensor_width, sensor_height, fps, isp_output_width, isp_output_height, flexa_mode, [output_fmt]
-        // output_fmt defaults to 23 (NV12) if not provided
-        if (argc < 10)
+        // Parse command: isp open mp 1920 1080 20 1920 1080 frame [output_fmt]
+        if (argc < 9)
         {
-            LOGE("Usage: isp open <mipi|dvp> <mp|sp> <sensor_width> <sensor_height> <fps> <isp_output_width> <isp_output_height> <frame|software|hardware> [output_fmt]\n");
+            LOGE("Usage: isp open <mp|sp> <sensor_width> <sensor_height> <fps> <isp_output_width> <isp_output_height> <frame|flexa> [output_fmt]\n");
             LOGE("  sensor_width/height: sensor output resolution (ISP input)\n");
             LOGE("  isp_output_width/height: ISP output resolution\n");
             LOGE("  output_fmt: pixel format number (default: 23 for NV12)\n");
             goto exit;
         }
 
-        // Parse camera type
-        uint8_t is_mipi = 0;
-        if (os_strcmp(argv[2], "mipi") == 0)
-        {
-            is_mipi = 1;
-        }
-        else if (os_strcmp(argv[2], "dvp") == 0)
-        {
-            is_mipi = 0;
-        }
-        else
-        {
-            LOGE("Invalid camera type: %s (expected mipi or dvp)\n", argv[2]);
-            goto exit;
-        }
-
-        // Parse channel type
         uint8_t is_mp = 0;
-        if (os_strcmp(argv[3], "mp") == 0)
+        if (os_strcmp(argv[2], "mp") == 0)
         {
             is_mp = 1;
         }
-        else if (os_strcmp(argv[3], "sp") == 0)
+        else if (os_strcmp(argv[2], "sp") == 0)
         {
             is_mp = 0;
         }
         else
         {
-            LOGE("Invalid channel type: %s (expected mp or sp)\n", argv[3]);
+            LOGE("Invalid channel type: %s (expected mp or sp)\n", argv[2]);
             goto exit;
         }
 
-        // Parse sensor resolution and fps
-        uint16_t sensor_width = (uint16_t)os_strtoul(argv[4], NULL, 10);
-        uint16_t sensor_height = (uint16_t)os_strtoul(argv[5], NULL, 10);
-        uint16_t fps = (uint16_t)os_strtoul(argv[6], NULL, 10);
+        uint16_t sensor_width = (uint16_t)os_strtoul(argv[3], NULL, 10);
+        uint16_t sensor_height = (uint16_t)os_strtoul(argv[4], NULL, 10);
+        uint16_t fps = (uint16_t)os_strtoul(argv[5], NULL, 10);
 
         if (sensor_width == 0 || sensor_height == 0 || fps == 0)
         {
@@ -961,9 +734,8 @@ void cli_isp_func_test_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, c
             goto exit;
         }
 
-        // Parse ISP output resolution (after fps)
-        uint16_t isp_output_width = (uint16_t)os_strtoul(argv[7], NULL, 10);
-        uint16_t isp_output_height = (uint16_t)os_strtoul(argv[8], NULL, 10);
+        uint16_t isp_output_width = (uint16_t)os_strtoul(argv[6], NULL, 10);
+        uint16_t isp_output_height = (uint16_t)os_strtoul(argv[7], NULL, 10);
 
         if (isp_output_width == 0 || isp_output_height == 0)
         {
@@ -971,34 +743,31 @@ void cli_isp_func_test_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, c
             goto exit;
         }
 
-        // Parse flexa mode
         uint8_t flexa_mode = 0;
-        if (os_strcmp(argv[9], "frame") == 0)
+        if (os_strcmp(argv[8], "frame") == 0)
         {
             flexa_mode = 0; // Frame mode
         }
-        else if (os_strcmp(argv[9], "flexa") == 0)
+        else if (os_strcmp(argv[8], "flexa") == 0)
         {
             flexa_mode = 1; // flexa
         }
         else
         {
-            LOGE("Invalid flexa mode: %s (expected frame, software, or hardware)\n", argv[9]);
+            LOGE("Invalid output mode: %s (expected frame or flexa)\n", argv[8]);
             goto exit;
         }
 
-        // Parse output format (default: 23 for NV12)
-        bk_pixel_format_t output_fmt = BK_PIXEL_FORMAT_NV12; // Default to NV12 (21)
-        if (argc == 11)
+        bk_pixel_format_t output_fmt = BK_PIXEL_FORMAT_NV12;
+        if (argc == 10)
         {
-            // output_fmt is provided at argv[10]
-            uint32_t fmt_value = os_strtoul(argv[10], NULL, 10);
+            uint32_t fmt_value = os_strtoul(argv[9], NULL, 10);
             output_fmt = (bk_pixel_format_t)fmt_value;
         }
 
-        // Open camera
-        ret = isp_open_camera(is_mipi, is_mp, sensor_width, sensor_height, fps, flexa_mode, output_fmt,
-                              isp_output_width, isp_output_height);
+        uint8_t chnl_id = is_mp ? 0 : 1;
+        ret = isp_open_mipi_camera(sensor_width, sensor_height, fps, chnl_id, flexa_mode, output_fmt,
+                                   isp_output_width, isp_output_height);
     }
     else if (os_strcmp(argv[1], "close") == 0)
     {

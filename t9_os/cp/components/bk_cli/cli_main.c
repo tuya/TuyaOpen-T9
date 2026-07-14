@@ -510,7 +510,6 @@ static void cli_ate_main(uint32_t data)
 			BK_LOGD(NULL,"cli_ate_main: ATE create background sema failed\r\n");
 	}
 
-	bk_pm_cp1_auto_power_down_state_set(0x0);
 	bk_pm_module_vote_power_ctrl(PM_POWER_MODULE_NAME_CPU1, PM_POWER_MODULE_STATE_ON);
 	extern void start_cpu1_core(void);
 	start_cpu1_core();
@@ -1520,6 +1519,13 @@ int bk_cli_init(void)
 	cli_uid_init();
 #endif
 
+#if (CLI_CFG_IEEE802154_TEST == 1)
+    cli_mac802154_init();
+#endif
+
+#if ((CONFIG_OPENTHREAD == 1) && (CLI_CFG_OPENTHREAD == 1))
+    cli_openthread_init();
+#endif
 /*--------------BT&MultMedia cli command init end------------------*/
 
 

@@ -21,9 +21,12 @@
 #include "bk_flexa_bond_types.h"
 #include "components/bk_decode/bk_h264_decode_ctlr.h"
 #include "private_h264_decode_ctlr.h"
+#include "bk_decode_pp_helper.h"
 #include "hw_decoder_ctlr.h"
 #include "modules/vcdec/vcdec_h264_api.h"
+#include "modules/vcdec/vcdec_common.h"
 #include "avdk_monitor.h"
+#include "common/avdk_pixel_types.h"
 
 #define TAG "bk_h264_dec"
 
@@ -197,8 +200,8 @@ static avdk_err_t h264_decode_ctlr_init(bk_h264_decode_ctlr_handle_t handle)
 		goto error;
 	}
 
-	if (vcdec_h264_memalloc_register(ctrl->vcdec_handle, h264_decode_mem_malloc, h264_decode_mem_free) != VCDEC_OK) {
-		LOGE("vcdec_h264_memalloc_register failed\r\n");
+	if (vcdec_register_memalloc(ctrl->vcdec_handle, h264_decode_mem_malloc, h264_decode_mem_free) != VCDEC_OK) {
+		LOGE("vcdec_register_memalloc failed\r\n");
 		ret = AVDK_ERR_GENERIC;
 		goto error;
 	}
@@ -277,8 +280,9 @@ static avdk_err_t h264_decode_callback(void *param)
 static avdk_err_t h264_decode_ctlr_decode_frame(bk_h264_decode_ctlr_handle_t handle, bk_h264_decode_input_t *input)
 {
 	private_h264_decode_flexa_ctlr_t *ctrl = __containerof(handle, private_h264_decode_flexa_ctlr_t, ops);
-	uint32_t rb_h;
+	uint32_t rb_size;
 	uint32_t out_w;
+	vcdec_pp_out_format_e out_fmt;
 
 	AVDK_RETURN_ON_FALSE(ctrl, AVDK_ERR_INVAL, TAG, "control is NULL");
 	AVDK_RETURN_ON_FALSE(input, AVDK_ERR_INVAL, TAG, "input is NULL");
@@ -286,7 +290,14 @@ static avdk_err_t h264_decode_ctlr_decode_frame(bk_h264_decode_ctlr_handle_t han
 	AVDK_RETURN_ON_FALSE(ctrl->vcdec_handle, AVDK_ERR_INVAL, TAG, "decoder not open");
 
 	out_w = (uint32_t)ctrl->config.out_width;
-	rb_h = 16U * (uint32_t)ctrl->config.segment_height * (uint32_t)ctrl->config.segment_number;
+	if (ctrl->config.out_format == BK_PIXEL_FORMAT_RGB565 ||
+	    ctrl->config.out_format == BK_PIXEL_FORMAT_RGB888) {
+		LOGE("H264 flexa RGB output is not supported; use frame RGB mode instead\r\n");
+		return AVDK_ERR_INVAL;
+	}
+	out_fmt = bk_decode_pp_map_out_format(ctrl->config.out_format);
+	rb_size = bk_decode_pp_flexa_rb_size(ctrl->config.out_width, ctrl->config.segment_height,
+					     ctrl->config.segment_number);
 	if (out_w == 0U) {
 		LOGE("Flexa mode requires out_width set\r\n");
 		return AVDK_ERR_INVAL;
@@ -295,8 +306,8 @@ static avdk_err_t h264_decode_ctlr_decode_frame(bk_h264_decode_ctlr_handle_t han
 		LOGE("No output buffer or size\r\n");
 		return AVDK_ERR_INVAL;
 	}
-	if (input->out_buffer_size < out_w * rb_h * 3U / 2U) {
-		LOGE("output buffer too small: have=%u need=%u\r\n", input->out_buffer_size, out_w * rb_h * 3U / 2U);
+	if (input->out_buffer_size < rb_size) {
+		LOGE("output buffer too small: have=%u need=%u\r\n", input->out_buffer_size, rb_size);
 		return AVDK_ERR_NOMEM;
 	}
 
@@ -304,6 +315,9 @@ static avdk_err_t h264_decode_ctlr_decode_frame(bk_h264_decode_ctlr_handle_t han
 	ctrl->decode_config.input_stream_len = input->stream_len;
 	ctrl->decode_config.output_buffer = input->out_buffer;
 	ctrl->decode_config.output_size = input->out_buffer_size;
+	ctrl->decode_config.out_width = ctrl->config.out_width;
+	ctrl->decode_config.out_height = ctrl->config.out_height;
+	ctrl->decode_config.out_format = out_fmt;
 	ctrl->decode_config.segment_height = ctrl->config.segment_height;
 	ctrl->decode_config.segment_number = ctrl->config.segment_number;
 
