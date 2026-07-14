@@ -5,6 +5,7 @@
 #include "os_heap_debug.h"
 #include "os_heap_malloc_fallback.h"
 #include "sys_sw_regs.h"
+#include <soc/soc.h>
 
 extern unsigned char _heap_start;
 #define SRAM_HEAP_START_ADDRESS ((uint32_t)&_heap_start)
@@ -38,7 +39,7 @@ static void bk_heap_track_ap_heap_window(void *ptr, size_t size)
 #ifdef CONFIG_AP_HSRAM_HEAP_ADDR
     else if (ptr_is_hsram_heap(ptr)) {
         heap_id = BK_SYS_SW_REGS_AP_HEAP_HSRAM;
-        pool_base = CONFIG_AP_HSRAM_HEAP_ADDR;
+        pool_base = (uint32_t)SOC_SRAM_CPU_ADDR(CONFIG_AP_HSRAM_HEAP_ADDR);
     }
 #endif
 #ifdef CONFIG_AP_EXT_SRAM_HEAP_ADDR

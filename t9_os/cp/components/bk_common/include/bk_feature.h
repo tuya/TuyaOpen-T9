@@ -233,14 +233,12 @@ int bk_feature_cpu_pwd_enable(void);
  */
 int bk_feature_wifi_dsss_only(void);
 
+
 /**
- * @brief     Interface for wi-fi and ble coex
- *
+ * @brief     Interface for customer to Enable/Disable keep alive arp reply
  *
  * @return
- *    - 0: disable wi-fi and ble coex
- *    - 1: enable wi-fi and ble coex
- *
+ *    - 1: enable
+ *    - 0: disable
  */
-int bk_feature_coex_enable(void);
-
+int bk_feature_keep_alive_arp_reply_enable(void);

@@ -10,7 +10,6 @@ import zlib
 from pathlib import Path
 
 import bk_packager
-from bk_crc import bk_crc16
 from bk_misc import parse_format_size
 from bk_ota_partition import bk_ota_partition
 
@@ -283,21 +282,19 @@ def pack_ota_rbl_ab(
     pack_dir: Path, bootloader_size: int, origin_ota_app_bin: Path, all_app_bin: Path
 ):
     ota_bin = Path("app_ab_crc.rbl")
-    ota_app_temp_bin = pack_dir / "ota_app_temp.bin"
     soc_name = curr_project.soc_name
     cmd = (
-        f"python3 {ota_tool} -i {origin_ota_app_bin} -o {ota_app_temp_bin} "
+        f"python3 {ota_tool} -i {origin_ota_app_bin} -o {ota_bin} "
         + f"-g {header_path} -ap {armino_path} -soc {soc_name} -pjd {project_dir} packager"
     )
-    # raise RuntimeError(cmd)
     ret = os.system(cmd)
     if ret != 0:
         raise RuntimeError("generate ota rbl file fail.")
-
-    crc_handler = bk_crc16()
-    crc_handler.crc_file(ota_app_temp_bin, ota_bin)
     logger.info(f"generate ota firmware {ota_bin}")
-    ota_app_temp_bin.unlink()
+
+    if curr_project.use_format_packager:
+        logger.info("skip overwriting format all-app.bin with ota rbl")
+        return ota_bin
 
     with all_app_bin.open("rb+") as dest_f, ota_bin.open("rb") as src_f:
         dest_f.seek(bootloader_size)
@@ -331,11 +328,13 @@ def pack_ota_app_bin(pack_dir: Path, output_bin: Path):
     with pack_json.open("r") as f:
         apps_part_info = json.load(f)
     sections: list[dict[str, str]] = apps_part_info["section"]
-    for index, part in enumerate(sections):
-        if "bootloader" in part["partition"]:
-            sections.pop(index)
-            apps_part_info["count"] -= 1
-            break
+    sections[:] = [part for part in sections if "bootloader" not in part["partition"]]
+    extra_partitions = set(curr_project.extra_pack_partitions)
+    if extra_partitions:
+        sections[:] = [
+            part for part in sections if part["partition"] not in extra_partitions
+        ]
+    apps_part_info["count"] = len(sections)
 
     if curr_project.flash_crc_enable:
         for part in sections:

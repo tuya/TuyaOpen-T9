@@ -27,6 +27,14 @@
 #include "bk_private/bk_wifi_types.h"
 #include "modules/wifi_types.h"
 
+#ifndef __IRAM3
+#if CONFIG_SOC_BK7259
+#define __IRAM3 __attribute__((section(".iram3")))
+#else
+#define __IRAM3
+#endif
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -672,7 +680,7 @@ void mdm_set_scramblerctrl(uint32_t value);
 //Optimize it
 __attribute__((weak)) uint32_t cfg_ap_is_open_system(void);
 uint8_t bk_wifi_get_ps_status();
-
+uint8_t bk_wifi_get_coex_mode(void);
 #ifdef __cplusplus
 }
 #endif

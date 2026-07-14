@@ -49,7 +49,11 @@ static inline void hpdma_ll_init(hpdma_hw_t *hw)
 		hw->config_group[hpdma_id].req_mux.v = 0;
 		hw->config_group[hpdma_id].src_pause_addr = 0;
 		hw->config_group[hpdma_id].dest_pause_addr = 0;
-		hw->config_group[hpdma_id].status.v = 0;
+		/* W1C: writing 0 never clears latched interrupt bits */
+		hw->config_group[hpdma_id].status.v = BIT(HPDMA_HALF_FINISH_INT_POS)
+		                                    | BIT(HPDMA_FINISH_INT_POS)
+		                                    | BIT(HPDMA_BUS_ERR_INT_POS)
+		                                    | BIT(HPDMA_FIFO_ERR_INT_POS);
 		hw->config_group[hpdma_id].step_reg.v = 0;
 		hw->config_group[hpdma_id].remain_length.v = 0;
 		hw->config_group[hpdma_id].next_ll_addr = 0;
@@ -368,6 +372,20 @@ static inline void hpdma_ll_disable_dest_addr_loop(hpdma_hw_t *hw, hpdma_id_t id
 	hw->config_group[id].ctrl.dest_addr_loop_en = 0;
 }
 
+/*
+ * SRAM address-alias warning (0x2C/0x28):
+ *   The *_set_*_addr / set_next_ll_addr helpers below write the given value
+ *   straight into the hardware register; this layer performs NO 0x2C->0x28
+ *   conversion. The SRAM cacheable alias 0x2Cxxxxxx must first be mapped to the
+ *   HPDMA-visible peripheral alias 0x28xxxxxx, otherwise the engine cannot
+ *   reach the data.
+ *
+ *   Convention: these LL helpers should only be reached through the same-named
+ *   hpdma_hal_set_*_addr macros in hpdma_hal.h, which already wrap
+ *   SOC_SRAM_PERI_ADDR. If new code must call this layer directly, apply
+ *   SOC_SRAM_PERI_ADDR() to the SRAM address yourself before passing it in;
+ *   never write a raw 0x2C address into the register.
+ */
 static inline void hpdma_ll_set_dest_start_addr(hpdma_hw_t *hw, volatile hpdma_id_t id, uint32_t addr)
 {
 	hw->config_group[id].dest_start_addr = addr;

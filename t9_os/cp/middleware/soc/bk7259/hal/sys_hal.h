@@ -103,9 +103,14 @@ void sys_hal_enter_deep_sleep(void *param);
 void sys_hal_enter_normal_sleep();
 void sys_hal_enter_normal_wakeup();
 void sys_hal_enter_low_voltage(void);
+bk_err_t sys_hal_set_alo2core_power_switch(uint32_t value);
+#if CONFIG_DEEP_LV_DEBUG_LOG
+void sys_hal_lv_aon_debug_flush(void);
+#endif
 void sys_hal_enter_cpu_wfi(void);
 void sys_hal_module_power_ctrl(power_module_name_t module,power_module_state_t power_state);
 void sys_hal_wakeup_interrupt_clear(wakeup_source_t interrupt_source);
+bk_err_t sys_hal_ap_clock_power_ctrl(power_module_state_t power_state);
 void sys_hal_module_power_ctrl(power_module_name_t module,power_module_state_t power_state);
 void sys_hal_module_RF_power_ctrl (module_name_t module,power_module_state_t power_state);
 void sys_hal_cpu0_main_int_ctrl(dev_clk_pwr_ctrl_t clock_state);
@@ -193,6 +198,8 @@ dev_clk_select_t sys_hal_get_clk_select(dev_clk_select_id_t dev);
 void sys_hal_set_dco_div(dev_clk_dco_div_t div);
 //DCO divider is valid for all of the peri-devices.
 dev_clk_dco_div_t sys_hal_get_dco_div(void);
+__IRAM_SEC void sys_hal_adjust_dpll(void);
+__IRAM_SEC void sys_hal_adjust_dco(void);
 /*clock power control end*/
 
 /* UART select clock    DIRTY **/
@@ -469,6 +476,7 @@ void sys_hal_enable_modem_rc_int(void);
 void sys_hal_enable_hsu_int(void);
 void sys_hal_set_debug_mux(int type);
 void sys_hal_diag_debug_mac(void);
+void sys_hal_diag_debug_mac802154(void);
 void sys_hal_diag_debug_phy(void);
 void dbg_enable_debug_gpio(void);
 void sys_hal_rf_clk_ctrl(bool clk_en);
@@ -759,6 +767,7 @@ int sys_hal_set_lv_ctrl_hf(bool lp_ena);
 int sys_hal_set_lv_ctrl_flash(bool lp_ena);
 int sys_hal_set_lv_ctrl_core(bool lp_ena);
 int sys_hal_set_lpo_src(sys_lpo_src_t src);
+bk_err_t sys_hal_xtal_rx_tx_anabuf_ctrl(pm_xtal_rx_tx_anabuf_state_e sleep_mode);
 void sys_hal_dump_ctrl(void);
 void sys_hal_set_ram_sph_cfg(uint32_t value);
 void sys_hal_set_ram_tph_cfg(uint32_t value);

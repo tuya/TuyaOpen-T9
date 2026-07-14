@@ -84,7 +84,21 @@
  #include "components/bk_gpu_types.h"
  #include "components/bk_video_player/bk_video_player_types.h"
  #include "components/bk_video_player/video_decoder/bk_video_player_hw_h264_decoder.h"
+ #include <soc/soc.h>
  
+#if defined(H264_FLEXA_RAW_ARGB8888_ENABLE) && defined(VIDEO_PLAY_H264_FLEXA_RAW_ARGB8888_ENABLE) && \
+    (H264_FLEXA_RAW_ARGB8888_ENABLE != VIDEO_PLAY_H264_FLEXA_RAW_ARGB8888_ENABLE)
+#error "H264_FLEXA_RAW_ARGB8888_ENABLE and VIDEO_PLAY_H264_FLEXA_RAW_ARGB8888_ENABLE must match"
+#endif
+
+#ifndef H264_FLEXA_RAW_ARGB8888_ENABLE
+#ifdef VIDEO_PLAY_H264_FLEXA_RAW_ARGB8888_ENABLE
+#define H264_FLEXA_RAW_ARGB8888_ENABLE VIDEO_PLAY_H264_FLEXA_RAW_ARGB8888_ENABLE
+#else
+#define H264_FLEXA_RAW_ARGB8888_ENABLE 0
+#endif
+#endif
+
  #define TAG "vp_h264_dec"
  
  #define LOGE(...) BK_LOGE(TAG, ##__VA_ARGS__)
@@ -188,7 +202,7 @@ static inline uint32_t hw_h264_frame_buf_alloc_size(uint32_t payload_plus_pad)
  {
  #if defined(CONFIG_AP_HSRAM_HEAP_ADDR) && defined(CONFIG_AP_HSRAM_HEAP_SIZE) && (CONFIG_AP_HSRAM_HEAP_SIZE > 0)
      const uintptr_t addr  = (uintptr_t)ptr;
-     const uintptr_t start = (uintptr_t)CONFIG_AP_HSRAM_HEAP_ADDR;
+     const uintptr_t start = (uintptr_t)SOC_SRAM_CPU_ADDR(CONFIG_AP_HSRAM_HEAP_ADDR);
      const uintptr_t end   = start + (uintptr_t)CONFIG_AP_HSRAM_HEAP_SIZE;
  
      return (addr >= start && addr < end);
@@ -429,19 +443,47 @@ static video_player_video_decoder_ops_t s_ops_template;
  // Annex-B / AVCC handling. Unchanged from the previous frame-mode path.
  // ---------------------------------------------------------------------------
  
- static bool hw_h264_buffer_is_annex_b(const uint8_t *buf, uint32_t len)
- {
-     const uint32_t scan = (len > 64U) ? 64U : len;
-     for (uint32_t i = 0; i + 3U < scan; i++)
-     {
-         if (buf[i] == 0x00 && buf[i + 1U] == 0x00)
-         {
-             if (buf[i + 2U] == 0x01) return true;
-             if (buf[i + 2U] == 0x00 && buf[i + 3U] == 0x01) return true;
-         }
-     }
-     return false;
- }
+static bool hw_h264_buffer_is_annex_b(const uint8_t *buf, uint32_t len)
+{
+    const uint32_t scan = (len > 64U) ? 64U : len;
+    for (uint32_t i = 0; i + 3U < scan; i++)
+    {
+        if (buf[i] == 0x00 && buf[i + 1U] == 0x00)
+        {
+            if (buf[i + 2U] == 0x01) return true;
+            if (buf[i + 2U] == 0x00 && buf[i + 3U] == 0x01) return true;
+        }
+    }
+    return false;
+}
+
+static bool hw_h264_buffer_is_avcc(const uint8_t *buf, uint32_t len, uint8_t length_size)
+{
+    if (buf == NULL || (length_size != 1U && length_size != 2U && length_size != 4U))
+    {
+        return false;
+    }
+
+    uint32_t i = 0U;
+    uint32_t nalu_count = 0U;
+    while (i + length_size <= len)
+    {
+        uint32_t nalu_len = 0U;
+        for (uint8_t k = 0U; k < length_size; k++)
+        {
+            nalu_len = (nalu_len << 8) | (uint32_t)buf[i + k];
+        }
+        i += length_size;
+        if (nalu_len == 0U || nalu_len > (len - i))
+        {
+            return false;
+        }
+        i += nalu_len;
+        nalu_count++;
+    }
+
+    return (i == len) && (nalu_count > 0U);
+}
  
  static bool hw_h264_au_contains_idr_annexb(const uint8_t *data, uint32_t len)
  {
@@ -853,14 +895,19 @@ static avdk_err_t hw_h264_decoder_setup_pipeline(hw_h264_decoder_ctx_t *ctx)
         __func__, ctx->flexa_pp_buf, (unsigned)ctx->flexa_pp_size,
         ((uintptr_t)ctx->flexa_pp_buf & 0x3FU) == 0U ? 1U : 0U);
 
-    /* dst must stay 16-aligned for DEC400 compression. We use the MB-aligned
-    * source dims directly: scale=false (set in resolve_dims) means the
-    * GPU does not actually scale, and the H264 IP recon write stride is
-    * already mb_w wide, so passing dst=mb keeps the GPU's Flexa segment
-    * stride identical to the H264 IP's segment stride. Any non-16 dst
-    * (e.g. dst=1080) would trip vg_lite "dec align error". */
+    /* DEC400 compressed output must stay 16-aligned. The raw experiment can
+     * target the visible DPU surface directly so the raw stride matches LCD. */
+#if H264_FLEXA_RAW_ARGB8888_ENABLE
+    const uint16_t dst_w = ctx->out_w;
+    const uint16_t dst_h = ctx->out_h;
+    const bool gpu_compress = false;
+    const bool gpu_scale = (dst_w != ctx->mb_w || dst_h != ctx->mb_h);
+#else
     const uint16_t dst_w = ctx->mb_w;
     const uint16_t dst_h = ctx->mb_h;
+    const bool gpu_compress = true;
+    const bool gpu_scale = ctx->scale_enable;
+#endif
 
     bk_gpu_ctlr_config_t gpu_cfg;
     os_memset(&gpu_cfg, 0, sizeof(gpu_cfg));
@@ -871,8 +918,8 @@ static avdk_err_t hw_h264_decoder_setup_pipeline(hw_h264_decoder_ctx_t *ctx)
     gpu_cfg.dst_height        = dst_h;
     gpu_cfg.src_format        = BK_PIXEL_FORMAT_NV12;
     gpu_cfg.dst_format        = BK_PIXEL_FORMAT_ARGB8888;
-    gpu_cfg.scale             = ctx->scale_enable;
-    gpu_cfg.compress          = true;   /* DEC400 tile compressed for DPU */
+    gpu_cfg.scale             = gpu_scale;
+    gpu_cfg.compress          = gpu_compress;
     gpu_cfg.src_buffer        = ctx->flexa_pp_buf;
     gpu_cfg.flexa             = true;
     gpu_cfg.flexa_lines       = H264_DECODER_GPU_FLEXA_LINES;
@@ -1226,13 +1273,17 @@ static avdk_err_t hw_h264_decoder_decode(struct video_player_video_decoder_ops_s
     AVDK_RETURN_ON_FALSE(ctx->h264_handle,       AVDK_ERR_GENERIC, TAG, "h264 not initialized");
     AVDK_RETURN_ON_FALSE(ctx->gpu_handle,        AVDK_ERR_GENERIC, TAG, "gpu not initialized");
 
-    (void)out_fmt; /* GPU pipeline always emits compressed ARGB8888; the
-                    * engine's requested format is ignored intentionally. */
+    (void)out_fmt; /* Flexa GPU output is ARGB8888; compression is controlled
+                    * by H264_FLEXA_RAW_ARGB8888_ENABLE, not out_fmt. */
 
     /* Step 1: Annex-B prep (same as the frame-mode path). */
     uint8_t  *bs_data = in_buffer->data;
     uint32_t  bs_len  = in_buffer->length;
-    bool      is_annexb_input = hw_h264_buffer_is_annex_b(in_buffer->data, in_buffer->length);
+
+    bool      is_avcc_input   = hw_h264_buffer_is_avcc(in_buffer->data, in_buffer->length,
+                                                       ctx->nalu_length_size);
+    bool      is_annexb_input = !is_avcc_input &&
+                                hw_h264_buffer_is_annex_b(in_buffer->data, in_buffer->length);
     const bool need_inject_before = ctx->need_inject_params;
     avdk_err_t ret = AVDK_ERR_OK;
 

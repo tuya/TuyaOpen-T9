@@ -45,6 +45,20 @@ uint32_t aon_pmu_hal_get_chipid(void)
 	return aon_pmu_ll_get_r7c_id();
 }
 
+bk7259_chip_model_e aon_pmu_hal_get_chip_model(void)
+{
+	switch (aon_pmu_hal_get_chipid()) {
+	case BK7259_CHIP_ID_V2_MPW:
+		return BK7259_CHIP_MODEL_V2_MPW;
+	case BK7259_CHIP_ID_V3A:
+		return BK7259_CHIP_MODEL_V3A;
+	case BK7259_CHIP_ID_V3B:
+		return BK7259_CHIP_MODEL_V3B;
+	default:
+		return BK7259_CHIP_MODEL_UNKNOWN;
+	}
+}
+
 /*
  * Read the DPLL unlock latches from R7D (dpll_unlockL bit 22, dpll_unlockH
  * bit 23). Either out-pointer may be NULL. Returns the logical OR of the
@@ -196,14 +210,17 @@ void aon_pmu_hal_lpo_src_set(uint32_t lpo_src)
 
 	if(lpo_src == PM_LPO_SRC_ROSC)
 	{
-		if(sys_ll_get_ana_reg5_en_xtall() == 0x1)
+		if(aon_pmu_hal_get_chip_model() != BK7259_CHIP_MODEL_V2_MPW)
 		{
-			sys_ll_set_ana_reg5_en_xtall(0x0);
-		}
+			if(sys_ll_get_ana_reg5_en_xtall() == 0x1)
+			{
+				sys_ll_set_ana_reg5_en_xtall(0x0);
+			}
 
-		if(sys_ll_get_ana_reg5_itune_xtall() != 0xF)
-		{
-			sys_ll_set_ana_reg5_itune_xtall(0xF);
+			if(sys_ll_get_ana_reg5_itune_xtall() != 0xF)
+			{
+				sys_ll_set_ana_reg5_itune_xtall(0xF);
+			}
 		}
 
 		if(sys_ll_get_ana_reg5_rosc_disable() == 0x1)
@@ -382,12 +399,13 @@ uint32_t aon_pmu_hal_get_r0(void)
 {
 	return aon_pmu_ll_get_r0();
 }
-static uint32_t s_pmu_saved_regs[2] = {0};
+static uint32_t s_pmu_saved_regs[3] = {0};
 
 __IRAM_SEC void aon_pmu_hal_backup(void)
 {
 	s_pmu_saved_regs[0] = aon_pmu_ll_get_r40();
 	s_pmu_saved_regs[1] = aon_pmu_ll_get_r41();
+	s_pmu_saved_regs[2] = aon_pmu_ll_get_r2();
 }
 
 __IRAM_SEC void aon_pmu_hal_restore(void)
@@ -396,4 +414,5 @@ __IRAM_SEC void aon_pmu_hal_restore(void)
 	aon_pmu_ll_set_r0(reg);
 	// aon_pmu_ll_set_r40(s_pmu_saved_regs[0]);
 	aon_pmu_ll_set_r41(s_pmu_saved_regs[1]);
+	aon_pmu_ll_set_r2(s_pmu_saved_regs[2]);
 }

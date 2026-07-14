@@ -8,10 +8,12 @@
 #include <os/os.h>
 #include <os/mem.h>
 #include <common/bk_assert.h>
+#include <soc/soc.h>
 
 #include <driver/int.h>
 
 #include <driver/psram.h>
+#include "hspl/hspl_res_lock.h"
 #include "bk_mem_slab.h"
 
 #define TAG "mem_slab"
@@ -26,6 +28,9 @@
 #define FB_ALLOCATED_PATTERN      (0x83388338)
 #define FB_FREE_PATTERN           (0xF00FF00F)
 
+#define BK_FRAME_BUFFER_SUPPORTED_FLAGS (BK_FRAME_BUFFER_FLAG_WRITE_THROUGH)
+#define BK_MEM_SLAB_WRITE_THROUGH_CHANNEL_INVALID (PSRAM_WRITE_THROUGH_AREA_COUNT)
+
 fb_mem_heap_t frame_mem_heap = {0};
 
 #define MEM_SLAB_ERR_OK                     (0)
@@ -38,12 +43,30 @@ fb_mem_heap_t frame_mem_heap = {0};
 #define MEM_SLAB_ERR_OVERFLOW_PREVIOUS_POINTER (-8)
 #define MEM_SLAB_ERR_OVERFLOW_CIRCULAR_REFERENCE (-9)
 
+static inline uint32_t bk_mem_slab_enter_critical(void)
+{
+    uint32_t flags = rtos_disable_int();
+    bk_err_t ret = bk_hspl_res_must_lock(BK_HSPL_RES_VIDEO);
+
+    BK_ASSERT(ret == BK_OK);
+
+    return flags;
+}
+
+static inline void bk_mem_slab_exit_critical(uint32_t flags)
+{
+    bk_hspl_res_unlock(BK_HSPL_RES_VIDEO);
+    rtos_enable_int(flags);
+}
 
 void bk_mem_slab_heap_init(uint8_t type, uint8_t *heap, uint32_t heap_size)
 {
     uint32_t head_address = SLAB_ALIGN_BYTES(((uint32_t)(uintptr_t)heap), ALIGN_BYTES);
+    uint32_t int_flags;
     heap_size = heap_size - (head_address - (uint32_t)(uintptr_t)heap);
     heap_size = heap_size & ~((ALIGN_BYTES) - 1);
+
+    int_flags = bk_mem_slab_enter_critical();
 
     // align first free descriptor to word boundary
     frame_mem_heap.heap[type] = (struct fb_block_free *)head_address;
@@ -58,14 +81,21 @@ void bk_mem_slab_heap_init(uint8_t type, uint8_t *heap, uint32_t heap_size)
     frame_mem_heap.heap[type]->head_end_check = FB_LIST_PATTERN;
 #endif
     frame_mem_heap.heap_size[type] = heap_size;
+
+    bk_mem_slab_exit_critical(int_flags);
+
     LOGD("%s heap:%p, type %d size %d\n", __func__, heap, type, heap_size);
     LOGD("%s, free_size:%d, check:0x%x\r\n", __func__, frame_mem_heap.heap[type]->free_size, frame_mem_heap.heap[type]->corrupt_check);
 }
 
 void bk_mem_slab_heap_resume(uint8_t type, uint8_t *heap, uint32_t heap_size)
 {
+    uint32_t int_flags = bk_mem_slab_enter_critical();
+
     frame_mem_heap.heap[type] = (struct fb_block_free *)heap;
     frame_mem_heap.heap_size[type] = heap_size;
+
+    bk_mem_slab_exit_critical(int_flags);
 }
 
 /**
@@ -90,10 +120,151 @@ static bool bk_mem_slab_is_in_heap(uint8_t type, void *mem_ptr)
     return ret;
 }
 
+int bk_mem_slab_overflow_check(fb_block_used *head);
+
+#if (CONFIG_PSRAM_WRITE_THROUGH)
+static uint32_t bk_mem_slab_get_payload_size(fb_block_used *block)
+{
+    return block->size - sizeof(fb_block_used);
+}
+
+static uint32_t bk_mem_slab_get_request_size(fb_block_used *block)
+{
+#if MEM_SLAB_MEM_DEBUG
+    return block->user_size;
+#else
+    return bk_mem_slab_get_payload_size(block);
+#endif
+}
+
+static bool bk_mem_slab_is_write_through_aligned(uint32_t value)
+{
+    return ((value & (ALIGN_BYTES - 1)) == 0);
+}
+
+static psram_write_through_area_t bk_mem_slab_alloc_write_through_channel(uint32_t start)
+{
+#if CONFIG_PSRAM_INTERLEAVE
+    (void)start;
+    return bk_psram_alloc_write_through_channel_with_psram_id(0);
+#else
+    if ((start >= (uint32_t)SOC_PSRAM1_DATA_BASE)
+        && (start < ((uint32_t)SOC_PSRAM1_DATA_BASE + SOC_PSRAM_DATA_SIZE)))
+    {
+        return bk_psram_alloc_write_through_channel_with_psram_id(1);
+    }
+
+    return bk_psram_alloc_write_through_channel_with_psram_id(0);
+#endif
+}
+
+static bk_err_t bk_mem_slab_enable_write_through(fb_block_used *block, void *mem_ptr)
+{
+    bk_err_t ret = BK_OK;
+    uint32_t start = (uint32_t)(uintptr_t)mem_ptr;
+    uint32_t request_size = bk_mem_slab_get_request_size(block);
+    uint32_t end = start + bk_mem_slab_get_payload_size(block);
+    psram_write_through_area_t area = PSRAM_WRITE_THROUGH_AREA_COUNT;
+    uint32_t int_flags;
+
+    if ((block->flag & BK_FRAME_BUFFER_FLAG_WRITE_THROUGH) != 0)
+    {
+        return BK_OK;
+    }
+
+    if (!bk_mem_slab_is_write_through_aligned(start)
+        || !bk_mem_slab_is_write_through_aligned(request_size))
+    {
+        LOGE("%s write-through setup failed, frame:%p addr_align:%u size:%u size_align:%u, require %u-byte aligned addr and size\n",
+            __func__, mem_ptr, start & (ALIGN_BYTES - 1), request_size,
+            request_size & (ALIGN_BYTES - 1), ALIGN_BYTES);
+        return BK_ERR_PARAM;
+    }
+
+    area = bk_mem_slab_alloc_write_through_channel(start);
+    if (area >= PSRAM_WRITE_THROUGH_AREA_COUNT)
+    {
+        return BK_ERR_NO_MEM;
+    }
+
+    int_flags = bk_mem_slab_enter_critical();
+    ret = bk_mem_slab_overflow_check(block);
+    if (ret != MEM_SLAB_ERR_OK)
+    {
+        bk_mem_slab_exit_critical(int_flags);
+        (void)bk_psram_free_write_through_channel(area);
+        LOGE("%s invalid frame buffer: %d\n", __func__, ret);
+        return BK_ERR_PARAM;
+    }
+
+    if ((block->flag & BK_FRAME_BUFFER_FLAG_WRITE_THROUGH) != 0)
+    {
+        bk_mem_slab_exit_critical(int_flags);
+        (void)bk_psram_free_write_through_channel(area);
+        return BK_OK;
+    }
+
+    ret = bk_psram_enable_write_through(area, start, end);
+    if (ret != BK_OK)
+    {
+        bk_mem_slab_exit_critical(int_flags);
+        (void)bk_psram_free_write_through_channel(area);
+        return ret;
+    }
+
+    block->flag |= BK_FRAME_BUFFER_FLAG_WRITE_THROUGH;
+    block->write_through_channel = area;
+
+    bk_mem_slab_exit_critical(int_flags);
+
+    return BK_OK;
+}
+
+static psram_write_through_area_t bk_mem_slab_detach_write_through_locked(fb_block_used *block)
+{
+    uint32_t area = block->write_through_channel;
+
+    if ((block->flag & BK_FRAME_BUFFER_FLAG_WRITE_THROUGH) == 0)
+    {
+        return BK_MEM_SLAB_WRITE_THROUGH_CHANNEL_INVALID;
+    }
+
+    block->flag &= ~BK_FRAME_BUFFER_FLAG_WRITE_THROUGH;
+    block->write_through_channel = BK_MEM_SLAB_WRITE_THROUGH_CHANNEL_INVALID;
+
+    if (area >= PSRAM_WRITE_THROUGH_AREA_COUNT)
+    {
+        LOGW("%s invalid write-through area %u\n", __func__, area);
+        return BK_MEM_SLAB_WRITE_THROUGH_CHANNEL_INVALID;
+    }
+
+    return (psram_write_through_area_t)area;
+}
+#else
+static bk_err_t bk_mem_slab_enable_write_through(fb_block_used *block, void *mem_ptr)
+{
+    (void)block;
+    (void)mem_ptr;
+
+    return BK_ERR_NOT_SUPPORT;
+}
+
+static psram_write_through_area_t bk_mem_slab_detach_write_through_locked(fb_block_used *block)
+{
+    (void)block;
+
+    return BK_MEM_SLAB_WRITE_THROUGH_CHANNEL_INVALID;
+}
+#endif
+
 void bk_mem_slab_init(void)
 {
+    uint32_t int_flags = bk_mem_slab_enter_critical();
+
     os_memset(frame_mem_heap.heap, 0, sizeof(struct fb_block_free *) * MEM_SLAB_HEAP_MAX);
     os_memset(frame_mem_heap.heap_size, 0, sizeof(uint32_t) * MEM_SLAB_HEAP_MAX);
+
+    bk_mem_slab_exit_critical(int_flags);
 }
 
 #if MEM_SLAB_MEM_DEBUG
@@ -106,14 +277,13 @@ void *bk_mem_slab_malloc(frame_buffer_heap_type_t type, uint32_t size)
     uint8_t cursor = 0;
     fb_block_used *alloc = NULL;
     uint32_t totalsize, user_size = size;
+    uint32_t int_flags;
 
     if (frame_mem_heap.heap_size[type] == 0)
     {
         LOGE("%s, type:%d not init\r\n", __func__, type);
         BK_ASSERT(0);
     }
-
-    GLOBAL_INT_DECLARATION();
 
     size = SLAB_ALIGN_BYTES(size, ALIGN_BYTES);
 
@@ -135,7 +305,7 @@ void *bk_mem_slab_malloc(frame_buffer_heap_type_t type, uint32_t size)
     BK_ASSERT(totalsize >= sizeof(struct fb_block_free));
 
     // protect accesses to descriptors
-    GLOBAL_INT_DISABLE();
+    int_flags = bk_mem_slab_enter_critical();
 
     uint8_t heap_id = COMMON_MOD((cursor + type), MEM_SLAB_HEAP_MAX);
 
@@ -180,7 +350,7 @@ void *bk_mem_slab_malloc(frame_buffer_heap_type_t type, uint32_t size)
     if (found == NULL)
     {
         //platform_reset(RESET_MEM_ALLOC_FAIL);
-        GLOBAL_INT_RESTORE();
+        bk_mem_slab_exit_critical(int_flags);
         return NULL;
     }
     else
@@ -216,6 +386,8 @@ void *bk_mem_slab_malloc(frame_buffer_heap_type_t type, uint32_t size)
         // save the size of the allocated block
         alloc->size = totalsize;
         alloc->corrupt_check = FB_ALLOCATED_PATTERN;
+        alloc->flag = 0;
+        alloc->write_through_channel = BK_MEM_SLAB_WRITE_THROUGH_CHANNEL_INVALID;
 #if MEM_SLAB_MEM_DEBUG
         alloc->func = func;
         alloc->line = line;
@@ -235,7 +407,7 @@ void *bk_mem_slab_malloc(frame_buffer_heap_type_t type, uint32_t size)
     }
 
     // end of protection (as early as possible)
-    GLOBAL_INT_RESTORE();
+    bk_mem_slab_exit_critical(int_flags);
     //BK_ASSERT(node == NULL);
 
     return (void *)alloc;
@@ -268,6 +440,40 @@ int bk_mem_slab_overflow_check(fb_block_used *head)
     return MEM_SLAB_ERR_OK;
 }
 
+bk_err_t bk_mem_slab_set(void *mem_ptr, uint32_t flags)
+{
+    fb_block_used *block = NULL;
+    int ret = MEM_SLAB_ERR_OK;
+    uint32_t int_flags;
+
+    if (mem_ptr == NULL)
+    {
+        return BK_ERR_NULL_PARAM;
+    }
+
+    if ((flags & ~BK_FRAME_BUFFER_SUPPORTED_FLAGS) != 0)
+    {
+        return BK_ERR_NOT_SUPPORT;
+    }
+
+    block = ((fb_block_used *)mem_ptr) - 1;
+
+    int_flags = bk_mem_slab_enter_critical();
+    ret = bk_mem_slab_overflow_check(block);
+    bk_mem_slab_exit_critical(int_flags);
+    if (ret != MEM_SLAB_ERR_OK)
+    {
+        LOGE("%s invalid frame buffer: %d\n", __func__, ret);
+        return BK_ERR_PARAM;
+    }
+
+    if ((flags & BK_FRAME_BUFFER_FLAG_WRITE_THROUGH) != 0)
+    {
+        return bk_mem_slab_enable_write_through(block, mem_ptr);
+    }
+
+    return BK_OK;
+}
 
 void bk_mem_slab_free(void *mem_ptr)
 {
@@ -277,7 +483,8 @@ void bk_mem_slab_free(void *mem_ptr)
     uint32_t size;
     uint8_t cursor = 0;
     int ret = -1;
-    GLOBAL_INT_DECLARATION();
+    uint32_t int_flags;
+    psram_write_through_area_t wt_area = BK_MEM_SLAB_WRITE_THROUGH_CHANNEL_INVALID;
 
     // sanity checks
     if (mem_ptr == NULL)
@@ -289,16 +496,29 @@ void bk_mem_slab_free(void *mem_ptr)
     // point to the block descriptor (before user memory so decrement)
     bfreed = ((fb_block_used *)mem_ptr) - 1;
 
-    GLOBAL_INT_DISABLE();
+    int_flags = bk_mem_slab_enter_critical();
     ret = bk_mem_slab_overflow_check(bfreed);
-    GLOBAL_INT_RESTORE();
 
     if (ret != MEM_SLAB_ERR_OK)
     {
+        bk_mem_slab_exit_critical(int_flags);
         LOGE("frame buffer overflow : %d\n", ret);
         BK_ASSERT(0);
         return;
     }
+
+    wt_area = bk_mem_slab_detach_write_through_locked(bfreed);
+#if (CONFIG_PSRAM_WRITE_THROUGH)
+    if (wt_area < PSRAM_WRITE_THROUGH_AREA_COUNT)
+    {
+        if (bk_psram_disable_write_through(wt_area) != BK_OK)
+        {
+            LOGW("%s disable write-through area %u failed\n", __func__, wt_area);
+        }
+    }
+#else
+    (void)wt_area;
+#endif
 
     // check if memory block has been corrupted or not
     //BT_ASSERT_INFO(bfreed->corrupt_check == FB_ALLOCATED_PATTERN, bfreed->corrupt_check, mem_ptr);
@@ -316,8 +536,6 @@ void bk_mem_slab_free(void *mem_ptr)
 
     //DBG_MEM_PERM_SET(bfreed, sizeof(struct fb_block_used), false, false, false);
 
-    // protect accesses to descriptors
-    GLOBAL_INT_DISABLE();
     //DBG_MEM_GRANT_CTRL(mem_ptr, true);
 
     // Retrieve where memory block comes from
@@ -354,7 +572,7 @@ void bk_mem_slab_free(void *mem_ptr)
         {
             LOGE("%s: node:%p, node->corrupt_check:0x%x", __func__, node, node->corrupt_check);
             BK_ASSERT(0);
-            return;
+            goto free_end;
         }
 #endif
 
@@ -445,12 +663,30 @@ void bk_mem_slab_free(void *mem_ptr)
 
 free_end:
     // end of protection
-    GLOBAL_INT_RESTORE();
+    bk_mem_slab_exit_critical(int_flags);
+
+#if (CONFIG_PSRAM_WRITE_THROUGH)
+    if (wt_area < PSRAM_WRITE_THROUGH_AREA_COUNT)
+    {
+        if (bk_psram_free_write_through_channel(wt_area) != BK_OK)
+        {
+            LOGW("%s free write-through area %u failed\n", __func__, wt_area);
+        }
+    }
+#endif
 }
 
 
 void bk_mem_slab_dump_heap(uint8_t type)
 {
+    uint32_t int_flags;
+    bk_err_t ret = bk_hspl_res_lock_irqsave(BK_HSPL_RES_VIDEO, &int_flags);
+    if (ret != BK_OK)
+    {
+        LOGW("%s: heap busy, skip dump, ret:%d\n", __func__, ret);
+        return;
+    }
+
     struct fb_block_free *node = frame_mem_heap.heap[type];
     uint8_t *heap_start = (uint8_t *)frame_mem_heap.heap[type];
     uint32_t heap_size = frame_mem_heap.heap_size[type];
@@ -579,6 +815,8 @@ void bk_mem_slab_dump_heap(uint8_t type)
         __func__, allocated_count, total_allocated);
     LOGI("%s: Heap size: %u bytes, Heap start: %p, Heap end: %p\n",
         __func__, heap_size, (void *)heap_start, (void *)heap_end);
+
+    bk_hspl_res_unlock_irqrestore(BK_HSPL_RES_VIDEO, int_flags);
 }
 
 void bk_mem_slab_dump_all_heaps(void)
@@ -605,7 +843,7 @@ void bk_mem_slab_check_heap(uint8_t type)
     uint32_t error_size = 0;
     int error_type = 0; // 0: no error, 1: free node out of range, 2: corrupt_check, 3: free_size, 4: next/previous pointer
     bool is_allocated_block_error = false; // Flag to indicate if error is from allocated block
-    GLOBAL_INT_DECLARATION();
+    uint32_t int_flags;
 
     // Check if heap is initialized
     if (frame_mem_heap.heap_size[type] == 0)
@@ -627,7 +865,7 @@ void bk_mem_slab_check_heap(uint8_t type)
     LOGI("%s: ==========[Heap: %d] Corruption Check Start ==========\n", __func__, type);
 
     // Protect heap access to prevent other threads or interrupt handlers from modifying heap structure during check
-    GLOBAL_INT_DISABLE();
+    int_flags = bk_mem_slab_enter_critical();
 
     // 1. Check free list
     node = frame_mem_heap.heap[type];
@@ -849,7 +1087,7 @@ void bk_mem_slab_check_heap(uint8_t type)
     }
 
     // Restore interrupt protection
-    GLOBAL_INT_RESTORE();
+    bk_mem_slab_exit_critical(int_flags);
 
     // Print error information
     if (error_found)

@@ -18,9 +18,11 @@
 #include "sys_ahbp_ll.h"
 #include "sys_aonp_struct.h"
 #include "aon_pmu_hal.h"
+#include "aon_pmu_ll.h"
 #include "gpio_hal_v2px.h"
 #include "gpio_driver_base.h"
 #include "sys_types.h"
+#include <driver/int.h>
 #include <driver/aon_rtc.h>
 #include <driver/hal/hal_spi_types.h>
 #include <driver/hal/hal_qspi_types.h>
@@ -55,6 +57,9 @@
 #define PM_CLOCK_MODE_2_POS                 (64)
 
 #define SYS_HAL_SWD_CORESIGHT_VALID         (1)
+#define SYS_HAL_DCO_UNLOCK_H_BIT            (25)
+#define SYS_HAL_DCO_UNLOCK_L_BIT            (26)
+#define SYS_HAL_DCO_BAND_MAX                (0x3F)
 
 #define SYS_PM_HAL_CPU_BARRIER()              do {      \
 	asm volatile ("dsb");                               \
@@ -92,8 +97,8 @@ static const sys_hal_cpu_bus_freq_cfg_t s_cpu_bus_freq_cfg[] = {
 	{PM_CPU_FRQ_XTAL, PM_CLKSEL_CORE_26M, 0x0, 0x0, 0x0, 0x0, PM_VDDDIG_H_VOL_0V825},
 	{PM_CPU_FRQ_60M, PM_CLKSEL_CORE_480M, 0x7, 0x0, 0x0, 0x0, PM_VDDDIG_H_VOL_0V825},
 	{PM_CPU_FRQ_80M, PM_CLKSEL_CORE_480M, 0x5, 0x0, 0x0, 0x0, PM_VDDDIG_H_VOL_0V825},
-	{PM_CPU_FRQ_120M, PM_CLKSEL_CORE_480M, 0x3, 0x0, 0x0, 0x0, PM_VDDDIG_H_VOL_0v9},
-	{PM_CPU_FRQ_160M, PM_CLKSEL_CORE_320M, 0x1, 0x0, 0x0, 0x0, PM_VDDDIG_H_VOL_0v9},
+	{PM_CPU_FRQ_120M, PM_CLKSEL_CORE_480M, 0x3, 0x0, 0x0, 0x0, PM_VDDDIG_H_VOL_0V825},
+	{PM_CPU_FRQ_160M, PM_CLKSEL_CORE_480M, 0x2, 0x0, 0x0, 0x0, PM_VDDDIG_H_VOL_0v9},
 	{PM_CPU_FRQ_240M, PM_CLKSEL_CORE_480M, 0x1, 0x0, 0x0, 0x0, PM_VDDDIG_H_VOL_0V95},
 };
 
@@ -106,11 +111,15 @@ static void sys_hal_delay(volatile uint32_t times);
 static bk_err_t sys_hal_m55_clock_power_init();
 static bk_err_t sys_hal_m55_clock_power_init();
 __IRAM_SEC int32 sys_hal_module_power_state_get(power_module_name_t module);
-static bk_err_t sys_hal_ap_clock_power_ctrl(power_module_state_t power_state);
+bk_err_t sys_hal_ap_clock_power_ctrl(power_module_state_t power_state);
 
 bk_err_t sys_hal_init()
 {
 	s_sys_hal.hw = (sys_hw_t *)SOC_SYS_REG_BASE;
+	//bk_int_isr_register(INT_SRC_PLL_UNLOCK, sys_hal_adjust_dpll, NULL);
+    // sys_hal_int_group2_enable(CPU0_CORE_ID, DPLL_UNLOCK_INTERRUPT_CTRL_BIT);
+	// bk_int_isr_register(INT_SRC_DCO_UNLOCK, sys_hal_adjust_dco, NULL);
+	// sys_hal_int_group2_enable(CPU0_CORE_ID, DCO_UNLOCK_INTERRUPT_CTRL_BIT);
 	return BK_OK;
 }
 
@@ -2299,6 +2308,11 @@ void sys_hal_diag_debug_mac()
 {
 	return;
 }
+void sys_hal_diag_debug_mac802154(void)
+{
+	//sys_ll_set_dbug_config0_dbug_mux(DIAG_DEBUG_THREAD);
+	return;
+}
 void sys_hal_diag_debug_phy()
 {
 	return;
@@ -3235,73 +3249,161 @@ static void sys_hal_delay(volatile uint32_t times)
 	while(times--);
 }
 
-uint32_t sys_hal_cali_dpll(uint32_t param)
+static uint32_t sys_hal_get_dco_unlock(uint32_t *unlockL, uint32_t *unlockH)
 {
-	sys_hal_cali_dpll_spi_trig_disable();
+	uint32_t r7f = aon_pmu_ll_get_r7f_value();
+	uint32_t dco_unlock_l = (r7f >> SYS_HAL_DCO_UNLOCK_L_BIT) & 0x1;
+	uint32_t dco_unlock_h = (r7f >> SYS_HAL_DCO_UNLOCK_H_BIT) & 0x1;
 
-    if (!param)
-    {
-		timer_hal_early_delay_us(120);
+	if (NULL != unlockL) {
+		*unlockL = dco_unlock_l;
+	}
+
+	if (NULL != unlockH) {
+		*unlockH = dco_unlock_h;
+	}
+
+	return (dco_unlock_l | dco_unlock_h) ? 1 : 0;
+}
+
+static void sys_hal_reset_dco_unlock_latch(void)
+{
+	sys_ll_set_ana_reg2_rst_unlock_dco(1);
+	sys_ll_set_ana_reg2_rst_unlock_dco(0);
+}
+
+__IRAM_SEC void sys_hal_adjust_dco(void)
+{
+	uint32_t unlock, unlockL = 0, unlockH = 0;
+	int32_t dco_band, count;
+
+	unlock = sys_hal_get_dco_unlock(&unlockL, &unlockH);
+	if (!unlock || (unlockL && unlockH)) {
+		return;
+	}
+
+	dco_band = (int32_t)sys_ll_get_ana_reg7_bandmanual();
+	for (count = 0; count <= SYS_HAL_DCO_BAND_MAX; count++) {
+		if (unlockL) {
+			if (dco_band >= SYS_HAL_DCO_BAND_MAX) {
+				break;
+			}
+			dco_band++;
+		} else if (unlockH) {
+			if (dco_band <= 0) {
+				break;
+			}
+			dco_band--;
+		} else {
+			break;
+		}
+
+		sys_ll_set_ana_reg7_bandmanual((uint32_t)dco_band);
+		sys_hal_reset_dco_unlock_latch();
+		timer_hal_early_delay_us(10);
+
+		unlock = sys_hal_get_dco_unlock(&unlockL, &unlockH);
+		if (!unlock || (unlockL && unlockH)) {
+			break;
+		}
+	}
+}
+
+__IRAM_SEC void sys_hal_adjust_dpll(void)
+{
+    uint32_t unlock, unlockL = 0, unlockH = 0;
+    int32_t dpll_band, count;
+
+    unlock = aon_pmu_hal_get_dpll_unlock(&unlockL, &unlockH);
+    //bk_printf("unlock=%d+%d=>%d,band=%d\n", unlockL, unlockH, unlock, sys_ana_ll_get_ana_reg1_bandmanual());
+    if (!unlock) {
+        return;
     }
-    else
-    {
-		timer_hal_early_delay_us(60);
+    dpll_band = (int32_t)sys_ll_get_ana_reg7_bandmanual();
+    for (count = 7; count > 0; count--) {
+        if (unlockL) {
+            dpll_band++;
+        } else {
+            dpll_band--;
+        }
+        if (dpll_band < 0) {
+            break;
+        } else if (dpll_band > 0x7F) {
+            break;
+        }
+        sys_ll_set_ana_reg7_bandmanual(dpll_band);
     }
+}
+uint32_t sys_hal_cali_dpll(uint32_t first_time)
+{
+	uint32_t int_mask = sys_hal_int_group2_disable(CPU0_CORE_ID, DPLL_UNLOCK_INTERRUPT_CTRL_BIT);
 
-    sys_hal_cali_dpll_spi_trig_enable();
-    sys_hal_cali_dpll_spi_detect_disable();
+	// Disable unlock detector briefly while calibrating DPLL.
+	sys_ll_set_ana_reg1_cben(1);
+	sys_ll_set_ana_reg7_manual(0);
+	timer_hal_early_delay_us(20);
 
-    if (!param)
-    {
+	sys_hal_cali_dpll_spi_detect_disable();
+
+	if (first_time)
+	{
 		timer_hal_early_delay_us(3400);
-    }
-    else
-    {
+	}
+	else
+	{
 		timer_hal_early_delay_us(340);
-    }
+	}
 
 	sys_hal_cali_dpll_spi_detect_enable();
 
-    if (!param)
-    {
+	if (first_time)
+	{
 		timer_hal_early_delay_us(3400);
-    }
-    else
-    {
+	}
+	else
+	{
 		timer_hal_early_delay_us(340);
-    }
-	return 0;
+	}
+
+	// Toggle twice to avoid reading a stale calibration value.
+	sys_hal_cali_dpll_spi_detect_disable();
+
+	if (first_time)
+	{
+		timer_hal_early_delay_us(3400);
+	}
+	else
+	{
+		timer_hal_early_delay_us(340);
+	}
+
+	sys_hal_cali_dpll_spi_detect_enable();
+
+	if (first_time)
+	{
+		timer_hal_early_delay_us(3400);
+	}
+	else
+	{
+		timer_hal_early_delay_us(340);
+	}
+
+	sys_ll_set_ana_reg7_bandmanual(aon_pmu_hal_get_dpll_band());
+	sys_ll_set_ana_reg7_manual(1);
+	sys_ll_set_ana_reg1_cben(0);
+
+	if (int_mask & DPLL_UNLOCK_INTERRUPT_CTRL_BIT)
+	{
+		sys_hal_int_group2_enable(CPU0_CORE_ID, DPLL_UNLOCK_INTERRUPT_CTRL_BIT);
+	}
+
+	return BK_OK;
 }
-static bk_err_t sys_hal_ap_clock_power_ctrl(power_module_state_t power_state)
+bk_err_t sys_hal_ap_clock_power_ctrl(power_module_state_t power_state)
 {
 	uint32_t regData = 0;
 	if(power_state == POWER_MODULE_STATE_ON)
 	{
-
-		// sys_ll_set_ana_reg10_spi_latch1v(1);
-		// sys_ll_set_ana_reg9_pwd_hsldo(0);
-		// sys_ll_set_ana_reg16_enhspw(1);
-		// sys_ll_set_ana_reg16_vcorehssel(0xA);//0.7+0.025*0xA=0.95v
-		// sys_ll_set_ana_reg10_spi_latch1v(0);
-
-		// /*"M55S Access Secure*/
-		// regData  = REG_READ(SOC_PPRO_REG_BASE + 0xF*4);
-		// regData &= ~((0x1<<3)|(0x1<<2));
-		// regData |=  ((  0<<3)|(  0<<2));
-		// REG_WRITE(SOC_PPRO_REG_BASE + 0xF*4, regData);
-
-		// /*M55:Default enable all the clock source for bringup */
-		// REG_WRITE(SOC_SYS_AHBP_REG_BASE + 0xA*4, 0xFFFFFFFF);
-
-		// /*M55 cpu freq and bus 480M, subbus 240M */
-		// regData = REG_READ(SOC_SYS_AHBP_REG_BASE + 0x8*4);
-		// regData |= 0x1 << 4;
-		// REG_WRITE(SOC_SYS_AHBP_REG_BASE + 0x8*4, regData);
-
-		// regData = REG_READ(SOC_SYS_AHBP_REG_BASE + 0x8*4);
-		// regData |= 0x0 << 2;
-		// regData |= 0x1 << 0;
-		// REG_WRITE(SOC_SYS_AHBP_REG_BASE + 0x8*4, regData);
 		sys_ll_set_ana_reg10_spi_latch1v(1);
 		sys_ll_set_ana_reg9_pwd_hsldo(1);
 		bk_delay_us(20);
@@ -3531,8 +3633,10 @@ static bk_err_t sys_hal_m55_clock_power_init()
 }
 static void sys_hal_dpll_cpu_flash_time_early_init(uint32_t chip_id)
 {
+	uint32_t cksel_flash = 0;
+	uint32_t ckdiv_flash = 0;
 	/*Calibrate the dpll*/
-	sys_hal_cali_dpll(0);
+	sys_hal_cali_dpll(1);
 
 	/*Enable all the clock sources*/
 	sys_ll_set_reserver_reg0xd_sig_240m_cken(1);
@@ -3541,6 +3645,13 @@ static void sys_hal_dpll_cpu_flash_time_early_init(uint32_t chip_id)
 	sys_ll_set_reserver_reg0xd_sig_160m_cken(1);
 	sys_ll_set_reserver_reg0xd_sig_120m_cken(1);
 
+	/*Keep bootloader flash clock config when it is already 240M/(2 + 1).*/
+	cksel_flash = sys_ll_get_cpu_clk_div_mode1_cksel_flash();
+	ckdiv_flash = sys_ll_get_cpu_clk_div_mode1_ckdiv_flash();
+	if ((cksel_flash != CKSEL_SYS_FLASH_240M) || (ckdiv_flash != 0x2)) {
+		sys_ll_set_cpu_clk_div_mode1_ckdiv_flash(0x2);
+		sys_ll_set_cpu_clk_div_mode1_cksel_flash(CKSEL_SYS_FLASH_240M);
+	}
 	/*Default enable all the clock source for bringup */
 	REG_WRITE(SYS_CPU_DEVICE_CLK_ENABLE_ADDR, 0xFFFFFFFF);
 	REG_WRITE(SYS_RESERVER_REG0XD_ADDR, 0xFFFFFFFF);
@@ -3596,7 +3707,7 @@ void sys_hal_early_init(void)
 		sys_hal_analog_set(ANALOG_REG11, 0xC3DD4587);//siqing20260202 bit[27:25] = 1 for Reduce BUCK frequency to 1 MHz
 		sys_hal_analog_set(ANALOG_REG12, 0x346E9878);
 		sys_hal_analog_set(ANALOG_REG13, 0x346E9858);//siqing20260330 bit[5]=0 per V2 sys_ana.ini 0x4d: dzcdcal (bit4)=1, dzcdmsel (bit5)=0; do not set both to 1. Low-power BUCK_L discontinuous-current reverse conduction caused abnormal measured efficiency.
-		sys_hal_analog_set(ANALOG_REG14, 0xF4E670EE);
+		sys_hal_analog_set(ANALOG_REG14, 0x74E670EE);
 		sys_hal_analog_set(ANALOG_REG15, 0);
 
 		sys_hal_analog_set(ANALOG_REG16, 0x9E436000);
@@ -3615,9 +3726,9 @@ void sys_hal_early_init(void)
 }
 void sys_hal_early_init_sleep(void)
 {
-	uint32_t chip_id;
+	//uint32_t chip_id;
 	uint32_t val;
-	chip_id = aon_pmu_hal_get_chipid();
+	//chip_id = aon_pmu_hal_get_chipid();
 
 	sys_ll_set_ana_reg10_spi_latch1v(1);
 
@@ -3653,7 +3764,7 @@ void sys_hal_early_init_sleep(void)
     sys_ll_set_ana_reg10_spi_latch1v(0);
 
 	/*early init cpu flash time*/
-	sys_hal_dpll_cpu_flash_time_early_init_sleep(chip_id);
+	//sys_hal_dpll_cpu_flash_time_early_init_sleep(chip_id);
 
 }
 void sys_hal_set_7816_int_en(uint32_t core_index, uint32_t value)

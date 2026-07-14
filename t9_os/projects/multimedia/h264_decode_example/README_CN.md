@@ -4,63 +4,60 @@
 
 ## 1. 项目概述
 
-本工程用于演示 Beken 平台上的 H264 解码流程，当前主要包含以下几类使用方式：
+本工程演示 Beken 平台上基于 **`bk_decoder`** 的 H264 整帧解码流程，覆盖三种
+`bk_h264_decode_ctlr` 控制器，并内置两条 1280x720 码流（无 B 帧的 1I30P 与含 B 帧的 IBBP）。
 
-- 基于 `bk_decoder` 的 VCDEC CLI：`h264_decode vcdec_h264d` / `h264_decode vcdec_h264d_flexa`
-- 传统 H264D FLEXA 示例 CLI：`h264_decode_flexa start`
-- 直接寄存器路径 VCDEC CLI：`vcdec_h264_driver`
-- 带 DMA 压力的循环解码测试：`h264_decode_stress`
-- 公共 Annex-B H264 码流解析模块，供 VCDEC case 复用
+所有能力都通过唯一的 `h264_decode` CLI 暴露：
 
-当前 `main()` 除了初始化和注册 CLI 外，在使能 `CONFIG_BK_DECODER` 时还会自动创建 boot demo 线程，按顺序执行一次 `vcdec_h264_flexa_test` 和 `vcdec_h264_test`。本工程默认 `defconfig` 已开启 `CONFIG_BK_DECODER`。
+| 控制器 | CLI | 是否支持 B 帧 | 兼容码流 |
+|--------|-----|--------------|----------|
+| frame（整帧） | `h264_decode vcdec_h264d [1280x720_1i30p\|1280x720_ibbp]` | 否 | `1280x720_1i30p` |
+| frame RGB（整帧格式转换） | `h264_decode vcdec_h264d_frame_rgb` | 否 | 内置 RGB 测试帧 |
+| flexa（分段） | `h264_decode vcdec_h264d_flexa [1280x720_1i30p\|1280x720_ibbp]` | 否 | `1280x720_1i30p` |
+| frame-zerocopy（零拷贝） | `h264_decode vcdec_h264d_frame_zerocopy [1280x720_1i30p\|1280x720_ibbp]` | 是 | `1280x720_1i30p` 与 `1280x720_ibbp` |
 
-* 有关 H264 解码的详细信息，请参阅：
+- 不带码流参数时默认使用 `1280x720_ibbp`；`1280x720` 为其别名。
+- frame、flexa 为非 B 控制器，请仅配合 `1280x720_1i30p` 使用；frame-zerocopy 是唯一能解码
+  B 帧（`1280x720_ibbp`）的控制器。
+- 使能 `CONFIG_BK_DECODER`（默认 `defconfig` 已开启）时，`main()` 会启动上电自检 demo
+  （`vcdec_h264_run_boot_demo()`），在独立线程中依次各跑一次 frame(1i30p)、flexa(1i30p)、
+  frame-zerocopy(ibbp)。
 
-  - [H264软件解码概述](../../../developer-guide/video_codec/h264_decoding_sw.html)
+* 开发者指南：[H264软件解码概述](../../../developer-guide/video_codec/h264_decoding_sw.html)
 
 ### 1.1 测试环境
 
-- 硬件配置
-  - 核心板：**BK7259_QF128_12.3X12.3_V4.0**
-  - PSRAM：32M
-- 输入数据
-  - 工程内置 H264 码流
-- 输出内容
-  - 解码过程日志
-  - FLEXA 输出回调日志
-  - 压力测试轮次日志
+- 硬件：**BK7259_QF128_12.3X12.3_V4.0**，PSRAM 32M
+- 输入：内置 H264 码流（`1280x720_1i30p`、`1280x720_ibbp`）
+- 输出：解码日志及 `[RESULT][PASS]` 结果行
 
 .. warning::
 
-    请使用参考外设进行示例学习与验证。如果外设规格不同，代码和配置可能需要同步调整。
+    请使用参考外设。外设规格不同时需调整代码与配置。
 
 ## 2. 目录结构
 
-项目采用 AP-CP 双核结构，主要逻辑位于 AP 侧：
-
 ```text
 h264_decode_example/
-├── README.md
-├── README_CN.md
 ├── ap/
-│   ├── ap_main.c                           # AP 主入口，注册 H264 相关 CLI
-│   ├── h264_decode/
-│   │   ├── common/
-│   │   │   ├── h264_decode_h264_parser.c   # 公共 Annex-B AU / 帧类型解析
-│   │   │   ├── h264_decode_h264_parser.h
-│   │   │   ├── h264_decode_stream_1280x720.c
-│   │   │   └── h264_decode_stream_256x128.c
-│   │   ├── include/
-│   │   └── src/
-│   │       ├── h264_decode_cli.c           # h264_decode CLI 实现
-│   │       ├── h264_decode_flexa_test.c    # 传统 FLEXA CLI 示例
-│   │       ├── vcdec_h264_driver_test.c    # 直接寄存器 VCDEC CLI
-│   │       └── vcdec_h264_test.c           # bk_decoder VCDEC 示例与 boot demo
-│   └── h264_decode_stress/
+│   ├── ap_main.c                                  # AP 主入口，注册 h264_decode CLI 并启动 boot demo
+│   ├── config/bk7259_ap/                          # AP 侧 defconfig / GPIO 配置
+│   └── h264_decode/
+│       ├── common/
+│       │   ├── h264_decode_h264_parser.c/.h       # 公共 Annex-B AU / 帧类型解析
+│       │   ├── h264_decode_stream_1280x720.c/.h   # 1I30P 码流（无 B 帧）
+│       │   └── h264_decode_stream_1280x720_ibbp.c # IBBP 码流（含 B 帧）
 │       ├── include/
+│       │   ├── h264_decode_test.h                 # CLI 入口 / 码流枚举声明
+│       │   └── vcdec_h264_test_common.h           # 共享测试辅助声明
 │       └── src/
-│           ├── h264_decode_stress.c        # H264 解码压力测试
-│           └── h264_decode_stress_stream.c
+│           ├── h264_decode_cli.c                  # h264_decode CLI 分发
+│           ├── vcdec_h264_test_common.c           # 共享辅助函数 + 码流表 + 结果行
+│           ├── vcdec_h264_frame_test.c            # frame 控制器测试（非 B）
+│           ├── vcdec_h264_rgb_test.c              # frame RGB565/RGB888 输出格式测试
+│           ├── vcdec_h264_flexa_test.c            # flexa 控制器测试（非 B）
+│           ├── vcdec_h264_frame_zerocopy_test.c   # 零拷贝 / B 帧控制器测试
+│           └── vcdec_h264_boot_demo.c             # 上电自动运行 demo
 ├── cp/
 ├── partitions/
 └── .it.csv
@@ -68,146 +65,71 @@ h264_decode_example/
 
 ## 3. 功能说明
 
-### 3.1 当前支持的功能
-
-- `h264_decode vcdec_h264d [1280x720|256x128]`：执行基于 `bk_decoder` 的 VCDEC 帧模式解码
-- `h264_decode vcdec_h264d_flexa [1280x720|256x128]`：执行基于 `bk_decoder` 的 VCDEC FLEXA 解码
-- `h264_decode_flexa start`：执行传统 `h264_decoder_*` FLEXA 示例
-- `vcdec_h264_driver frame|flexa [1280x720|256x128]`：执行直接寄存器 VCDEC 解码验证
-- `h264_decode_stress`：执行循环解码压力测试，并可叠加 DMA 压力
-- 公共 H264 parser：解析 Annex-B access unit、帧类型和 frame table，供 `vcdec_h264_test.c`、`vcdec_h264_driver_test.c` 复用
-- 上电后自动 boot demo：在 `CONFIG_BK_DECODER=y` 时自动执行一次 `vcdec_h264_flexa_test(1280x720)` 和 `vcdec_h264_test(1280x720)`
-
-> 说明：此前新增的 `h264d_native_frame_test.c` 和 `h264d_native_flexa_test.c` 已删除，相关 `h264d_native*` CLI 入口也已移除。
+- 三个 `bk_decoder`（`bk_h264_decode_ctlr`）控制器，每个测试用例位于独立源文件：
+  - `h264_decode vcdec_h264d [stream]` —— frame 控制器（整帧，**非 B**），`vcdec_h264_frame_test.c`
+  - `h264_decode vcdec_h264d_frame_rgb` —— frame 控制器 PP RGB565/RGB888 输出格式测试，`vcdec_h264_rgb_test.c`
+  - `h264_decode vcdec_h264d_flexa [stream]` —— flexa/分段控制器（**非 B**），`vcdec_h264_flexa_test.c`
+  - `h264_decode vcdec_h264d_frame_zerocopy [stream]` —— 零拷贝 / **B 帧** 控制器，`vcdec_h264_frame_zerocopy_test.c`
+- 两条 1280x720 码流同时编入固件（各自独立符号）：
+  - `1280x720_1i30p` —— 1 IDR + 30 P，无 B 帧（符号 `h264_decode_stream_1280x720_1i30p[]`）
+  - `1280x720_ibbp` —— Main profile 含 B 帧（符号 `h264_decode_stream_1280x720_ibbp[]`，`1280x720` 为其别名）
+- 控制器 / 码流兼容性：frame、flexa 为非 B，仅可配合 `1280x720_1i30p`；frame-zerocopy 支持
+  两条码流，且是唯一能解码 B 帧的控制器。
+- 公共 H264 parser：解析 Annex-B access unit、帧类型与 frame table，三个测试文件通过
+  `vcdec_h264_test_common.c` 复用。
+- 上电自检 demo（`vcdec_h264_boot_demo.c` 中的 `vcdec_h264_run_boot_demo()`）：在独立线程中
+  各执行一次 frame(1i30p)、flexa(1i30p)、frame-zerocopy(ibbp)。
 
 ## 4. 编译与运行
 
-### 4.1 编译方法
+### 4.1 编译
 
 ```bash
 make bk7259 PROJECT=multimedia/h264_decode_example -j32
 ```
 
-### 4.2 运行方式
-
-烧录固件后，若 `CONFIG_BK_DECODER=y`，系统会上电自动触发一次 VCDEC boot demo；其余测试可通过串口终端手动输入命令触发。
-
-#### 4.2.1 CLI 命令列表
-
-基础解码命令：
+### 4.2 CLI 命令
 
 ```text
 h264_decode help
-h264_decode vcdec_h264d
-h264_decode vcdec_h264d 256x128
-h264_decode vcdec_h264d_flexa
-h264_decode vcdec_h264d_flexa 256x128
-h264_decode_flexa start
+h264_decode vcdec_h264d 1280x720_1i30p
+h264_decode vcdec_h264d_frame_rgb
+h264_decode vcdec_h264d_flexa 1280x720_1i30p
+h264_decode vcdec_h264d_frame_zerocopy 1280x720_1i30p
+h264_decode vcdec_h264d_frame_zerocopy 1280x720_ibbp
 ```
 
-直接寄存器 VCDEC 命令：
+说明：frame / flexa 控制器为非 B，仅可使用 `1280x720_1i30p`；frame-zerocopy 控制器同时支持
+`1280x720_1i30p` 与 `1280x720_ibbp`。不带码流参数时默认 `1280x720_ibbp`（`1280x720` 为其别名）。
+
+命令提交成功 / 失败：`CMDRSP:OK` / `CMDRSP:ERROR`。
+
+### 4.3 如何判断测试成功或失败
+
+`CMDRSP:OK` 仅表示 CLI 成功创建了测试线程，不代表测试已经通过。运行结束时按控制器查看对应结果行：
 
 ```text
-vcdec_h264_driver frame
-vcdec_h264_driver frame 256x128
-vcdec_h264_driver flexa
-vcdec_h264_driver flexa 256x128
+[RESULT][PASS] vcdec_h264_test success, decoded_aus=..., rounds=...                 # vcdec_h264d (frame)
+[RESULT][PASS] vcdec_h264_frame_rgb_test success                                    # vcdec_h264d_frame_rgb
+[RESULT][PASS] vcdec_h264_flexa_test success, decoded_aus=..., rounds=...           # vcdec_h264d_flexa
+[RESULT][PASS] vcdec_h264_frame_zerocopy_test success, decoded_aus=..., rounds=...  # vcdec_h264d_frame_zerocopy
 ```
 
-压力测试命令：
-
-```text
-h264_decode_stress start
-h264_decode_stress start 512
-h264_decode_stress stop
-h264_decode_stress dma_open
-h264_decode_stress dma_close
-```
-
-其中：
-
-- `start` 表示使用默认 DMA 搬运大小启动压力测试
-- `start 512` 这类形式表示指定 `dma_copy_size_kb`
-- `dma_open` / `dma_close` 用于单独打开或关闭 DMA 压力源
-
-命令提交成功时返回：
-
-```text
-CMDRSP:OK
-```
-
-命令提交失败时返回：
-
-```text
-CMDRSP:ERROR
-```
-
-#### 4.2.2 如何判断测试成功或失败
-
-`CMDRSP:OK` 仅表示 CLI 成功创建任务，不代表测试已经通过。不同路径的通过标志如下：
-
-- `h264_decode vcdec_h264d` / `h264_decode vcdec_h264d_flexa`
-  - 运行结束时可看到类似如下结果行：
-
-```text
-[RESULT][PASS] vcdec_h264_test success, decoded_aus=..., rounds=...
-[RESULT][PASS] vcdec_h264_flexa_test success, decoded_aus=..., rounds=...
-```
-
-- `h264_decode_flexa start`
-  - 无 `h264_decoder_init failed`、`h264_decoder_decode failed` 等错误日志
-  - 运行结束时可看到 `exit h264_decode_flexa_test`
-
-- `vcdec_h264_driver frame` / `vcdec_h264_driver flexa`
-  - 运行过程中无 `vcdec_h264_* failed`、`unexpected output size`、`all decoded outputs sampled as zero` 等错误日志
-  - 运行结束时可看到类似如下结果行：
-
-```text
-vcdec h264 frame test PASS: stream=1280x720 aus=... frame_cb=... flexa_cb=... last_wr=...
-vcdec_h264_test_thread exit, mode=frame stream=1280x720 ret=0
-```
-
-- `h264_decode_stress`
-  - 运行过程中无分配失败、初始化失败或解码失败日志
-  - 执行 `h264_decode_stress stop` 后可看到类似如下退出日志：
-
-```text
-h264 decode stress thread exit, rounds=123 stop=1
-```
-
-常见失败日志包括：
-
-```text
-h264_decoder_init failed, ret=...
-h264_decoder_decode failed at round=... ret=...
-vcdec_h264_decode_frame failed, ret=...
-vcdec_h264_get_info failed, au=...
-unexpected output size ... expect ...
-all decoded outputs sampled as zero
-failed to allocate ... buffer
-psram_dma_stress_start failed, ret=...
-```
-
-#### 4.2.3 集成测试命令
-
-`.it.csv` 当前覆盖两组内置 VCDEC H264 码流以及两种解码模式：
-
-```text
-ap_cmd h264_decode vcdec_h264d 1280x720
-ap_cmd h264_decode vcdec_h264d_flexa 1280x720
-ap_cmd h264_decode vcdec_h264d 256x128
-ap_cmd h264_decode vcdec_h264d_flexa 256x128
-```
-
-期望结果分别匹配 `[RESULT][PASS] vcdec_h264_test success` 或 `[RESULT][PASS] vcdec_h264_flexa_test success` 日志。
+失败时对应打印 `[RESULT][FAIL] <case> failed at <stage>, ret=...`。
 
 ## 5. 注意事项
 
-1. 当前 `h264_decode` CLI 默认只启用 `vcdec_h264d` 和 `vcdec_h264d_flexa`；二者可额外携带 `1280x720` 或 `256x128` 码流参数。
-2. `h264_decode_flexa start` 是独立 CLI 命令，用于传统 `h264_decoder_*` FLEXA 示例。
-3. `h264_decode`、`h264_decode_flexa`、`vcdec_h264_driver`、`h264_decode_stress` 以及上电 boot demo 都通过独立线程运行测试，避免阻塞 CLI 线程。
-4. `h264_decode_stress start [dma_copy_size_kb]` 中的可选参数单位为 KB。
-5. `vcdec_h264_driver` 与 `h264_decode vcdec_h264d*` 路径都内置了 `1280x720` 和 `256x128` 两组码流；不带参数时默认使用 `1280x720`。
-6. 压力测试会额外申请输出缓冲区、码流缓冲区以及 DMA 压测缓冲区，运行前请确认系统有足够内存。
-7. `bk7259_ap` 默认配置已开启 `CONFIG_BK_DECODER=y`，因此首次上电时会自动输出一轮 VCDEC boot demo 日志。
-8. 用于性能分析的 GPIO debug 脉冲逻辑已移除，正常运行不再通过 P30-P39 或 P34/P36 输出解码阶段标记。
+1. `h264_decode` CLI 提供 `vcdec_h264d`、`vcdec_h264d_flexa` 和 `vcdec_h264d_frame_zerocopy`，
+   均可携带码流参数（`1280x720_1i30p` 或 `1280x720_ibbp`）。
+2. 控制器 / 码流兼容性：frame、flexa 为非 B，仅可解码 `1280x720_1i30p`；frame-zerocopy 支持
+   两条码流，且是唯一能解码 B 帧 `1280x720_ibbp` 的控制器。
+3. RGB565/RGB888 输出格式转换仅由 frame RGB 测试命令覆盖；flexa 模式不支持 RGB 输出。
+4. 所有测试用例与上电 boot demo 都在独立线程运行，避免阻塞 CLI 线程；boot demo 与手动 CLI
+   共用解码硬件，建议等 boot demo 结束后再手动触发。
+5. 不带码流参数时默认使用 `1280x720_ibbp`；`1280x720` 为其别名。
+6. `bk7259_ap` 默认配置已开启 `CONFIG_BK_DECODER=y`、`CONFIG_FRAME_BUFFER=y`。
+7. 两条 1280x720 码流同时编入 flash，各自独立符号（`h264_decode_stream_1280x720_1i30p[]` 与
+   `h264_decode_stream_1280x720_ibbp[]`），运行时按码流 id / CLI 参数选择，空间充足。
+8. 旧版本的 `vcdec_h264_driver`（寄存器级）、`h264_decode_flexa`、`h264_decode_stress` 及
+   `256x128` 码流已不在本工程中；legacy 源码归档于
+   `ap/properties/modules/verisilicon_nano/legacy/projects/h264_decode_example/`。
