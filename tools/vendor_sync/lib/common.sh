@@ -32,3 +32,9 @@ vs_resolve_repo_root() {
 }
 
 vs_need_cmd git
+
+# Sort unique paths (C locale); empty input -> empty output
+vs_lines_sort() {
+  # Strip CR; grep returns 1 on empty input — ignore under pipefail
+  tr -d '\r' | { grep -v '^$' || true; } | LC_ALL=C sort -u
+}
