@@ -1,6 +1,6 @@
 # vendor_sync：T9 原厂 `t9_os` 同步辅助工具
 
-完整流程见：[`../../docs/VENDOR_UPSTREAM_SYNC.md`](../../docs/VENDOR_UPSTREAM_SYNC.md)
+完整流程见：[`VENDOR_UPSTREAM_SYNC.md`](VENDOR_UPSTREAM_SYNC.md)
 
 ## 依赖
 

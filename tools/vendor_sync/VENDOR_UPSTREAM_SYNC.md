@@ -1,7 +1,7 @@
 # T9 原厂 `t9_os` Upstream 同步操作手册
 
 配套设计：仓库外 `tuyaos-iot` 文档 `docs/superpowers/specs/2026-07-14-t9-vendor-upstream-sync-design.md`  
-配套工具：`tools/vendor_sync/`
+配套工具：同目录下脚本（`import_pristine.sh` / `report_upgrade.sh` / `merge_assist.sh` 等）
 
 本手册假设工作目录为 **vendor/T9 仓库根**（该目录自身为 git root）。
 
