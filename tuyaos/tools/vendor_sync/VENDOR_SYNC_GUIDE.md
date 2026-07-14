@@ -293,7 +293,16 @@ upstream/bk-N 、 upstream/bk-N+1
 2. `git checkout --orphan upstream/bk`（注意备份；必要时取回工具目录）。  
 3. **`import_pristine.sh --src <原厂N> --commit`**  
 4. `git tag upstream/bk-N` 并 push。  
-5. 回到业务分支：`git merge upstream/bk-N`（挂接基线）。  
+5. 回到业务分支（或特性分支如 `feature/vendor_sync-tools`）挂接基线。  
+   orphan 与业务无共同祖先，首次合并会报 `refusing to merge unrelated histories`，需：
+
+   ```bash
+   git merge upstream/bk-N \
+     --allow-unrelated-histories \
+     -m "Merge pristine upstream/bk-N as vendor baseline"
+   ```
+
+   之后升级再 `git merge upstream/bk-N+1` 时，一般**不再**需要该参数。  
 6. 可选：`list_business_delta.sh --upstream upstream/bk-N` 核对业务相对基线的改动。  
 
 此阶段一般还用不上「两版原厂」的 `report_upgrade`（还没有 N+1）。

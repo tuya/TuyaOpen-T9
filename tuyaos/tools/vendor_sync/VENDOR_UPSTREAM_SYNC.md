@@ -50,18 +50,32 @@ git push origin "upstream/bk-${N}"
 
 ## 2. 业务分支挂接公共祖先（强烈建议，一次性）
 
-推荐 **2A**：
+推荐 **2A**。可在业务主分支（如 `feature/t9_smp`）上做，也可先在特性分支（如 `feature/vendor_sync-tools`）上挂接，验证后再合回主业务分支。
+
+### 2.1 为何会报 `refusing to merge unrelated histories`
+
+`upstream/bk` 由 **orphan** 创建，与业务分支**没有共同祖先**（`git merge-base` 为空）。首次挂接时 Git 会拒绝合并，这是预期现象，不是 tag 做错了。
+
+### 2.2 首次挂接命令（必须加 `--allow-unrelated-histories`）
 
 ```bash
-git checkout feature/t9_smp   # 或你的业务分支
-git merge "upstream/bk-${N}" -m "Merge pristine upstream/bk-${N} as vendor baseline"
+git checkout feature/t9_smp   # 或 feature/vendor_sync-tools 等业务/特性分支
+git merge "upstream/bk-${N}" \
+  --allow-unrelated-histories \
+  -m "Merge pristine upstream/bk-${N} as vendor baseline"
 ```
 
 冲突原则：
 
 - 纯原厂文件 → 取 upstream
 - 已有 TUYA 定制 → 保留业务侧，确认标注仍在
-- `tuyaos/` 仅业务侧存在 → 保持业务侧
+- `tuyaos/` 仅业务侧存在 → 保留业务侧
+
+### 2.3 挂接之后
+
+- 业务历史已与 `upstream/bk` 相连；**以后**合并 `upstream/bk-${N+1}` 时**一般不再需要** `--allow-unrelated-histories`。
+- 该参数**仅用于**「orphan 干净基线 ↔ 业务」的这一次首次挂接，不要用于其它无关分支乱合。
+- 可选核对：`./tuyaos/tools/vendor_sync/list_business_delta.sh --upstream upstream/bk-${N} | head`
 
 ---
 
