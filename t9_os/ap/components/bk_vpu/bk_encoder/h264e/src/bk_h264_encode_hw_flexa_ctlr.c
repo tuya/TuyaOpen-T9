@@ -20,20 +20,6 @@
 #define LOGD(...) BK_LOGD(TAG, ##__VA_ARGS__)
 #define LOGV(...) BK_LOGV(TAG, ##__VA_ARGS__)
 
-// Modified by TUYA Start
-/* Drain any buffered posts so a stale semaphore can't trigger a spurious encode
- * after stop/restart. Does not unblock a current waiter; used together with the
- * `stopping` flag during teardown. */
-static void h264_encode_clear_semaphore(beken_semaphore_t *sem)
-{
-    if (sem == NULL || *sem == NULL) {
-        return;
-    }
-    while (rtos_get_semaphore(sem, 0) == BK_OK) {
-    }
-}
-// Modified by TUYA End
-
 // Handle encoding failure
 static void handle_encode_error(private_h264_encode_hw_flexa_ctlr_t *ctrl, void *buffer, uint32_t size)
 {
@@ -141,14 +127,6 @@ static avdk_err_t h264_encode_msg_callback(void *param)
         LOGW("No encoder parameters available\r\n");
         return AVDK_ERR_INVAL;
     }
-    // Modified by TUYA Start
-    /* Do not engage the HW encoder while stopping/torn down; report success so
-     * the bond handshake completes without a mid-frame abort. */
-    if (ctrl->stopping || ctrl->enc_status == 0 || ctrl->bond == NULL) {
-        ctrl->encode_result = BK_OK;
-        return AVDK_ERR_OK;
-    }
-    // Modified by TUYA End
     ENCODE_FRAME_START;
     ctrl->enc_param.in_buffer = ctrl->pending_in_buf;
     ctrl->enc_param.in_lines = ctrl->pending_in_lines;
@@ -197,12 +175,6 @@ static void h264_encoder_entry(void *arg)
         if (!ctrl->enc_status) {
             break;
         }
-        // Modified by TUYA Start
-        /* Stopping or bond detached: drop frame-ready kicks without touching HW. */
-        if (ctrl->stopping || ctrl->bond == NULL) {
-            continue;
-        }
-        // Modified by TUYA End
         if (ctrl->pending_out_buf == 0 && ctrl->config.outbuf_malloc != NULL) {
             void *temp_buffer = ctrl->config.outbuf_malloc(CONFIG_BK_ENCODER_H264_MAX_OUTPUT_BUFFER, ctrl->config.outbuf_malloc_args);
             if (temp_buffer != NULL) {
@@ -231,28 +203,14 @@ static void h264_encoder_entry(void *arg)
             .param = ctrl,
             .sem = &ctrl->enc_done_sem
         };
-        // Modified by TUYA Start
-        /* Drop any stale completion post so this dispatch waits on its own frame. */
-        h264_encode_clear_semaphore(&ctrl->enc_done_sem);
-        // Modified by TUYA End
         avdk_err_t ret = hw_encoder_send_msg(&msg, BEKEN_WAIT_FOREVER);
         if (ret != AVDK_ERR_OK) {
-            // Modified by TUYA Start
-            if (ctrl->stopping || ctrl->enc_status == 0) {
-                continue;
-            }
-            // Modified by TUYA End
             LOGE("hw_encoder_send_msg failed: %d\r\n", ret);
             handle_encode_error(ctrl, (void *)ctrl->pending_out_buf, 0);
             continue;
         }
         ret = rtos_get_semaphore(&ctrl->enc_done_sem, 1000);
         if (ret != BK_OK) {
-            // Modified by TUYA Start
-            if (ctrl->stopping || ctrl->enc_status == 0) {
-                continue;
-            }
-            // Modified by TUYA End
             LOGE("get semaphore failed: %d\r\n", ret);
             handle_encode_error(ctrl, (void *)ctrl->pending_out_buf, 0);
             if (ctrl->bond != NULL && ctrl->bond->frame_done != NULL) {
@@ -359,11 +317,6 @@ static avdk_err_t h264_encode_ctlr_open(bk_h264_encode_ctlr_handle_t handle)
     control->enc_line_cnt = 0;
     control->enc_status = 1;
     control->enc_start_first = 1;
-    // Modified by TUYA Start
-    control->stopping = 0;
-    h264_encode_clear_semaphore(&control->enc_start_sem);
-    h264_encode_clear_semaphore(&control->enc_done_sem);
-    // Modified by TUYA End
     bk_err_t ret = rtos_create_hsram_thread(&control->thread,
                            2,
                            "h264e_encoder",
@@ -397,12 +350,6 @@ static avdk_err_t h264_encode_ctlr_close(bk_h264_encode_ctlr_handle_t handle)
     private_h264_encode_hw_flexa_ctlr_t *control =  __containerof(handle, private_h264_encode_hw_flexa_ctlr_t, ops);
     AVDK_RETURN_ON_FALSE(control, AVDK_ERR_INVAL, TAG, "control is NULL");
 
-    // Modified by TUYA Start
-    /* Block new frames from reaching the HW before joining the encoder thread,
-     * so the in-flight frame (if any) is the last one and teardown stays clean. */
-    control->stopping = 1;
-    h264_encode_clear_semaphore(&control->enc_done_sem);
-    // Modified by TUYA End
     control->enc_status = 0;
     rtos_set_semaphore(&control->enc_start_sem);
     rtos_get_semaphore(&control->sem, BEKEN_WAIT_FOREVER);
@@ -709,8 +656,6 @@ static avdk_err_t h264_encode_ctlr_ioctl(bk_h264_encode_ctlr_handle_t handle, ui
             }
             else {
                 control->bond = bond;
-                // Modified by TUYA: bond (re)attached -> allow frames again.
-                control->stopping = 0;
             }
             break;
         }
@@ -721,10 +666,6 @@ static avdk_err_t h264_encode_ctlr_ioctl(bk_h264_encode_ctlr_handle_t handle, ui
                 return AVDK_ERR_INVAL;
             }
             if (control->bond == bond) {
-                // Modified by TUYA: stop feeding HW before aborting/detaching.
-                control->stopping = 1;
-                h264_encode_clear_semaphore(&control->enc_start_sem);
-                h264_encode_clear_semaphore(&control->enc_done_sem);
                 if (control->encoder_inited) {
                     (void)vcenc_h264_abort(&control->enc_param);
                 }
@@ -735,17 +676,6 @@ static avdk_err_t h264_encode_ctlr_ioctl(bk_h264_encode_ctlr_handle_t handle, ui
             }
             break;
         }
-        // Modified by TUYA Start
-        case BK_H264_ENCODE_IOCTL_STOP_ENCODE: {
-            /* Pre-stop signal (called by the adapter before bond stop): block new
-             * frames from reaching the HW so the bond's SBI-disable handshake runs
-             * against an idle encoder and no in-flight frame gets aborted. */
-            control->stopping = 1;
-            h264_encode_clear_semaphore(&control->enc_start_sem);
-            h264_encode_clear_semaphore(&control->enc_done_sem);
-            break;
-        }
-        // Modified by TUYA End
         default:
             LOGE("Unknown ioctl command: %d\r\n", cmd);
             return AVDK_ERR_INVAL;
