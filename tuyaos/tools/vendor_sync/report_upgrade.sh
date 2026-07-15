@@ -9,14 +9,20 @@ REPO_ROOT=""
 OLD_REF=""
 NEW_REF=""
 OUT=""
+# Business tip for OLD...TIP delta. Default HEAD.
+# After a merge commit is on HEAD, Axis-A review MUST pass the pre-merge parent
+# (usually 'HEAD^1') or INTERSECT inflates toward the full OEM set.
+BUSINESS_TIP="HEAD"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --repo-root) REPO_ROOT="$2"; shift 2 ;;
     --old) OLD_REF="$2"; shift 2 ;;
     --new) NEW_REF="$2"; shift 2 ;;
+    --business-tip) BUSINESS_TIP="$2"; shift 2 ;;
     --out) OUT="$2"; shift 2 ;;
     -h|--help)
-      echo "Usage: report_upgrade.sh --old <ref> --new <ref> [--repo-root DIR] [--out FILE]"
+      echo "Usage: report_upgrade.sh --old <ref> --new <ref> [--business-tip <ref>] [--repo-root DIR] [--out FILE]"
+      echo "  --business-tip  tip for business delta (default HEAD). Post-merge Axis A: use 'HEAD^1'."
       exit 0
       ;;
     *) vs_die "unknown arg: $1" ;;
@@ -28,20 +34,22 @@ ROOT="$(vs_resolve_repo_root "${REPO_ROOT}")"
 cd "$ROOT"
 git rev-parse --verify "$OLD_REF^{commit}" >/dev/null 2>&1 || vs_die "invalid --old: $OLD_REF"
 git rev-parse --verify "$NEW_REF^{commit}" >/dev/null 2>&1 || vs_die "invalid --new: $NEW_REF"
+git rev-parse --verify "${BUSINESS_TIP}^{commit}" >/dev/null 2>&1 || vs_die "invalid --business-tip: $BUSINESS_TIP"
 
 HEAD_SHA="$(git rev-parse --short HEAD)"
+BIZ_SHA="$(git rev-parse --short "${BUSINESS_TIP}^{commit}")"
 
 TMPDIR_VS="$(mktemp -d)"
 trap 'rm -rf "$TMPDIR_VS"' EXIT
 
 git diff --name-only "${OLD_REF}..${NEW_REF}" -- t9_os | vs_lines_sort >"$TMPDIR_VS/oem"
-git diff --name-only "${OLD_REF}...HEAD" -- t9_os | vs_lines_sort >"$TMPDIR_VS/biz"
+git diff --name-only "${OLD_REF}...${BUSINESS_TIP}" -- t9_os | vs_lines_sort >"$TMPDIR_VS/biz"
 comm -12 "$TMPDIR_VS/oem" "$TMPDIR_VS/biz" >"$TMPDIR_VS/intersect" || true
 
 "$SCRIPT_DIR/list_tuya_marked.sh" --repo-root "$ROOT" | vs_lines_sort >"$TMPDIR_VS/marked" || true
 comm -12 "$TMPDIR_VS/oem" "$TMPDIR_VS/marked" >"$TMPDIR_VS/marked_oem" || true
 
-git diff --name-status "${OLD_REF}...HEAD" -- t9_os | awk '$1=="A"{print $2}' | vs_lines_sort >"$TMPDIR_VS/added_biz"
+git diff --name-status "${OLD_REF}...${BUSINESS_TIP}" -- t9_os | awk '$1=="A"{print $2}' | vs_lines_sort >"$TMPDIR_VS/added_biz"
 git diff --name-status "${OLD_REF}..${NEW_REF}" -- t9_os | awk '$1=="A"{print $2}' | vs_lines_sort >"$TMPDIR_VS/added_oem"
 comm -12 "$TMPDIR_VS/added_biz" "$TMPDIR_VS/added_oem" >"$TMPDIR_VS/collision" || true
 
@@ -72,6 +80,7 @@ emit() {
 - Old: ${OLD_REF}
 - New: ${NEW_REF}
 - HEAD: ${HEAD_SHA}
+- Business tip: ${BUSINESS_TIP} (${BIZ_SHA})
 
 ## OEM changed files ($(count_file "$TMPDIR_VS/oem"))
 
