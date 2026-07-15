@@ -172,19 +172,20 @@ git diff --name-status <upstream>...HEAD -- t9_os
 
 ### 3.5 `report_upgrade.sh` — 升级影响报告（核心）
 
-**作用：** 对比「旧 upstream / 新 upstream / 当前 HEAD」，生成 Markdown 报告。
+**作用：** 对比「旧 upstream / 新 upstream / 业务 tip」，生成 Markdown 报告。
 
 内部逻辑概要：
 
 1. **OEM changed** = `git diff --name-only old..new -- t9_os`  
-2. **Business delta** = `git diff --name-only old...HEAD -- t9_os`（含新增）  
+2. **Business delta** = `git diff --name-only old...<business-tip> -- t9_os`（默认 tip=`HEAD`）  
 3. **Intersection（PRIMARY REVIEW QUEUE）** = 业务 ∩ 原厂 → **人工主队列**  
-4. **TUYA-marked ∩ OEM** = 标注列表 ∩ 原厂变更  
+4. **TUYA-marked ∩ OEM** = 标注列表 ∩ 原厂变更（标记来自**当前工作树**）  
 5. **Business-only added** = 业务新增文件  
 6. **Path collisions** = 业务新增路径 ∩ 原厂新增路径  
 7. **Diffstat** = 原厂 old..new 的 `--stat`  
 
-**与是否正在 merge 冲突无关：** 比的是 tag 与 `HEAD`（冲突未提交完成时，`HEAD` 仍是业务侧 tip），**merge 前 / 冲突中 / merge 完成后都可以跑。**
+**与是否正在 merge 冲突无关：** merge 前 / 冲突中 / merge 完成后都可以跑。  
+**Merge commit 已落盘后**：必须加 `--business-tip 'HEAD^1'`（合入前业务 tip）。若仍用默认 `HEAD`，Business delta 会吸收已合入的 OEM，**INTERSECT≈OEM 全量**，不能当主审队列。NOTES 建议同时记录 POST(`HEAD`) 与 PRE(`HEAD^1`) 两行统计。
 
 **何时用：**
 
@@ -195,10 +196,18 @@ git diff --name-status <upstream>...HEAD -- t9_os
 **用法：**
 
 ```bash
+# merge 前 / 冲突中（业务 tip 仍是 HEAD）
 ./tuyaos/tools/vendor_sync/report_upgrade.sh \
   --old upstream/bk-4.0.1.4 \
   --new upstream/bk-4.0.1.5 \
   --out t9_os/TUYA_BK_SDK_UPDATE_4.0.1.5_NOTES.md
+
+# merge 完成后（轴 A 主审）
+./tuyaos/tools/vendor_sync/report_upgrade.sh \
+  --old upstream/bk-4.0.1.4 \
+  --new upstream/bk-4.0.1.5 \
+  --business-tip 'HEAD^1' \
+  --out /tmp/t9_upgrade_pre.md
 ```
 
 省略 `--out` 则打印到 stdout。
@@ -207,6 +216,7 @@ git diff --name-status <upstream>...HEAD -- t9_os
 |------|------|
 | `--old REF` | 旧干净 upstream tag（必填） |
 | `--new REF` | 新干净 upstream tag（必填） |
+| `--business-tip REF` | 业务 delta tip（默认 `HEAD`；merge 后主审用 `'HEAD^1'`） |
 | `--out FILE` | 写入文件（可选） |
 | `--repo-root DIR` | 可选 |
 
@@ -341,12 +351,12 @@ upstream/bk-N 、 upstream/bk-N+1
 | merge 前（可选） | 先跑一遍 `report_upgrade --old N --new N+1`，心里有 INTERSECT 名单 |
 | `git merge` 后若有冲突 | **立刻**跑 `merge_assist`（此时 CONFLICTS 有内容）+ `report_upgrade` |
 | 然后 | 按 CONFLICTS → INTERSECT → MARKED 解冲突并 `git add` / 完成 merge |
-| merge 完成后 | 再落盘/润色 report 作 NOTES；复查**无冲突但在 INTERSECT 里**的文件（自动合并仍可能行为错）|
+| merge 完成后 | 用 `--business-tip 'HEAD^1'` 再跑 report 作 NOTES 主审；复查 PRE INTERSECT（自动合并仍可能行为错）|
 
 原因简述：
 
 - `merge_assist` 的 CONFLICTS 依赖「仍在 merging」状态；解完再跑会变成空。  
-- `report_upgrade` 不依赖冲突状态，前/中/后都可用。  
+- `report_upgrade` 不依赖冲突状态，前/中/后都可用；**完成后必须改 tip**，否则 INTERSECT 膨胀。  
 
 #### 示例命令（在 vendor/T9 根）
 
@@ -373,11 +383,142 @@ git merge "upstream/bk-${N+1}"
   --out "/tmp/t9_upgrade_${N+1}.md"
 # ... 按队列解冲突，完成 merge ...
 
-# --- ⑤ NOTES ---
+# --- ⑤ NOTES（轴 A 主审：合入前 tip）---
 ./tuyaos/tools/vendor_sync/report_upgrade.sh \
   --old "upstream/bk-${N}" --new "upstream/bk-${N+1}" \
+  --business-tip 'HEAD^1' \
   --out "t9_os/TUYA_BK_SDK_UPDATE_${N+1}_NOTES.md"
+./tuyaos/tools/vendor_sync/merge_assist.sh \
+  --old "upstream/bk-${N}" --new "upstream/bk-${N+1}" \
+  --business-tip 'HEAD^1' || true
+
+# 人工：合入后按 Axis-A / Axis-B 结论补写本次升版说明（两轴都要有）。
+# Axis-A / Axis-B 两轴详见下文「5.2.1 双轴审计」。
+
+# --- ⑤b Axis-B：OEM include × TKL ABI（必做，防漏公共头破坏性变更）---
+./tuyaos/tools/vendor_sync/audit_tkl_abi.sh \
+  --old "upstream/bk-${N}" --new "upstream/bk-${N+1}" \
+  --out "/tmp/t9_tkl_abi_${N+1}.md"
+# 人工 triage 报告中的 hits → 改 tkl_*.c / 记入本次升版说明
 ```
+
+---
+
+### 5.2.1 双轴审计（升版必做）：定制 vs TKL 适配
+
+升版后有两类完全不同的风险，**必须分开跑**，不能只用 `report_upgrade`。
+
+```text
+                    OEM 干净基线 N → N+1
+                              │
+              ┌───────────────┴───────────────┐
+              ▼                               ▼
+     ┌─────────────────┐             ┌─────────────────┐
+     │ 轴 A · 定制完整性 │             │ 轴 B · TKL ABI   │
+     │ t9_os 业务改动   │             │ tuyaos_adapter   │
+     └────────┬────────┘             └────────┬────────┘
+              │                               │
+   report_upgrade /                    audit_tkl_abi /
+   merge_assist                        git diff include
+              │                               │
+              ▼                               ▼
+   INTERSECT / TUYA∩OEM               删改字段 × tkl_*.c
+   「定制会不会丢」                   「编译会不会挂 / 要不要改适配」
+```
+
+| | **轴 A：定制** | **轴 B：TKL 适配** |
+|--|----------------|---------------------|
+| **问题** | 业务 / TUYA 改的东西会不会被 OEM 盖掉？ | adapter 用的 OEM 类型/API 断了没有？ |
+| **对象** | `t9_os/**`（含标记、自研驱动、`tuya_app`） | `tuyaos/tuyaos_adapter/**` + OEM **公共头** |
+| **主工具** | `report_upgrade.sh`、`merge_assist.sh`、`list_tuya_marked.sh` | `audit_tkl_abi.sh`；或手工 `git diff …/include` + `rg` |
+| **关键集合** | OEM changed、INTERSECT、TUYA∩OEM、Business-only、Path collision | 变更的 `t9_os/{ap,cp}/include/**/*.h`；删/改名字段/原型 |
+| **为什么单独轴** | INTERSECT 只看「业务也动过的 `t9_os` 路径」 | **OEM-only 头文件不在 INTERSECT**；adapter **根本不在 `t9_os`** |
+| **典型产出** | 解冲突队列、WiFi IRAM 三件套是否丢标记 | `tkl_qspi` 的 `wire_mode` 必改之类 |
+| **合入时机** | merge 前/中（指导解冲突） | merge 后立刻跑（adapter 常不随 merge 自动改） |
+
+#### 轴 A 怎么跑（定制）
+
+在 **业务分支**（建议升版专用分支）上，旧/新 tag 分别为 `upstream/bk-N` / `upstream/bk-N+1`：
+
+```bash
+./tuyaos/tools/vendor_sync/report_upgrade.sh \
+  --old "upstream/bk-${N}" --new "upstream/bk-${N+1}" \
+  --out "/tmp/t9_upgrade_${N+1}.md"
+
+./tuyaos/tools/vendor_sync/merge_assist.sh \
+  --old "upstream/bk-${N}" --new "upstream/bk-${N+1}"
+```
+
+阅读顺序（不要只看 OEM 4876 行列表）：
+
+1. **CONFLICTS / merge_assist 队列** → 先解。  
+2. **TUYA-marked ∩ OEM** → 定制标注是否还在。  
+3. **INTERSECT** → 原厂与业务叠交的主人工队列（按模块定高中低）。  
+4. **Business-only / Path collisions** → 自研资产与撞名风险。  
+5. OEM 全量列表只作背景噪音（Kconfig 海量变更等）。
+
+#### 轴 B 怎么跑（TKL ABI）
+
+**目标：** 找出「原厂公共头里删掉/改名的符号」在 `tuyaos_adapter` 里是否仍被引用。
+
+**推荐一键：**
+
+```bash
+./tuyaos/tools/vendor_sync/audit_tkl_abi.sh \
+  --old "upstream/bk-${N}" --new "upstream/bk-${N+1}" \
+  --out "/tmp/t9_tkl_abi_${N+1}.md"
+```
+
+脚本会：
+
+1. `git diff` `t9_os/ap/include` + `t9_os/cp/include`（公共 API/类型面）。  
+2. 从 diff 的 **删除行**里提取候选符号（结构体字段、原型名、`#define` 等）。  
+3. 用这些符号去搜索 `tuyaos/tuyaos_adapter`（含 `tkl_*.c`）。  
+4. 打出 Markdown：**变更头列表 + adapter hits**（会有误报，需人工 triage）。
+
+**手工等价（理解原理时看这个）：**
+
+```bash
+# 1) 看公共头改了多少
+git diff --stat "upstream/bk-${N}".."upstream/bk-${N+1}" -- \
+  t9_os/ap/include t9_os/cp/include
+
+# 2) 重点打开类型头的 unified diff（搜删除的字段）
+git diff -U3 "upstream/bk-${N}".."upstream/bk-${N+1}" -- \
+  t9_os/ap/include/driver/hal/
+
+# 3) 对删掉的字段名，在 TKL 里搜（示例：旧 qspi）
+rg -n 'wire_mode|qcmd\.' tuyaos/tuyaos_adapter/src/driver/tkl_qspi.c
+```
+
+**人工 triage 规则：**
+
+| 判定 | 条件 | 动作 |
+|------|------|------|
+| **MUST** | 字段/原型删除或改名，且 TKL 仍写旧名（编译必挂或链接必挂） | 改对应 `tkl_*.c` 后再合/再提 |
+| **LIKELY** | 头只是增量，但实现行为/公式变；或 TKL 走间接封装 | 强回归；失败再改 |
+| **NO** | include 无破坏性变更，或 TKL 根本不用该符号 | 冒烟即可 |
+| **误报** | 如普通词 `width`/`cmd`；或 SPI 的 `wire_mode` ≠ QSPI 的 `wire_mode` | 丢弃 |
+
+**典型实例（OEM 改公共头、业务未改该头）：**
+
+1. 轴 A：相关 `hal_*_types.h` **不在 INTERSECT**（业务没改过该头）→ 定制报告「不显眼」。  
+2. 轴 B：include diff 显示字段删除/改名；`rg`/`audit_tkl_abi` 命中对应 `tkl_*.c` → **MUST**。  
+3. 按新 ABI 改 TKL 映射后再合/再提。
+
+#### 两轴在升版流水线中的位置
+
+| 步骤 | 动作 |
+|------|------|
+| 1 | import + tag `upstream/bk-N+1` |
+| 2 | 业务分支 `git merge` |
+| 3 | **轴 A**：`report_upgrade` + `merge_assist` → 解冲突、保 TUYA |
+| 4 | merge 提交完成 |
+| 5 | **轴 B**：`audit_tkl_abi` → 改 TKL / 记入升版说明 |
+| 6 | 编译 + 按升版说明回归 |
+| 7 | 写/更新本次升版说明（两轴结论都要有） |
+
+**禁止：** 只跑轴 A 就写「TKL 不用改」；也不要用轴 B 代替解冲突（扫不到 `t9_os` 里的 TUYA 块）。
 
 ---
 
@@ -399,8 +540,9 @@ git merge "upstream/bk-${N+1}"
 | 工具负责 | 你负责 |
 |----------|--------|
 | 导入干净树、排除嵌套 `.git` | 选择正确分支；orphan/tag/push |
-| 计算业务 delta / 交集 / 标注触碰 | 解冲突时保留正确的 TUYA 逻辑与行为 |
-| Markdown 报告骨架与文件名单 | 风险分级、TKL 影响、测试矩阵与冒烟结论 |
+| 计算业务 delta / 交集 / 标注触碰（轴 A） | 解冲突时保留正确的 TUYA 逻辑与行为 |
+| OEM include 删符号 × adapter 命中草稿（轴 B） | triage MUST/LIKELY/误报；改 `tkl_*.c` |
+| Markdown 报告骨架与文件名单 | 风险分级、测试矩阵与冒烟结论；升版说明 |
 | exit 码提示是否有冲突 | 编译与板上验证 |
 
 ---
@@ -412,6 +554,7 @@ git merge "upstream/bk-${N+1}"
 3. 把原厂嵌套 `.git` 提交进本仓库。  
 4. 把 `tuyaos/`（含本工具）导入 upstream 快照。  
 5. 只看标注列表、忽略「业务∩原厂」和新建文件。  
+6. 只跑轴 A（`report_upgrade`）就断言「TKL 不用改」——公共头 OEM-only 变更轴 A 看不见。  
 
 ---
 
@@ -422,10 +565,12 @@ git merge "upstream/bk-${N+1}"
 | 把干净原厂灌进 `t9_os` | `import_pristine.sh` |
 | 看有哪些 TUYA 标注文件 | `list_tuya_marked.sh` |
 | 看业务相对某 upstream 改了啥（含新文件） | `list_business_delta.sh` |
-| 出升级影响报告 / NOTES 初稿 | `report_upgrade.sh` |
+| 出升级影响报告 / NOTES 初稿（轴 A · 定制） | `report_upgrade.sh` |
 | merge 冲突中拿处理队列 | `merge_assist.sh`（冲突未解时） |
+| OEM 公共头 × TKL 命中草稿（轴 B · 适配） | `audit_tkl_abi.sh` |
 | 改完脚本自测 | `tests/run_tests.sh` |
 | 跟手册逐步点操作 | `VENDOR_UPSTREAM_SYNC.md` |
+| 双轴说明与典型实例 | 上文 §5.2.1 |
 
 ---
 

@@ -168,11 +168,25 @@ git merge "upstream/bk-${N+1}"
 3. TUYA 标注触碰子集
 4. 业务新增文件与原厂新增路径碰撞
 
-可将 report 输出作为 `TUYA_BK_SDK_UPDATE_*_NOTES.md` 初稿，再补模块风险与测试矩阵。
+可将 report 输出作为 `TUYA_BK_SDK_UPDATE_*_NOTES.md` 初稿，再补模块风险与测试矩阵。  
+以上为 **轴 A（定制完整性）**。详细对照见 [`VENDOR_SYNC_GUIDE.md` §5.2.1](VENDOR_SYNC_GUIDE.md)。
+
+### 3.3b 轴 B：OEM 公共头 × TKL ABI（merge 完成后必做）
+
+`report_upgrade` / INTERSECT **看不见**「业务未改过的公共头」和 `tuyaos_adapter`。每次升版还须：
+
+```bash
+./tuyaos/tools/vendor_sync/audit_tkl_abi.sh \
+  --old "upstream/bk-${N}" \
+  --new "upstream/bk-${N+1}" \
+  --out "/tmp/t9_tkl_abi_${N+1}.md"
+```
+
+对 hits 做 MUST/LIKELY/误报 triage，改对应 `tkl_*.c`，并记入本次升版说明（两轴结论）。
 
 ### 3.4 验证
 
-编译 + 红/黄项冒烟 → Review → 合回业务分支。旧 tag **保留**。
+编译（含 TKL）+ 红/黄项冒烟 → Review → 合回业务分支。旧 tag **保留**。
 
 ---
 
