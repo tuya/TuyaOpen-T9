@@ -25,7 +25,6 @@
 #include <driver/int.h>
 #include <driver/aon_rtc.h>
 #include <driver/hal/hal_spi_types.h>
-#include <driver/hal/hal_qspi_types.h>
 #include <gpio_driver.h>
 #include "timer_hal.h"
 #include <driver/pwr_clk.h>
@@ -45,6 +44,7 @@
 #define PM_CLKDIV_CORE_MASK                 (0xF << PM_CLKDIV_CORE_POS)
 #define PM_VDDD_H_VOL_1V                    (0x6)
 #define PM_VDDDIG_H_VOL_0V825               (0x9)
+#define PM_VDDDIG_H_VOL_0V85                (0xA)
 #define PM_VDDDIG_H_VOL_0v9                 (0xC)
 #define PM_VDDDIG_H_VOL_0V95                (0xE)
 #define PM_CLKDV_CPU1_1                     (0x1)
@@ -94,10 +94,10 @@ typedef struct {
 
 
 static const sys_hal_cpu_bus_freq_cfg_t s_cpu_bus_freq_cfg[] = {
-	{PM_CPU_FRQ_XTAL, PM_CLKSEL_CORE_26M, 0x0, 0x0, 0x0, 0x0, PM_VDDDIG_H_VOL_0V825},
-	{PM_CPU_FRQ_60M, PM_CLKSEL_CORE_480M, 0x7, 0x0, 0x0, 0x0, PM_VDDDIG_H_VOL_0V825},
-	{PM_CPU_FRQ_80M, PM_CLKSEL_CORE_480M, 0x5, 0x0, 0x0, 0x0, PM_VDDDIG_H_VOL_0V825},
-	{PM_CPU_FRQ_120M, PM_CLKSEL_CORE_480M, 0x3, 0x0, 0x0, 0x0, PM_VDDDIG_H_VOL_0V825},
+	{PM_CPU_FRQ_XTAL, PM_CLKSEL_CORE_26M, 0x0, 0x0, 0x0, 0x0, PM_VDDDIG_H_VOL_0V85},
+	{PM_CPU_FRQ_60M, PM_CLKSEL_CORE_480M, 0x7, 0x0, 0x0, 0x0, PM_VDDDIG_H_VOL_0V85},
+	{PM_CPU_FRQ_80M, PM_CLKSEL_CORE_480M, 0x5, 0x0, 0x0, 0x0, PM_VDDDIG_H_VOL_0V85},
+	{PM_CPU_FRQ_120M, PM_CLKSEL_CORE_480M, 0x3, 0x0, 0x0, 0x0, PM_VDDDIG_H_VOL_0V85},
 	{PM_CPU_FRQ_160M, PM_CLKSEL_CORE_480M, 0x2, 0x0, 0x0, 0x0, PM_VDDDIG_H_VOL_0v9},
 	{PM_CPU_FRQ_240M, PM_CLKSEL_CORE_480M, 0x1, 0x0, 0x0, 0x0, PM_VDDDIG_H_VOL_0V95},
 };
@@ -1388,30 +1388,6 @@ void sys_hal_spi_select_clock(spi_id_t num, spi_src_clk_t mode)
 		default:
 			break;
 	}
-}
-
-void sys_hal_set_qspi_vddram_voltage(uint32_t param)
-{
-	// TODO: Implement QSPI VDD RAM voltage control
-	return;
-}
-
-void sys_hal_set_qspi_io_voltage(uint32_t param)
-{
-	// TODO: Implement QSPI IO voltage control
-	return;
-}
-
-void sys_hal_qspi_clk_sel(uint32_t id, uint32_t param)
-{
-	// TODO: Implement QSPI clock selection
-	return;
-}
-
-void sys_hal_qspi_set_src_clk_div(uint32_t id, uint32_t value)
-{
-	// TODO: Implement QSPI clock divider
-	return;
 }
 
 #if 1	//tmp build

@@ -39,6 +39,7 @@ typedef struct {
 	vcdec_h264_decode_config_t decode_config;
 	uint32_t decode_result;
 	beken_semaphore_t decode_done_sem;
+	beken_mutex_t osd_mutex;
 
 	bk_h264_decode_frame_config_t config;
 	bk_h264_decode_ctlr_t ops;
@@ -53,6 +54,14 @@ typedef struct {
 
 	struct h264d_fbpool *pool;   /* internally owned zero-copy frame pool */
 	vcdec_fb_if_t fbif;          /* decode-side vtable exported by the pool */
+
+	/* Frame-drop resync state (controller-owned policy). Set when a reference/
+	 * IDR frame had to be dropped because a decode target could not be acquired
+	 * within the wait budget: the reference chain is broken, so every following
+	 * non-IDR access unit is skipped until the next IDR re-establishes a
+	 * self-contained resync point. Accessed only on the hw-decoder worker
+	 * thread (the decode callback), plus cleared on RESET. */
+	uint8_t skip_until_idr;
 
 	bk_h264_decode_frame_zerocopy_config_t config;
 	bk_h264_decode_ctlr_t ops;
