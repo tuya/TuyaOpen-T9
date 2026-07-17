@@ -305,12 +305,6 @@ CONFIG_AP_SYS_MASTER_CPU_ID=2
 #
 
 #
-# CPU Hotplug
-#
-CONFIG_CPU_HOTPLUG_BOOT_OFFLINE=y
-CONFIG_CPU_HP_GOVERNOR=y
-
-#
 # Mac Config
 #
 CONFIG_NEW_MAC_POLICY=y
@@ -335,8 +329,14 @@ CONFIG_UART_PRINT_BAUD_RATE=115200
 #
 # bk_uid
 #
-# CONFIG_GET_UID_ENABLE is not set
+CONFIG_GET_UID_ENABLE=y
+CONFIG_GET_UID_TEST=y
 # end of bk_uid
+
+#
+# modules::uid
+#
+# end of modules::uid
 
 #
 # Bk_Wifi
@@ -1026,7 +1026,7 @@ CONFIG_PM_AP_CPU3_CACHE_POWER_DOWN=y
 #
 # OTP
 #
-# CONFIG_OTP_V1 is not set
+CONFIG_OTP_V1=y
 # CONFIG_PHY_RFCALI_TO_OTP is not set
 # CONFIG_AON_ENCP is not set
 # end of OTP
@@ -1152,6 +1152,12 @@ CONFIG_DRIVER_TEST=y
 CONFIG_SUPPORT_MULTICORE=y
 # CONFIG_MULTICORE_TEST is not set
 # end of multicore
+
+#
+# CPU Hotplug
+#
+CONFIG_CPU_HOTPLUG_BOOT_OFFLINE=y
+CONFIG_CPU_HP_VOTE=y
 
 #
 # xdac
