@@ -9,13 +9,21 @@
 #include <components/bk_isp_camera.h>
 #include <driver/isp_base.h>
 #include <driver/isp_types.h>
+#include <modules/pm.h>
 #include <os/mem.h>
 #include <os/str.h>
+#include "sys_driver.h"
 #include "tkl_output.h"
+#include "tkl_system.h"
+
+#define TKL_CAM_MIPI_POWER_SETTLE_MS    20U
+#define TKL_CAM_MIPI_SYS_ANA_REG_BASE   (0x44010000U)
+#define TKL_CAM_MIPI_LDO_ANA_REG        (0x69U)
 
 typedef struct {
     BOOL_T initialized;
     BOOL_T started;
+    BOOL_T sensor_power_on;
     TUYA_CAMERA_MIPI_CFG_T cfg;
     UINT16_T active_output_width;
     UINT16_T active_output_height;
@@ -26,6 +34,55 @@ typedef struct {
 } tkl_camera_mipi_ctx_t;
 
 static tkl_camera_mipi_ctx_t s_cam_ctx;
+
+static VOID_T tkl_camera_mipi_gpio_bank_ldo_enable(VOID_T)
+{
+    UINT32_T reg = REG_READ(TKL_CAM_MIPI_SYS_ANA_REG_BASE + TKL_CAM_MIPI_LDO_ANA_REG * 4U);
+
+    reg |= (0xFU << 28) | (0x2U << 23) | (0x7U << 19) | (0x7U << 15);
+    reg &= ~(0xFU << 11);
+    reg |= (0x8U << 11);
+    REG_WRITE(TKL_CAM_MIPI_SYS_ANA_REG_BASE + TKL_CAM_MIPI_LDO_ANA_REG * 4U, reg);
+}
+
+static OPERATE_RET tkl_camera_mipi_sensor_power_enable(BOOL_T enable)
+{
+    pm_auxldo_ctrl_cfg_t auxldo_cfg = {0};
+    int ldo_en = (enable != FALSE) ? PM_AUXLDO_ENABLE : PM_AUXLDO_DISABLE;
+
+    tkl_log_output("camera sensor power %s (gpio_bank+1p8v+1p2v)\r\n",
+                   (enable != FALSE) ? "on" : "off");
+
+    if (enable != FALSE) {
+        /* Must run before any GPIO59+ / I2C access. */
+        tkl_camera_mipi_gpio_bank_ldo_enable();
+    }
+
+    auxldo_cfg.ldo = AUXLDOS_SEL_1P8V;
+    auxldo_cfg.out = PM_AUXLDO_1P8V_OUT_1P8V;
+    auxldo_cfg.user = PM_AUXLDO_USER_CAMERA;
+    auxldo_cfg.state = ldo_en;
+    if (bk_pm_auxldo_ctrl_vote(&auxldo_cfg) != BK_OK) {
+        tkl_log_output("camera 1p8v ldo vote failed\r\n");
+        return OPRT_COM_ERROR;
+    }
+
+    os_memset(&auxldo_cfg, 0, sizeof(auxldo_cfg));
+    auxldo_cfg.ldo = AUXLDOS_SEL_1P2V;
+    auxldo_cfg.out = PM_AUXLDO_1P2V_OUT_1P2V;
+    auxldo_cfg.user = PM_AUXLDO_USER_CAMERA;
+    auxldo_cfg.state = ldo_en;
+    if (bk_pm_auxldo_ctrl_vote(&auxldo_cfg) != BK_OK) {
+        tkl_log_output("camera 1p2v ldo vote failed\r\n");
+        return OPRT_COM_ERROR;
+    }
+
+    if (enable != FALSE) {
+        tkl_system_sleep(TKL_CAM_MIPI_POWER_SETTLE_MS);
+    }
+    s_cam_ctx.sensor_power_on = (enable != FALSE) ? TRUE : FALSE;
+    return OPRT_OK;
+}
 
 static void tkl_camera_mipi_runtime_reset(BOOL_T keep_config)
 {
@@ -315,6 +372,10 @@ static void tkl_camera_mipi_cleanup_resources(void)
         bk_camera_sensor_destroy(s_cam_ctx.sensor_handle);
         s_cam_ctx.sensor_handle = NULL;
     }
+
+    if (s_cam_ctx.sensor_power_on != FALSE) {
+        (void)tkl_camera_mipi_sensor_power_enable(FALSE);
+    }
 }
 
 OPERATE_RET tkl_camera_mipi_init(TUYA_CAMERA_MIPI_CFG_T *config)
@@ -345,6 +406,12 @@ OPERATE_RET tkl_camera_mipi_init(TUYA_CAMERA_MIPI_CFG_T *config)
     tkl_camera_mipi_runtime_reset(FALSE);
     os_memcpy(&s_cam_ctx.cfg, &cfg_local, sizeof(cfg_local));
 
+    ret = tkl_camera_mipi_sensor_power_enable(TRUE);
+    if (ret != OPRT_OK) {
+        tkl_camera_mipi_runtime_reset(FALSE);
+        return ret;
+    }
+
     os_memset(&bus_cfg, 0, sizeof(bus_cfg));
     bus_cfg.pin_scl = (uint8_t)s_cam_ctx.cfg.pin_scl;
     bus_cfg.pin_sda = (uint8_t)s_cam_ctx.cfg.pin_sda;
@@ -357,6 +424,7 @@ OPERATE_RET tkl_camera_mipi_init(TUYA_CAMERA_MIPI_CFG_T *config)
     s_cam_ctx.bus_handle = bk_camera_bus_new(&bus_cfg);
     if (s_cam_ctx.bus_handle == NULL) {
         tkl_log_output( "camera bus new failed\r\n");
+        (void)tkl_camera_mipi_sensor_power_enable(FALSE);
         tkl_camera_mipi_runtime_reset(FALSE);
         return OPRT_COM_ERROR;
     }

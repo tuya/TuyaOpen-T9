@@ -10,7 +10,6 @@
 #include <os/mem.h>
 #include <os/os.h>
 #include <os/str.h>
-#include "sys_driver.h"
 #include "gpio_driver.h"
 
 #include "cli_tuya_test.h"
@@ -29,8 +28,6 @@
 #define MIPI_TEST_BYTES_PER_PIXEL   2U
 #define MIPI_TEST_FRAME_COUNT       2U
 #define MIPI_TEST_REFRESH_MS        1000U
-#define SYS_ANA_REG_BASE            (0x44010000)
-#define LDO_ANA_REG                 (0x69)
 #define MIPI_TEST_CAMERA_PIN_SCL    GPIO_69
 #define MIPI_TEST_CAMERA_PIN_SDA    GPIO_70
 #define MIPI_TEST_CAMERA_I2C_ID     1U
@@ -164,15 +161,6 @@ static OPERATE_RET test_mipi_panel_init_with_desc(const bk_display_dsi_panel_t *
     }
 
     return OPRT_OK;
-}
-
-static void test_mipi_auxldo_enable(void)
-{
-    uint32_t reg = REG_READ(SYS_ANA_REG_BASE + LDO_ANA_REG * 4);
-
-    reg &= ~((0x7 << 23) | (0xF << 19));
-    reg |= (0x2 << 23) | (0x7 << 19) | (0x3 << 30);
-    REG_WRITE(SYS_ANA_REG_BASE + LDO_ANA_REG * 4, reg);
 }
 
 static void test_mipi_runtime_reset(void)
@@ -598,7 +586,6 @@ static OPERATE_RET test_mipi_lcd_ensure_open(const char *panel_name)
         return (ret == OPRT_OK) ? OPRT_NOT_FOUND : ret;
     }
 
-    test_mipi_auxldo_enable();
     test_mipi_frame_buffer_init_once();
     ret = test_mipi_panel_cfg_apply();
     if (ret != OPRT_OK) {
@@ -824,7 +811,6 @@ static OPERATE_RET test_mipi_camera_mipi_open(uint16_t sensor_width,
     s_mipi_camera_cfg.output_width = output_width;
     s_mipi_camera_cfg.output_height = output_height;
 
-    test_mipi_auxldo_enable();
     test_mipi_frame_buffer_init_once();
 
     ret = tkl_camera_mipi_init(&s_mipi_camera_cfg);
@@ -867,7 +853,6 @@ static OPERATE_RET test_mipi_camera_mipi_open_gpu(uint16_t sensor_width,
     s_mipi_camera_cfg.enable_flexa = TRUE;
     s_mipi_camera_cfg.work_mode = 1U;
 
-    test_mipi_auxldo_enable();
     test_mipi_frame_buffer_init_once();
 
     ret = tkl_camera_mipi_init(&s_mipi_camera_cfg);
@@ -918,7 +903,6 @@ static OPERATE_RET test_mipi_camera_mipi_open_gpu_sp(uint16_t sensor_width,
     s_mipi_camera_cfg.sp_buf_cnt = 2U;
     s_mipi_camera_cfg.sp_work_mode = 0U;
 
-    test_mipi_auxldo_enable();
     test_mipi_frame_buffer_init_once();
 
     ret = tkl_camera_mipi_init(&s_mipi_camera_cfg);
