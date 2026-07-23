@@ -3062,7 +3062,11 @@ FRESULT find_volume (	/* FR_OK(0): successful, !=0: any error occurred */
 	WORD nrsv;
 	FATFS *fs;
 	UINT i;
-	
+	// Modified by TUYA Start
+	BYTE ptype[4];					/* Primary partition system IDs (for extended-partition detection) */
+	DWORD ext_base, ebr_cur;		/* Extended-partition container base / current EBR sector */
+	int ebr_guard;					/* Safety bound on the EBR chain length */
+	// Modified by TUYA End
 	//BK_LOGD(NULL, "find_volume 1\r\n");
 
 	/* Get logical drive number */
@@ -3107,13 +3111,21 @@ FRESULT find_volume (	/* FR_OK(0): successful, !=0: any error occurred */
 	if (SS(fs) > FF_MAX_SS || SS(fs) < FF_MIN_SS || (SS(fs) & (SS(fs) - 1))) return FR_DISK_ERR;
 #endif
 
-	/* Find an FAT partition on the drive. Supports only generic partitioning rules, FDISK and SFD. */
+	// Modified by TUYA Start
+	/* Find an FAT partition on the drive. Supports generic partitioning rules
+	 * (FDISK primary partitions and SFD) plus MS extended-partition / EBR chains
+	 * (types 0x05/0x0F/0x85), so cards whose FAT volume lives inside a logical
+	 * (extended) partition can still be mounted. */
+	// Modified by TUYA End
 	bsect = 0;
 	fmt = check_fs(fs, bsect);			/* Load sector 0 and check if it is an FAT-VBR as SFD */
 	BK_LOGD(NULL, "fmt=%d\r\n", fmt);
 	if (fmt == 2 || (fmt < 2 && LD2PT(vol) != 0)) {	/* Not an FAT-VBR or forced partition number */
-		for (i = 0; i < 4; i++) {		/* Get partition offset */
+		for (i = 0; i < 4; i++) {		/* Get partition offset & system ID */
 			pt = fs->win + (MBR_Table + i * SZ_PTE);
+			// Modified by TUYA Start
+			ptype[i] = pt[PTE_System];
+			// Modified by TUYA End
 			br[i] = pt[PTE_System] ? ld_dword(pt + PTE_StLba) : 0;
 		}
 		i = LD2PT(vol);					/* Partition number: 0:auto, 1-4:forced */
@@ -3122,6 +3134,37 @@ FRESULT find_volume (	/* FR_OK(0): successful, !=0: any error occurred */
 			bsect = br[i];
 			fmt = bsect ? check_fs(fs, bsect) : 3;	/* Check the partition */
 		} while (LD2PT(vol) == 0 && fmt >= 2 && ++i < 4);
+		// Modified by TUYA Start
+		/* No FAT in the 4 primary slots (auto mount): follow any extended
+		 * partition's EBR chain and mount the first FAT logical volume.
+		 * PTE0 of an EBR is the logical partition (start relative to THIS EBR);
+		 * PTE1 links to the next EBR (start relative to the container base). */
+		if (LD2PT(vol) == 0 && fmt >= 2) {
+			for (i = 0; i < 4 && fmt >= 2; i++) {
+				if (!(ptype[i] == 0x05 || ptype[i] == 0x0F || ptype[i] == 0x85)) continue;
+				if (!br[i]) continue;
+				ext_base = br[i];		/* Absolute LBA of the extended container */
+				ebr_cur = ext_base;
+				for (ebr_guard = 0; ebr_guard < 100; ebr_guard++) {
+					DWORD lstart, nstart;
+					BYTE ntype;
+					if (move_window(fs, ebr_cur) != FR_OK) { fmt = 4; break; }
+					if (ld_word(fs->win + BS_55AA) != 0xAA55) break;	/* Not a valid EBR */
+					pt = fs->win + MBR_Table;
+					lstart = ld_dword(pt + PTE_StLba);					/* Logical part, rel. to this EBR */
+					ntype = pt[SZ_PTE + PTE_System];
+					nstart = ld_dword(pt + SZ_PTE + PTE_StLba);			/* Next EBR, rel. to container base */
+					if (pt[PTE_System] && lstart) {
+						bsect = ebr_cur + lstart;						/* Absolute LBA of logical VBR */
+						fmt = check_fs(fs, bsect);
+						if (fmt < 2) break;								/* FAT/exFAT volume found */
+					}
+					if (!((ntype == 0x05 || ntype == 0x0F || ntype == 0x85) && nstart)) break;	/* End of EBR chain */
+					ebr_cur = ext_base + nstart;						/* Advance to next EBR */
+				}
+			}
+		}
+		// Modified by TUYA End
 	}
 	BK_LOGD(NULL, "fmt2=%d\r\n", fmt);
 	if (fmt == 4) return FR_DISK_ERR;		/* An error occured in the disk I/O layer */
