@@ -26,11 +26,12 @@
 #define VENC_TEST_RECORD_PATH_MAX     128U
 #define VENC_TEST_RECORD_NAME_MAX     64U
 #define VENC_TEST_RECORD_DEFAULT_FILE "h264_cap.h264"
-#define VENC_TEST_RECORD_QUEUE_DEPTH  8U
+/* Depth must absorb FatFS write stalls; 8 slots drops frames at 2304x1296@15. */
+#define VENC_TEST_RECORD_QUEUE_DEPTH  64U
 #define VENC_TEST_RECORD_WRITER_STACK (4U * 1024U)
-#define VENC_TEST_RECORD_WRITER_WAIT_MS 15000U
+#define VENC_TEST_RECORD_WRITER_WAIT_MS 30000U
 #define VENC_TEST_RECORD_FILE_READY_MS 3000U
-#define VENC_TEST_RECORD_WRITER_IDLE_MS 5U
+#define VENC_TEST_RECORD_WRITER_IDLE_MS 1U
 
 #if defined(CONFIG_BK_ENCODER_H264_MAX_OUTPUT_BUFFER) && (CONFIG_BK_ENCODER_H264_MAX_OUTPUT_BUFFER > 0)
 #define VENC_TEST_RECORD_MAX_FRAME_SIZE ((uint32_t)CONFIG_BK_ENCODER_H264_MAX_OUTPUT_BUFFER)
@@ -540,7 +541,7 @@ static OPERATE_RET test_venc_record_writer_start(void)
     ret = tkl_thread_create(&s_venc_record.writer_task,
                             "venc_rec",
                             VENC_TEST_RECORD_WRITER_STACK,
-                            TKL_THREAD_PRI_BELOW_NORML,
+                            TKL_THREAD_PRI_NORMAL,
                             test_venc_record_writer_main,
                             NULL);
     if (ret != OPRT_OK) {

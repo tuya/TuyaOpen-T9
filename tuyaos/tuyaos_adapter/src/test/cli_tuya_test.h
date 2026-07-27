@@ -85,6 +85,8 @@ int cli_mp3_init(void);
 int cli_dwt_init(void);
 
 void cli_tuya_mipi_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv);
+// void cli_xmbedtls_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv);
+// void cli_xplat_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv);
 #endif // CONFIG_SYS_CPU1
 
 #endif /* !CLI_TUYA_TEST_H */

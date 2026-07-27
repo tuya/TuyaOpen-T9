@@ -224,6 +224,8 @@ else()
             src/test/test_sdcard.c
             src/test/test_memory.c
             src/test/test_ota.c
+            # src/test/test_mbedtls.c
+            # src/test/test_plat.c
             # src/test/test_face_recognize/AvdkDetectionModel.cc
             # src/test/test_face_recognize/box.c
             # src/test/test_face_recognize/YolofaceDetectionModel.cc
