@@ -274,81 +274,8 @@ INT_T tkl_system_get_random(CONST UINT_T range)
     return (bk_rand() % trange);
 }
 
-#if 0
 #define EFUSE_DEVICE_ID_BYTE_NUM 5
-#define OTP_DEVICE_ID 29
-
-OPERATE_RET tkl_system_get_cpu_info(TUYA_CPU_INFO_T **cpu_ary, INT_T *cpu_cnt)
-{
-    // TODO
-    struct ipc_msg_s msg = {0};
-
-    memset(&msg, 0, sizeof(struct ipc_msg_s));
-
-    msg.type = TKL_IPC_TYPE_SYS;
-
-#if CONFIG_CPU_INDEX == 0
-    TUYA_CPU_INFO_T *cpu = *cpu_ary;
-
-    bk_otp_apb_read(OTP_DEVICE_ID, cpu->chipid, EFUSE_DEVICE_ID_BYTE_NUM);
-    cpu->chipidlen = EFUSE_DEVICE_ID_BYTE_NUM;
-    if (cpu_cnt) {
-        *cpu_cnt = 1;
-    }
-
-    bk_printf_raw(BK_LOG_INFO, NULL, "send cpu info rsp, %p, 0x%02x%02x%02x%02x%02x\r\n",
-            *cpu, cpu->chipid[0], cpu->chipid[1],
-            cpu->chipid[2], cpu->chipid[3], cpu->chipid[4]);
-
-    msg.subtype = TKL_IPC_TYPE_SYS_CPU_INFO_RSP;
-    tuya_ipc_send_sync(&msg);
-#else
-
-    struct ipc_msg_param_s param = {0};
-    msg.subtype = TKL_IPC_TYPE_SYS_CPU_INFO;
-
-    TUYA_CPU_INFO_T *cpu = tkl_system_malloc(sizeof(TUYA_CPU_INFO_T));
-    if (NULL == cpu) {
-        bk_printf("get info malloc failed\r\n");
-        return OPRT_MALLOC_FAILED;
-    }
-
-    // wait cp response
-    OPERATE_RET ret = tkl_semaphore_create_init(&get_cpu_info_sem, 0, 1);
-    if (ret !=  OPRT_OK) {
-        bk_printf("create semaphore failed\r\n");
-        tkl_system_free(cpu);
-        cpu = NULL;
-        return ret;
-    }
-
-    memset(cpu, 0, sizeof(TUYA_CPU_INFO_T));
-    *cpu_ary = cpu;
-
-    param.p1 = (void *)((uint32_t)cpu_ary);
-    param.p2 = (void *)((uint32_t)cpu_cnt);
-
-    msg.req_param = &param;
-    msg.req_len = sizeof(param);
-
-    bk_printf("send cpu info req\r\n");
-    tuya_ipc_send_sync(&msg);
-
-    bk_printf("wait cpu info\r\n");
-    ret = tkl_semaphore_wait(get_cpu_info_sem, 5000);
-    tkl_semaphore_release(get_cpu_info_sem);
-    get_cpu_info_sem = NULL;
-    if (ret !=  OPRT_OK) {
-        bk_printf("wait cpu timeout\r\n");
-        return ret;
-    }
-
-
-#endif
-
-    return OPRT_OK;
-}
-#endif
+#define OTP_DEVICE_ID 23
 
 OPERATE_RET tkl_system_get_cpu_info(TUYA_CPU_INFO_T **cpu_ary, INT_T *cpu_cnt)
 {
@@ -368,19 +295,12 @@ OPERATE_RET tkl_system_get_cpu_info(TUYA_CPU_INFO_T **cpu_ary, INT_T *cpu_cnt)
 
     memset(cpu, 0, sizeof(TUYA_CPU_INFO_T));
 
-    uint8_t uid[32] = {0};
-    if (bk_uid_get_data(uid) != BK_OK) {
+    bk_err_t ret = bk_otp_ahb_read(OTP_DEVICE_ID, cpu->chipid, EFUSE_DEVICE_ID_BYTE_NUM);
+    if (ret != BK_OK) {
         tkl_system_free(cpu);
         return OPRT_COM_ERROR;
     }
-
-    UINT_T copy_len = (UINT_T)sizeof(cpu->chipid);
-    if (copy_len > (UINT_T)sizeof(uid)) {
-        copy_len = (UINT_T)sizeof(uid);
-    }
-
-    memcpy(cpu->chipid, uid, copy_len);
-    cpu->chipidlen = copy_len;
+    cpu->chipidlen = EFUSE_DEVICE_ID_BYTE_NUM;
 
     if (cpu_cnt) {
         *cpu_cnt = 1;
@@ -388,11 +308,54 @@ OPERATE_RET tkl_system_get_cpu_info(TUYA_CPU_INFO_T **cpu_ary, INT_T *cpu_cnt)
 
     *cpu_ary = cpu;
 
-    // bk_printf_raw(BK_LOG_INFO, NULL,
-    //               "get cpu info, %p, 0x%02x%02x%02x%02x%02x%02x%02x%02x\r\n",
-    //               cpu, cpu->chipid[0], cpu->chipid[1], cpu->chipid[2], cpu->chipid[3],
-    //               cpu->chipid[4], cpu->chipid[5], cpu->chipid[6], cpu->chipid[7]);
+    bk_printf_raw(BK_LOG_INFO, NULL,
+                  "get cpu info, %p, 0x%02x%02x%02x%02x%02x\r\n",
+                  cpu, cpu->chipid[0], cpu->chipid[1], cpu->chipid[2], cpu->chipid[3],
+                  cpu->chipid[4]);
 
+    return OPRT_OK;
+}
+
+/**
+ * @brief get hardware unique id
+ *
+ * @param[in,out] id   buffer provided by caller; filled with the unique id on success
+ * @param[in,out] len  in: buffer capacity; out: actual unique id length
+ * @return OPRT_OK on success; OPRT_INVALID_PARM / OPRT_COM_ERROR / OPRT_NOT_SUPPORTED on error
+ *
+ * @note source: the chip id (Beken UID), reused from tkl_system_get_cpu_info() so the
+ *       hw unique id stays identical to the system chip id. No IPC on this platform.
+ *       Caller buffer must be >= the chip id size (32 bytes).
+ */
+OPERATE_RET tkl_system_get_hw_unique_id(UINT8_T *id, UINT8_T *len)
+{
+    if ((id == NULL) || (len == NULL)) {
+        return OPRT_INVALID_PARM;
+    }
+
+    TUYA_CPU_INFO_T *cpu = NULL;
+    INT_T cnt = 0;
+    OPERATE_RET ret = tkl_system_get_cpu_info(&cpu, &cnt);
+    if ((ret != OPRT_OK) || (cpu == NULL)) {
+        return OPRT_COM_ERROR;
+    }
+
+    UINT8_T clen = cpu->chipidlen;
+    os_memcpy(id, cpu->chipid, clen);
+    tkl_system_free(cpu);
+
+    /* Contract forbids all-0x00 / all-0xFF */
+    BOOL_T all_zero = TRUE, all_ff = TRUE;
+    for (UINT8_T i = 0; i < clen; i++) {
+        if (id[i] != 0x00) { all_zero = FALSE; }
+        if (id[i] != 0xFF) { all_ff  = FALSE; }
+    }
+    if (all_zero || all_ff) {
+        *len = 0;
+        return OPRT_NOT_SUPPORTED;
+    }
+
+    *len = clen;
     return OPRT_OK;
 }
 
