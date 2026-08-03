@@ -56,6 +56,7 @@ typedef struct {
     uint8_t             raw_ch_num;
 #if CONFIG_AUD_DRIVER_V2
     uint32_t            adc_ch_bitmap;
+    aud_adc_mode_t      adc_mode;
 #endif
     dma_id_t            mic_dma_id;
     RingBufferContext   mic_rb;
@@ -144,6 +145,46 @@ static OPERATE_RET __tkl_aud_adc_apply_v2_gain(uint32_t logical_gain)
     TKL_AUD_ADC_LOG("adc gain apply logical=0x%02x dig_db=%.1f ana_db=%d\n",
                     apply_gain, dig_db, TKL_AUD_ADC_V2_ANA_GAIN_DB_DEFAULT);
     return OPRT_OK;
+}
+
+/**
+ * @brief Re-apply ADC sample rate / mode / bits / gain after a shared HW reset
+ * @return OPRT_OK on success
+ * @note DAC init also calls bk_aud_hardware_reset(); re-apply before start so
+ *       ADC digital path is valid even if another client reset the IP.
+ */
+static OPERATE_RET __tkl_aud_adc_reapply_hw_config(VOID_T)
+{
+    bk_err_t ret;
+
+    if (gl_adc_ctx == NULL) {
+        return OPRT_COM_ERROR;
+    }
+
+    ret = bk_aud_adc_set_samp_rate(gl_adc_ctx->cfg.sample_rate);
+    if (ret != BK_OK) {
+        TKL_AUD_ADC_LOG("reapply samp_rate fail, ret=%d rate=%u\n",
+                        ret, gl_adc_ctx->cfg.sample_rate);
+        return OPRT_COM_ERROR;
+    }
+
+    for (uint32_t ch = 0; ch < AUD_ADC_CHL_MAX; ch++) {
+        if (!(gl_adc_ctx->adc_ch_bitmap & (1U << ch))) {
+            continue;
+        }
+        ret = bk_aud_adc_set_mic_mode((aud_adc_chl_t)ch, gl_adc_ctx->adc_mode);
+        if (ret != BK_OK) {
+            TKL_AUD_ADC_LOG("reapply mic_mode fail, ret=%d ch=%u\n", ret, ch);
+            return OPRT_COM_ERROR;
+        }
+        ret = bk_aud_adc_set_bits_width((aud_adc_chl_t)ch, gl_adc_ctx->cfg.sample_bits);
+        if (ret != BK_OK) {
+            TKL_AUD_ADC_LOG("reapply bits fail, ret=%d ch=%u\n", ret, ch);
+            return OPRT_COM_ERROR;
+        }
+    }
+
+    return __tkl_aud_adc_apply_v2_gain(gl_adc_ctx->cfg.vol);
 }
 #endif
 
@@ -669,6 +710,7 @@ OPERATE_RET tkl_aud_adc_init(TUYA_AUDIO_ADC_PORT_E port, TKL_AUD_ADC_CFG_T *conf
     gl_adc_ctx->raw_ch_num = raw_ch_num;
 #if CONFIG_AUD_DRIVER_V2
     gl_adc_ctx->adc_ch_bitmap = adc_ch_bitmap;
+    gl_adc_ctx->adc_mode = adc_mode;
     gl_adc_ctx->dma_frame_size = AUD_ADC_FRAME_SIZE(config->sample_rate, config->sample_bits, config->frame_time_ms, raw_ch_num);
 #else
     /* V1 keeps LR interleaved capture and extracts one channel in ISR. */
@@ -711,9 +753,11 @@ OPERATE_RET tkl_aud_adc_init(TUYA_AUDIO_ADC_PORT_E port, TKL_AUD_ADC_CFG_T *conf
 #endif
 
     /*
-     * Reset shared audio hardware before ADC-only init. DAC init already does
-     * this; without it, cold-start ADC can report started but never produce DMA frames.
+     * Bring audio common driver (APB + ana defaults) up before digital IP
+     * reset. After a full driver_deinit that zeros ana_reg20~30, resetting
+     * first then init leaves ADC producing DMA frames of silence.
      */
+    (void)bk_aud_driver_init();
     bk_aud_hardware_reset();
     ret = bk_aud_adc_init(&aud_adc_cfg);
     if (ret != BK_OK) {
@@ -819,6 +863,14 @@ OPERATE_RET tkl_aud_adc_start(TUYA_AUDIO_ADC_PORT_E port)
     }
 
     ring_buffer_clear(&gl_adc_ctx->mic_rb);
+
+#if CONFIG_AUD_DRIVER_V2
+    /* DAC (or other clients) may have called bk_aud_hardware_reset() after
+     * ADC init; restore rate/mode/gain before enabling the mic path. */
+    if (__tkl_aud_adc_reapply_hw_config() != OPRT_OK) {
+        return OPRT_COM_ERROR;
+    }
+#endif
 
     bk_err_t ret = bk_dma_start(gl_adc_ctx->mic_dma_id);
     if (ret != BK_OK)
@@ -948,7 +1000,23 @@ VOID_T tkl_aud_adc_deinit(TUYA_AUDIO_ADC_PORT_E port)
     }
 
     __tkl_aud_adc_dma_deconfig();
+
+#if CONFIG_AUD_DRIVER_V2
+    /*
+     * Soft teardown: stop channels and clear ADC module flag, but do NOT call
+     * bk_aud_adc_deinit() → bk_aud_driver_deinit(). The latter zeros
+     * ana_reg20~30 / kills micbias; a following init+start then keeps producing
+     * DMA frames that are all zeros. stop→start without deinit stays healthy.
+     */
+    if (bk_aud_get_module_init_sta(AUD_MODULE_ADC)) {
+        (void)bk_aud_adc_stop(AUD_ADC_CHL_0);
+        (void)bk_aud_adc_stop(AUD_ADC_CHL_1);
+        (void)bk_aud_adc_stop(AUD_ADC_CHL_2);
+        bk_aud_set_module_init_sta(AUD_MODULE_ADC, false);
+    }
+#else
     bk_aud_adc_deinit();
+#endif
 
     mb_flash_unregister_op_onboard_mic_stream_notify();
 
