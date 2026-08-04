@@ -50,14 +50,18 @@ static void bk_heap_track_ap_heap_window(void *ptr, size_t size)
 #ifdef CONFIG_AP_EXT_SRAM_HEAP_ADDR
     else if (ptr_is_ext_sram_heap(ptr)) {
         ap_extra_dump_info_t extra_info;
-        uint32_t usage = (uint32_t)(alloc_end - CONFIG_AP_EXT_SRAM_HEAP_ADDR);
-
+        // Modified by TUYA Start
+        uint32_t pool_base = (uint32_t)SOC_SRAM_CPU_ADDR(CONFIG_AP_EXT_SRAM_HEAP_ADDR);
+        uint32_t usage = (uint32_t)(alloc_end - pool_base);
+        // Modified by TUYA End
         if (bk_sys_sw_regs_get_ap_extra_dump(BK_SYS_SW_REGS_AP_EXTRA_DUMP_EXT_SRAM_HEAP, &extra_info) &&
             (usage <= extra_info.size)) {
             return;
         }
+        // Modified by TUYA Start
         bk_sys_sw_regs_update_ap_extra_dump(BK_SYS_SW_REGS_AP_EXTRA_DUMP_EXT_SRAM_HEAP,
-                                            CONFIG_AP_EXT_SRAM_HEAP_ADDR, usage);
+                                            pool_base, usage);
+        // Modified by TUYA End
         return;
     }
 #endif
