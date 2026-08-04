@@ -346,7 +346,6 @@ int send_cmd(uintptr_t addr, uint8 CMD_INDEX, uint8 RESP_TYPE, uint32 ARGUMENT)
 
 	//SDIOD_LOGD("send cmd[%d], pstate:0x%x\r\n", CMD_INDEX, pstate);
 
-	// Modified by TUYA Start
 	/* Drain any stale CMD_COMPLETE token left in the binary semaphore by a
 	 * previous command (e.g. a late/extra completion after the defensive
 	 * CMD12 timeout, or a double CMD_COMPLETE+CMD_TOUT interrupt). Without
@@ -358,7 +357,6 @@ int send_cmd(uintptr_t addr, uint8 CMD_INDEX, uint8 RESP_TYPE, uint32 ARGUMENT)
 	 * pattern already used in receive_mult_data(). */
 	if (rtos_get_semaphore(&s_sdio_cmd_done_sema, 0) == 0)
 		SDIOD_LOGW("send_cmd: drained stale cmd_done token before CMD%u\r\n", CMD_INDEX);
-	// Modified by TUYA End
 
 	uint32_t int_level = rtos_disable_int();
 
@@ -749,24 +747,11 @@ bk_err_t adma2_receive_data (uintptr_t addr,uint32 SYS_ADDR,uint16 BLOCK_SIZE,ui
  *   1 -> SDIO1 group: GPIO14~23
  * Replaces the former compile-time SDIO0/SDIO1 selection so both BK7259
  * controllers can be brought up at runtime. */
-// Modified by TUYA Start
-extern void user_sdio_gpio_init(void) __attribute__((weak));
-extern void user_sdio_set_width(uint8_t width_sel) __attribute__((weak));
-
 void sdio_gpio_init(uint8_t io_pos, sdio_wire_width_sel_t width_sel)
 {
-	if (user_sdio_gpio_init) {
-		if (user_sdio_set_width) {
-			user_sdio_set_width((uint8_t)width_sel);
-		}
-		user_sdio_gpio_init();
-		return;
-	}
-
 	(void)io_pos;
 	(void)width_sel;
 }
-// Modified by TUYA End
 
 void tuning_cfg(uintptr_t addr,uint8 tuning_rx_sel0,uint8 tuning_rx_sel1,uint8 sample_rx_sel0,uint8 sample_rx_sel1,uint8 tuning_tx_sel0,uint8 tuning_tx_sel1,uint8 sample_tx_sel0,uint8 sample_tx_sel1,uint8 clk_drv_inv_sel)
 {
@@ -1424,9 +1409,7 @@ bk_err_t bk_sdio_host_init(sdio_host_id_t id, const sdio_host_cfg_t *cfg)
 		ret = mshc_host_init(s_active_base, 0x3, 300, 0xff, 0xa,
 				     1 /*CARD_IS_EMMC*/, UHS_MODE_EMMC_DS, DATA_WIDTH1);
 	} else {
-		// Modified by TUYA Start
 		tuning_cfg(s_active_base, 0, 0, 0, 0, 0, 0, 0, 0, 1);
-		// Modified by TUYA End
 		ret = sdio_host_init();         /* SD path, behavior preserved */
 	}
 
@@ -1567,14 +1550,10 @@ bk_err_t bk_sdio_host_send_cmd(sdio_host_id_t id, const sdio_host_cmd_t *cmd,
 	r = (uint32_t)send_cmd(s_active_base, cmd->index,
 			       sdio_host_hw_resp_type(cmd->resp_type), cmd->arg);
 	timeout = sdio_host_last_cmd_timeout();
-	// Modified by TUYA Start
 	bool crc_err = (CMD_CRC_ERR_STATE != 0);
-	// Modified by TUYA End
 	if (resp) {
 		resp->timeout = timeout;
-		// Modified by TUYA Start
 		resp->crc_err = crc_err;
-		// Modified by TUYA End
 		if (cmd->resp_type == SDIO_HOST_RESP_R2) {
 			/*
 			 * R2 (136-bit CID/CSD): this SDHCI-style MSHC controller stores
@@ -1604,10 +1583,9 @@ bk_err_t bk_sdio_host_send_cmd(sdio_host_id_t id, const sdio_host_cmd_t *cmd,
 	}
 	sdio_host_unlock();
 
-	// Modified by TUYA Start
 	SDIOD_LOGD("send_cmd: CMD%u arg=0x%08x rt=%d tout=%d crc=%d resp0=0x%08x\r\n",
-		cmd->index, cmd->arg, cmd->resp_type, timeout, crc_err, r);
-	// Modified by TUYA End
+		   cmd->index, cmd->arg, cmd->resp_type, timeout, crc_err, r);
+
 	return timeout ? BK_ERR_SDIO_HOST_CMD_RSP_TIMEOUT : BK_OK;
 }
 

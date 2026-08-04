@@ -3062,11 +3062,10 @@ FRESULT find_volume (	/* FR_OK(0): successful, !=0: any error occurred */
 	WORD nrsv;
 	FATFS *fs;
 	UINT i;
-	// Modified by TUYA Start
 	BYTE ptype[4];					/* Primary partition system IDs (for extended-partition detection) */
 	DWORD ext_base, ebr_cur;		/* Extended-partition container base / current EBR sector */
 	int ebr_guard;					/* Safety bound on the EBR chain length */
-	// Modified by TUYA End
+	
 	//BK_LOGD(NULL, "find_volume 1\r\n");
 
 	/* Get logical drive number */
@@ -3111,21 +3110,17 @@ FRESULT find_volume (	/* FR_OK(0): successful, !=0: any error occurred */
 	if (SS(fs) > FF_MAX_SS || SS(fs) < FF_MIN_SS || (SS(fs) & (SS(fs) - 1))) return FR_DISK_ERR;
 #endif
 
-	// Modified by TUYA Start
 	/* Find an FAT partition on the drive. Supports generic partitioning rules
 	 * (FDISK primary partitions and SFD) plus MS extended-partition / EBR chains
 	 * (types 0x05/0x0F/0x85), so cards whose FAT volume lives inside a logical
 	 * (extended) partition can still be mounted. */
-	// Modified by TUYA End
 	bsect = 0;
 	fmt = check_fs(fs, bsect);			/* Load sector 0 and check if it is an FAT-VBR as SFD */
 	BK_LOGD(NULL, "fmt=%d\r\n", fmt);
 	if (fmt == 2 || (fmt < 2 && LD2PT(vol) != 0)) {	/* Not an FAT-VBR or forced partition number */
 		for (i = 0; i < 4; i++) {		/* Get partition offset & system ID */
 			pt = fs->win + (MBR_Table + i * SZ_PTE);
-			// Modified by TUYA Start
 			ptype[i] = pt[PTE_System];
-			// Modified by TUYA End
 			br[i] = pt[PTE_System] ? ld_dword(pt + PTE_StLba) : 0;
 		}
 		i = LD2PT(vol);					/* Partition number: 0:auto, 1-4:forced */
@@ -3134,7 +3129,7 @@ FRESULT find_volume (	/* FR_OK(0): successful, !=0: any error occurred */
 			bsect = br[i];
 			fmt = bsect ? check_fs(fs, bsect) : 3;	/* Check the partition */
 		} while (LD2PT(vol) == 0 && fmt >= 2 && ++i < 4);
-		// Modified by TUYA Start
+
 		/* No FAT in the 4 primary slots (auto mount): follow any extended
 		 * partition's EBR chain and mount the first FAT logical volume.
 		 * PTE0 of an EBR is the logical partition (start relative to THIS EBR);
@@ -3164,7 +3159,6 @@ FRESULT find_volume (	/* FR_OK(0): successful, !=0: any error occurred */
 				}
 			}
 		}
-		// Modified by TUYA End
 	}
 	BK_LOGD(NULL, "fmt2=%d\r\n", fmt);
 	if (fmt == 4) return FR_DISK_ERR;		/* An error occured in the disk I/O layer */
@@ -6395,21 +6389,12 @@ DWORD get_fattime (void)
 	uint32_t year = FF_NORTC_YEAR;
 	uint32_t month = FF_NORTC_MON;
 	uint32_t day = FF_NORTC_MDAY;
-// Modified by TUYA Start
-	uint32_t hour = 0;
-	uint32_t min = 0;
-	uint32_t sec = 0;
 #if CONFIG_NTP_SYNC_RTC
 	struct tm t = {0};
 	datetime_get(&t);
 	year = t.tm_year + 1900;
 	month = t.tm_mon + 1;
 	day = t.tm_mday;
-	hour = t.tm_hour;
-	min = t.tm_min;
-	sec = t.tm_sec;
 #endif
-	return ((DWORD)(year - 1980) << 25 | (DWORD)month << 21 | (DWORD)day << 16 |
-			(DWORD)hour << 11 | (DWORD)min << 5 | (DWORD)(sec / 2));
-// Modified by TUYA End
+	return ((DWORD)(year - 1980) << 25 | (DWORD)month << 21 | (DWORD)day << 16);
 }

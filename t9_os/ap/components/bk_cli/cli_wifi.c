@@ -15,6 +15,7 @@
 #include "bk_wifi.h"
 #include "bk_wifi_types.h"
 #include "wifi_api.h"
+#include "soc_debug.h"
 
 #include "ftp/ftpd.h"
 
@@ -968,6 +969,12 @@ int cli_netif_event_cb(void *arg, event_module_t event_module,
 		}
 		CLI_LOGW("%s got ip %s\n", netif_name, got_ip->ip);
 		break;
+#if CONFIG_IPV6
+	case EVENT_NETIF_GOT_IP6:
+		CLI_LOGW("BK STA got ipv6, addr_count=%d\n",
+				 ((netif_event_got_ip6_t *)event_data)->addr_count);
+		break;
+#endif
 	default:
 		CLI_LOGW("rx event <%d %d>\n", event_module, event_id);
 		break;
@@ -1289,9 +1296,32 @@ error:
 }
 #endif
 
+/*
+ * regulatory domain command (forwarded to CP).
+ *     regd get
+ *     regd set <alpha2>
+ */
+void cli_wifi_regd_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv)
+{
+	if (argc > 1 && !os_strcmp(argv[1], "get")) {
+		bk_wifi_print_regdomain();
+		return;
+	} else if (argc > 2 && !os_strcmp(argv[1], "set")) {
+		char alpha2[3] = {0};
+		os_strlcpy(alpha2, argv[2], sizeof(alpha2));
+		bk_wifi_set_country_code(alpha2);
+		return;
+	}
+
+	CLI_LOGE("Usage:\n");
+	CLI_LOGE("\t%s get\n", argv[0]);
+	CLI_LOGE("\t%s set <alpha2>\n", argv[0]);
+}
+
 #define WIFI_CMD_CNT (sizeof(s_wifi_commands) / sizeof(struct cli_command))
 static const struct cli_command s_wifi_commands[] = {
 	{"scan", "scan [ssid]", cli_wifi_scan_cmd},
+	{"regd", "regd {get|set <alpha2>}", cli_wifi_regd_cmd},
 #ifdef CONFIG_WIFI_SOFTAP
 	{"ap", "ap {ssid} [password] [channel] [hidden]", cli_wifi_ap_cmd},
 #endif
@@ -1320,7 +1350,8 @@ int cli_wifi_init(void)
 	#endif
 	BK_LOG_ON_ERR(bk_event_register_cb(EVENT_MOD_WIFI, EVENT_ID_ALL, cli_wifi_event_cb, NULL));
 	BK_LOG_ON_ERR(bk_event_register_cb(EVENT_MOD_NETIF, EVENT_ID_ALL, cli_netif_event_cb, NULL));
-	return cli_register_commands(s_wifi_commands, WIFI_CMD_CNT);
+	int _reg_ret = cli_register_commands(s_wifi_commands, WIFI_CMD_CNT);
+	return _reg_ret;
 }
 
 #endif //#if (CLI_CFG_WIFI == 1)

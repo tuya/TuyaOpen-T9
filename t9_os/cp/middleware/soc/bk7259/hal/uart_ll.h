@@ -20,7 +20,7 @@
 #include "system_hw.h"
 #include "uart_hw.h"
 #include "hal_port.h"
-#include "gpio_map.h"
+#include "sdkconfig.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -61,62 +61,6 @@ static inline uint32_t uart_ll_get_dev_status(uart_hw_t *hw)
 static inline void uart_ll_init(uart_hw_t *hw)
 {
 	uart_ll_soft_reset(hw);
-}
-
-static inline gpio_id_t uart_ll_get_tx_pin(uart_id_t id)
-{
-	switch (id) {
-	case UART_ID_0:
-		return UART0_TX_PIN;
-	case UART_ID_1:
-		return UART1_TX_PIN;
-	case UART_ID_2:
-		return UART2_TX_PIN;
-	case UART_ID_3:
-		return UART3_TX_PIN;
-	case UART_ID_4:
-		return UART4_TX_PIN;
-	case UART_ID_5:
-		return UART5_TX_PIN;
-	default:
-		return SOC_GPIO_NUM;
-	}
-}
-
-static inline gpio_id_t uart_ll_get_rx_pin(uart_id_t id)
-{
-	switch (id) {
-	case UART_ID_0:
-		return UART0_RX_PIN;
-	case UART_ID_1:
-		return UART1_RX_PIN;
-	case UART_ID_2:
-		return UART2_RX_PIN;
-	case UART_ID_5:
-		return UART5_RX_PIN;
-	default:
-		return SOC_GPIO_NUM;
-	}
-}
-
-static inline gpio_id_t uart_ll_get_cts_pin(uart_id_t id)
-{
-	switch (id) {
-	case UART_ID_0:
-		return UART0_CTS_PIN;
-	default:
-		return SOC_GPIO_NUM;
-	}
-}
-
-static inline gpio_id_t uart_ll_get_rts_pin(uart_id_t id)
-{
-	switch (id) {
-	case UART_ID_0:
-		return UART0_RTS_PIN;
-	default:
-		return SOC_GPIO_NUM;
-	}
 }
 
 static inline uint32_t uart_ll_get_reg_base(uart_id_t id)

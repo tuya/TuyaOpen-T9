@@ -34,8 +34,6 @@ typedef struct bk_flexa_bond_config {
 	void *bond;
 	void *in_stream;
 	void *out_stream;
-	uint32_t set_sbi_flag;
-	uint32_t flexa_sbi;
 	beken_semaphore_t sem;
 	bk_flexa_bond_kind_t in_stream_type;
 	bk_flexa_bond_kind_t out_stream_type;
@@ -45,7 +43,8 @@ typedef struct bk_flexa_bond {
 	uint32_t max_lines_per_frame;
 
 	void *handle;
-	uint32_t last_seq;
+	uint32_t last_seq;      /* decoder -> consumer: current decode frame_seq delivered with lines */
+	uint32_t report_seq;    /* consumer worker -> its bond report: frame_seq the worker is finishing/aborting */
 	uint32_t last_lines;
 	void (*flexa_done)(uint32_t lines, void *arg);
 	void (*frame_done)(uint32_t status, void *arg);

@@ -110,6 +110,8 @@ void sys_hal_set_cpu1_pwr_dw(uint32_t is_pwr_down);
 void sys_hal_set_cpu2_boot_address_offset(uint32_t address_offset);
 void sys_hal_set_cpu2_reset(uint32_t reset_value);
 void sys_hal_set_cpu2_pwr_dw(uint32_t is_pwr_down);
+void sys_hal_set_cpu3_reset(uint32_t reset_value);
+void sys_hal_set_cpu3_pwr_dw(uint32_t is_pwr_down);
 void sys_hal_enable_mac_wakeup_source();
 void sys_hal_disable_mac_wakeup_source();
 void sys_hal_enable_bt_wakeup_source();
@@ -148,6 +150,8 @@ bk_err_t sys_hal_cpu_freq_dump();
 void sys_hal_set_cpu0_rxevt_sel(uint32_t param);
 void sys_hal_set_cpu1_rxevt_sel(uint32_t param);
 void sys_hal_set_cpu2_rxevt_sel(uint32_t param);
+bk_err_t sys_hal_switch_cpu_bus_freq_high_to_low(pm_cpu_freq_e cpu_bus_freq);
+bk_err_t sys_hal_switch_cpu_bus_freq_low_to_high(pm_cpu_freq_e cpu_bus_freq);
 
 /*low power feature end*/
 uint32 sys_hal_get_chip_id(void);

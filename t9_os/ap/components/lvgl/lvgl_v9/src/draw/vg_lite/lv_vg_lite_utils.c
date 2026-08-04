@@ -17,6 +17,7 @@
 #include "lv_vg_lite_pending.h"
 #include "lv_vg_lite_grad.h"
 #include "lv_draw_vg_lite_type.h"
+#include "soc/reg_base.h"
 #include <string.h>
 #include <math.h>
 
@@ -751,17 +752,17 @@ void lv_vg_lite_buffer_init(
     if(format == VG_LITE_NV12) {
         lv_yuv_buf_t * frame_p = (lv_yuv_buf_t *)ptr;
         buffer->memory = (void *)frame_p->semi_planar.y.buf;
-        buffer->address = (uintptr_t)frame_p->semi_planar.y.buf;
+        buffer->address = SOC_SRAM_PERI_ADDR((uintptr_t)frame_p->semi_planar.y.buf);
         buffer->yuv.swizzle = VG_LITE_SWIZZLE_UV;
         buffer->yuv.alpha_stride = buffer->stride;
         buffer->yuv.uv_height = buffer->height / 2;
         buffer->yuv.uv_memory = (void *)frame_p->semi_planar.uv.buf;
-        buffer->yuv.uv_planar = (uint32_t)(uintptr_t)frame_p->semi_planar.uv.buf;
+        buffer->yuv.uv_planar = SOC_SRAM_PERI_ADDR((uintptr_t)frame_p->semi_planar.uv.buf);
         buffer->yuv.uv_stride = frame_p->semi_planar.uv.stride;
     }
     else {
         buffer->memory = (void *)ptr;
-        buffer->address = (uintptr_t)ptr;
+        buffer->address = SOC_SRAM_PERI_ADDR((uintptr_t)ptr);
     }
 }
 

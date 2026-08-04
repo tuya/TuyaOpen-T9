@@ -126,7 +126,10 @@ bk_err_t https_ota_event_cb(bk_http_client_event_t *evt)
 	break;
     case HTTP_EVENT_ON_DATA:
 	//do something: evt->data, evt->data_len
-	bk_ota_process_data((char *)evt->data, evt->data_len, evt->data_len, evt->client->response->content_length);
+	if (bk_ota_process_data((char *)evt->data, evt->data_len, evt->data_len, evt->client->response->content_length) != 0) {
+		BK_LOGE(TAG, "ota data process failed, abort download\r\n");
+		return BK_FAIL;
+	}
 	BK_LOGD(TAG, "HTTP_EVENT_ON_DATA, length:%d , content_length:0x%x \r\n", evt->data_len , evt->client->response->content_length);
 	break;
     case HTTP_EVENT_ON_FINISH:
@@ -185,7 +188,11 @@ int bk_https_ota_download(const char *url)
 		ota_do_deinit_operation();
 		return err;
 	}
+	/* Disable STA power-save during download; PS sleep drops MAC timer IRQs and
+	 * stalls the transfer. Restored right after, before any branch. */
+	bk_wifi_sta_pm_disable();
 	err = bk_http_client_perform(client);
+	bk_wifi_sta_pm_enable();
 	if(err == BK_OK){
 		BK_LOGI(TAG, "bk_http_client_perform ok\r\n");
 
@@ -214,8 +221,7 @@ int bk_https_ota_download(const char *url)
 	bk_reboot();
 #else
 	BK_LOGI(TAG,"ota_success.\r\n");
-	ota_do_deinit_operation();
-    bk_reboot();
+	bk_ota_finish_and_reboot();
 #endif
 	}
 	else{

@@ -80,13 +80,19 @@ typedef struct
 
     volatile bool flexa_stop;
     bool flexa_frame_active;
+    bool flexa_abort_notified;
     uint8_t *gpu_contiguous_buffer;
 
+    /* Per-instance OSD blend timing (BK_GPU_IOCTL_SET_OSD_BY_FLEXA):
+     * false = single SRC_OVER at frame end; true = per flexa block. */
+    bool osd_by_flexa;
+
+    /* Multi-slot OSD sprites (update -> display double buffer). */
     bool blit_enable;
-    void *display_blit_buffer;
-    bk_gpu_blit_config_t display_blit_config;
-    void *update_blit_buffer;
-    bk_gpu_blit_config_t update_blit_config;
+    void *display_blit_buffer[BK_GPU_BLIT_SLOT_MAX];
+    bk_gpu_blit_config_t display_blit_config[BK_GPU_BLIT_SLOT_MAX];
+    void *update_blit_buffer[BK_GPU_BLIT_SLOT_MAX];
+    bk_gpu_blit_config_t update_blit_config[BK_GPU_BLIT_SLOT_MAX];
     beken_mutex_t blit_mutex;
     beken_mutex_t gpu_mutex;
 

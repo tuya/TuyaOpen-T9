@@ -28,8 +28,6 @@ int main(void)
     bk_init();
     media_service_init();
 
-    bk_printf("M55 main running...\r\n");
-
     bk_auxldo_enable();
 
     bk_printf("lodoen enable...\r\n");
