@@ -1696,8 +1696,8 @@ typedef enum {
     TUYA_AUDIO_ADC_CHANNEL_L,
     TUYA_AUDIO_ADC_CHANNEL_R,
     TUYA_AUDIO_ADC_CHANNEL_LR,
-    TUYA_AUDIO_ADC_CHANNEL_MIC3,   /**< AEC reference lane, index 0 in [ref,mic1,mic2] frame */
-    TUYA_AUDIO_ADC_CHANNEL_RAW3, /**< Full 3ch interleaved [ref,mic1,mic2] to upper_cb */
+    TUYA_AUDIO_ADC_CHANNEL_MIC3,   /**< AEC-reference mic, index 2 in [mic1,mic2,mic3] frame */
+    TUYA_AUDIO_ADC_CHANNEL_RAW3, /**< Full 3ch interleaved [mic1,mic2,mic3] to upper_cb */
     TUYA_AUDIO_ADC_CHANNEL_MAX
 } TUYA_AUDIO_ADC_CHAN_E;
 

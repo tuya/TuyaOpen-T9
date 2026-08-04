@@ -349,22 +349,22 @@ static void __tkl_aud_adc_dma_finish_isr(void)
         }
 
         /*
-         * Mixed 3ch layout from reference pipeline:
-         * [ref, mic1, mic2, ref, mic1, mic2, ...]
-         * For single-channel request:
-         *   MIC3 -> ref (AEC reference, index 0)
-         *   L    -> mic1
-         *   R    -> mic2
+         * Mixed 3ch layout when CHL_0|1|2 are enabled (aec_en=0):
+         * [mic1, mic2, mic3, ...] matching AUD_ADC_CHL_0/1/2 order.
+         * MIC3 is the board AEC-reference mic (drop for L/R/LR talk path).
+         *   L    -> mic1 (index 0)
+         *   R    -> mic2 (index 1)
+         *   MIC3 -> mic3 (index 2)
          */
         if (raw_ch_num == 3U) {
             uint32_t mic_idx;
 
             if (gl_adc_ctx->cfg.chan == TUYA_AUDIO_ADC_CHANNEL_MIC3) {
-                mic_idx = 0U;
-            } else if (gl_adc_ctx->cfg.chan == TUYA_AUDIO_ADC_CHANNEL_R) {
                 mic_idx = 2U;
-            } else {
+            } else if (gl_adc_ctx->cfg.chan == TUYA_AUDIO_ADC_CHANNEL_R) {
                 mic_idx = 1U;
+            } else {
+                mic_idx = 0U;
             }
             for (uint32_t i = 0; i < frame_pts; i++) {
                 dst[i] = src[i * 3U + mic_idx];
@@ -445,10 +445,10 @@ static void __tkl_aud_adc_dma_finish_isr(void)
                 return;
             }
 
-            /* Remove ref lane and keep analog mic pair [mic1, mic2]. */
+            /* Keep talk mics [mic1, mic2], drop MIC3 (AEC ref) at index 2. */
             for (uint32_t i = 0; i < frame_pts; i++) {
-                dst[2U * i] = src[3U * i + 1U];
-                dst[2U * i + 1U] = src[3U * i + 2U];
+                dst[2U * i] = src[3U * i];
+                dst[2U * i + 1U] = src[3U * i + 1U];
             }
 
             gl_adc_ctx->cfg.upper_cb(TUYA_AUDIO_FRAME_EVENT_ADC_RX,
@@ -598,8 +598,8 @@ exit:
 *
 * @note This API allocates context, configures ADC hardware, DMA ring buffer,
 *       and registers flash operation notify handler. On BK7259 V2 the onboard
-*       frame layout is [ref, mic1, mic2]: CHANNEL_L/R/LR select mic1/mic2/both,
-*       CHANNEL_MIC3 selects the AEC reference lane (index 0). Must be called
+*       3ch frame layout is [mic1, mic2, mic3]: CHANNEL_L/R/LR select mic1/mic2/both,
+*       CHANNEL_MIC3 selects the AEC-reference mic (index 2). Must be called
 *       before tkl_aud_adc_start.
 *
 * @return OPRT_OK on success. Others on error, please refer to tuya_error_code.h
@@ -652,22 +652,22 @@ OPERATE_RET tkl_aud_adc_init(TUYA_AUDIO_ADC_PORT_E port, TKL_AUD_ADC_CFG_T *conf
             adc_mode = AUD_ADC_MODE_DIFFEN;
             break;
         case TUYA_AUDIO_ADC_CHANNEL_LR:
-            /* Mixed frame: [ref, mic1, mic2], callback only mic lanes. */
+            /* Mixed frame: [mic1, mic2, mic3], callback keeps [mic1, mic2]. */
             adc_ch_bitmap = (1U << AUD_ADC_CHL_0) | (1U << AUD_ADC_CHL_1) | (1U << AUD_ADC_CHL_2);
             adc_mode = AUD_ADC_MODE_DIFFEN;
             chl_num = 2;
             raw_ch_num = 3;
             break;
         case TUYA_AUDIO_ADC_CHANNEL_MIC3:
-            /* AEC ref lane: same 3ch DMA as LR, strip index 0 in ISR. */
+            /* AEC ref mic: same 3ch DMA as LR, extract index 2 in ISR. */
             adc_ch_bitmap = (1U << AUD_ADC_CHL_0) | (1U << AUD_ADC_CHL_1) | (1U << AUD_ADC_CHL_2);
             adc_mode = AUD_ADC_MODE_DIFFEN;
             chl_num = 1;
             raw_ch_num = 3;
-            TKL_AUD_ADC_LOG("chan MIC3(AEC ref): 3ch DMA [ref,mic1,mic2], output ref lane\r\n");
+            TKL_AUD_ADC_LOG("chan MIC3(AEC ref): 3ch DMA [mic1,mic2,mic3], output mic3 lane\r\n");
             break;
         case TUYA_AUDIO_ADC_CHANNEL_RAW3:
-            /* Pass through full [ref,mic1,mic2] frame for dump/analysis. */
+            /* Pass through full [mic1, mic2, mic3] frame for dump/analysis. */
             adc_ch_bitmap = (1U << AUD_ADC_CHL_0) | (1U << AUD_ADC_CHL_1) | (1U << AUD_ADC_CHL_2);
             adc_mode = AUD_ADC_MODE_DIFFEN;
             chl_num = 3;

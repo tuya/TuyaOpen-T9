@@ -926,7 +926,7 @@ static OPERATE_RET hwloop_compare_test(uint8_t mode)
     if (mode == HWLOOP_MODE_LEFT) {
         adc_chan = TUYA_AUDIO_ADC_CHANNEL_L;
     } else if (mode == HWLOOP_MODE_RIGHT) {
-        /* BK7259 V2: MIC2 only works in 3-ch [ref,mic1,mic2] frame; use LR not R-only */
+        /* BK7259 V2: MIC2 is reliable in 3-ch [mic1,mic2,mic3] frame; use LR not R-only */
         adc_chan = TUYA_AUDIO_ADC_CHANNEL_LR;
     } else if (mode == HWLOOP_MODE_MIC3) {
         adc_chan = TUYA_AUDIO_ADC_CHANNEL_MIC3;

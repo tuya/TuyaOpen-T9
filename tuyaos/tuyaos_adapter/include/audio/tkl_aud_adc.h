@@ -48,8 +48,8 @@ typedef struct {
 *
 * @note This API allocates context, configures ADC hardware, DMA ring buffer,
 *       and registers flash operation notify handler. On BK7259 V2 the onboard
-*       frame layout is [ref, mic1, mic2]: CHANNEL_L/R/LR select mic1/mic2/both,
-*       CHANNEL_MIC3 selects the AEC reference lane (index 0). Must be called
+*       3ch frame layout is [mic1, mic2, mic3]: CHANNEL_L/R/LR select mic1/mic2/both,
+*       CHANNEL_MIC3 selects the AEC-reference mic (index 2). Must be called
 *       before tkl_aud_adc_start.
 *
 * @return OPRT_OK on success. Others on error, please refer to tuya_error_code.h
