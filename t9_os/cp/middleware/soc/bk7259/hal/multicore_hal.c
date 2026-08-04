@@ -207,7 +207,7 @@ static bk_err_t multicore_hal_m55_core_copy_code_and_data(uint32_t boot_addr, bo
 		}
 	}
 
-#if CONFIG_DCACHE
+#if CONFIG_CACHE_MAINTENANCE
 	flush_all_dcache();
 #endif
 
@@ -303,6 +303,12 @@ bk_err_t multicore_hal_stop(uint32_t id)
 	switch (id) {
 	case CPU1_CORE_ID:
 		sys_drv_set_cpu1_reset(0);
+		break;
+	case CPU2_CORE_ID:
+		sys_drv_set_cpu2_reset(0);
+		break;
+	case CPU3_CORE_ID:
+		sys_drv_set_cpu3_reset(0);
 		break;
 	default:
 		return BK_ERR_NOT_SUPPORT;

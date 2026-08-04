@@ -331,55 +331,29 @@ enum BK_EVENT_TYPE
 {
     BK_EVT_IPV4_IND             = 0x1,
     BK_EVT_IPV6_IND             = 0x2,
-    BK_EVT_DISCONNECT_IND       = 0x3,
-    BK_EVT_START_AP_IND         = 0x4,
-    BK_EVT_ASSOC_AP_IND         = 0x5,
-    BK_EVT_DISASSOC_AP_IND      = 0x6,
-    BK_EVT_STOP_AP_IND          = 0x7,
-    BK_EVT_SCAN_WIFI_IND        = 0x8,
-    BK_EVT_WIFI_FAIL_IND        = 0x9,
-    BK_EVT_BCN_CC_RXED          = 0xA,
-    BK_EVT_CSI_INFO_IND         = 0xB,
-    BK_EVT_ASSOC_GO_IND         = 0xC,
-    BK_EVT_DISASSOC_GO_IND      = 0xD,
-    BK_EVT_MODEXP_REQ           = 0xE,
-    BK_EVT_P2P_GO_START_IND     = 0xF,
-    BK_EVT_P2P_GO_STOP_IND      = 0x10,
-    BK_EVT_P2P_GC_START_IND     = 0x11,
-    BK_EVT_P2P_GC_STOP_IND      = 0x12,
-    BK_EVT_WIFI_EVENT_IND       = 0x13,
-    // BLE event
-    // BK_EVT_BLE_XX            = 0x101
+    BK_EVT_START_AP_IND         = 0x3,
+    BK_EVT_STOP_AP_IND          = 0x4,
+    BK_EVT_BCN_CC_RXED          = 0x5,
+    BK_EVT_CSI_INFO_IND         = 0x6,
+    BK_EVT_MODEXP_REQ           = 0x7,
+    BK_EVT_P2P_GO_START_IND     = 0x8,
+    BK_EVT_P2P_GO_STOP_IND      = 0x9,
+    BK_EVT_WIFI_EVENT_IND       = 0xA,
 
-    // system event
     BK_EVT_CONTROLLER_AT_IND    = 0x201,
     BK_EVT_CUSTOMER_IND         = 0x202,
 
-    // Wi-Fi API event
     BK_EVT_WIFI_API_START       = 0x300,
     BK_EVT_WIFI_API_END         = 0x3FF,
-
-    // throughput test
-    BK_EVT_TP_TEST              = 0x401,
-
 
     BK_EVT_BUTT                 = WDRV_MAX_MSG_CNT - 1
 };
 
-/* CP -> AP Wi-Fi event passthrough (see cp/components/controller_if/cif_wifi_event.h) */
-#define CIF_WIFI_EVENT_IND_MAX_DATA      64
-
-typedef struct {
-    uint16_t event_id;
-    uint16_t data_len;
-    uint8_t data[CIF_WIFI_EVENT_IND_MAX_DATA];
-} cif_wifi_event_ind_t;
+#include "cif_wifi_event.h"
 
 /* cmd-table from app to netdrv */
 
 typedef struct _wdrv_wlan {
-    int8_t  wlan_mode;
-    uint8_t wlan_link_sta_status;
     bool    comp_sign_get_mac_ready;
 
     beken_mutex_t cfm_lock;
@@ -461,6 +435,7 @@ int bk_platform_get_wlan_status(void);
 extern void wdrv_rx_handle_event(wdrv_rx_msg *msg);
 extern void wdrv_rx_handle_cmd_confirm(wdrv_rx_msg *msg);
 void wdrv_notify_sta_connected(void);
+void wdrv_notify_sta_got_ipv4(void);
 #if CONFIG_P2P
 void wdrv_notify_gc_got_ipv4(void);
 void wdrv_notify_gc_got_ip(void);
@@ -469,10 +444,7 @@ void wdrv_p2p_role_clear(void);
 void wdrv_notify_sta_got_ip(void);
 void bk_rx_handle_customer_event(void *data, uint16_t len);
 int bk_wdrv_send_customer_data(uint8_t *data, uint16_t len);
-void wdrv_notify_sta_disconnected(void *data, uint16_t len);
-void wdrv_notify_sap_sta_connected(void);
 void wdrv_notify_sta_got_ipv6(void);
-void wdrv_notify_sap_sta_disconnected(void);
 bk_err_t bk_wifi_bcn_cc_rxed_cb(void *data, uint16_t len);
 void bk_wifi_csi_info_cb(void *data);
 
@@ -480,6 +452,8 @@ void bk_wifi_csi_info_cb(void *data);
 FUNC_1PARAM_PTR bk_wlan_get_status_cb(void);
 void wifi_netif_call_status_cb_when_sta_got_ip(void);
 void mhdr_set_station_status(wifi_linkstate_reason_t info);
+wifi_linkstate_reason_t mhdr_get_station_status(void);
+void wdrv_reset_sta_link_state(wifi_link_state_t state);
 void bk_wlan_status_register_cb(FUNC_1PARAM_PTR cb);
 
 typedef void (* rx_handle_customer_event_cb)(void *data, uint16_t len);

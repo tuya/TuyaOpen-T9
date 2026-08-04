@@ -75,6 +75,8 @@ extern bool site_survey_cc;
 static int wpa_ctrl_debug_info_dump(struct wpa_supplicant *wpas, uint32_t type);
 extern void wpa_driver_scan_timeout(void *eloop_ctx, void *timeout_ctx);
 uint32_t bk_lookup_ipaddr_wrapper(void *addr);
+extern void rwnx_regulatory_hint_11d(int freq, const u8 *country_ie, u8 country_ie_len);
+extern void regulatory_hint_disconnect(void);
 
 int __wpa_ctrl_request(wpa_ctrl_cmd_t cmd, void *data, int wait, uint16_t flags)
 {
@@ -282,6 +284,14 @@ int wpa_supplicant_ctrl_iface_scan_results(
 	}
 
 	dl_list_for_each(bss, &wpa_s->bss_id, struct wpa_bss, list_id) {
+#if CONFIG_WIFI_REGDOMAIN
+		u8 chan;
+
+		/* check country code */
+		ieee80211_freq_to_chan(bss->freq, &chan);
+		if (!rw_ieee80211_is_scan_rst_in_countrycode(chan))
+			continue;
+#endif
 		/* if no ssid specified, or match the specified ssid */
 		if (!ssid ||
 			(bss->ssid_len == ssid_len && !os_memcmp(ssid, bss->ssid, bss->ssid_len))) {
@@ -295,6 +305,14 @@ int wpa_supplicant_ctrl_iface_scan_results(
 	if (!results->ApList)
 		return -1;
 	dl_list_for_each(bss, &wpa_s->bss_id, struct wpa_bss, list_id) {
+#if CONFIG_WIFI_REGDOMAIN
+		u8 chan;
+
+		/* check country code */
+		ieee80211_freq_to_chan(bss->freq, &chan);
+		if (!rw_ieee80211_is_scan_rst_in_countrycode(chan))
+			continue;
+#endif
 		/* if no ssid specified, or match the specified ssid */
 		if (!ssid ||
 			(bss->ssid_len == ssid_len && !os_memcmp(ssid, bss->ssid, bss->ssid_len))) {
@@ -2175,6 +2193,21 @@ int wpa_supplicant_handle_events(wpah_msg_t *msg)
 				data.assoc_info.resp_ies = (u8 *)ind->assoc_ie_buf + ind->assoc_req_ie_len;
 				data.assoc_info.resp_ies_len = ind->assoc_rsp_ie_len;
 				wpa_supplicant_event_sta(wpa_s, EVENT_ASSOC, &data);
+
+#if CONFIG_WIFI_REGDOMAIN
+				/* handle dot11d; current_bss may be NULL during rapid STA switch */
+				const uint8_t *country_ie = get_ie(data.assoc_info.resp_ies,
+						data.assoc_info.resp_ies_len, WLAN_EID_COUNTRY);
+				if (!country_ie && wpa_s->current_bss)
+					country_ie = wpa_bss_get_ie(wpa_s->current_bss, WLAN_EID_COUNTRY);
+				if (country_ie) {
+					int freq = wpa_s->current_bss ?
+						wpa_s->current_bss->freq : ind->chan.prim20_freq;
+
+					rwnx_regulatory_hint_11d(freq, country_ie + 2, *(country_ie + 1));
+				}
+#endif
+
 			} else {
 				union wpa_event_data data;
 

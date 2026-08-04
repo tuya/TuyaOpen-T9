@@ -6,6 +6,7 @@
 #include "driver/flash.h"
 #include "common/bk_err.h"
 #include "bk_private/bk_ota_private.h"
+#include <soc/soc.h>   /* SOC_FLASH_REG_BASE: applies the S/NS address offset */
 
 #ifdef CONFIG_HTTP_AB_PARTITION
 #include "modules/ota.h"
@@ -15,20 +16,28 @@
 #include "aon_pmu_hal.h"
 #endif
 
-#ifdef CONFIG_HTTP_AB_PARTITION
-#define FLASH_BASE_ADDRESS                (0x44030000)
+/* Flash XIP remap register (bit0: 0=slot A/primary, 1=slot B/secondary), set by
+ * MCUboot BL2. Defined unconditionally so the secure-XIP OTA path can read the
+ * running slot without CONFIG_HTTP_AB_PARTITION.
+ *
+ * Use SOC_FLASH_REG_BASE (not a hardcoded 0x44030000) so the S/NS address
+ * offset is applied: on the Non-Secure AP (CONFIG_SPE=0) this resolves to the
+ * NS alias 0x54030000. A raw read of the secure alias 0x44030000 from the NS
+ * AP triggers a Secure/BusFault that hangs the caller (e.g. `ab_version`). */
+#define FLASH_BASE_ADDRESS                (SOC_FLASH_REG_BASE)
 #define FLASH_OFFSET_ENABLE               (0x19)
+
+#ifdef CONFIG_HTTP_AB_PARTITION
 #define FLASH_DEFAULT_VALUE               (0xFFFFFFFF)
 
 /* AON PMU trial reboot counter, shared with the bootloader (driver_ab.c): the
- * count lives in the reset_count field bits[23:20] (written via PMU_REG0, read
- * back from PMU_REG7A). The bootloader increments it on every TRIAL boot and
- * rolls back once it reaches try_max; clearing it here on a successful confirm
- * gives each new OTA a full trial budget again (otherwise consecutive OTAs
- * without an intervening cold/NORMAL boot would accumulate the count and
- * spuriously roll back). */
-#define AB_PMU_REBOOT_CNT_BIT             (20)
-#define AB_PMU_REBOOT_CNT_MASK            (0xFU)
+ * count lives in the aon_pmu_r0_t bl2_reset_count field (written via PMU_REG0,
+ * read back from PMU_REG7A). The bootloader increments it on every TRIAL boot
+ * and rolls back once it reaches try_max; clearing it here on a successful
+ * confirm gives each new OTA a full trial budget again (otherwise consecutive
+ * OTAs without an intervening cold/NORMAL boot would accumulate the count and
+ * spuriously roll back). The field position/width comes from the SoC register
+ * definition (aon_pmu_struct.h), so no local bit/mask duplication is needed. */
 
 /* The OTA target slot is always the one opposite the running slot; derive it on
  * demand instead of caching it in a global (the running slot never changes
@@ -123,6 +132,11 @@ static uint32_t ap_ab_commit(ab_slot_t exec_slot, ab_slot_t update_slot,
 	rec.boot_state = boot_state;
 	rec.dl_state = dl_state;
 	rec.try_max = try_max ? try_max : (uint8_t)AB_FLAG_DEFAULT_TRY_MAX;
+	/* The bootloader reboot counter is a 3-bit AON PMU field saturating at 7;
+	 * never persist a threshold that count could never reach. */
+	if (rec.try_max > 7u) {
+		rec.try_max = AB_FLAG_DEFAULT_TRY_MAX;
+	}
 	ap_ab_record_commit(&rec);
 	return rec.seq;
 }
@@ -142,7 +156,7 @@ static int ap_slot_has_image(ab_slot_t slot)
 	return (head_word != FLASH_DEFAULT_VALUE);
 }
 
-/* Clear the AON PMU trial reboot counter (bits[23:20]) through the AP PMU HAL/LL
+/* Clear the AON PMU trial reboot counter (bits[14:12]) through the AP PMU HAL/LL
  * instead of poking registers directly. The counter is written via PMU_REG0 plus
  * the PMU_REG25 magic latch and read back from PMU_REG7A (aon_pmu_ll_get_r7a_value),
  * which is the authoritative live view of the latched value; aon_pmu_hal_set_r0()
@@ -150,10 +164,11 @@ static int ap_slot_has_image(ab_slot_t slot)
  * bl_ab_reboot_count_clear() (write R0, read R7A). */
 static void ap_ab_reboot_count_clear(void)
 {
-	uint32_t reg = aon_pmu_ll_get_r7a_value();
+	aon_pmu_r0_t r;
 
-	reg &= ~(AB_PMU_REBOOT_CNT_MASK << AB_PMU_REBOOT_CNT_BIT);
-	aon_pmu_hal_set_r0(reg);
+	r.v = aon_pmu_ll_get_r7a_value();
+	r.bl2_reset_count = 0;
+	aon_pmu_hal_set_r0(r.v);
 }
 
 /* Confirm the currently running trial slot: if the active record is TRIAL and
@@ -195,16 +210,6 @@ static void ap_ab_try_confirm(void)
 	OTA_LOGI("OTA confirmed: exec slot %d (seq->%u)\r\n", (int)running, (unsigned)seq);
 }
 
-static uint8 ota_get_flash_offset_enable_value(void)
-{
-	uint8 ret_val;
-
-	ret_val = (REG_READ((FLASH_BASE_ADDRESS + FLASH_OFFSET_ENABLE*4)) & 0x1);
-	OTA_LOGI("ret_val  :0x%x\r\n",ret_val);
-
-	return ret_val;
-}
-
 void bk_ota_double_check_for_execution(void)
 {
 	/* Lightweight automatic confirm: reaching app init counts as "the trial
@@ -212,15 +217,6 @@ void bk_ota_double_check_for_execution(void)
 	 * (see ap_ab_try_confirm). AP-only -- CP has no OTA component. */
 	OTA_LOGI("bk_ota_double_check_for_execution\r\n");
 	ap_ab_try_confirm();
-}
-
-uint8 bk_ota_get_current_partition(void)
-{
-	uint8 ret_val;
-	
-	ret_val = ota_get_flash_offset_enable_value();
-
-	return ret_val;  //ret_val: 0x0 represents A 0x1 :represents B.
 }
 
 #ifdef CONFIG_OTA_HASH_FUNCTION
@@ -320,6 +316,23 @@ uint32 http_get_sapp_partition_length(bk_partition_t partition)
 }
 
 #endif // CONFIG_HTTP_AB_PARTITION
+
+/* HW XIP remap accessor (bit0: 0=A, 1=B), compiled unconditionally so the
+ * secure-XIP OTA backend can read the running slot. */
+static uint8 ota_get_flash_offset_enable_value(void)
+{
+	uint8 ret_val;
+
+	ret_val = (REG_READ((FLASH_BASE_ADDRESS + FLASH_OFFSET_ENABLE*4)) & 0x1);
+	OTA_LOGI("ret_val  :0x%x\r\n",ret_val);
+
+	return ret_val;
+}
+
+uint8 bk_ota_get_current_partition(void)
+{
+	return ota_get_flash_offset_enable_value();  //0x0: slot A, 0x1: slot B
+}
 
 #if CONFIG_OTA_DISPLAY_PICTURE_DEMO
 #include "bk_partition.h"

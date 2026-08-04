@@ -60,6 +60,9 @@ void bk_coredump_dump_time(uint64_t time_us);
 const char *bk_coredump_get_fault_type(void);
 
 void bk_coredump_memory(void);
+void bk_coredump_memory_essential(void);
+void bk_coredump_memory_extended(void);
+void bk_coredump_memory_peripherals(void);
 void bk_coredump_ap_memory(void);
 void bk_coredump_dump_ap_memory_for_trap(void);
 
@@ -67,10 +70,12 @@ bk_mem_addr_t *bk_get_dump_sys_mem_info(void);
 uint32_t bk_get_dump_sys_mem_count(void);
 
 void bk_coredump_lock(void);
+void bk_coredump_feed_watchdogs(void);
 
 uint32_t *bk_find_next_valid_lr_pos(uint32_t *start, uint32_t *end);
 
 void bk_dump_peri_regs(void);
+void bk_dump_peri_probes(void);
 void bk_dump_dtcm(void);
 void bk_dump_all_sram(void);
 void bk_dump_extra_mem(void);

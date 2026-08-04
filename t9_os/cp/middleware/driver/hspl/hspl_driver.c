@@ -121,6 +121,7 @@ bk_err_t bk_hspl_driver_init(void)
 		HSPL_REG_WR32(base0, HSPL_REG_TIMEOUT_CFG, 0x0);
 		HSPL_REG_WR32(base0, HSPL_REG_TIMEOUT_CTL, 0x0);
 	}
+
 	if (base1) {
 		HSPL_REG_WR32(base1, HSPL_REG_CLKRST, 0x1);
 		HSPL_REG_WR32(base1, HSPL_REG_TIMEOUT_CFG, 0x0);

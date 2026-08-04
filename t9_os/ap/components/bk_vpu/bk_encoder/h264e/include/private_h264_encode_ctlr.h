@@ -19,6 +19,7 @@
 #include "modules/vcenc/vcenc_types.h"
 #include "modules/vcenc/vcenc_h264_types.h"
 #include "modules/vcenc/vcenc_h264_api.h"
+#include "h264_encode_osd_priv.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -146,6 +147,7 @@ typedef struct
 	bk_flexa_bond_t *bond;            /* Bond callbacks (unused in frame mode but kept for symmetry) */
 
 	bk_h264_encode_frame_config_t config;   /* User configuration */
+	h264_encode_osd_slot_state_t osd_slots[H264_ENCODE_OSD_SLOT_COUNT];
 	bk_h264_encode_ctlr_t ops;        /* Control vtable */
 } private_h264_encode_frame_ctlr_t;
 
@@ -184,6 +186,7 @@ typedef struct
 	bk_flexa_bond_t *bond;
 
 	bk_h264_encode_hw_flexa_config_t config;
+	h264_encode_osd_slot_state_t osd_slots[H264_ENCODE_OSD_SLOT_COUNT];
 	bk_h264_encode_ctlr_t ops;
 } private_h264_encode_hw_flexa_ctlr_t;
 
@@ -211,6 +214,11 @@ typedef struct
 	uint32_t pending_out_buf;
 	uint32_t pending_out_size;
 	bool pending_valid;
+	/*
+	 * Per-frame encode outcome from vcenc dispatch; encoder thread reports
+	 * bond frame_done once per frame based on this value.
+	 */
+	uint32_t encode_result;
 	beken_semaphore_t enc_done_sem;
 
 	bk_flexa_bond_t *bond;
@@ -220,6 +228,7 @@ typedef struct
 	uint32_t last_flexa_line;
 
 	bk_h264_encode_sw_flexa_config_t config;
+	h264_encode_osd_slot_state_t osd_slots[H264_ENCODE_OSD_SLOT_COUNT];
 	bk_h264_encode_ctlr_t ops;
 } private_h264_encode_sw_flexa_ctlr_t;
 

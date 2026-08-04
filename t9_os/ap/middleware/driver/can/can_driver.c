@@ -25,16 +25,19 @@
 #include "can_driver.h"
 #include "can_hal.h"
 #include "sys_driver.h"
+#include "interrupt.h"
 #include "FreeRTOS.h"
 #include "task.h"
 
-#if CONFIG_CAN_PM_SUPPORT
+#if CONFIG_CAN_PM_CB_SUPPORT
 #include <modules/pm.h>
 #endif
 
+#define CAN_ERR_RECOVER_STACK_SIZE      1024
+
 #define CAN_RETURN_ON_DEVICE_NOT_INIT() do { \
-	if (!s_can_driver_is_init) { \
-			CAN_LOGE("can driver not init\r\n"); \
+	if (!s_can_hw_is_init) { \
+			CAN_LOGE("can hw not init\r\n"); \
 			return BK_ERR_CAN_NOT_INIT; \
 		} \
 	} while(0)
@@ -44,65 +47,80 @@
 
 static can_env_t *s_can_env;
 static can_dev_t s_can_dev;
-static can_gpio_t s_can_gpio[CAN_CHAN_MAX] = GPIO_CAN_MAP_TABLE;
 static bool s_can_driver_is_init = false;
+static bool s_can_hw_is_init = false;
 static can_callback_des_t s_can_isr_user_rx_cb;
 static can_callback_des_t s_can_isr_user_tx_cb;
 static can_callback_des_t s_can_isr_user_err_cb;
+static volatile uint32_t s_can_err_pending;
+static beken_semaphore_t s_can_err_sem;
+static beken_thread_t s_can_err_thread;
 
-bk_err_t bk_can_gpio_init(can_channel_t chn)
+static bk_err_t can_err_recover_init(void);
+static void can_err_recover_deinit(void);
+static void can_apply_protocol(can_protocol_e protocol);
+static void can_err_int(void *param);
+static void can_fill_default_config(can_dev_t *dev);
+#if (CONFIG_CAN_PM_CB_SUPPORT)
+static int bk_can_backup(uint64_t sleep_time_ms, void *args);
+static int bk_can_restore(uint64_t sleep_time_ms, void *args);
+#endif
+#if CONFIG_USR_GPIO_CFG_EN
+#define CAN_SET_PIN(chn) do { \
+	if ((chn) == CAN_CHAN_0) { \
+		BK_LOG_ON_ERR(gpio_dev_map_by_func(GPIO_DEV_CAN_TX)); \
+		BK_LOG_ON_ERR(gpio_dev_map_by_func(GPIO_DEV_CAN_RX)); \
+		BK_LOG_ON_ERR(gpio_dev_map_by_func(GPIO_DEV_CAN_STANDBY)); \
+	} \
+} while (0)
+
+#define CAN_UNSET_PIN(chn) do { \
+	if ((chn) == CAN_CHAN_0) { \
+		BK_LOG_ON_ERR(gpio_dev_unmap_by_func(GPIO_DEV_CAN_TX)); \
+		BK_LOG_ON_ERR(gpio_dev_unmap_by_func(GPIO_DEV_CAN_RX)); \
+		BK_LOG_ON_ERR(gpio_dev_unmap_by_func(GPIO_DEV_CAN_STANDBY)); \
+	} \
+} while (0)
+#endif
+
+static void can_init_gpio(can_channel_t chn)
 {
 	if (chn >= CAN_CHAN_MAX || chn < CAN_CHAN_0) {
 		CAN_LOGV("unsupported can chnnal\r\n");
-		return BK_ERR_PARAM;
+		return;
 	}
 #if CONFIG_USR_GPIO_CFG_EN
-	BK_LOG_ON_ERR(gpio_dev_map_by_func(s_can_gpio[chn].tx.dev));
-	BK_LOG_ON_ERR(gpio_dev_map_by_func(s_can_gpio[chn].rx.dev));
-	BK_LOG_ON_ERR(gpio_dev_map_by_func(s_can_gpio[chn].standby.dev));
+	CAN_SET_PIN(chn);
 #endif
-	return BK_OK;
 }
 
-bk_err_t bk_can_gpio_deinit(can_channel_t chn)
+static void can_deinit_gpio(can_channel_t chn)
 {
 	if (chn >= CAN_CHAN_MAX || chn < CAN_CHAN_0) {
 		CAN_LOGV("unsupported can chnnal\r\n");
-		return BK_ERR_PARAM;
+		return;
 	}
 #if CONFIG_USR_GPIO_CFG_EN
-	BK_LOG_ON_ERR(gpio_dev_unmap_by_func(s_can_gpio[chn].tx.dev));
-	BK_LOG_ON_ERR(gpio_dev_unmap_by_func(s_can_gpio[chn].rx.dev));
-	BK_LOG_ON_ERR(gpio_dev_unmap_by_func(s_can_gpio[chn].standby.dev));
+	CAN_UNSET_PIN(chn);
 #endif
-	return BK_OK;
 }
 
 bk_err_t bk_can_clock_enable(void)
 {
-    sys_hal_can_set_sel_clk(1);
-	bk_pm_clock_ctrl(CLK_PWR_ID_CAN, CLK_PWR_CTRL_PWR_UP);
+	/* Program the cksel mux to match the HAL's currently selected source clock
+	 * (picked per requested bit rate). Also keeps the PM restore path correct,
+	 * since bk_can_restore reuses this to re-power the controller. */
+	uint32_t cksel = (can_hal_get_clk_hz() == CAN_CLK_HZ_120M)
+		? CKSEL_SYS_XTAL_120M_120M : CKSEL_SYS_XTAL_120M_XTAL;
+	sys_hal_can0_cksel_set(cksel);
+	bk_pm_clock_ctrl(CLK_PWR_ID_CAN0, CLK_PWR_CTRL_PWR_UP);
 
 	return BK_OK;
 }
 
 bk_err_t bk_can_clock_disable(void)
 {
-	bk_pm_clock_ctrl(CLK_PWR_ID_CAN, CLK_PWR_CTRL_PWR_DOWN);
-
-	return BK_OK;
-}
-
-bk_err_t bk_can_interrupt_enable(void)
-{
-	sys_drv_int_enable(CAN_INTERRUPT_CTRL_BIT);
-
-	return BK_OK;
-}
-
-bk_err_t bk_can_interrupt_disable(void)
-{
-	sys_drv_int_disable(CAN_INTERRUPT_CTRL_BIT);
+	bk_pm_clock_ctrl(CLK_PWR_ID_CAN0, CLK_PWR_CTRL_PWR_DOWN);
 
 	return BK_OK;
 }
@@ -111,16 +129,12 @@ static void bk_can_base_init(void)
 {
     bk_can_clock_enable();
 
-    bk_can_gpio_init(CAN_CHAN_0);
-
-    bk_can_interrupt_enable();
+    can_init_gpio(CAN_CHAN_0);
 }
 
 static void bk_can_base_deinit(void)
 {
-    bk_can_interrupt_disable();
-
-    bk_can_gpio_deinit(CAN_CHAN_0);
+    can_deinit_gpio(CAN_CHAN_0);
 
     bk_can_clock_disable();
 }
@@ -271,6 +285,9 @@ bk_err_t bk_can_receive(uint8_t *data, uint32_t expect_size, uint32_t *recv_size
 bk_err_t bk_can_send_ptb(can_frame_s* frame)
 {
     CAN_RETURN_ON_DEVICE_NOT_INIT();
+    if (frame == NULL) {
+        return BK_ERR_NULL_PARAM;
+    }
     if ((frame->tag.fdf == CAN_PROTO_20) && (frame->size > 8)) {
         return BK_ERR_PARAM;
     }
@@ -307,56 +324,51 @@ bk_err_t bk_can_abort_ptb(void)
 
 bk_err_t bk_can_send(can_frame_s* frame, uint32_t timeout)
 {
-    uint32_t t_size;
-    uint8_t *data = frame->data;
-    uint32_t size = frame->size;
+    uint32_t t_size = 0;
     uint32_t param = 0;
-    bk_err_t ret = BK_OK;
     uint32_t flag;
 
 	CAN_RETURN_ON_DEVICE_NOT_INIT();
+    if (frame == NULL || frame->data == NULL) {
+        return BK_ERR_NULL_PARAM;
+    }
     if (s_can_env == NULL || s_can_env->can_f.tx == NULL) {
         return BK_ERR_NULL_PARAM;
     }
 
+    uint8_t *data = frame->data;
+    uint32_t size = frame->size;
     can_frame_tag_t tag = frame->tag;
     can_hal_ctrl(CMD_CAN_SET_TX_FRAME_TAG, &tag);
 
-	flag = rtos_disable_int();
-	spinlock_acquire(&s_can_env->tx_spin, CAN_SPINLOCK_TIMEOUT_MS);
-
     while (size) {
+        flag = rtos_disable_int();
+        spinlock_acquire(&s_can_env->tx_spin, CAN_SPINLOCK_TIMEOUT_MS);
         t_size = kfifo_unused(s_can_env->can_f.tx);
+        if (t_size > 0) {
+            if (t_size >= size) {
+                t_size = size;
+            }
+            can_tx_fifo_put(data, t_size);
+            size -= t_size;
+            data += t_size;
+        }
+        spinlock_release(&s_can_env->tx_spin, flag);
+        rtos_enable_int(flag);
 
         if (t_size == 0) {
             can_hal_ctrl(CMD_CAN_STB_INBUF, &param);
-
             if (rtos_get_semaphore(&(s_can_env->tx_semphr), timeout) != BK_OK) {
-                ret = BK_ERR_TIMEOUT;
-                break;
+                return BK_ERR_TIMEOUT;
             }
-            continue;
         }
-
-        if (t_size >= size) {
-            t_size = size;
-        }
-
-        can_tx_fifo_put(data, t_size);
-
-        size -= t_size;
-        data += t_size;
     }
 
     can_hal_ctrl(CMD_CAN_STB_INBUF, &param);
-
     param = CAN_TSALL;
     can_hal_ctrl(CMD_CAN_TRANS_SWITCH, (void *)param);
 
-	spinlock_release(&s_can_env->tx_spin, flag);
-	rtos_enable_int(flag);
-
-    return ret;
+    return BK_OK;
 }
 
 bk_err_t bk_can_abort_all(void)
@@ -365,6 +377,26 @@ bk_err_t bk_can_abort_all(void)
     can_tx_fifo_clr();
     uint32_t param = CAN_TPA | CAN_TSA;
     can_hal_ctrl(CMD_CAN_TRANS_SWITCH, (void *)param);
+
+    return BK_OK;
+}
+
+bk_err_t bk_can_set_loopback_internal(bool enable)
+{
+    CAN_RETURN_ON_DEVICE_NOT_INIT();
+    can_hal_set_lbmi(enable ? 1 : 0);
+
+    return BK_OK;
+}
+
+bk_err_t bk_can_set_loopback_external(bool enable)
+{
+    CAN_RETURN_ON_DEVICE_NOT_INIT();
+    can_hal_set_lbme(enable ? 1 : 0);
+    /* External loopback puts the frame on the real bus; a single node has no
+     * peer to acknowledge it, so enable self-ACK to let the node ACK its own
+     * frames. Cleared on exit to keep normal bus operation ACK-correct. */
+    can_hal_set_sack(enable ? 1 : 0);
 
     return BK_OK;
 }
@@ -391,11 +423,81 @@ static bk_err_t bk_can_busoff_clr(void)
     return BK_OK;
 }
 
-static bk_err_t bk_can_get_koer(void)
+static void can_err_recover_task(void *arg)
 {
-    can_koer_code_e koer_c;
+	(void)arg;
 
-    CAN_RETURN_ON_DEVICE_NOT_INIT();
+	while (1) {
+		rtos_get_semaphore(&s_can_err_sem, BEKEN_WAIT_FOREVER);
+		if (s_can_err_pending & CAN_ERRINT_WARN_LIM) {
+			bk_can_abort_all();
+			bk_can_busoff_clr();
+		}
+		s_can_err_pending = 0;
+	}
+}
+
+static bk_err_t can_err_recover_init(void)
+{
+	bk_err_t ret;
+
+	ret = rtos_init_semaphore(&s_can_err_sem, 1);
+	if (ret != BK_OK) {
+		return ret;
+	}
+
+	ret = rtos_create_thread(&s_can_err_thread, BEKEN_DEFAULT_WORKER_PRIORITY,
+		"can_err", can_err_recover_task, CAN_ERR_RECOVER_STACK_SIZE, NULL);
+	if (ret != BK_OK) {
+		rtos_deinit_semaphore(&s_can_err_sem);
+	}
+
+	return ret;
+}
+
+static void can_err_recover_deinit(void)
+{
+	if (s_can_err_thread) {
+		rtos_delete_thread(&s_can_err_thread);
+		s_can_err_thread = NULL;
+	}
+	if (s_can_err_sem) {
+		rtos_deinit_semaphore(&s_can_err_sem);
+		s_can_err_sem = NULL;
+	}
+	s_can_err_pending = 0;
+}
+
+static void can_fill_default_config(can_dev_t *dev)
+{
+	if (dev == NULL) {
+		return;
+	}
+	dev->config.protocol = CAN_PROTO_FD;
+	dev->config.s_speed = CAN_BR_1M;
+	dev->config.f_speed = CAN_BR_2M;
+	dev->config.rx_size = DEFAULT_FIFO_SIZE;
+	dev->config.tx_size = DEFAULT_FIFO_SIZE;
+	dev->err_cb.cb = can_err_int;
+	dev->err_cb.param = NULL;
+}
+
+static void can_apply_protocol(can_protocol_e protocol)
+{
+	if (protocol == CAN_PROTO_FD) {
+		can_hal_set_fd_enable(1);
+	} else {
+		can_hal_set_fd_enable(0);
+	}
+}
+
+static can_koer_code_e bk_can_get_koer(void)
+{
+    can_koer_code_e koer_c = CAN_KOER_NO;
+
+    if (!s_can_hw_is_init) {
+        return CAN_KOER_NO;
+    }
     can_hal_ctrl(CMD_CAN_GET_KOER, &koer_c);
 
     return koer_c;
@@ -412,15 +514,18 @@ void bk_can_register_err_callback(can_callback_des_t *err_cb)
 static void can_err_int(void *param)
 {
     uint32_t err_code = (uint32_t)param;
-    CAN_LOGD("%s,%d err code 0x%x\r\n", __func__, __LINE__, err_code);
+    /* KOER (kind of error) pinpoints the cause: 4=ACK (no peer/listen-only or
+     * bit-rate not synced), 5=CRC / 2=FORM / 3=STUFF (FD/ISO mismatch or bit
+     * timing), 1=BIT. Helps triage real-bus errors that only show as BUS ERROR. */
+    CAN_LOGD("%s,%d err code 0x%x koer 0x%x\r\n", __func__, __LINE__, err_code, bk_can_get_koer());
 
     if(s_can_isr_user_err_cb.cb) {
         s_can_isr_user_err_cb.cb(s_can_isr_user_err_cb.param);
     }
 
     if (err_code & CAN_ERRINT_WARN_LIM) {
-        bk_can_abort_all();
-        bk_can_busoff_clr();
+        s_can_err_pending |= err_code;
+        rtos_set_semaphore(&s_can_err_sem);
     }
 }
 
@@ -502,38 +607,121 @@ void can_isr(void)
 	can_hal_set_ie_value(intc_stat);
 }
 
+/* Read back the live bit-timing registers and report the *actual* on-wire bit
+ * rate and sample point, so a test operator can confirm the controller really
+ * runs at the nominal rate (e.g. that "1M" is 1.000M, not 967.7k) instead of
+ * trusting the requested enum. Computed from real registers, not the table.
+ * The Tq base clock is the currently selected source (26M XTAL or 120M PLL,
+ * picked per bit rate), read from the HAL so it always matches the live cksel. */
+void bk_can_dump_bit_rate(void)
+{
+    uint32_t clk_hz = can_hal_get_clk_hz();
+    uint32_t s_seg1 = can_hal_get_sseg1();
+    uint32_t s_seg2 = can_hal_get_sseg2();
+    uint32_t s_presc = can_hal_get_spresc();
+    uint32_t f_seg1 = can_hal_get_fseg1();
+    uint32_t f_seg2 = can_hal_get_fseg2();
+    uint32_t f_presc = can_hal_get_fpresc();
+
+    uint32_t s_tq = s_seg1 + s_seg2 + 2;
+    uint32_t f_tq = f_seg1 + f_seg2 + 2;
+    uint32_t s_bps = clk_hz / ((s_presc + 1) * s_tq);
+    uint32_t f_bps = clk_hz / ((f_presc + 1) * f_tq);
+    /* sample point in 0.1% units: (seg1+1)/total_tq */
+    uint32_t s_sp = (s_seg1 + 1) * 1000 / s_tq;
+    uint32_t f_sp = (f_seg1 + 1) * 1000 / f_tq;
+
+    CAN_LOGI("bit rate: arb=%u bps (sp %u.%u%%), data=%u bps (sp %u.%u%%) sspoff=%u tdcen=%u iso=%u\r\n",
+             s_bps, s_sp / 10, s_sp % 10, f_bps, f_sp / 10, f_sp % 10,
+             can_hal_get_sspoff(), can_hal_get_tdcen(), can_hal_get_fd_iso());
+}
+
+/* Switch ISO vs non-ISO (BOSCH) CAN-FD at runtime so a bench operator can match
+ * the analyzer. The fd_iso bit lives in the cfg register; write it in reset. */
+void bk_can_set_iso(uint32_t iso)
+{
+    can_hal_set_reset(1);
+    can_hal_set_fd_iso(iso ? 1 : 0);
+    can_hal_set_reset(0);
+    bk_can_dump_bit_rate();
+}
+
+/* Live override of the FD data-phase secondary sample point (SSP), in fast-phase
+ * Tq, for bench-tuning 4M/5M BRS against a real transceiver without a rebuild.
+ * Must be called after the bit rate is configured (config recomputes SSPOFF). */
+void bk_can_set_ssp(uint32_t sspoff_tq)
+{
+    /* SSPOFF/TDCEN live in the CAP register, which only latches writes while the
+     * controller is held in reset (same as can_driver_bit_rate_config); writing
+     * it in normal mode is silently ignored. */
+    can_hal_set_reset(1);
+    can_hal_set_sspoff(sspoff_tq);
+    can_hal_set_tdcen(1);
+    can_hal_set_reset(0);
+    bk_can_dump_bit_rate();
+}
+
 bk_err_t can_driver_bit_rate_config(can_bit_rate_e s_speed, can_bit_rate_e f_speed)
 {
-    if (s_speed < CAN_BR_125K || s_speed > CAN_BR_5M || f_speed < CAN_BR_250K || f_speed > CAN_BR_5M) {
+    if (s_speed < CAN_BR_250K || s_speed > CAN_BR_5M || f_speed < CAN_BR_250K || f_speed > CAN_BR_5M) {
         CAN_LOGE("beyond configurable range!!!\r\n");
         return BK_ERR_PARAM;
     }
     can_hal_set_reset(1);
+    /* can_hal_bit_rate_config picks the source clock for these rates and loads the
+     * matching table; re-program the cksel mux to match while still in reset so a
+     * runtime rate change that flips 26M<->120M doesn't glitch a running clock. */
     can_hal_bit_rate_config(s_speed, f_speed);
+    bk_can_clock_enable();
     can_hal_set_reset(0);
+
+    bk_can_dump_bit_rate();
 
     return BK_OK;
 }
 
 bk_err_t bk_can_init(can_dev_t *can)
 {
+    bk_err_t ret = BK_OK;
+    can_dev_t default_dev;
+
+    if (s_can_hw_is_init) {
+        return BK_OK;
+    }
+
+    /* A NULL config means "bring up with the driver's built-in defaults", so the
+     * internal default error callback (can_err_int) stays inside the driver and
+     * callers/CLI can enable the hardware with a single argument-less call. */
     if (can == NULL) {
-        return BK_ERR_PARAM;
+        can_fill_default_config(&default_dev);
+        can = &default_dev;
     }
 
     if (can->config.s_speed > CAN_BR_1M) {
         return BK_ERR_PARAM;
     }
 
+    bk_pm_module_vote_power_ctrl(PM_POWER_SUB_MODULE_NAME_AHBP_CAN, PM_POWER_MODULE_STATE_ON);
+
     if (s_can_env == NULL) {
         s_can_env = os_zalloc(sizeof(can_env_t));
         if(!s_can_env) {
             CAN_LOGE("%s,%d s_can_env malloc fail\r\n", __func__, __LINE__);
+            bk_pm_module_vote_power_ctrl(PM_POWER_SUB_MODULE_NAME_AHBP_CAN, PM_POWER_MODULE_STATE_OFF);
             return BK_ERR_CAN_CHK_ERROR;
         }
     }
 
+    /* Pre-select the source clock from the requested rates so bk_can_base_init
+     * powers up with the right cksel mux, before the controller leaves reset. */
+    can_hal_select_clk(can->config.s_speed, can->config.f_speed);
     bk_can_base_init();
+    ret = can_err_recover_init();
+    if (ret != BK_OK) {
+        bk_can_base_deinit();
+        bk_pm_module_vote_power_ctrl(PM_POWER_SUB_MODULE_NAME_AHBP_CAN, PM_POWER_MODULE_STATE_OFF);
+        return ret;
+    }
     rtos_init_semaphore(&(s_can_env->rx_semphr), 1);
     rtos_init_semaphore(&(s_can_env->tx_semphr), 1);
     spinlock_init(&s_can_env->rx_spin);
@@ -543,6 +731,8 @@ bk_err_t bk_can_init(can_dev_t *can)
     can_speed.s_speed = can->config.s_speed;
     can_speed.f_speed = can->config.f_speed;
     can_hal_ctrl(CMD_CAN_MODUILE_INIT, &can_speed);
+    can_apply_protocol(can->config.protocol);
+    can_hal_int_enable();
 
     s_can_env->status = CAN_STATUS_IDLE;
 
@@ -577,15 +767,32 @@ bk_err_t bk_can_init(can_dev_t *can)
     reg_cb.param = NULL;
     can_hal_ctrl(CMD_CAN_SET_TX_CALLBACK, &reg_cb);
 
-    bk_int_isr_register(INT_SRC_CAN, can_isr, NULL);
+    bk_interrupt_register_m55sub_int(INT_SRC_CP_CAN, can_isr);
+
+    s_can_hw_is_init = true;
+
+#if (CONFIG_CAN_PM_CB_SUPPORT)
+    pm_cb_conf_t enter_config = {bk_can_backup, NULL};
+    pm_cb_conf_t exit_config = {bk_can_restore, NULL};
+    bk_pm_sleep_register_cb(PM_MODE_LOW_VOLTAGE, PM_DEV_ID_CAN, &enter_config, &exit_config);
+#endif
 
     return BK_OK;
 }
 
 bk_err_t bk_can_deinit(void)
 {
+    if (!s_can_hw_is_init) {
+        return BK_OK;
+    }
+    s_can_hw_is_init = false;
+#if (CONFIG_CAN_PM_CB_SUPPORT)
+    bk_pm_sleep_unregister_cb(PM_MODE_LOW_VOLTAGE, PM_DEV_ID_CAN, true, true);
+#endif
+    can_err_recover_deinit();
+    can_hal_int_disable();
+    bk_interrupt_unregister_m55sub_int(INT_SRC_CP_CAN);
     bk_can_base_deinit();
-    bk_int_isr_unregister(INT_SRC_CAN);
 
     if (s_can_env != NULL) {
         rtos_deinit_semaphore(&(s_can_env->rx_semphr));
@@ -604,10 +811,12 @@ bk_err_t bk_can_deinit(void)
         s_can_env = NULL;
     }
 
+    bk_pm_module_vote_power_ctrl(PM_POWER_SUB_MODULE_NAME_AHBP_CAN, PM_POWER_MODULE_STATE_OFF);
+
     return BK_OK;
 }
 
-#if (CONFIG_CAN_PM_SUPPORT)
+#if (CONFIG_CAN_PM_CB_SUPPORT)
 static uint32_t s_can_pm_backup[16];
 static int bk_can_backup(uint64_t sleep_time_ms, void *args)
 {
@@ -661,28 +870,17 @@ static int bk_can_restore(uint64_t sleep_time_ms, void *args)
 }
 #endif
 
+/* Software-layer load only: fill the default config and register CLI, with no
+ * hardware side effect (no power-up, no GPIO map, no interrupt). This runs at
+ * boot under CONFIG_CAN so merely enabling the macro does NOT bring the CAN
+ * controller live. The hardware is enabled later, on demand, by bk_can_init(). */
 bk_err_t bk_can_driver_init(void)
 {
 	if (s_can_driver_is_init) {
 		return BK_OK;
 	}
 
-	s_can_dev.config.s_speed = CAN_BR_1M;
-	s_can_dev.config.f_speed = CAN_BR_4M;
-	s_can_dev.config.rx_size = DEFAULT_FIFO_SIZE;
-	s_can_dev.config.tx_size = DEFAULT_FIFO_SIZE;
-	s_can_dev.err_cb.cb = can_err_int;
-	s_can_dev.err_cb.param = NULL;
-
-	bk_pm_module_vote_power_ctrl(PM_POWER_SUB_MODULE_NAME_AHBP_CAN, PM_POWER_MODULE_STATE_ON);
-#if (CONFIG_CAN_PM_SUPPORT)
-	pm_cb_conf_t enter_config = {bk_can_backup, NULL};
-	pm_cb_conf_t exit_config = {bk_can_restore, NULL};
-	bk_pm_sleep_register_cb(PM_MODE_LOW_VOLTAGE, PM_DEV_ID_CAN, &enter_config, &exit_config);
-#endif
-
-	BK_LOG_ON_ERR(bk_can_init(&s_can_dev));
-	s_can_driver_is_init = true;
+	can_fill_default_config(&s_can_dev);
 
 #if CONFIG_CAN_TEST
     int bk_can_register_cli_test_feature(void);
@@ -693,6 +891,9 @@ bk_err_t bk_can_driver_init(void)
     int bk_can_register_cli_demo(void);
     bk_can_register_cli_demo();
 #endif
+
+	s_can_driver_is_init = true;
+
 	return BK_OK;
 }
 
@@ -701,11 +902,14 @@ bk_err_t bk_can_driver_deinit(void)
 	if (!s_can_driver_is_init) {
 		return BK_OK;
 	}
+
+	/* Tear the hardware down first if some caller left it enabled, so unloading
+	 * the driver never leaves the controller powered/interrupting. */
+	if (s_can_hw_is_init) {
+		bk_can_deinit();
+	}
+
 	s_can_driver_is_init = false;
-#if (CONFIG_CAN_PM_SUPPORT)
-	bk_pm_sleep_unregister_cb(PM_MODE_LOW_VOLTAGE, PM_DEV_ID_CAN, true, true);
-#endif
-	bk_can_deinit();
-	bk_pm_module_vote_power_ctrl(PM_POWER_SUB_MODULE_NAME_AHBP_CAN, PM_POWER_MODULE_STATE_OFF);
+
 	return BK_OK;
 }
