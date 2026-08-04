@@ -6,57 +6,72 @@
 #include "uart_statis.h"
 #include "bk_uart.h"
 #include <components/log.h>
-#include "uart_hal.h"
+#include "gpio_driver.h"
 
 #define CLI_GETCHAR_TIMEOUT           (120000)
 
 extern void bk_printf(const char *fmt, ...);
 
-static gpio_id_t __tkl_uart2_rx_pin = GPIO_30;
-static gpio_id_t __tkl_uart2_tx_pin = GPIO_31;
-
-static inline int __tkl_uart2_pin_check(void)
+/**
+ * @brief Map uart id to TXD function used by usr_gpio_cfg
+ * @param[in] id uart id
+ * @return gpio_dev_t or GPIO_DEV_NONE
+ */
+static gpio_dev_t __tkl_uart_txd_dev(uart_id_t id)
 {
-    if (((__tkl_uart2_rx_pin == GPIO_30) && (__tkl_uart2_tx_pin == GPIO_31)) ||
-        ((__tkl_uart2_rx_pin == GPIO_40) && (__tkl_uart2_tx_pin == GPIO_41))) {
-        return 0;
-    } else {
-        return -1;
+    switch (id) {
+    case UART_ID_0:
+        return GPIO_DEV_UART0_TXD;
+    case UART_ID_1:
+        return GPIO_DEV_UART1_TXD;
+    case UART_ID_2:
+        return GPIO_DEV_UART2_TXD;
+    default:
+        return GPIO_DEV_NONE;
     }
-}
-gpio_id_t __tkl_uart2_get_rx_pin(void)
-{
-    if (__tkl_uart2_pin_check() != 0) {
-        return GPIO_30;
-    }
-    return __tkl_uart2_rx_pin;
-}
-gpio_id_t __tkl_uart2_get_tx_pin(void)
-{
-    if (__tkl_uart2_pin_check() != 0) {
-        return GPIO_31;
-    }
-    return __tkl_uart2_tx_pin;
 }
 
-void __tkl_uart2_set_rx_pin(TUYA_I2C_NUM_E port, const TUYA_PIN_NAME_E pin)
+/**
+ * @brief Map uart id to RXD function used by usr_gpio_cfg
+ * @param[in] id uart id
+ * @return gpio_dev_t or GPIO_DEV_NONE
+ */
+static gpio_dev_t __tkl_uart_rxd_dev(uart_id_t id)
 {
-    // only support UART2
-    if (pin != GPIO_30 && pin != GPIO_40) {
-        bk_printf("tkl_uart2_set_rx_pin unsupport pin: %d\r\n", pin);
-        return;
+    switch (id) {
+    case UART_ID_0:
+        return GPIO_DEV_UART0_RXD;
+    case UART_ID_1:
+        return GPIO_DEV_UART1_RXD;
+    case UART_ID_2:
+        return GPIO_DEV_UART2_RXD;
+    default:
+        return GPIO_DEV_NONE;
     }
-    __tkl_uart2_rx_pin = (gpio_id_t)pin;
 }
 
-void __tkl_uart2_set_tx_pin(TUYA_I2C_NUM_E port, const TUYA_PIN_NAME_E pin)
+/**
+ * @brief Float UART TX/RX pads after controller deinit (high-Z, pull off)
+ * @param[in] id uart id
+ * @return none
+ * @note Resolves pins via usr_gpio_cfg (gpio_get_id_by_func), same as OEM
+ *       uart_deinit_*_gpio. Pins must be listed in GPIO_DEFAULT_DEV_CONFIG.
+ */
+static VOID_T __tkl_uart_float_pins(uart_id_t id)
 {
-    // only support UART2
-    if (pin != GPIO_31 && pin != GPIO_41) {
-        bk_printf("tkl_uart2_set_tx_pin unsupport pin: %d\r\n", pin);
-        return;
+#if defined(CONFIG_USR_GPIO_CFG_EN) && (CONFIG_USR_GPIO_CFG_EN)
+    gpio_dev_t tx_dev = __tkl_uart_txd_dev(id);
+    gpio_dev_t rx_dev = __tkl_uart_rxd_dev(id);
+
+    if (tx_dev != GPIO_DEV_NONE && gpio_get_id_by_func(tx_dev) < SOC_GPIO_NUM) {
+        gpio_dev_unmap_by_func(tx_dev);
     }
-    __tkl_uart2_tx_pin = (gpio_id_t)pin;
+    if (rx_dev != GPIO_DEV_NONE && gpio_get_id_by_func(rx_dev) < SOC_GPIO_NUM) {
+        gpio_dev_unmap_by_func(rx_dev);
+    }
+#else
+    (VOID_T)id;
+#endif
 }
 
 /**
@@ -169,17 +184,8 @@ OPERATE_RET tkl_uart_deinit(TUYA_UART_NUM_E port_id)
         return OPRT_INVALID_PARM;
     }
     bk_uart_deinit(port);
-
-    tkl_gpio_deinit(uart_hal_get_tx_pin(port));
-    tkl_gpio_deinit(uart_hal_get_rx_pin(port));
-
-    TUYA_GPIO_BASE_CFG_T gpio_cfg;
-    gpio_cfg.direct = TUYA_GPIO_INPUT;
-    gpio_cfg.level = TUYA_GPIO_LEVEL_HIGH;
-    gpio_cfg.mode = TUYA_GPIO_PULLDOWN;
-    tkl_gpio_init(uart_hal_get_tx_pin(port), &gpio_cfg);
-    gpio_cfg.mode = TUYA_GPIO_FLOATING;
-    tkl_gpio_init(uart_hal_get_rx_pin(port), &gpio_cfg);
+    /* deinit stops HW but does not unmap pads; float TX/RX explicitly */
+    __tkl_uart_float_pins(port);
 
     return OPRT_OK;
 }
