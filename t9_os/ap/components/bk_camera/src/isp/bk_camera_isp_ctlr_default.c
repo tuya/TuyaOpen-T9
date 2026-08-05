@@ -30,6 +30,20 @@ static void isp_camera_ctlr_task_entry(void *param)
     isp_channel_config_t *config = NULL;
     while (cam_control->thread_enable)
     {
+        // Modified by TUYA Start
+        /*
+         * Idle until bk_isp_camera_read() arms read_enable.
+         * Otherwise with MP flexa + SP frame (open_gpu_sp), this thread keeps
+         * watching default chnl=0 (MP) and spam-logs flexa-not-supported.
+         * Also avoid pop/free on an idle channel (would drop frames).
+         */
+        if (cam_control->read_enable == false || cam_control->frame == NULL)
+        {
+            rtos_delay_milliseconds(10);
+            continue;
+        }
+        // Modified by TUYA End
+
         uint8_t chnl_id = cam_control->chnl;
         config = &isp_control->chn[chnl_id];
         if (config == NULL || config->enable == false)
@@ -42,7 +56,12 @@ static void isp_camera_ctlr_task_entry(void *param)
         if (config->enable_flexa)
         {
             LOGE("%s, %d channel %d flexa mode not supported read frame\n", __func__, __LINE__, chnl_id);
-            rtos_delay_milliseconds(1000);
+            // Modified by TUYA Start
+            cam_control->size = 0;
+            cam_control->read_enable = false;
+            cam_control->frame = NULL;
+            rtos_set_semaphore(&cam_control->sem);
+            // Modified by TUYA End
             continue;
         }
 
