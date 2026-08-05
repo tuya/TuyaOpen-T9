@@ -1,5 +1,6 @@
 #include "tkl_camera_mipi.h"
 
+#include <avdk_error.h>
 #include <avdk_types.h>
 #include <common/avdk_pixel_types.h>
 #include <components/bk_camera_bus.h>
@@ -189,6 +190,38 @@ static void tkl_camera_mipi_cfg_normalize(TUYA_CAMERA_MIPI_CFG_T *cfg)
             cfg->sp_work_mode = 1U;
         }
     }
+
+    cfg->hmirror = (cfg->hmirror != 0U) ? 1U : 0U;
+    cfg->vflip = (cfg->vflip != 0U) ? 1U : 0U;
+}
+
+/**
+ * @brief Apply hmirror/vflip to the detected sensor
+ * @return OPRT_OK on success; UNSUPPORTED sensor hooks are ignored
+ */
+static OPERATE_RET tkl_camera_mipi_apply_mirror(VOID_T)
+{
+    avdk_err_t ret;
+
+    if (s_cam_ctx.sensor_handle == NULL) {
+        return OPRT_RESOURCE_NOT_READY;
+    }
+
+    ret = bk_camera_sensor_set_hmirror(s_cam_ctx.sensor_handle, s_cam_ctx.cfg.hmirror != 0U);
+    if (ret != AVDK_ERR_OK && ret != AVDK_ERR_UNSUPPORTED) {
+        tkl_log_output("set_hmirror failed: %d\r\n", ret);
+        return OPRT_COM_ERROR;
+    }
+
+    ret = bk_camera_sensor_set_vflip(s_cam_ctx.sensor_handle, s_cam_ctx.cfg.vflip != 0U);
+    if (ret != AVDK_ERR_OK && ret != AVDK_ERR_UNSUPPORTED) {
+        tkl_log_output("set_vflip failed: %d\r\n", ret);
+        return OPRT_COM_ERROR;
+    }
+
+    tkl_log_output("camera mirror applied: hmirror=%u vflip=%u\r\n",
+                   s_cam_ctx.cfg.hmirror, s_cam_ctx.cfg.vflip);
+    return OPRT_OK;
 }
 
 static OPERATE_RET tkl_camera_mipi_cfg_validate(const TUYA_CAMERA_MIPI_CFG_T *cfg)
@@ -615,6 +648,12 @@ OPERATE_RET tkl_camera_mipi_start(void)
         goto err_start;
     }
 
+    /* Apply after set_format: init table may reset mirror regs. */
+    ret = tkl_camera_mipi_apply_mirror();
+    if (ret != OPRT_OK) {
+        goto err_start;
+    }
+
     ret = tkl_camera_mipi_open_sp_channel();
     if (ret != OPRT_OK) {
         goto err_start;
@@ -625,13 +664,15 @@ OPERATE_RET tkl_camera_mipi_start(void)
     s_cam_ctx.started = TRUE;
     s_cam_ctx.sp_warmup_pending =
         (s_cam_ctx.cfg.sp_enable != FALSE) ? TRUE : FALSE;
-    tkl_log_output("camera start ok, sensor=%ux%u@%u, isp_output=%ux%u fmt=%u\r\n",
+    tkl_log_output("camera start ok, sensor=%ux%u@%u, isp_output=%ux%u fmt=%u hmirror=%u vflip=%u\r\n",
             s_cam_ctx.cfg.sensor_width,
             s_cam_ctx.cfg.sensor_height,
             s_cam_ctx.cfg.sensor_fps,
             s_cam_ctx.cfg.output_width,
             s_cam_ctx.cfg.output_height,
-            (unsigned int)s_cam_ctx.cfg.output_format);
+            (unsigned int)s_cam_ctx.cfg.output_format,
+            s_cam_ctx.cfg.hmirror,
+            s_cam_ctx.cfg.vflip);
     return OPRT_OK;
 
 err_start:
@@ -1233,6 +1274,38 @@ OPERATE_RET tkl_camera_mipi_get_frame(TUYA_CAMERA_MIPI_FRAME_T *frame)
     frame->format = format;
     frame->y_stride = y_stride;
     frame->uv_stride = uv_stride;
+
+    return OPRT_OK;
+}
+
+OPERATE_RET tkl_camera_mipi_set_mirror_flip(UINT8_T hmirror, UINT8_T vflip)
+{
+    if (s_cam_ctx.initialized != TRUE) {
+        return OPRT_RESOURCE_NOT_READY;
+    }
+
+    s_cam_ctx.cfg.hmirror = (hmirror != 0U) ? 1U : 0U;
+    s_cam_ctx.cfg.vflip = (vflip != 0U) ? 1U : 0U;
+
+    if (s_cam_ctx.started != TRUE || s_cam_ctx.sensor_handle == NULL) {
+        return OPRT_OK;
+    }
+
+    return tkl_camera_mipi_apply_mirror();
+}
+
+OPERATE_RET tkl_camera_mipi_get_mirror_flip(UINT8_T *hmirror, UINT8_T *vflip)
+{
+    if (s_cam_ctx.initialized != TRUE) {
+        return OPRT_RESOURCE_NOT_READY;
+    }
+
+    if (hmirror != NULL) {
+        *hmirror = s_cam_ctx.cfg.hmirror;
+    }
+    if (vflip != NULL) {
+        *vflip = s_cam_ctx.cfg.vflip;
+    }
 
     return OPRT_OK;
 }
