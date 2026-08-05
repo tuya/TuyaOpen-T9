@@ -1310,6 +1310,36 @@ OPERATE_RET tkl_camera_mipi_get_mirror_flip(UINT8_T *hmirror, UINT8_T *vflip)
     return OPRT_OK;
 }
 
+/**
+ * @brief Get ISP weighted mean exposure luminance via camera IOCTL
+ * @param[out] luminance mean luminance * 1000
+ * @return OPRT_OK on success
+ */
+OPERATE_RET tkl_camera_mipi_get_exposure_luminance(UINT32_T *luminance)
+{
+    avdk_err_t ret;
+    uint32_t lum = 0U;
+
+    if (luminance == NULL) {
+        return OPRT_INVALID_PARM;
+    }
+
+    if (s_cam_ctx.started != TRUE || s_cam_ctx.camera_ctlr_handle == NULL) {
+        return OPRT_RESOURCE_NOT_READY;
+    }
+
+    ret = bk_isp_camera_ctlr_ioctl(s_cam_ctx.camera_ctlr_handle,
+                                   BK_CAM_IOCTL_GET_EXPOSURE_LUMINANCE,
+                                   &lum);
+    if (ret != AVDK_ERR_OK) {
+        tkl_log_output("get exposure luminance failed: %d\r\n", ret);
+        return OPRT_COM_ERROR;
+    }
+
+    *luminance = (UINT32_T)lum;
+    return OPRT_OK;
+}
+
 OPERATE_RET tkl_camera_mipi_get_isp_handle(VOID **isp_handle)
 {
     if (isp_handle == NULL) {

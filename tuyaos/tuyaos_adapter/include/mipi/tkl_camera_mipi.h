@@ -98,6 +98,13 @@ OPERATE_RET tkl_camera_mipi_set_mirror_flip(UINT8_T hmirror, UINT8_T vflip);
  * @return OPRT_OK on success
  */
 OPERATE_RET tkl_camera_mipi_get_mirror_flip(UINT8_T *hmirror, UINT8_T *vflip);
+/**
+ * @brief Get ISP weighted mean exposure luminance
+ * @param[out] luminance mean luminance scaled by 1000 (typical range 0~255000)
+ * @return OPRT_OK on success
+ * @note Requires camera started. Wraps BK_CAM_IOCTL_GET_EXPOSURE_LUMINANCE.
+ */
+OPERATE_RET tkl_camera_mipi_get_exposure_luminance(UINT32_T *luminance);
 OPERATE_RET tkl_camera_mipi_get_frame(TUYA_CAMERA_MIPI_FRAME_T *frame);
 OPERATE_RET tkl_camera_mipi_get_isp_handle(VOID **isp_handle);
 OPERATE_RET tkl_camera_mipi_get_flexa_source(TUYA_CAMERA_MIPI_FLEXA_SOURCE_T *source);

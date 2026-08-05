@@ -45,7 +45,10 @@
 #define MIPI_TEST_MIRROR_SETTLE_FRAMES 2U
 #define MIPI_TEST_MIRROR_EDGE_COLS     8U
 #define MIPI_TEST_CAMERA_USAGE \
-    "Usage: xmipi camera <open [sw sh fps ow oh]|open_gpu [sw sh fps ow oh]|open_gpu_sp [sw sh fps ow oh spw sph]|start|switch <ow> <oh>|get_frame|mirror [hmirror vflip]|mirror_test|stop|close>"
+    "Usage: xmipi camera <open [sw sh fps ow oh]|open_gpu [sw sh fps ow oh]|open_gpu_sp [sw sh fps ow oh spw sph]|start|switch <ow> <oh>|get_frame|mirror [hmirror vflip]|mirror_test|luminance|luminance_test [n ms]|stop|close>"
+#define MIPI_TEST_LUMINANCE_MAX         255000U
+#define MIPI_TEST_LUMINANCE_DEFAULT_CNT 5U
+#define MIPI_TEST_LUMINANCE_DEFAULT_MS  200U
 
 typedef struct {
     BOOL_T enable;
@@ -1566,6 +1569,98 @@ restore:
     return OPRT_OK;
 }
 
+/**
+ * @brief Query ISP exposure luminance once
+ * @param[out] luminance optional output
+ * @return OPRT_OK on success
+ */
+static OPERATE_RET test_mipi_camera_get_luminance(UINT32_T *luminance)
+{
+    OPERATE_RET ret;
+    UINT32_T lum = 0U;
+
+    if (s_mipi_camera_started != true) {
+        tkl_log_output("luminance needs started camera\r\n");
+        return OPRT_RESOURCE_NOT_READY;
+    }
+
+    ret = tkl_camera_mipi_get_exposure_luminance(&lum);
+    if (ret != OPRT_OK) {
+        tkl_log_output("camera get_exposure_luminance failed: %d\r\n", ret);
+        return ret;
+    }
+
+    tkl_log_output("camera luminance=%u (meanLum*1000, range 0~%u)\r\n",
+                   (unsigned int)lum, (unsigned int)MIPI_TEST_LUMINANCE_MAX);
+    if (luminance != NULL) {
+        *luminance = lum;
+    }
+    return OPRT_OK;
+}
+
+/**
+ * @brief Sample exposure luminance repeatedly and validate range
+ * @param[in] count sample count
+ * @param[in] interval_ms delay between samples
+ * @return OPRT_OK if all samples succeed and stay in range
+ */
+static OPERATE_RET test_mipi_camera_luminance_test(UINT32_T count, UINT32_T interval_ms)
+{
+    OPERATE_RET ret;
+    UINT32_T i;
+    UINT32_T lum = 0U;
+    UINT32_T min_lum = 0xFFFFFFFFU;
+    UINT32_T max_lum = 0U;
+    UINT64_T sum = 0U;
+    BOOL_T pass = TRUE;
+
+    if (count == 0U) {
+        count = MIPI_TEST_LUMINANCE_DEFAULT_CNT;
+    }
+    if (interval_ms == 0U) {
+        interval_ms = MIPI_TEST_LUMINANCE_DEFAULT_MS;
+    }
+
+    tkl_log_output("luminance_test start, count=%u interval=%ums\r\n",
+                   (unsigned int)count, (unsigned int)interval_ms);
+
+    for (i = 0U; i < count; i++) {
+        ret = test_mipi_camera_get_luminance(&lum);
+        if (ret != OPRT_OK) {
+            pass = FALSE;
+            break;
+        }
+        if (lum > MIPI_TEST_LUMINANCE_MAX) {
+            tkl_log_output("luminance_test FAIL: sample[%u]=%u out of range\r\n",
+                           (unsigned int)i, (unsigned int)lum);
+            pass = FALSE;
+            break;
+        }
+        if (lum < min_lum) {
+            min_lum = lum;
+        }
+        if (lum > max_lum) {
+            max_lum = lum;
+        }
+        sum += (UINT64_T)lum;
+        if ((i + 1U) < count) {
+            tkl_system_sleep(interval_ms);
+        }
+    }
+
+    if (pass != TRUE) {
+        tkl_log_output("luminance_test FAILED\r\n");
+        return OPRT_COM_ERROR;
+    }
+
+    tkl_log_output("luminance_test PASS: samples=%u min=%u max=%u avg=%u\r\n",
+                   (unsigned int)count,
+                   (unsigned int)min_lum,
+                   (unsigned int)max_lum,
+                   (unsigned int)(sum / (UINT64_T)count));
+    return OPRT_OK;
+}
+
 void cli_tuya_mipi_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv)
 {
     OPERATE_RET ret;
@@ -1744,6 +1839,33 @@ void cli_tuya_mipi_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char 
             ret = test_mipi_camera_mirror_test();
             snprintf(pcWriteBuffer, xWriteBufferLen,
                      "xmipi camera mirror_test %s (%d)\r\n",
+                     (ret == OPRT_OK) ? "ok" : "failed",
+                     ret);
+        } else if (os_strcmp(cmd, "luminance") == 0 || os_strcmp(cmd, "lum") == 0) {
+            UINT32_T lum = 0U;
+
+            ret = test_mipi_camera_get_luminance(&lum);
+            if (ret == OPRT_OK) {
+                snprintf(pcWriteBuffer, xWriteBufferLen,
+                         "xmipi camera luminance ok (%d), luminance=%u\r\n",
+                         ret, (unsigned int)lum);
+            } else {
+                snprintf(pcWriteBuffer, xWriteBufferLen,
+                         "xmipi camera luminance failed (%d)\r\n", ret);
+            }
+        } else if (os_strcmp(cmd, "luminance_test") == 0 || os_strcmp(cmd, "lum_test") == 0) {
+            UINT32_T count = MIPI_TEST_LUMINANCE_DEFAULT_CNT;
+            UINT32_T interval_ms = MIPI_TEST_LUMINANCE_DEFAULT_MS;
+
+            if (argc >= 4) {
+                count = (UINT32_T)os_strtoul(argv[3], NULL, 10);
+            }
+            if (argc >= 5) {
+                interval_ms = (UINT32_T)os_strtoul(argv[4], NULL, 10);
+            }
+            ret = test_mipi_camera_luminance_test(count, interval_ms);
+            snprintf(pcWriteBuffer, xWriteBufferLen,
+                     "xmipi camera luminance_test %s (%d)\r\n",
                      (ret == OPRT_OK) ? "ok" : "failed",
                      ret);
         } else if (os_strcmp(cmd, "stop") == 0) {
