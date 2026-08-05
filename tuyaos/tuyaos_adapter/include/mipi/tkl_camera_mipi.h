@@ -59,6 +59,8 @@ typedef struct {
     UINT16_T height;
     UINT32_T format;                /* bk_pixel_format_t */
     UINT8_T channel_id;             /* TUYA_CAMERA_MIPI_CHANNEL_*, default MP */
+    UINT32_T y_stride;              /* bytes per Y/RGB row in buffer after get_frame */
+    UINT32_T uv_stride;             /* bytes per UV row for NV12; 0 if N/A */
 } TUYA_CAMERA_MIPI_FRAME_T;
 
 typedef struct {

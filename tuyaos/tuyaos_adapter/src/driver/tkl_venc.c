@@ -20,15 +20,16 @@
 #include "tkl_system.h"
 #include "tkl_venc.h"
 
-#define TKL_VENC_STOP_DRAIN_MS          300U
-#define TKL_VENC_JPEG_DEFAULT_QUALITY   2U
-#define TKL_VENC_H264_DEFAULT_GOP       40U
-#define TKL_VENC_H264_DEFAULT_BITRATE   1500000U
-#define TKL_VENC_H264_QP_MIN_I          20U
-#define TKL_VENC_H264_QP_MAX_I          51U
-#define TKL_VENC_H264_QP_MIN_P          26U
-#define TKL_VENC_H264_QP_MAX_P          51U
-#define TKL_VENC_ISP_FLEXA_LINES        16U
+#define TKL_VENC_STOP_DRAIN_MS              300U
+#define TKL_VENC_JPEG_DEFAULT_QUALITY       2U
+#define TKL_VENC_H264_DEFAULT_GOP           40U
+#define TKL_VENC_H264_DEFAULT_BITRATE       1500000U
+#define TKL_VENC_H264_QP_MIN_I              20U
+#define TKL_VENC_H264_QP_MAX_I              51U
+#define TKL_VENC_H264_QP_MIN_P              26U
+#define TKL_VENC_H264_QP_MAX_P              51U
+#define TKL_VENC_ISP_FLEXA_LINES            16U
+#define TKL_VENC_JPEG_SW_DEFAULT_QUALITY    80U
 
 typedef enum {
     TKL_VENC_BACKEND_NONE = 0,
@@ -1102,4 +1103,372 @@ OPERATE_RET tkl_venc_get_handle(TUYA_VENC_HANDLE handle, VOID **backend_handle)
     }
 
     return OPRT_OK;
+}
+
+/**
+ * @brief Convert NV12 to packed YUYV
+ * @param[in] width frame width, must be even
+ * @param[in] height frame height, must be even
+ * @param[in] y_plane Y plane base
+ * @param[in] uv_plane interleaved UV plane base
+ * @param[out] yuyv packed YUYV output buffer
+ * @return OPRT_OK on success
+ */
+STATIC OPERATE_RET __tkl_venc_jpeg_sw_nv12_to_yuyv(UINT16_T width,
+                                                   UINT16_T height,
+                                                   const UINT8_T *y_plane,
+                                                   const UINT8_T *uv_plane,
+                                                   UINT8_T *yuyv)
+{
+    UINT32_T y;
+    UINT32_T y_stride = (UINT32_T)width;
+    UINT32_T yuyv_stride = (UINT32_T)width * 2U;
+
+    if (y_plane == NULL || uv_plane == NULL || yuyv == NULL ||
+        (width & 1U) != 0U || (height & 1U) != 0U) {
+        return OPRT_INVALID_PARM;
+    }
+
+    for (y = 0U; y < (UINT32_T)height; y += 2U) {
+        const UINT8_T *y_row0 = y_plane + y * y_stride;
+        const UINT8_T *y_row1 = y_row0 + y_stride;
+        const UINT8_T *uv_row = uv_plane + (y >> 1U) * y_stride;
+        UINT8_T *out_row0 = yuyv + y * yuyv_stride;
+        UINT8_T *out_row1 = out_row0 + yuyv_stride;
+        UINT32_T x = 0U;
+
+        for (; x + 8U <= (UINT32_T)width; x += 8U) {
+            const UINT8_T *uv = uv_row + x;
+            UINT8_T *d0 = out_row0 + (x * 2U);
+            UINT8_T *d1 = out_row1 + (x * 2U);
+            UINT32_T pack0;
+            UINT32_T pack1;
+
+            /* tjpg expects YVYU (Y0 V Y1 U); NV12 chroma is U V. */
+            pack0 = ((UINT32_T)uv[0] << 24) | ((UINT32_T)y_row0[x + 1U] << 16) |
+                    ((UINT32_T)uv[1] << 8) | y_row0[x];
+            pack1 = ((UINT32_T)uv[0] << 24) | ((UINT32_T)y_row1[x + 1U] << 16) |
+                    ((UINT32_T)uv[1] << 8) | y_row1[x];
+            *(UINT32_T *)d0 = pack0;
+            *(UINT32_T *)d1 = pack1;
+
+            pack0 = ((UINT32_T)uv[2] << 24) | ((UINT32_T)y_row0[x + 3U] << 16) |
+                    ((UINT32_T)uv[3] << 8) | y_row0[x + 2U];
+            pack1 = ((UINT32_T)uv[2] << 24) | ((UINT32_T)y_row1[x + 3U] << 16) |
+                    ((UINT32_T)uv[3] << 8) | y_row1[x + 2U];
+            *(UINT32_T *)(d0 + 4U) = pack0;
+            *(UINT32_T *)(d1 + 4U) = pack1;
+
+            pack0 = ((UINT32_T)uv[4] << 24) | ((UINT32_T)y_row0[x + 5U] << 16) |
+                    ((UINT32_T)uv[5] << 8) | y_row0[x + 4U];
+            pack1 = ((UINT32_T)uv[4] << 24) | ((UINT32_T)y_row1[x + 5U] << 16) |
+                    ((UINT32_T)uv[5] << 8) | y_row1[x + 4U];
+            *(UINT32_T *)(d0 + 8U) = pack0;
+            *(UINT32_T *)(d1 + 8U) = pack1;
+
+            pack0 = ((UINT32_T)uv[6] << 24) | ((UINT32_T)y_row0[x + 7U] << 16) |
+                    ((UINT32_T)uv[7] << 8) | y_row0[x + 6U];
+            pack1 = ((UINT32_T)uv[6] << 24) | ((UINT32_T)y_row1[x + 7U] << 16) |
+                    ((UINT32_T)uv[7] << 8) | y_row1[x + 6U];
+            *(UINT32_T *)(d0 + 12U) = pack0;
+            *(UINT32_T *)(d1 + 12U) = pack1;
+        }
+
+        for (; x < (UINT32_T)width; x += 2U) {
+            UINT8_T u = uv_row[x];
+            UINT8_T v = uv_row[x + 1U];
+            UINT32_T pack0 = ((UINT32_T)u << 24) | ((UINT32_T)y_row0[x + 1U] << 16) |
+                             ((UINT32_T)v << 8) | y_row0[x];
+            UINT32_T pack1 = ((UINT32_T)u << 24) | ((UINT32_T)y_row1[x + 1U] << 16) |
+                             ((UINT32_T)v << 8) | y_row1[x];
+
+            *(UINT32_T *)(out_row0 + (x * 2U)) = pack0;
+            *(UINT32_T *)(out_row1 + (x * 2U)) = pack1;
+        }
+    }
+
+    return OPRT_OK;
+}
+
+/**
+ * @brief Resolve software JPEG quality factor
+ * @param[in] quality input quality, 0 selects default
+ * @return resolved quality in 1..100
+ */
+STATIC UINT8_T __tkl_venc_jpeg_sw_quality_resolve(UINT8_T quality)
+{
+    if (quality == 0U) {
+        return (UINT8_T)TKL_VENC_JPEG_SW_DEFAULT_QUALITY;
+    }
+
+    if (quality > 100U) {
+        return 100U;
+    }
+
+    return quality;
+}
+
+/**
+ * @brief JPEG software encode outbuf completion callback
+ * @param[in] info encode output buffer info
+ * @return BK_OK
+ */
+STATIC UINT32_T __tkl_venc_jpeg_sw_outbuf_complete(bk_jpeg_encode_outbuf_info_t *info)
+{
+    if (info != NULL && info->args != NULL && info->status == BK_OK) {
+        *(UINT32_T *)info->args = info->length;
+    }
+
+    return BK_OK;
+}
+
+/**
+ * @brief Encode packed YUYV to JPEG using bk_jpeg_encode_sw_frame
+ * @param[in] width frame width
+ * @param[in] height frame height
+ * @param[in] yuyv packed YUYV input buffer
+ * @param[in] quality quality factor 1..100
+ * @param[out] out caller-owned JPEG output descriptor
+ * @return OPRT_OK on success
+ */
+STATIC OPERATE_RET __tkl_venc_jpeg_sw_encode_yuyv(UINT16_T width,
+                                                  UINT16_T height,
+                                                  UINT8_T *yuyv,
+                                                  UINT8_T quality,
+                                                  TUYA_VENC_JPEG_SW_OUT_T *out)
+{
+    bk_jpeg_encode_sw_frame_config_t enc_cfg;
+    bk_jpeg_encode_input_t enc_input;
+    bk_jpeg_encode_ctlr_handle_t enc_handle = NULL;
+    UINT32_T encoded_size = 0U;
+    avdk_err_t ret;
+
+    if (yuyv == NULL || out == NULL || out->buffer == NULL || out->buf_size == 0U) {
+        return OPRT_INVALID_PARM;
+    }
+
+    enc_cfg = (bk_jpeg_encode_sw_frame_config_t) {
+        .width = width,
+        .height = height,
+        .input_format = BK_PIXEL_FORMAT_YUYV,
+        .quality = quality,
+        .outbuf_complete = __tkl_venc_jpeg_sw_outbuf_complete,
+        .outbuf_complete_args = &encoded_size,
+    };
+    enc_input = (bk_jpeg_encode_input_t) {
+        .pic_buf = (UINT32_T)(uintptr_t)yuyv,
+        .out_buf = (UINT32_T)(uintptr_t)out->buffer,
+        .out_size = out->buf_size,
+    };
+
+    ret = bk_jpeg_encode_sw_frame_new(&enc_handle, &enc_cfg);
+    if (ret == AVDK_ERR_OK) {
+        ret = bk_jpeg_encode_init(enc_handle);
+    }
+    if (ret == AVDK_ERR_OK) {
+        ret = bk_jpeg_encode_open(enc_handle);
+    }
+    if (ret == AVDK_ERR_OK) {
+        ret = bk_jpeg_encode_frame(enc_handle, &enc_input);
+    }
+    if (enc_handle != NULL) {
+        (void)bk_jpeg_encode_close(enc_handle);
+        (void)bk_jpeg_encode_deinit(enc_handle);
+        (void)bk_jpeg_encode_delete(enc_handle);
+    }
+
+    if (ret != AVDK_ERR_OK || encoded_size == 0U) {
+        tkl_log_output("tkl_venc: jpeg sw encode failed ret=%d size=%u\r\n",
+                       (INT_T)ret, encoded_size);
+        return OPRT_COM_ERROR;
+    }
+
+    out->size = encoded_size;
+    return OPRT_OK;
+}
+
+/**
+ * @brief Validate JPEG software encode input parameters
+ * @param[in] in input descriptor
+ * @param[out] y_plane resolved Y plane pointer
+ * @param[out] uv_plane resolved UV plane pointer for NV12
+ * @param[out] yuyv_direct direct YUYV pointer when format is YUYV
+ * @return OPRT_OK on success
+ */
+STATIC OPERATE_RET __tkl_venc_jpeg_sw_validate_in(const TUYA_VENC_JPEG_SW_IN_T *in,
+                                                  const UINT8_T **y_plane,
+                                                  const UINT8_T **uv_plane,
+                                                  const UINT8_T **yuyv_direct)
+{
+    UINT32_T y_plane_size;
+    UINT32_T nv12_min_size;
+    UINT32_T yuyv_min_size;
+    const UINT8_T *y = NULL;
+    const UINT8_T *uv = NULL;
+
+    if (in == NULL || y_plane == NULL || uv_plane == NULL || yuyv_direct == NULL) {
+        return OPRT_INVALID_PARM;
+    }
+
+    *y_plane = NULL;
+    *uv_plane = NULL;
+    *yuyv_direct = NULL;
+
+    if (in->buffer == NULL || in->size == 0U || in->width == 0U || in->height == 0U) {
+        return OPRT_INVALID_PARM;
+    }
+
+    if ((in->width & 1U) != 0U || (in->height & 1U) != 0U) {
+        return OPRT_INVALID_PARM;
+    }
+
+    y_plane_size = (UINT32_T)in->width * (UINT32_T)in->height;
+    if (y_plane_size == 0U) {
+        return OPRT_INVALID_PARM;
+    }
+
+    if (in->format == (UINT32_T)BK_PIXEL_FORMAT_YUYV) {
+        yuyv_min_size = y_plane_size * 2U;
+        if (in->size < yuyv_min_size) {
+            return OPRT_INVALID_PARM;
+        }
+        *yuyv_direct = in->buffer;
+        return OPRT_OK;
+    }
+
+    if (in->format != (UINT32_T)BK_PIXEL_FORMAT_NV12) {
+        return OPRT_NOT_SUPPORTED;
+    }
+
+    nv12_min_size = y_plane_size + (y_plane_size / 2U);
+    if (in->size < nv12_min_size) {
+        return OPRT_INVALID_PARM;
+    }
+
+    if (in->y_addr != 0U) {
+        y = (const UINT8_T *)(uintptr_t)in->y_addr;
+    } else {
+        y = in->buffer;
+    }
+
+    if (in->u_addr != 0U) {
+        uv = (const UINT8_T *)(uintptr_t)in->u_addr;
+    } else {
+        uv = y + y_plane_size;
+    }
+
+    if (uv < y) {
+        return OPRT_INVALID_PARM;
+    }
+
+    *y_plane = y;
+    *uv_plane = uv;
+    return OPRT_OK;
+}
+
+/**
+ * @brief One-shot JPEG software encode
+ * @param[in]  in   input pixel frame
+ * @param[out] out  caller-owned JPEG buffer; out->size filled on success
+ * @return OPRT_OK on success
+ * @note NV12 is converted to YUYV internally, then encoded via bk_jpeg_encode_sw_frame.
+ */
+OPERATE_RET tkl_venc_jpeg_sw_encode(const TUYA_VENC_JPEG_SW_IN_T *in,
+                                    TUYA_VENC_JPEG_SW_OUT_T *out)
+{
+    OPERATE_RET op_ret;
+    const UINT8_T *y_plane = NULL;
+    const UINT8_T *uv_plane = NULL;
+    const UINT8_T *yuyv_direct = NULL;
+    UINT8_T *yuyv_tmp = NULL;
+    UINT8_T *yuyv_encode = NULL;
+    UINT32_T yuyv_size;
+    UINT8_T quality;
+
+    if (out == NULL) {
+        return OPRT_INVALID_PARM;
+    }
+
+    out->size = 0U;
+    if (out->buffer == NULL || out->buf_size == 0U) {
+        return OPRT_INVALID_PARM;
+    }
+
+    op_ret = __tkl_venc_jpeg_sw_validate_in(in, &y_plane, &uv_plane, &yuyv_direct);
+    if (op_ret != OPRT_OK) {
+        return op_ret;
+    }
+
+    quality = __tkl_venc_jpeg_sw_quality_resolve(in->quality);
+
+    if (yuyv_direct != NULL) {
+        yuyv_encode = (UINT8_T *)yuyv_direct;
+    } else {
+        yuyv_size = (UINT32_T)in->width * (UINT32_T)in->height * 2U;
+        yuyv_tmp = (UINT8_T *)tkl_system_psram_malloc(yuyv_size);
+        if (yuyv_tmp == NULL) {
+            return OPRT_MALLOC_FAILED;
+        }
+
+        op_ret = __tkl_venc_jpeg_sw_nv12_to_yuyv(in->width, in->height,
+                                                 y_plane, uv_plane, yuyv_tmp);
+        if (op_ret != OPRT_OK) {
+            tkl_system_psram_free(yuyv_tmp);
+            return op_ret;
+        }
+
+        yuyv_encode = yuyv_tmp;
+    }
+
+    op_ret = __tkl_venc_jpeg_sw_encode_yuyv(in->width, in->height,
+                                            yuyv_encode, quality, out);
+    if (yuyv_tmp != NULL) {
+        tkl_system_psram_free(yuyv_tmp);
+        yuyv_tmp = NULL;
+    }
+
+    if (op_ret != OPRT_OK) {
+        out->size = 0U;
+    }
+
+    return op_ret;
+}
+
+/**
+ * @brief Convert tightly packed NV12 to packed YUYV used by soft JPEG
+ * @param[in] width frame width, must be even
+ * @param[in] height frame height, must be even
+ * @param[in] nv12 tightly packed NV12 (stride == width)
+ * @param[in] nv12_size NV12 buffer size
+ * @param[out] yuyv packed output buffer
+ * @param[in] yuyv_size YUYV buffer capacity
+ * @return OPRT_OK on success
+ */
+OPERATE_RET tkl_venc_nv12_to_yuyv(UINT16_T width,
+                                  UINT16_T height,
+                                  const UINT8_T *nv12,
+                                  UINT32_T nv12_size,
+                                  UINT8_T *yuyv,
+                                  UINT32_T yuyv_size)
+{
+    UINT32_T y_plane_size;
+    UINT32_T need_nv12;
+    UINT32_T need_yuyv;
+
+    if (nv12 == NULL || yuyv == NULL ||
+        (width & 1U) != 0U || (height & 1U) != 0U) {
+        return OPRT_INVALID_PARM;
+    }
+
+    y_plane_size = (UINT32_T)width * (UINT32_T)height;
+    need_nv12 = y_plane_size + (y_plane_size / 2U);
+    need_yuyv = y_plane_size * 2U;
+    if (nv12_size < need_nv12 || yuyv_size < need_yuyv) {
+        return OPRT_INVALID_PARM;
+    }
+
+    return __tkl_venc_jpeg_sw_nv12_to_yuyv(width, height,
+                                           nv12,
+                                           nv12 + y_plane_size,
+                                           yuyv);
 }

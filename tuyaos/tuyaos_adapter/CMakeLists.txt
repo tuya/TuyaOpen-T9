@@ -307,7 +307,7 @@ endif()
 if ("$ENV{ARMINO_SOC}" STREQUAL "bk7259")
     set(priv_requires_list bk_common bk_log bk_cli lwip_intf_v2_1 os_source)
 elseif ("$ENV{ARMINO_SOC}" STREQUAL "bk7259_ap")
-    set(priv_requires_list bk_common bk_modem bk_log bk_cli lwip_intf_v2_1 os_source lvgl bk_vfs media_service bk_usb audio_record audio_play bk_tflite_micro avdk_utils bk_peripheral bk_netif)
+    set(priv_requires_list bk_common bk_modem bk_log bk_cli lwip_intf_v2_1 os_source lvgl bk_vfs media_service bk_usb audio_record audio_play bk_tflite_micro avdk_utils bk_peripheral bk_netif bk_encoder)
 else()
     message(FATAL_ERROR soc:"$ENV{ARMINO_SOC}" is not valid!)
 endif() # CONFIG_CPU_INDEX

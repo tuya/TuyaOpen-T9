@@ -26,12 +26,20 @@
 #define VENC_TEST_RECORD_PATH_MAX     128U
 #define VENC_TEST_RECORD_NAME_MAX     64U
 #define VENC_TEST_RECORD_DEFAULT_FILE "h264_cap.h264"
+#define VENC_TEST_RECORD_DEFAULT_JPEG_FILE "jpeg_cap.mjpeg"
+#define VENC_TEST_SNAPSHOT_DEFAULT_FILE    "jpeg_snap.jpg"
+#define VENC_TEST_SNAPSHOT_WAIT_MS         5000U
 /* Depth must absorb FatFS write stalls; 8 slots drops frames at 2304x1296@15. */
 #define VENC_TEST_RECORD_QUEUE_DEPTH  64U
 #define VENC_TEST_RECORD_WRITER_STACK (4U * 1024U)
 #define VENC_TEST_RECORD_WRITER_WAIT_MS 30000U
 #define VENC_TEST_RECORD_FILE_READY_MS 3000U
-#define VENC_TEST_RECORD_WRITER_IDLE_MS 1U
+#define VENC_TEST_RECORD_WRITER_IDLE_MS 5U
+#define VENC_TEST_JPEGSW_OUTBUF_MIN       (256U * 1024U)
+#define VENC_TEST_JPEGSW_OUTBUF_MAX       (1024U * 1024U)
+#define VENC_TEST_JPEGSW_DEFAULT_FILE     "jpeg_cap.jpg"
+#define VENC_TEST_JPEGSW_DEFAULT_QUALITY  80U
+#define VENC_TEST_DUMP_SP_DEFAULT_PREFIX  "sp_dump"
 
 #if defined(CONFIG_BK_ENCODER_H264_MAX_OUTPUT_BUFFER) && (CONFIG_BK_ENCODER_H264_MAX_OUTPUT_BUFFER > 0)
 #define VENC_TEST_RECORD_MAX_FRAME_SIZE ((uint32_t)CONFIG_BK_ENCODER_H264_MAX_OUTPUT_BUFFER)
@@ -122,6 +130,7 @@ typedef struct {
     TUYA_FILE file;
     TKL_THREAD_HANDLE writer_task;
     uint32_t duration_ms;
+    uint32_t target_frames; /* 0: duration mode; >0: stop after N queued frames */
     uint64_t written_bytes;
     uint32_t queued_frames;
     uint32_t dropped_frames;
@@ -143,6 +152,7 @@ static test_venc_record_ctx_t s_venc_record = {
     .file = NULL,
     .writer_task = NULL,
     .duration_ms = 0U,
+    .target_frames = 0U,
     .written_bytes = 0U,
     .queued_frames = 0U,
     .dropped_frames = 0U,
@@ -157,7 +167,12 @@ extern OPERATE_RET test_vdec_get_flexa_source(TUYA_VCODEC_FLEXA_BUFFER_T *flexa)
 extern BOOL_T test_mipi_camera_is_inited(void);
 extern BOOL_T test_mipi_camera_is_started(void);
 extern BOOL_T test_mipi_camera_flexa_enabled(void);
+extern OPERATE_RET test_mipi_camera_get_sp_info(UINT16_T *width,
+                                                UINT16_T *height,
+                                                UINT32_T *format,
+                                                UINT32_T *timeout_ms);
 extern OPERATE_RET test_mipi_camera_get_flexa_source(TUYA_CAMERA_MIPI_FLEXA_SOURCE_T *camera_source);
+extern OPERATE_RET test_mipi_camera_capture_frame(TUYA_CAMERA_MIPI_FRAME_T *frame);
 
 static OPERATE_RET test_venc_stream_free(VOID *ptr, VOID *arg);
 static bool test_venc_record_queue_push(const TUYA_VCODEC_STREAM_T *stream);
@@ -260,6 +275,7 @@ static void test_venc_record_ctx_reset(void)
     s_venc_record.file = NULL;
     s_venc_record.writer_task = NULL;
     s_venc_record.duration_ms = 0U;
+    s_venc_record.target_frames = 0U;
     s_venc_record.written_bytes = 0U;
     s_venc_record.queued_frames = 0U;
     s_venc_record.dropped_frames = 0U;
@@ -415,6 +431,11 @@ static bool test_venc_record_queue_push(const TUYA_VCODEC_STREAM_T *stream)
     s_venc_record.tail = (tail + 1U) % VENC_TEST_RECORD_QUEUE_DEPTH;
     s_venc_record.count++;
     s_venc_record.queued_frames++;
+    if (s_venc_record.target_frames > 0U &&
+        s_venc_record.queued_frames >= s_venc_record.target_frames) {
+        s_venc_record.capturing = false;
+        s_venc_record.stop_req = true;
+    }
     pushed = true;
     tkl_system_exit_critical(irq_mask);
 
@@ -625,14 +646,16 @@ static OPERATE_RET test_venc_record(uint32_t duration_sec, const char *filename)
 {
     OPERATE_RET ret;
     uint32_t waited_ms = 0U;
+    const char *default_file;
 
     if (s_venc_ctx.initialized != true || s_venc_ctx.started != true) {
         tkl_log_output("venc is not started, use: xmipi camera open_gpu ... && xmipi camera start && xvenc init && xvenc start\r\n");
         return OPRT_RESOURCE_NOT_READY;
     }
 
-    if (s_venc_ctx.codec != VENC_TEST_CODEC_H264) {
-        tkl_log_output("venc record only supports h264\r\n");
+    if (s_venc_ctx.codec != VENC_TEST_CODEC_H264 &&
+        s_venc_ctx.codec != VENC_TEST_CODEC_JPEG) {
+        tkl_log_output("venc record only supports h264/jpeg\r\n");
         return OPRT_NOT_SUPPORTED;
     }
 
@@ -643,6 +666,12 @@ static OPERATE_RET test_venc_record(uint32_t duration_sec, const char *filename)
 
     if (duration_sec == 0U) {
         duration_sec = VENC_TEST_RECORD_DEFAULT_SEC;
+    }
+
+    default_file = (s_venc_ctx.codec == VENC_TEST_CODEC_JPEG) ?
+            VENC_TEST_RECORD_DEFAULT_JPEG_FILE : VENC_TEST_RECORD_DEFAULT_FILE;
+    if (filename == NULL || filename[0] == '\0') {
+        filename = default_file;
     }
 
     os_memset(&s_venc_record, 0, sizeof(s_venc_record));
@@ -661,6 +690,7 @@ static OPERATE_RET test_venc_record(uint32_t duration_sec, const char *filename)
     }
 
     s_venc_record.duration_ms = duration_sec * 1000U;
+    s_venc_record.target_frames = 0U;
     s_venc_record.capturing = true;
     s_venc_record.stop_req = false;
 
@@ -681,13 +711,18 @@ static OPERATE_RET test_venc_record(uint32_t duration_sec, const char *filename)
         return ret;
     }
 
-    tkl_log_output("venc record start: path=%s duration=%us src=%ux%u fps=%u async=1 queue=%u zero_copy=1\r\n",
-                   s_venc_record.path,
-                   (unsigned int)duration_sec,
-                   s_venc_ctx.width,
-                   s_venc_ctx.height,
-                   (unsigned int)s_venc_ctx.fps,
-                   (unsigned int)VENC_TEST_RECORD_QUEUE_DEPTH);
+    tkl_log_output(
+            "venc record start: codec=%s path=%s duration=%us src=%ux%u fps=%u async=1 queue=%u zero_copy=1\r\n",
+            test_venc_codec_name(s_venc_ctx.codec),
+            s_venc_record.path,
+            (unsigned int)duration_sec,
+            s_venc_ctx.width,
+            s_venc_ctx.height,
+            (unsigned int)s_venc_ctx.fps,
+            (unsigned int)VENC_TEST_RECORD_QUEUE_DEPTH);
+    if (s_venc_ctx.codec == VENC_TEST_CODEC_JPEG) {
+        tkl_log_output("venc record note: jpeg frames are concatenated (MJPEG-like)\r\n");
+    }
 
     while (waited_ms < s_venc_record.duration_ms) {
         tkl_system_sleep(VENC_TEST_RECORD_POLL_MS);
@@ -697,6 +732,87 @@ static OPERATE_RET test_venc_record(uint32_t duration_sec, const char *filename)
     s_venc_record.capturing = false;
     s_venc_record.stop_req = true;
     ret = test_venc_record_writer_wait_done(VENC_TEST_RECORD_WRITER_WAIT_MS);
+    test_venc_record_queue_purge();
+    test_venc_record_ctx_reset();
+    return ret;
+}
+
+/**
+ * @brief Capture exactly one HW JPEG frame to SD card
+ * @param[in] filename output file name under /sdcard; NULL uses default
+ * @return OPRT_OK on success
+ */
+static OPERATE_RET test_venc_snapshot(const char *filename)
+{
+    OPERATE_RET ret;
+
+    if (s_venc_ctx.initialized != true || s_venc_ctx.started != true) {
+        tkl_log_output("venc snapshot needs HW jpeg running: xvenc init camera jpeg ... && xvenc start\r\n");
+        return OPRT_RESOURCE_NOT_READY;
+    }
+
+    if (s_venc_ctx.codec != VENC_TEST_CODEC_JPEG) {
+        tkl_log_output("venc snapshot only supports jpeg codec (use jpegsw for soft encode)\r\n");
+        return OPRT_NOT_SUPPORTED;
+    }
+
+    if (test_venc_record_is_busy() == true) {
+        tkl_log_output("venc record/snapshot is already running\r\n");
+        return OPRT_RESOURCE_NOT_READY;
+    }
+
+    if (filename == NULL || filename[0] == '\0') {
+        filename = VENC_TEST_SNAPSHOT_DEFAULT_FILE;
+    }
+
+    os_memset(&s_venc_record, 0, sizeof(s_venc_record));
+    s_venc_record.writer_done = true;
+    ret = test_venc_record_build_path(filename, s_venc_record.path, sizeof(s_venc_record.path));
+    if (ret != OPRT_OK) {
+        tkl_log_output("venc snapshot invalid filename: %s\r\n", filename);
+        return ret;
+    }
+
+    if (test_fs_mount(TEST_SDCARD_MOUNT_POINT, DEV_SDCARD) != 0) {
+        tkl_log_output("venc snapshot mount %s failed\r\n", TEST_SDCARD_MOUNT_POINT);
+        test_venc_record_ctx_reset();
+        return OPRT_COM_ERROR;
+    }
+
+    s_venc_record.duration_ms = 0U;
+    s_venc_record.target_frames = 1U;
+    s_venc_record.capturing = true;
+    s_venc_record.stop_req = false;
+
+    ret = test_venc_record_writer_start();
+    if (ret != OPRT_OK) {
+        s_venc_record.capturing = false;
+        test_venc_record_ctx_reset();
+        return ret;
+    }
+
+    ret = test_venc_record_writer_wait_ready(VENC_TEST_RECORD_FILE_READY_MS);
+    if (ret != OPRT_OK) {
+        s_venc_record.capturing = false;
+        s_venc_record.stop_req = true;
+        (void)test_venc_record_writer_wait_done(VENC_TEST_RECORD_WRITER_WAIT_MS);
+        test_venc_record_queue_purge();
+        test_venc_record_ctx_reset();
+        return ret;
+    }
+
+    tkl_log_output("venc snapshot start: path=%s src=%ux%u frames=1\r\n",
+                   s_venc_record.path,
+                   s_venc_ctx.width,
+                   s_venc_ctx.height);
+
+    ret = test_venc_record_writer_wait_done(VENC_TEST_SNAPSHOT_WAIT_MS);
+    if (ret != OPRT_OK) {
+        s_venc_record.capturing = false;
+        s_venc_record.stop_req = true;
+        (void)test_venc_record_writer_wait_done(VENC_TEST_RECORD_WRITER_WAIT_MS);
+    }
+
     test_venc_record_queue_purge();
     test_venc_record_ctx_reset();
     return ret;
@@ -1226,6 +1342,370 @@ static void test_venc_status_dump(void)
     s_venc_ctx.status_mark_frames = s_venc_ctx.total_frames;
 }
 
+static OPERATE_RET test_venc_jpegsw_write_file(const char *path, const UINT8_T *data, UINT32_T size)
+{
+    TUYA_FILE file = NULL;
+    INT_T write_len;
+
+    if (path == NULL || data == NULL || size == 0U) {
+        return OPRT_INVALID_PARM;
+    }
+
+    file = tkl_fopen(path, "wb");
+    if (file == NULL) {
+        tkl_log_output("venc jpegsw open failed: %s\r\n", path);
+        return OPRT_COM_ERROR;
+    }
+
+    write_len = tkl_fwrite((VOID_T *)data, (INT_T)size, file);
+    (void)tkl_fsync((INT_T)file);
+    (void)tkl_fclose(file);
+    if (write_len != (INT_T)size) {
+        tkl_log_output("venc jpegsw write failed: expect=%u actual=%d\r\n",
+                       (unsigned int)size,
+                       write_len);
+        return OPRT_COM_ERROR;
+    }
+
+    return OPRT_OK;
+}
+
+static OPERATE_RET test_venc_jpegsw_capture_sp_nv12(UINT8_T **nv12_buf,
+                                                    UINT16_T *width,
+                                                    UINT16_T *height)
+{
+    OPERATE_RET ret;
+    UINT16_T sp_w = 0U;
+    UINT16_T sp_h = 0U;
+    UINT32_T format = 0U;
+    UINT32_T timeout_ms = 0U;
+    UINT32_T nv12_size = 0U;
+    UINT8_T *buffer = NULL;
+    TUYA_CAMERA_MIPI_FRAME_T frame;
+
+    if (nv12_buf == NULL || width == NULL || height == NULL) {
+        return OPRT_INVALID_PARM;
+    }
+
+    *nv12_buf = NULL;
+    *width = 0U;
+    *height = 0U;
+
+    ret = test_mipi_camera_get_sp_info(&sp_w, &sp_h, &format, &timeout_ms);
+    if (ret != OPRT_OK) {
+        return ret;
+    }
+
+    if (format != (UINT32_T)BK_PIXEL_FORMAT_NV12) {
+        return OPRT_NOT_SUPPORTED;
+    }
+
+    nv12_size = (UINT32_T)sp_w * (UINT32_T)sp_h * 3U / 2U;
+    buffer = (UINT8_T *)bk_frame_buffer_malloc(MEM_SLAB_HEAP_UNCODED, nv12_size);
+    if (buffer == NULL) {
+        return OPRT_MALLOC_FAILED;
+    }
+
+    os_memset(&frame, 0, sizeof(frame));
+    frame.buffer = buffer;
+    frame.size = nv12_size;
+    frame.timeout_ms = timeout_ms;
+    frame.channel_id = TUYA_CAMERA_MIPI_CHANNEL_SP;
+
+    ret = tkl_camera_mipi_get_frame(&frame);
+    if (ret != OPRT_OK) {
+        bk_frame_buffer_free(buffer);
+        tkl_log_output("venc jpegsw sp get_frame failed: %d\r\n", ret);
+        return ret;
+    }
+
+    *nv12_buf = buffer;
+    *width = frame.width;
+    *height = frame.height;
+    return OPRT_OK;
+}
+
+/**
+ * @brief Dump SP NV12 and soft-encode YUYV raw buffers to SD card
+ * @param[in] prefix file prefix under /sdcard (no extension)
+ * @return OPRT_OK on success
+ */
+static OPERATE_RET test_venc_dump_sp(const char *prefix)
+{
+    OPERATE_RET ret;
+    UINT8_T *nv12_buf = NULL;
+    UINT8_T *yuyv_buf = NULL;
+    UINT16_T width = 0U;
+    UINT16_T height = 0U;
+    UINT32_T nv12_size = 0U;
+    UINT32_T yuyv_size = 0U;
+    char nv12_path[VENC_TEST_RECORD_PATH_MAX];
+    char yuyv_path[VENC_TEST_RECORD_PATH_MAX];
+    char info_path[VENC_TEST_RECORD_PATH_MAX];
+    char info[384];
+    int info_len;
+
+    if (prefix == NULL || prefix[0] == '\0') {
+        prefix = VENC_TEST_DUMP_SP_DEFAULT_PREFIX;
+    }
+
+    if (!test_venc_record_name_valid(prefix)) {
+        tkl_log_output("venc dump_sp invalid prefix: %s\r\n", prefix);
+        return OPRT_INVALID_PARM;
+    }
+
+    if (test_mipi_camera_is_inited() != TRUE || test_mipi_camera_is_started() != TRUE) {
+        tkl_log_output("venc dump_sp requires camera, use: xmipi camera open_gpu_sp ... nv12 && xmipi camera start\r\n");
+        return OPRT_RESOURCE_NOT_READY;
+    }
+
+    ret = test_venc_jpegsw_capture_sp_nv12(&nv12_buf, &width, &height);
+    if (ret != OPRT_OK) {
+        tkl_log_output("venc dump_sp capture NV12 failed: %d\r\n", ret);
+        return ret;
+    }
+
+    nv12_size = (UINT32_T)width * (UINT32_T)height * 3U / 2U;
+    yuyv_size = (UINT32_T)width * (UINT32_T)height * 2U;
+    yuyv_buf = (UINT8_T *)bk_frame_buffer_malloc(MEM_SLAB_HEAP_UNCODED, yuyv_size);
+    if (yuyv_buf == NULL) {
+        bk_frame_buffer_free(nv12_buf);
+        return OPRT_MALLOC_FAILED;
+    }
+
+    ret = tkl_venc_nv12_to_yuyv(width, height, nv12_buf, nv12_size, yuyv_buf, yuyv_size);
+    if (ret != OPRT_OK) {
+        tkl_log_output("venc dump_sp nv12_to_yuyv failed: %d\r\n", ret);
+        bk_frame_buffer_free(yuyv_buf);
+        bk_frame_buffer_free(nv12_buf);
+        return ret;
+    }
+
+    if (test_fs_mount(TEST_SDCARD_MOUNT_POINT, DEV_SDCARD) != 0) {
+        tkl_log_output("venc dump_sp mount %s failed\r\n", TEST_SDCARD_MOUNT_POINT);
+        bk_frame_buffer_free(yuyv_buf);
+        bk_frame_buffer_free(nv12_buf);
+        return OPRT_COM_ERROR;
+    }
+
+    ret = test_venc_record_build_path(prefix, nv12_path, sizeof(nv12_path));
+    if (ret != OPRT_OK) {
+        bk_frame_buffer_free(yuyv_buf);
+        bk_frame_buffer_free(nv12_buf);
+        return ret;
+    }
+
+    /* rebuild with extensions */
+    if (os_snprintf(nv12_path, sizeof(nv12_path), "%s/%s.nv12",
+                    TEST_SDCARD_MOUNT_POINT, prefix) <= 0) {
+        bk_frame_buffer_free(yuyv_buf);
+        bk_frame_buffer_free(nv12_buf);
+        return OPRT_COM_ERROR;
+    }
+    if (os_snprintf(yuyv_path, sizeof(yuyv_path), "%s/%s.yuyv",
+                    TEST_SDCARD_MOUNT_POINT, prefix) <= 0) {
+        bk_frame_buffer_free(yuyv_buf);
+        bk_frame_buffer_free(nv12_buf);
+        return OPRT_COM_ERROR;
+    }
+    if (os_snprintf(info_path, sizeof(info_path), "%s/%s.txt",
+                    TEST_SDCARD_MOUNT_POINT, prefix) <= 0) {
+        bk_frame_buffer_free(yuyv_buf);
+        bk_frame_buffer_free(nv12_buf);
+        return OPRT_COM_ERROR;
+    }
+
+    ret = test_venc_jpegsw_write_file(nv12_path, nv12_buf, nv12_size);
+    if (ret != OPRT_OK) {
+        bk_frame_buffer_free(yuyv_buf);
+        bk_frame_buffer_free(nv12_buf);
+        return ret;
+    }
+
+    ret = test_venc_jpegsw_write_file(yuyv_path, yuyv_buf, yuyv_size);
+    if (ret != OPRT_OK) {
+        bk_frame_buffer_free(yuyv_buf);
+        bk_frame_buffer_free(nv12_buf);
+        return ret;
+    }
+
+    info_len = os_snprintf(info, sizeof(info),
+                           "width=%u\nheight=%u\nnv12_size=%u\nyuyv_size=%u\n"
+                           "nv12=tight packed stride=width\n"
+                           "yuyv=soft-jpeg packing (Y0 V Y1 U / YVYU-like)\n"
+                           "ffplay -f rawvideo -pixel_format nv12 -video_size %ux%u %s.nv12\n"
+                           "ffplay -f rawvideo -pixel_format yvyu422 -video_size %ux%u %s.yuyv\n",
+                           (unsigned int)width,
+                           (unsigned int)height,
+                           (unsigned int)nv12_size,
+                           (unsigned int)yuyv_size,
+                           (unsigned int)width,
+                           (unsigned int)height,
+                           prefix,
+                           (unsigned int)width,
+                           (unsigned int)height,
+                           prefix);
+    if (info_len > 0) {
+        (void)test_venc_jpegsw_write_file(info_path, (const UINT8_T *)info, (UINT32_T)info_len);
+    }
+
+    tkl_log_output("venc dump_sp ok: %ux%u nv12=%s (%u) yuyv=%s (%u) info=%s\r\n",
+                   width,
+                   height,
+                   nv12_path,
+                   (unsigned int)nv12_size,
+                   yuyv_path,
+                   (unsigned int)yuyv_size,
+                   info_path);
+
+    bk_frame_buffer_free(yuyv_buf);
+    bk_frame_buffer_free(nv12_buf);
+    return OPRT_OK;
+}
+
+/**
+ * @brief Resolve JPEG SW output buffer size for capture resolution
+ * @param[in] width frame width
+ * @param[in] height frame height
+ * @return buffer size in bytes, clamped to [MIN, MAX]
+ * @note ~1 byte/pixel gives headroom for high quality (e.g. 1024x600 Q100).
+ */
+static uint32_t test_venc_jpegsw_outbuf_size(uint16_t width, uint16_t height)
+{
+    uint32_t need = (uint32_t)width * (uint32_t)height;
+
+    if (need < VENC_TEST_JPEGSW_OUTBUF_MIN) {
+        need = VENC_TEST_JPEGSW_OUTBUF_MIN;
+    }
+    if (need > VENC_TEST_JPEGSW_OUTBUF_MAX) {
+        need = VENC_TEST_JPEGSW_OUTBUF_MAX;
+    }
+    return need;
+}
+
+static OPERATE_RET test_venc_jpegsw(uint8_t quality, const char *filename)
+{
+    OPERATE_RET ret;
+    TUYA_VENC_JPEG_SW_IN_T enc_in;
+    TUYA_VENC_JPEG_SW_OUT_T enc_out;
+    TUYA_CAMERA_MIPI_FRAME_T cam_frame;
+    UINT8_T *jpeg_buf = NULL;
+    UINT8_T *pixel_buf = NULL;
+    UINT16_T capt_w = 0U;
+    UINT16_T capt_h = 0U;
+    uint32_t jpeg_outbuf_size = 0U;
+    char path[VENC_TEST_RECORD_PATH_MAX];
+    bool from_sp = false;
+
+    if (test_mipi_camera_is_inited() != TRUE || test_mipi_camera_is_started() != TRUE) {
+        tkl_log_output("venc jpegsw requires camera, use: xmipi camera open_gpu_sp ... nv12 && xmipi camera start\r\n");
+        return OPRT_RESOURCE_NOT_READY;
+    }
+
+    os_memset(&cam_frame, 0, sizeof(cam_frame));
+    ret = test_venc_jpegsw_capture_sp_nv12(&pixel_buf, &capt_w, &capt_h);
+    if (ret == OPRT_OK) {
+        from_sp = true;
+        cam_frame.buffer = pixel_buf;
+        cam_frame.out_len = (UINT32_T)capt_w * (UINT32_T)capt_h * 3U / 2U;
+        cam_frame.width = capt_w;
+        cam_frame.height = capt_h;
+        cam_frame.format = (UINT32_T)BK_PIXEL_FORMAT_NV12;
+    } else if (ret == OPRT_NOT_SUPPORTED || ret == OPRT_RESOURCE_NOT_READY) {
+        if (test_mipi_camera_flexa_enabled() == TRUE) {
+            tkl_log_output("venc jpegsw needs SP NV12 frame mode, try: xmipi camera open_gpu_sp ... nv12\r\n");
+            return OPRT_NOT_SUPPORTED;
+        }
+
+        ret = test_mipi_camera_capture_frame(&cam_frame);
+        if (ret != OPRT_OK) {
+            tkl_log_output("venc jpegsw mp get_frame failed: %d\r\n", ret);
+            return ret;
+        }
+    } else {
+        tkl_log_output("venc jpegsw sp capture failed: %d\r\n", ret);
+        return ret;
+    }
+
+    ret = test_venc_record_build_path(
+            (filename != NULL) ? filename : VENC_TEST_JPEGSW_DEFAULT_FILE,
+            path,
+            sizeof(path));
+    if (ret != OPRT_OK) {
+        tkl_log_output("venc jpegsw invalid filename: %s\r\n",
+                         (filename != NULL) ? filename : VENC_TEST_JPEGSW_DEFAULT_FILE);
+        if (pixel_buf != NULL) {
+            bk_frame_buffer_free(pixel_buf);
+        }
+        return ret;
+    }
+
+    if (test_fs_mount(TEST_SDCARD_MOUNT_POINT, DEV_SDCARD) != 0) {
+        tkl_log_output("venc jpegsw mount %s failed\r\n", TEST_SDCARD_MOUNT_POINT);
+        if (pixel_buf != NULL) {
+            bk_frame_buffer_free(pixel_buf);
+        }
+        return OPRT_COM_ERROR;
+    }
+
+    if (cam_frame.format != (UINT32_T)BK_PIXEL_FORMAT_NV12 &&
+        cam_frame.format != (UINT32_T)BK_PIXEL_FORMAT_YUYV) {
+        tkl_log_output("venc jpegsw unsupported format=%u, need NV12 or YUYV\r\n",
+                       (unsigned int)cam_frame.format);
+        if (pixel_buf != NULL) {
+            bk_frame_buffer_free(pixel_buf);
+        }
+        return OPRT_NOT_SUPPORTED;
+    }
+
+    jpeg_outbuf_size = test_venc_jpegsw_outbuf_size(cam_frame.width, cam_frame.height);
+    jpeg_buf = (UINT8_T *)bk_frame_buffer_malloc(MEM_SLAB_HEAP_CODED, jpeg_outbuf_size);
+    if (jpeg_buf == NULL) {
+        if (pixel_buf != NULL) {
+            bk_frame_buffer_free(pixel_buf);
+        }
+        return OPRT_MALLOC_FAILED;
+    }
+
+    os_memset(&enc_in, 0, sizeof(enc_in));
+    enc_in.buffer = cam_frame.buffer;
+    enc_in.size = cam_frame.out_len;
+    enc_in.width = cam_frame.width;
+    enc_in.height = cam_frame.height;
+    enc_in.format = cam_frame.format;
+    enc_in.quality = quality;
+
+    os_memset(&enc_out, 0, sizeof(enc_out));
+    enc_out.buffer = jpeg_buf;
+    enc_out.buf_size = jpeg_outbuf_size;
+
+    ret = tkl_venc_jpeg_sw_encode(&enc_in, &enc_out);
+    if (pixel_buf != NULL) {
+        bk_frame_buffer_free(pixel_buf);
+        pixel_buf = NULL;
+    }
+    if (ret != OPRT_OK) {
+        tkl_log_output("venc jpegsw encode failed: %d\r\n", ret);
+        bk_frame_buffer_free(jpeg_buf);
+        return ret;
+    }
+
+    ret = test_venc_jpegsw_write_file(path, enc_out.buffer, enc_out.size);
+    bk_frame_buffer_free(jpeg_buf);
+    if (ret != OPRT_OK) {
+        return ret;
+    }
+
+    tkl_log_output("venc jpegsw ok: ch=%s %ux%u fmt=%u jpeg=%u bytes -> %s\r\n",
+                   from_sp ? "SP" : "MP",
+                   cam_frame.width,
+                   cam_frame.height,
+                   (unsigned int)cam_frame.format,
+                   (unsigned int)enc_out.size,
+                   path);
+    return OPRT_OK;
+}
+
 static test_venc_codec_t test_venc_parse_codec(const char *token)
 {
     if (token == NULL) {
@@ -1268,7 +1748,7 @@ void cli_tuya_venc_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char 
 
     if (argc < 2) {
         snprintf(pcWriteBuffer, xWriteBufferLen,
-                 "Usage: xvenc <init [camera|vdec] [h264|jpeg] [fps] [gop|quality] [bitrate]|start|stop|bitrate <bps> [idr]|record [sec] [file]|deinit|close|idr|status>");
+                 "Usage: xvenc <init [camera|vdec] [h264|jpeg] [fps] [gop|quality] [bitrate]|start|stop|bitrate <bps> [idr]|record [sec] [file]|snapshot [file]|dump_sp [prefix]|jpegsw [quality] [file]|deinit|close|idr|status>");
         return;
     }
 
@@ -1364,16 +1844,69 @@ void cli_tuya_venc_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char 
         }
         if (argc >= 4) {
             record_file = argv[3];
+        } else if (s_venc_ctx.codec == VENC_TEST_CODEC_JPEG) {
+            record_file = VENC_TEST_RECORD_DEFAULT_JPEG_FILE;
         }
 
         ret = test_venc_record(record_sec, record_file);
         snprintf(pcWriteBuffer, xWriteBufferLen,
-                 "xvenc record %s (%d), sec=%u file=%s/%s\r\n",
+                 "xvenc record %s (%d), sec=%u file=%s/%s codec=%s\r\n",
                  (ret == OPRT_OK) ? "ok" : "failed",
                  ret,
                  (unsigned int)((record_sec == 0U) ? VENC_TEST_RECORD_DEFAULT_SEC : record_sec),
                  TEST_SDCARD_MOUNT_POINT,
-                 record_file);
+                 record_file,
+                 test_venc_codec_name(s_venc_ctx.codec));
+    } else if (os_strcmp(cmd, "snapshot") == 0 || os_strcmp(cmd, "snap") == 0) {
+        const char *snap_file = VENC_TEST_SNAPSHOT_DEFAULT_FILE;
+
+        if (argc >= 3) {
+            snap_file = argv[2];
+        }
+
+        ret = test_venc_snapshot(snap_file);
+        snprintf(pcWriteBuffer, xWriteBufferLen,
+                 "xvenc snapshot %s (%d), file=%s/%s\r\n",
+                 (ret == OPRT_OK) ? "ok" : "failed",
+                 ret,
+                 TEST_SDCARD_MOUNT_POINT,
+                 snap_file);
+    } else if (os_strcmp(cmd, "dump_sp") == 0 || os_strcmp(cmd, "dump_yuv") == 0) {
+        const char *dump_prefix = VENC_TEST_DUMP_SP_DEFAULT_PREFIX;
+
+        if (argc >= 3) {
+            dump_prefix = argv[2];
+        }
+
+        ret = test_venc_dump_sp(dump_prefix);
+        snprintf(pcWriteBuffer, xWriteBufferLen,
+                 "xvenc dump_sp %s (%d), prefix=%s files=%s/{%s.nv12,%s.yuyv,%s.txt}\r\n",
+                 (ret == OPRT_OK) ? "ok" : "failed",
+                 ret,
+                 dump_prefix,
+                 TEST_SDCARD_MOUNT_POINT,
+                 dump_prefix,
+                 dump_prefix,
+                 dump_prefix);
+    } else if (os_strcmp(cmd, "jpegsw") == 0) {
+        const char *jpeg_file = VENC_TEST_JPEGSW_DEFAULT_FILE;
+        uint8_t jpeg_quality = VENC_TEST_JPEGSW_DEFAULT_QUALITY;
+
+        if (argc >= 3) {
+            jpeg_quality = (uint8_t)os_strtoul(argv[2], NULL, 10);
+        }
+        if (argc >= 4) {
+            jpeg_file = argv[3];
+        }
+
+        ret = test_venc_jpegsw(jpeg_quality, jpeg_file);
+        snprintf(pcWriteBuffer, xWriteBufferLen,
+                 "xvenc jpegsw %s (%d), quality=%u file=%s/%s\r\n",
+                 (ret == OPRT_OK) ? "ok" : "failed",
+                 ret,
+                 (unsigned int)jpeg_quality,
+                 TEST_SDCARD_MOUNT_POINT,
+                 jpeg_file);
     } else if (os_strcmp(cmd, "deinit") == 0 || os_strcmp(cmd, "close") == 0) {
         ret = test_venc_deinit();
         snprintf(pcWriteBuffer, xWriteBufferLen,
@@ -1393,6 +1926,6 @@ void cli_tuya_venc_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char 
                  "xvenc status ok, see logs\r\n");
     } else {
         snprintf(pcWriteBuffer, xWriteBufferLen,
-                 "Usage: xvenc <init [camera|vdec] [h264|jpeg] [fps] [gop|quality] [bitrate]|start|stop|bitrate <bps> [idr]|record [sec] [file]|deinit|close|idr|status>");
+                 "Usage: xvenc <init [camera|vdec] [h264|jpeg] [fps] [gop|quality] [bitrate]|start|stop|bitrate <bps> [idr]|record [sec] [file]|snapshot [file]|dump_sp [prefix]|jpegsw [quality] [file]|deinit|close|idr|status>");
     }
 }

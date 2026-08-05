@@ -70,6 +70,27 @@ typedef struct {
     };
 } TUYA_VENC_SOURCE_T;
 
+/* ---------------------------------------------------------------------------
+ * JPEG software encode
+ * --------------------------------------------------------------------------- */
+
+typedef struct {
+    UINT8_T  *buffer;
+    UINT32_T  size;
+    UINT16_T  width;
+    UINT16_T  height;
+    UINT32_T  format;                 /* BK_PIXEL_FORMAT_NV12 or BK_PIXEL_FORMAT_YUYV */
+    UINT8_T   quality;                /* 1..100; 0 uses TKL_VENC_JPEG_SW_DEFAULT_QUALITY */
+    UINT32_T  y_addr;                 /* optional NV12 Y base; 0 = use buffer */
+    UINT32_T  u_addr;                 /* optional NV12 UV base; 0 = Y + width*height */
+} TUYA_VENC_JPEG_SW_IN_T;
+
+typedef struct {
+    UINT8_T  *buffer;
+    UINT32_T  buf_size;
+    UINT32_T  size;
+} TUYA_VENC_JPEG_SW_OUT_T;
+
 OPERATE_RET tkl_venc_init(TUYA_VENC_HANDLE *handle, const TUYA_VENC_CFG_T *config);
 OPERATE_RET tkl_venc_deinit(TUYA_VENC_HANDLE handle);
 OPERATE_RET tkl_venc_set_source(TUYA_VENC_HANDLE handle, const TUYA_VENC_SOURCE_T *source);
@@ -80,6 +101,34 @@ OPERATE_RET tkl_venc_set_rate_ctrl(TUYA_VENC_HANDLE handle, const TUYA_VENC_RATE
 OPERATE_RET tkl_venc_request_idr(TUYA_VENC_HANDLE handle);
 OPERATE_RET tkl_venc_submit_frame(TUYA_VENC_HANDLE handle, const TUYA_VCODEC_FRAME_T *frame);
 OPERATE_RET tkl_venc_get_handle(TUYA_VENC_HANDLE handle, VOID **backend_handle);
+
+/**
+ * @brief One-shot JPEG software encode
+ * @param[in]  in   input pixel frame
+ * @param[out] out  caller-owned JPEG buffer; out->size filled on success
+ * @return OPRT_OK on success
+ * @note NV12 is converted to YUYV internally, then encoded via bk_jpeg_encode_sw_frame.
+ */
+OPERATE_RET tkl_venc_jpeg_sw_encode(const TUYA_VENC_JPEG_SW_IN_T *in,
+                                    TUYA_VENC_JPEG_SW_OUT_T *out);
+
+/**
+ * @brief Convert tightly packed NV12 to packed YUYV used by soft JPEG
+ * @param[in] width frame width, must be even
+ * @param[in] height frame height, must be even
+ * @param[in] nv12 tightly packed NV12 (stride == width)
+ * @param[in] nv12_size NV12 buffer size, must be >= width*height*3/2
+ * @param[out] yuyv packed YUYV/YVYU output
+ * @param[in] yuyv_size YUYV buffer size, must be >= width*height*2
+ * @return OPRT_OK on success
+ * @note Matches the conversion inside tkl_venc_jpeg_sw_encode().
+ */
+OPERATE_RET tkl_venc_nv12_to_yuyv(UINT16_T width,
+                                  UINT16_T height,
+                                  const UINT8_T *nv12,
+                                  UINT32_T nv12_size,
+                                  UINT8_T *yuyv,
+                                  UINT32_T yuyv_size);
 
 #ifdef __cplusplus
 }

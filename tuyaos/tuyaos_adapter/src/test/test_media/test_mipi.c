@@ -21,17 +21,17 @@
 
 #define MIPI_TEST_TASK_NAME         "mipi_test"
 #define MIPI_TEST_TASK_STACK_SIZE   (4 * 1024)
-#define MIPI_TEST_RESET_PIN         GPIO_60
-#define MIPI_TEST_BACKLIGHT_PIN     GPIO_7
+#define MIPI_TEST_RESET_PIN         GPIO_16
+#define MIPI_TEST_BACKLIGHT_PIN     GPIO_20
 #define MIPI_TEST_INVALID_PIN       (-1)
 #define MIPI_TEST_PANEL_NAME_LEN    64
 #define MIPI_TEST_BYTES_PER_PIXEL   2U
 #define MIPI_TEST_FRAME_COUNT       2U
 #define MIPI_TEST_REFRESH_MS        1000U
-#define MIPI_TEST_CAMERA_PIN_SCL    GPIO_69
-#define MIPI_TEST_CAMERA_PIN_SDA    GPIO_70
+#define MIPI_TEST_CAMERA_PIN_SCL    GPIO_65
+#define MIPI_TEST_CAMERA_PIN_SDA    GPIO_64
 #define MIPI_TEST_CAMERA_I2C_ID     1U
-#define MIPI_TEST_CAMERA_PIN_RESET  GPIO_71
+#define MIPI_TEST_CAMERA_PIN_RESET  GPIO_60
 #define MIPI_TEST_CAMERA_PIN_PWDN   (-1)
 #define MIPI_TEST_CAMERA_PIN_XCLK   GPIO_59
 #define MIPI_TEST_CAMERA_SENSOR_W   1920U
@@ -205,7 +205,7 @@ static void test_mipi_camera_runtime_reset(void)
     s_mipi_camera_cfg.sensor_width = MIPI_TEST_CAMERA_SENSOR_W;
     s_mipi_camera_cfg.sensor_height = MIPI_TEST_CAMERA_SENSOR_H;
     s_mipi_camera_cfg.sensor_fps = MIPI_TEST_CAMERA_SENSOR_FPS;
-    s_mipi_camera_cfg.sensor_input_format = BK_PIXEL_FORMAT_RGGB10;
+    s_mipi_camera_cfg.sensor_input_format = BK_PIXEL_FORMAT_BGGR10;
     s_mipi_camera_cfg.output_width = MIPI_TEST_CAMERA_SENSOR_W;
     s_mipi_camera_cfg.output_height = MIPI_TEST_CAMERA_SENSOR_H;
     s_mipi_camera_cfg.output_format = BK_PIXEL_FORMAT_NV12;
@@ -879,7 +879,8 @@ static OPERATE_RET test_mipi_camera_mipi_open_gpu_sp(uint16_t sensor_width,
                                                      uint16_t output_width,
                                                      uint16_t output_height,
                                                      uint16_t sp_width,
-                                                     uint16_t sp_height)
+                                                     uint16_t sp_height,
+                                                     uint32_t sp_format)
 {
     OPERATE_RET ret;
 
@@ -899,8 +900,9 @@ static OPERATE_RET test_mipi_camera_mipi_open_gpu_sp(uint16_t sensor_width,
     s_mipi_camera_cfg.sp_enable = TRUE;
     s_mipi_camera_cfg.sp_width = sp_width;
     s_mipi_camera_cfg.sp_height = sp_height;
-    s_mipi_camera_cfg.sp_format = MIPI_TEST_FACE_SP_FORMAT;
+    s_mipi_camera_cfg.sp_format = sp_format;
     s_mipi_camera_cfg.sp_buf_cnt = 2U;
+    s_mipi_camera_cfg.sp_enable_flexa = FALSE;
     s_mipi_camera_cfg.sp_work_mode = 0U;
 
     test_mipi_frame_buffer_init_once();
@@ -956,6 +958,38 @@ BOOL_T test_mipi_camera_is_started(void)
 BOOL_T test_mipi_camera_flexa_enabled(void)
 {
     return (s_mipi_camera_cfg.enable_flexa != FALSE) ? TRUE : FALSE;
+}
+
+OPERATE_RET test_mipi_camera_get_sp_info(UINT16_T *width,
+                                        UINT16_T *height,
+                                        UINT32_T *format,
+                                        UINT32_T *timeout_ms)
+{
+    if (s_mipi_camera_cfg.sp_enable != TRUE) {
+        return OPRT_RESOURCE_NOT_READY;
+    }
+
+    if (s_mipi_camera_cfg.sp_enable_flexa != FALSE || s_mipi_camera_cfg.sp_work_mode != 0U) {
+        return OPRT_NOT_SUPPORTED;
+    }
+
+    if (width != NULL) {
+        *width = s_mipi_camera_cfg.sp_width;
+    }
+
+    if (height != NULL) {
+        *height = s_mipi_camera_cfg.sp_height;
+    }
+
+    if (format != NULL) {
+        *format = s_mipi_camera_cfg.sp_format;
+    }
+
+    if (timeout_ms != NULL) {
+        *timeout_ms = s_mipi_camera_cfg.read_timeout_ms;
+    }
+
+    return OPRT_OK;
 }
 
 OPERATE_RET test_mipi_camera_get_flexa_source(TUYA_CAMERA_MIPI_FLEXA_SOURCE_T *source)
@@ -1093,16 +1127,24 @@ static OPERATE_RET test_mipi_camera_mipi_switch_output(uint16_t output_width, ui
     return OPRT_OK;
 }
 
-static OPERATE_RET test_mipi_camera_mipi_get_frame(void)
+OPERATE_RET test_mipi_camera_capture_frame(TUYA_CAMERA_MIPI_FRAME_T *frame)
 {
     OPERATE_RET ret;
-    TUYA_CAMERA_MIPI_FRAME_T frame;
-    uint8_t head[MIPI_TEST_CAMERA_HEAD_BYTES] = {0};
-    uint32_t head_len;
+
+    if (frame == NULL) {
+        return OPRT_INVALID_PARM;
+    }
 
     if (s_mipi_camera_started != true) {
         tkl_log_output( "mipi camera is not started\r\n");
         return OPRT_RESOURCE_NOT_READY;
+    }
+
+    if (s_mipi_camera_cfg.enable_flexa != FALSE || s_mipi_camera_cfg.work_mode != 0U) {
+        tkl_log_output( "mp get_frame requires frame mode, flexa=%u work_mode=%u\r\n",
+                        (unsigned int)s_mipi_camera_cfg.enable_flexa,
+                        (unsigned int)s_mipi_camera_cfg.work_mode);
+        return OPRT_NOT_SUPPORTED;
     }
 
     ret = test_mipi_camera_frame_prepare();
@@ -1110,21 +1152,37 @@ static OPERATE_RET test_mipi_camera_mipi_get_frame(void)
         return ret;
     }
 
-    os_memset(&frame, 0, sizeof(frame));
-    frame.buffer = s_mipi_camera_frame;
-    frame.size = s_mipi_camera_frame_size;
-    frame.timeout_ms = s_mipi_camera_cfg.read_timeout_ms;
+    os_memset(frame, 0, sizeof(*frame));
+    frame->buffer = s_mipi_camera_frame;
+    frame->size = s_mipi_camera_frame_size;
+    frame->timeout_ms = s_mipi_camera_cfg.read_timeout_ms;
+    frame->channel_id = TUYA_CAMERA_MIPI_CHANNEL_MP;
 
-    ret = tkl_camera_mipi_get_frame(&frame);
+    ret = tkl_camera_mipi_get_frame(frame);
     if (ret != OPRT_OK) {
         tkl_log_output( "camera get_frame failed: %d\r\n", ret);
         return ret;
     }
 
-    s_mipi_camera_last_frame_len = frame.out_len;
-    s_mipi_camera_last_frame_width = frame.width;
-    s_mipi_camera_last_frame_height = frame.height;
-    s_mipi_camera_last_frame_format = frame.format;
+    s_mipi_camera_last_frame_len = frame->out_len;
+    s_mipi_camera_last_frame_width = frame->width;
+    s_mipi_camera_last_frame_height = frame->height;
+    s_mipi_camera_last_frame_format = frame->format;
+
+    return OPRT_OK;
+}
+
+OPERATE_RET test_mipi_camera_mipi_get_frame(void)
+{
+    OPERATE_RET ret;
+    TUYA_CAMERA_MIPI_FRAME_T frame;
+    uint8_t head[MIPI_TEST_CAMERA_HEAD_BYTES] = {0};
+    uint32_t head_len;
+
+    ret = test_mipi_camera_capture_frame(&frame);
+    if (ret != OPRT_OK) {
+        return ret;
+    }
 
     head_len = (frame.out_len < MIPI_TEST_CAMERA_HEAD_BYTES) ? frame.out_len : MIPI_TEST_CAMERA_HEAD_BYTES;
     if (head_len > 0U) {
@@ -1257,20 +1315,27 @@ void cli_tuya_mipi_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char 
             snprintf(pcWriteBuffer, xWriteBufferLen,
                      "xmipi camera open_gpu %s (%d)\r\n", (ret == OPRT_OK) ? "ok" : "failed", ret);
         } else if (os_strcmp(cmd, "open_gpu_sp") == 0) {
+            uint32_t sp_format = MIPI_TEST_FACE_SP_FORMAT;
+
+            if (argc >= 11 && os_strcmp(argv[10], "nv12") == 0) {
+                sp_format = BK_PIXEL_FORMAT_NV12;
+            }
+
             ret = test_mipi_camera_mipi_open_gpu_sp(sensor_width,
                                                    sensor_height,
                                                    sensor_fps,
                                                    output_width,
                                                    output_height,
                                                    sp_width,
-                                                   sp_height);
+                                                   sp_height,
+                                                   sp_format);
             snprintf(pcWriteBuffer, xWriteBufferLen,
                      "xmipi camera open_gpu_sp %s (%d), sp=%ux%u fmt=%u\r\n",
                      (ret == OPRT_OK) ? "ok" : "failed",
                      ret,
                      sp_width,
                      sp_height,
-                     (unsigned int)MIPI_TEST_FACE_SP_FORMAT);
+                     (unsigned int)sp_format);
         } else if (os_strcmp(cmd, "start") == 0) {
             ret = test_mipi_camera_mipi_start();
             snprintf(pcWriteBuffer, xWriteBufferLen,
