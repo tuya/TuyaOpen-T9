@@ -1,17 +1,17 @@
 /**
  * @file tkl_gpu.h
  * @brief Common process - adapter the GPU pipeline api
- * @version 0.1
+ * @version 0.2
  * @date 2026-04-13
  *
  * @copyright Copyright 2021-2022 Tuya Inc. All Rights Reserved.
- *
  */
 
 #ifndef __TKL_GPU_H__
 #define __TKL_GPU_H__
 
 #include "tuya_cloud_types.h"
+#include <components/bk_draw_osd_types.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -72,6 +72,24 @@ typedef struct {
     };
 } TUYA_GPU_SOURCE_T;
 
+/* ---------------------------------------------------------------------------
+ * Display GPU OSD (bk_draw_osd pipeline submit model)
+ * Encode-path OSD remains tkl_venc_set_osd.
+ * --------------------------------------------------------------------------- */
+
+typedef enum {
+    TUYA_GPU_OSD_OP_UPDATE = 0, /* add/update one element by name+content, then draw */
+    TUYA_GPU_OSD_OP_REMOVE,       /* remove one element by name, then redraw remainder */
+    TUYA_GPU_OSD_OP_CLEAR,        /* clear all GPU blits; keep instance and dynamic list */
+} TUYA_GPU_OSD_OP_E;
+
+typedef struct {
+    CONST blend_info_t *blend_assets; /* asset table for UPDATE; {.addr=NULL} ends; required for add */
+    CONST blend_info_t *blend_info;   /* optional preload list (not drawn at open); NULL or {.addr=NULL} ok */
+    UINT32_T src_format;              /* 0=auto (ABGR if compress else ARGB) */
+    BOOL_T by_flexa;                  /* false=frame-end, true=per-flexa block */
+} TUYA_GPU_OSD_OPEN_T;
+
 OPERATE_RET tkl_gpu_init(TUYA_GPU_CFG_T *config);
 OPERATE_RET tkl_gpu_deinit(VOID);
 OPERATE_RET tkl_gpu_set_sink(const TUYA_GPU_SINK_T *sink);
@@ -79,6 +97,37 @@ OPERATE_RET tkl_gpu_set_source(TUYA_GPU_SOURCE_T *source);
 OPERATE_RET tkl_gpu_start(VOID);
 OPERATE_RET tkl_gpu_stop(VOID);
 OPERATE_RET tkl_gpu_get_handle(VOID **handle);
+
+/**
+ * @brief Create bk_draw_osd instance on started tkl_gpu (does not draw)
+ * @param[in] cfg assets + optional preload list + blend mode
+ * @return OPRT_OK on success
+ * @note Requires tkl_gpu_start(). No blit until tkl_gpu_osd_ctrl(UPDATE, ...).
+ *       blend_assets/blend_info pointers are not deep-copied.
+ */
+OPERATE_RET tkl_gpu_osd_open(CONST TUYA_GPU_OSD_OPEN_T *cfg);
+
+/**
+ * @brief Runtime OSD list / blit control
+ * @param[in] op UPDATE / REMOVE / CLEAR
+ * @param[in] name element name (UPDATE/REMOVE required; CLEAR ignored)
+ * @param[in] content text or image variant key (UPDATE required; others ignored)
+ * @return OPRT_OK on success
+ */
+OPERATE_RET tkl_gpu_osd_ctrl(TUYA_GPU_OSD_OP_E op, CONST CHAR_T *name, CONST CHAR_T *content);
+
+/**
+ * @brief Destroy OSD instance and clear blits
+ * @return OPRT_OK on success
+ */
+OPERATE_RET tkl_gpu_osd_close(VOID);
+
+/**
+ * @brief Set OSD blend timing on bound GPU
+ * @param[in] by_flexa TRUE=per-flexa, FALSE=frame-end
+ * @return OPRT_OK on success
+ */
+OPERATE_RET tkl_gpu_osd_set_mode(BOOL_T by_flexa);
 
 #ifdef __cplusplus
 }
