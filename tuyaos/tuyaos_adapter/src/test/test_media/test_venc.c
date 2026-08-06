@@ -40,6 +40,17 @@
 #define VENC_TEST_JPEGSW_DEFAULT_FILE     "jpeg_cap.jpg"
 #define VENC_TEST_JPEGSW_DEFAULT_QUALITY  80U
 #define VENC_TEST_DUMP_SP_DEFAULT_PREFIX  "sp_dump"
+#define VENC_TEST_OSD_MAX_INDEX           7U
+#define VENC_TEST_OSD_TIME_INDEX          0U
+#define VENC_TEST_OSD_TIME_X              2U
+#define VENC_TEST_OSD_TIME_Y              2U
+#define VENC_TEST_OSD_TIME_W              112U
+#define VENC_TEST_OSD_TIME_H              16U
+#define VENC_TEST_OSD_TIME_SCALE          2U
+#define VENC_TEST_OSD_TIME_ARGB           0xFFFFFF00U /* opaque yellow */
+#define VENC_TEST_OSD_TIME_REFRESH_MS     1000U
+#define VENC_TEST_OSD_TIME_STACK          (3U * 1024U)
+#define VENC_TEST_OSD_TIME_TEXT_LEN       16U
 
 #if defined(CONFIG_BK_ENCODER_H264_MAX_OUTPUT_BUFFER) && (CONFIG_BK_ENCODER_H264_MAX_OUTPUT_BUFFER > 0)
 #define VENC_TEST_RECORD_MAX_FRAME_SIZE ((uint32_t)CONFIG_BK_ENCODER_H264_MAX_OUTPUT_BUFFER)
@@ -163,6 +174,34 @@ static test_venc_record_ctx_t s_venc_record = {
     .count = 0U,
 };
 
+typedef struct {
+    volatile bool running;
+    volatile bool stop_req;
+    TKL_THREAD_HANDLE task;
+    char last_text[VENC_TEST_OSD_TIME_TEXT_LEN];
+} test_venc_osd_time_ctx_t;
+
+static test_venc_osd_time_ctx_t s_venc_osd_time = {
+    .running = false,
+    .stop_req = false,
+    .task = NULL,
+    .last_text = {0},
+};
+
+static const uint8_t s_venc_osd_digit_font[11][7] = {
+    {0x0E, 0x11, 0x13, 0x15, 0x19, 0x11, 0x0E}, /* 0 */
+    {0x04, 0x0C, 0x04, 0x04, 0x04, 0x04, 0x0E}, /* 1 */
+    {0x0E, 0x11, 0x01, 0x06, 0x08, 0x10, 0x1F}, /* 2 */
+    {0x1F, 0x02, 0x04, 0x06, 0x02, 0x11, 0x0E}, /* 3 */
+    {0x02, 0x06, 0x0A, 0x12, 0x1F, 0x02, 0x02}, /* 4 */
+    {0x1F, 0x10, 0x1E, 0x01, 0x01, 0x11, 0x0E}, /* 5 */
+    {0x06, 0x08, 0x10, 0x1E, 0x11, 0x11, 0x0E}, /* 6 */
+    {0x1F, 0x01, 0x02, 0x04, 0x08, 0x08, 0x08}, /* 7 */
+    {0x0E, 0x11, 0x11, 0x0E, 0x11, 0x11, 0x0E}, /* 8 */
+    {0x0E, 0x11, 0x11, 0x0F, 0x01, 0x02, 0x0C}, /* 9 */
+    {0x00, 0x00, 0x04, 0x00, 0x04, 0x00, 0x00}, /* : */
+};
+
 extern OPERATE_RET test_vdec_get_flexa_source(TUYA_VCODEC_FLEXA_BUFFER_T *flexa);
 extern BOOL_T test_mipi_camera_is_inited(void);
 extern BOOL_T test_mipi_camera_is_started(void);
@@ -177,6 +216,7 @@ extern OPERATE_RET test_mipi_camera_capture_frame(TUYA_CAMERA_MIPI_FRAME_T *fram
 static OPERATE_RET test_venc_stream_free(VOID *ptr, VOID *arg);
 static bool test_venc_record_queue_push(const TUYA_VCODEC_STREAM_T *stream);
 static bool test_venc_record_queue_contains(const VOID *ptr);
+static void test_venc_osd_time_stop(void);
 
 static const char *test_venc_source_name(test_venc_source_t source)
 {
@@ -1173,6 +1213,8 @@ static OPERATE_RET test_venc_stop(void)
 {
     OPERATE_RET ret;
 
+    test_venc_osd_time_stop();
+
     if (test_venc_record_is_busy() == true) {
         (void)test_venc_record_stop();
     }
@@ -1193,6 +1235,8 @@ static OPERATE_RET test_venc_stop(void)
 static OPERATE_RET test_venc_deinit(void)
 {
     OPERATE_RET ret;
+
+    test_venc_osd_time_stop();
 
     if (test_venc_record_is_busy() == true) {
         (void)test_venc_record_stop();
@@ -1224,6 +1268,357 @@ static OPERATE_RET test_venc_request_idr(void)
     }
 
     return tkl_venc_request_idr(s_venc_ctx.handle);
+}
+
+static void test_venc_osd_buffer_free(void *buffer, void *free_arg)
+{
+    (void)free_arg;
+    if (buffer != NULL) {
+        bk_frame_buffer_free(buffer);
+    }
+}
+
+static void test_venc_osd_put_pixel(uint32_t *pixels,
+                                    uint32_t width,
+                                    uint32_t height,
+                                    uint32_t x,
+                                    uint32_t y,
+                                    uint32_t argb)
+{
+    if (pixels == NULL || x >= width || y >= height) {
+        return;
+    }
+    pixels[y * width + x] = argb;
+}
+
+static void test_venc_osd_fill_rect(uint32_t *pixels,
+                                    uint32_t width,
+                                    uint32_t height,
+                                    uint32_t x,
+                                    uint32_t y,
+                                    uint32_t w,
+                                    uint32_t h,
+                                    uint32_t argb)
+{
+    uint32_t row;
+    uint32_t col;
+
+    for (row = 0U; row < h; row++) {
+        if ((y + row) >= height) {
+            break;
+        }
+        for (col = 0U; col < w; col++) {
+            if ((x + col) >= width) {
+                break;
+            }
+            test_venc_osd_put_pixel(pixels, width, height, x + col, y + row, argb);
+        }
+    }
+}
+
+static const uint8_t *test_venc_osd_font_rows(char ch)
+{
+    if (ch >= '0' && ch <= '9') {
+        return s_venc_osd_digit_font[ch - '0'];
+    }
+    if (ch == ':') {
+        return s_venc_osd_digit_font[10];
+    }
+    return NULL;
+}
+
+static void test_venc_osd_draw_char(uint32_t *pixels,
+                                    uint32_t width,
+                                    uint32_t height,
+                                    uint32_t x,
+                                    uint32_t y,
+                                    char ch,
+                                    uint32_t scale,
+                                    uint32_t argb)
+{
+    const uint8_t *rows = test_venc_osd_font_rows(ch);
+    uint32_t row;
+    uint32_t col;
+
+    if (rows == NULL || scale == 0U) {
+        return;
+    }
+
+    for (row = 0U; row < 7U; row++) {
+        uint8_t bits = rows[row];
+        for (col = 0U; col < 5U; col++) {
+            if ((bits & (1U << (4U - col))) == 0U) {
+                continue;
+            }
+            test_venc_osd_fill_rect(pixels, width, height,
+                                    x + col * scale, y + row * scale,
+                                    scale, scale, argb);
+        }
+    }
+}
+
+/**
+ * @brief Draw left-aligned HH:MM:SS text into an ARGB8888 OSD buffer
+ * @param[out] pixels destination buffer
+ * @param[in] width buffer width
+ * @param[in] height buffer height
+ * @param[in] text null-terminated digit/colon string
+ * @return none
+ */
+static void test_venc_osd_draw_time_text(uint32_t *pixels,
+                                         uint32_t width,
+                                         uint32_t height,
+                                         const char *text)
+{
+    const uint32_t scale = VENC_TEST_OSD_TIME_SCALE;
+    const uint32_t glyph_w = 5U * scale;
+    const uint32_t glyph_h = 7U * scale;
+    const uint32_t char_w = glyph_w + 4U;
+    const uint32_t argb = VENC_TEST_OSD_TIME_ARGB;
+    uint32_t x = 0U;
+    uint32_t y;
+    size_t i;
+
+    if (pixels == NULL || width == 0U || height == 0U) {
+        return;
+    }
+
+    os_memset(pixels, 0, (size_t)width * (size_t)height * sizeof(uint32_t));
+    if (text == NULL || text[0] == '\0') {
+        return;
+    }
+
+    y = (height > glyph_h) ? ((height - glyph_h) / 2U) : 0U;
+    for (i = 0U; text[i] != '\0' && (x + glyph_w) <= width; i++) {
+        test_venc_osd_draw_char(pixels, width, height, x, y, text[i], scale, argb);
+        x += char_w;
+    }
+}
+
+/**
+ * @brief Format uptime as HH:MM:SS
+ * @param[out] text output string buffer
+ * @param[in] text_len buffer length
+ * @return none
+ */
+static void test_venc_osd_format_time(char *text, size_t text_len)
+{
+    SYS_TIME_T now_ms;
+    uint32_t total_sec;
+    uint32_t hour;
+    uint32_t min;
+    uint32_t sec;
+
+    if (text == NULL || text_len < 9U) {
+        return;
+    }
+
+    now_ms = tkl_system_get_millisecond();
+    total_sec = (uint32_t)(now_ms / 1000U);
+    hour = (total_sec / 3600U) % 100U;
+    min = (total_sec / 60U) % 60U;
+    sec = total_sec % 60U;
+
+    text[0] = (char)('0' + (hour / 10U));
+    text[1] = (char)('0' + (hour % 10U));
+    text[2] = ':';
+    text[3] = (char)('0' + (min / 10U));
+    text[4] = (char)('0' + (min % 10U));
+    text[5] = ':';
+    text[6] = (char)('0' + (sec / 10U));
+    text[7] = (char)('0' + (sec % 10U));
+    text[8] = '\0';
+}
+
+/**
+ * @brief Push one time OSD frame to slot 0 at top-left
+ * @param[in] text HH:MM:SS string
+ * @return OPRT_OK on success
+ */
+static OPERATE_RET test_venc_osd_submit_time(const char *text)
+{
+    TUYA_VENC_OSD_T osd;
+    uint32_t *pixels = NULL;
+    uint32_t buf_bytes;
+    OPERATE_RET ret;
+
+    if (s_venc_ctx.initialized != true || s_venc_ctx.handle == NULL) {
+        return OPRT_RESOURCE_NOT_READY;
+    }
+
+    if (s_venc_ctx.codec != VENC_TEST_CODEC_H264) {
+        return OPRT_NOT_SUPPORTED;
+    }
+
+    if (s_venc_ctx.width > 0U && s_venc_ctx.height > 0U) {
+        if ((VENC_TEST_OSD_TIME_X + VENC_TEST_OSD_TIME_W) > s_venc_ctx.width ||
+            (VENC_TEST_OSD_TIME_Y + VENC_TEST_OSD_TIME_H) > s_venc_ctx.height) {
+            tkl_log_output("osd time region exceeds frame %ux%u\r\n",
+                           (unsigned int)s_venc_ctx.width,
+                           (unsigned int)s_venc_ctx.height);
+            return OPRT_INVALID_PARM;
+        }
+    }
+
+    buf_bytes = VENC_TEST_OSD_TIME_W * VENC_TEST_OSD_TIME_H * sizeof(uint32_t);
+    pixels = (uint32_t *)bk_frame_buffer_malloc(MEM_SLAB_HEAP_UNCODED, buf_bytes);
+    if (pixels == NULL) {
+        tkl_log_output("osd time malloc %u bytes failed\r\n", (unsigned int)buf_bytes);
+        return OPRT_MALLOC_FAILED;
+    }
+
+    test_venc_osd_draw_time_text(pixels, VENC_TEST_OSD_TIME_W, VENC_TEST_OSD_TIME_H, text);
+
+    os_memset(&osd, 0, sizeof(osd));
+    osd.index = VENC_TEST_OSD_TIME_INDEX;
+    osd.buffer = pixels;
+    osd.format = TUYA_VENC_OSD_FMT_ARGB8888;
+    osd.x = VENC_TEST_OSD_TIME_X;
+    osd.y = VENC_TEST_OSD_TIME_Y;
+    osd.width = VENC_TEST_OSD_TIME_W;
+    osd.height = VENC_TEST_OSD_TIME_H;
+    osd.buffer_free = test_venc_osd_buffer_free;
+    osd.free_arg = NULL;
+
+    ret = tkl_venc_set_osd(s_venc_ctx.handle, &osd);
+    if (ret != OPRT_OK) {
+        bk_frame_buffer_free(pixels);
+    }
+
+    return ret;
+}
+
+static void test_venc_osd_time_task(void *arg)
+{
+    TKL_THREAD_HANDLE self = NULL;
+    char text[VENC_TEST_OSD_TIME_TEXT_LEN];
+
+    (void)arg;
+    (void)tkl_thread_get_id(&self);
+
+    while (s_venc_osd_time.stop_req != true) {
+        test_venc_osd_format_time(text, sizeof(text));
+        if (os_strcmp(text, s_venc_osd_time.last_text) != 0) {
+            if (test_venc_osd_submit_time(text) == OPRT_OK) {
+                os_strncpy(s_venc_osd_time.last_text, text, sizeof(s_venc_osd_time.last_text) - 1U);
+                s_venc_osd_time.last_text[sizeof(s_venc_osd_time.last_text) - 1U] = '\0';
+            }
+        }
+        tkl_system_sleep(VENC_TEST_OSD_TIME_REFRESH_MS);
+    }
+
+    s_venc_osd_time.running = false;
+    s_venc_osd_time.task = NULL;
+    tkl_thread_release(self);
+}
+
+/**
+ * @brief Stop time OSD refresh task
+ * @return none
+ */
+static void test_venc_osd_time_stop(void)
+{
+    uint32_t waited_ms = 0U;
+
+    if (s_venc_osd_time.running != true && s_venc_osd_time.task == NULL) {
+        return;
+    }
+
+    s_venc_osd_time.stop_req = true;
+    while (s_venc_osd_time.running == true && waited_ms < 3000U) {
+        tkl_system_sleep(20U);
+        waited_ms += 20U;
+    }
+
+    s_venc_osd_time.running = false;
+    s_venc_osd_time.task = NULL;
+    s_venc_osd_time.stop_req = false;
+    s_venc_osd_time.last_text[0] = '\0';
+}
+
+static OPERATE_RET test_venc_osd_clear(uint32_t index)
+{
+    TUYA_VENC_OSD_T osd;
+
+    if (s_venc_ctx.initialized != true || s_venc_ctx.handle == NULL) {
+        tkl_log_output("venc is not initialized\r\n");
+        return OPRT_RESOURCE_NOT_READY;
+    }
+
+    if (s_venc_ctx.codec != VENC_TEST_CODEC_H264) {
+        tkl_log_output("osd is only supported for h264\r\n");
+        return OPRT_NOT_SUPPORTED;
+    }
+
+    if (index > VENC_TEST_OSD_MAX_INDEX) {
+        tkl_log_output("osd index must be 0..%u\r\n", (unsigned int)VENC_TEST_OSD_MAX_INDEX);
+        return OPRT_INVALID_PARM;
+    }
+
+    if (index == VENC_TEST_OSD_TIME_INDEX) {
+        test_venc_osd_time_stop();
+    }
+
+    os_memset(&osd, 0, sizeof(osd));
+    osd.index = index;
+    osd.buffer = NULL;
+
+    return tkl_venc_set_osd(s_venc_ctx.handle, &osd);
+}
+
+/**
+ * @brief Start top-left HH:MM:SS OSD and refresh every second
+ * @return OPRT_OK on success
+ */
+static OPERATE_RET test_venc_osd_time_start(void)
+{
+    OPERATE_RET ret;
+    char text[VENC_TEST_OSD_TIME_TEXT_LEN];
+
+    if (s_venc_ctx.initialized != true || s_venc_ctx.handle == NULL) {
+        tkl_log_output("venc is not initialized\r\n");
+        return OPRT_RESOURCE_NOT_READY;
+    }
+
+    if (s_venc_ctx.codec != VENC_TEST_CODEC_H264) {
+        tkl_log_output("osd is only supported for h264\r\n");
+        return OPRT_NOT_SUPPORTED;
+    }
+
+    test_venc_osd_time_stop();
+
+    test_venc_osd_format_time(text, sizeof(text));
+    ret = test_venc_osd_submit_time(text);
+    if (ret != OPRT_OK) {
+        return ret;
+    }
+
+    os_strncpy(s_venc_osd_time.last_text, text, sizeof(s_venc_osd_time.last_text) - 1U);
+    s_venc_osd_time.last_text[sizeof(s_venc_osd_time.last_text) - 1U] = '\0';
+    s_venc_osd_time.stop_req = false;
+    s_venc_osd_time.running = true;
+
+    ret = tkl_thread_create(&s_venc_osd_time.task,
+                            "venc_osd_time",
+                            VENC_TEST_OSD_TIME_STACK,
+                            TKL_THREAD_PRI_NORMAL,
+                            test_venc_osd_time_task,
+                            NULL);
+    if (ret != OPRT_OK) {
+        s_venc_osd_time.running = false;
+        s_venc_osd_time.task = NULL;
+        tkl_log_output("osd time thread create failed (%d)\r\n", ret);
+        return ret;
+    }
+
+    tkl_log_output("osd time start: %s @(%u,%u) %ux%u slot=%u\r\n",
+                   text,
+                   (unsigned int)VENC_TEST_OSD_TIME_X,
+                   (unsigned int)VENC_TEST_OSD_TIME_Y,
+                   (unsigned int)VENC_TEST_OSD_TIME_W,
+                   (unsigned int)VENC_TEST_OSD_TIME_H,
+                   (unsigned int)VENC_TEST_OSD_TIME_INDEX);
+    return OPRT_OK;
 }
 
 static OPERATE_RET test_venc_set_bitrate(uint32_t bitrate, bool force_idr)
@@ -1748,7 +2143,7 @@ void cli_tuya_venc_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char 
 
     if (argc < 2) {
         snprintf(pcWriteBuffer, xWriteBufferLen,
-                 "Usage: xvenc <init [camera|vdec] [h264|jpeg] [fps] [gop|quality] [bitrate]|start|stop|bitrate <bps> [idr]|record [sec] [file]|snapshot [file]|dump_sp [prefix]|jpegsw [quality] [file]|deinit|close|idr|status>");
+                 "Usage: xvenc <init [camera|vdec] [h264|jpeg] [fps] [gop|quality] [bitrate]|start|stop|bitrate <bps> [idr]|record [sec] [file]|snapshot [file]|dump_sp [prefix]|jpegsw [quality] [file]|deinit|close|idr|osd|status>");
         return;
     }
 
@@ -1920,12 +2315,52 @@ void cli_tuya_venc_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char 
                  "xvenc idr %s (%d)\r\n",
                  (ret == OPRT_OK) ? "ok" : "failed",
                  ret);
+    } else if (os_strcmp(cmd, "osd") == 0) {
+        const char *osd_sub = NULL;
+        uint32_t osd_index = VENC_TEST_OSD_TIME_INDEX;
+
+        if (argc < 3) {
+            snprintf(pcWriteBuffer, xWriteBufferLen,
+                     "Usage: xvenc osd <time|clear [idx]|stop>\r\n");
+            return;
+        }
+
+        osd_sub = argv[2];
+        if (os_strcmp(osd_sub, "time") == 0) {
+            ret = test_venc_osd_time_start();
+            snprintf(pcWriteBuffer, xWriteBufferLen,
+                     "xvenc osd time %s (%d), text=%s @(%u,%u)\r\n",
+                     (ret == OPRT_OK) ? "ok" : "failed",
+                     ret,
+                     s_venc_osd_time.last_text,
+                     (unsigned int)VENC_TEST_OSD_TIME_X,
+                     (unsigned int)VENC_TEST_OSD_TIME_Y);
+        } else if (os_strcmp(osd_sub, "stop") == 0) {
+            ret = test_venc_osd_clear(VENC_TEST_OSD_TIME_INDEX);
+            snprintf(pcWriteBuffer, xWriteBufferLen,
+                     "xvenc osd stop %s (%d)\r\n",
+                     (ret == OPRT_OK) ? "ok" : "failed",
+                     ret);
+        } else if (os_strcmp(osd_sub, "clear") == 0) {
+            if (argc >= 4) {
+                osd_index = os_strtoul(argv[3], NULL, 10);
+            }
+            ret = test_venc_osd_clear(osd_index);
+            snprintf(pcWriteBuffer, xWriteBufferLen,
+                     "xvenc osd clear %s (%d), idx=%u\r\n",
+                     (ret == OPRT_OK) ? "ok" : "failed",
+                     ret,
+                     (unsigned int)osd_index);
+        } else {
+            snprintf(pcWriteBuffer, xWriteBufferLen,
+                     "Usage: xvenc osd <time|clear [idx]|stop>\r\n");
+        }
     } else if (os_strcmp(cmd, "status") == 0) {
         test_venc_status_dump();
         snprintf(pcWriteBuffer, xWriteBufferLen,
                  "xvenc status ok, see logs\r\n");
     } else {
         snprintf(pcWriteBuffer, xWriteBufferLen,
-                 "Usage: xvenc <init [camera|vdec] [h264|jpeg] [fps] [gop|quality] [bitrate]|start|stop|bitrate <bps> [idr]|record [sec] [file]|snapshot [file]|dump_sp [prefix]|jpegsw [quality] [file]|deinit|close|idr|status>");
+                 "Usage: xvenc <init [camera|vdec] [h264|jpeg] [fps] [gop|quality] [bitrate]|start|stop|bitrate <bps> [idr]|record [sec] [file]|snapshot [file]|dump_sp [prefix]|jpegsw [quality] [file]|deinit|close|idr|osd|status>");
     }
 }

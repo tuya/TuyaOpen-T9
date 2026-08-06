@@ -1067,6 +1067,78 @@ OPERATE_RET tkl_venc_request_idr(TUYA_VENC_HANDLE handle)
     return OPRT_OK;
 }
 
+/**
+ * @brief Configure H264 hardware OSD overlay via bk_h264_encode_set_osd
+ * @param[in] handle venc handle
+ * @param[in] osd overlay config
+ * @return OPRT_OK on success
+ */
+OPERATE_RET tkl_venc_set_osd(TUYA_VENC_HANDLE handle, const TUYA_VENC_OSD_T *osd)
+{
+    TUYA_VENC_CTX_T *ctx = tkl_venc_ctx_get(handle);
+    bk_h264_encode_osd_t bk_osd;
+    avdk_err_t ret;
+
+    if (ctx == NULL || osd == NULL) {
+        return OPRT_INVALID_PARM;
+    }
+
+    if (ctx->backend_type != TKL_VENC_BACKEND_H264 || ctx->backend.h264 == NULL) {
+        return OPRT_NOT_SUPPORTED;
+    }
+
+    if (ctx->backend_opened != TRUE) {
+        return OPRT_RESOURCE_NOT_READY;
+    }
+
+    if (osd->buffer != NULL && osd->buffer_free == NULL) {
+        return OPRT_INVALID_PARM;
+    }
+
+    if (osd->format != TUYA_VENC_OSD_FMT_ARGB8888 &&
+        osd->format != TUYA_VENC_OSD_FMT_NV12 &&
+        osd->format != TUYA_VENC_OSD_FMT_BITMAP) {
+        return OPRT_INVALID_PARM;
+    }
+
+    tkl_system_memset(&bk_osd, 0, sizeof(bk_osd));
+    bk_osd.index = osd->index;
+    bk_osd.buffer = osd->buffer;
+    bk_osd.format = osd->format;
+    bk_osd.alpha = osd->alpha;
+    bk_osd.x = osd->x;
+    bk_osd.y = osd->y;
+    bk_osd.width = osd->width;
+    bk_osd.height = osd->height;
+    bk_osd.bitmap_y = osd->bitmap_y;
+    bk_osd.bitmap_u = osd->bitmap_u;
+    bk_osd.bitmap_v = osd->bitmap_v;
+    bk_osd.buffer_free = (bk_h264_encode_osd_buffer_free_cb_t)osd->buffer_free;
+    bk_osd.free_arg = osd->free_arg;
+
+    ret = bk_h264_encode_set_osd(ctx->backend.h264, &bk_osd);
+    if (ret != AVDK_ERR_OK) {
+        tkl_log_output("tkl_venc: set_osd failed (%d), index=%u buf=%p %ux%u@(%u,%u) fmt=%u\r\n",
+                       ret,
+                       (unsigned int)osd->index,
+                       osd->buffer,
+                       (unsigned int)osd->width,
+                       (unsigned int)osd->height,
+                       (unsigned int)osd->x,
+                       (unsigned int)osd->y,
+                       (unsigned int)osd->format);
+        if (ret == AVDK_ERR_INVAL) {
+            return OPRT_INVALID_PARM;
+        }
+        if (ret == AVDK_ERR_UNSUPPORTED) {
+            return OPRT_NOT_SUPPORTED;
+        }
+        return OPRT_COM_ERROR;
+    }
+
+    return OPRT_OK;
+}
+
 OPERATE_RET tkl_venc_submit_frame(TUYA_VENC_HANDLE handle, const TUYA_VCODEC_FRAME_T *frame)
 {
     TUYA_VENC_CTX_T *ctx = tkl_venc_ctx_get(handle);

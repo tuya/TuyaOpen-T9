@@ -48,6 +48,31 @@ typedef struct {
     BOOL_T force_idr;               /* request IDR after rate ctrl update */
 } TUYA_VENC_RATE_CTRL_T;
 
+/* H264 hardware OSD overlay (VCENC); JPEG is not supported */
+typedef enum {
+    TUYA_VENC_OSD_FMT_ARGB8888 = 0,
+    TUYA_VENC_OSD_FMT_NV12 = 1,
+    TUYA_VENC_OSD_FMT_BITMAP = 2,
+} TUYA_VENC_OSD_FORMAT_E;
+
+typedef VOID (*TUYA_VENC_OSD_BUFFER_FREE_CB)(VOID *buffer, VOID *free_arg);
+
+typedef struct {
+    UINT32_T index;                     /* overlay slot 0..7 */
+    VOID *buffer;                       /* pixel buffer; NULL clears this slot */
+    UINT32_T format;                    /* TUYA_VENC_OSD_FORMAT_E */
+    UINT8_T alpha;                      /* global alpha for NV12/Bitmap; ignored for ARGB8888 */
+    UINT32_T x;
+    UINT32_T y;
+    UINT32_T width;
+    UINT32_T height;
+    UINT8_T bitmap_y;                   /* Bitmap foreground Y */
+    UINT8_T bitmap_u;
+    UINT8_T bitmap_v;
+    TUYA_VENC_OSD_BUFFER_FREE_CB buffer_free; /* required when buffer != NULL */
+    VOID *free_arg;
+} TUYA_VENC_OSD_T;
+
 typedef struct {
     TUYA_VENC_STREAM_CB stream_cb;
     TUYA_VCODEC_ALLOC_CB alloc_cb;
@@ -99,6 +124,15 @@ OPERATE_RET tkl_venc_start(TUYA_VENC_HANDLE handle);
 OPERATE_RET tkl_venc_stop(TUYA_VENC_HANDLE handle);
 OPERATE_RET tkl_venc_set_rate_ctrl(TUYA_VENC_HANDLE handle, const TUYA_VENC_RATE_CTRL_T *rate_ctrl);
 OPERATE_RET tkl_venc_request_idr(TUYA_VENC_HANDLE handle);
+/**
+ * @brief Configure H264 hardware OSD overlay
+ * @param[in] handle venc handle
+ * @param[in] osd overlay config; buffer==NULL clears the slot
+ * @return OPRT_OK on success, OPRT_NOT_SUPPORTED for JPEG / non-H264
+ * @note Only H264/VCENC. Caller fills pixel buffer then transfers ownership via buffer_free.
+ *       Takes effect from the next encoded frame. Max 8 slots; regions must not share a 64x16 CTB.
+ */
+OPERATE_RET tkl_venc_set_osd(TUYA_VENC_HANDLE handle, const TUYA_VENC_OSD_T *osd);
 OPERATE_RET tkl_venc_submit_frame(TUYA_VENC_HANDLE handle, const TUYA_VCODEC_FRAME_T *frame);
 OPERATE_RET tkl_venc_get_handle(TUYA_VENC_HANDLE handle, VOID **backend_handle);
 
