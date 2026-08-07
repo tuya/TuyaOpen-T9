@@ -10,7 +10,6 @@
 #include <os/mem.h>
 #include <os/os.h>
 #include <os/str.h>
-#include "sys_driver.h"
 #include "gpio_driver.h"
 
 #include "cli_tuya_test.h"
@@ -22,19 +21,17 @@
 
 #define MIPI_TEST_TASK_NAME         "mipi_test"
 #define MIPI_TEST_TASK_STACK_SIZE   (4 * 1024)
-#define MIPI_TEST_RESET_PIN         GPIO_60
-#define MIPI_TEST_BACKLIGHT_PIN     GPIO_7
+#define MIPI_TEST_RESET_PIN         GPIO_16
+#define MIPI_TEST_BACKLIGHT_PIN     GPIO_20
 #define MIPI_TEST_INVALID_PIN       (-1)
 #define MIPI_TEST_PANEL_NAME_LEN    64
 #define MIPI_TEST_BYTES_PER_PIXEL   2U
 #define MIPI_TEST_FRAME_COUNT       2U
 #define MIPI_TEST_REFRESH_MS        1000U
-#define SYS_ANA_REG_BASE            (0x44010000)
-#define LDO_ANA_REG                 (0x69)
-#define MIPI_TEST_CAMERA_PIN_SCL    GPIO_69
-#define MIPI_TEST_CAMERA_PIN_SDA    GPIO_70
+#define MIPI_TEST_CAMERA_PIN_SCL    GPIO_65
+#define MIPI_TEST_CAMERA_PIN_SDA    GPIO_64
 #define MIPI_TEST_CAMERA_I2C_ID     1U
-#define MIPI_TEST_CAMERA_PIN_RESET  GPIO_71
+#define MIPI_TEST_CAMERA_PIN_RESET  GPIO_60
 #define MIPI_TEST_CAMERA_PIN_PWDN   (-1)
 #define MIPI_TEST_CAMERA_PIN_XCLK   GPIO_59
 #define MIPI_TEST_CAMERA_SENSOR_W   1920U
@@ -45,6 +42,13 @@
 #define MIPI_TEST_FACE_SP_WIDTH     56U
 #define MIPI_TEST_FACE_SP_HEIGHT    56U
 #define MIPI_TEST_FACE_SP_FORMAT    BK_PIXEL_FORMAT_RGB888
+#define MIPI_TEST_MIRROR_SETTLE_FRAMES 2U
+#define MIPI_TEST_MIRROR_EDGE_COLS     8U
+#define MIPI_TEST_CAMERA_USAGE \
+    "Usage: xmipi camera <open [sw sh fps ow oh]|open_gpu [sw sh fps ow oh]|open_gpu_sp [sw sh fps ow oh spw sph]|start|switch <ow> <oh>|get_frame|mirror [hmirror vflip]|mirror_test|luminance|luminance_test [n ms]|stop|close>"
+#define MIPI_TEST_LUMINANCE_MAX         255000U
+#define MIPI_TEST_LUMINANCE_DEFAULT_CNT 5U
+#define MIPI_TEST_LUMINANCE_DEFAULT_MS  200U
 
 typedef struct {
     BOOL_T enable;
@@ -166,15 +170,6 @@ static OPERATE_RET test_mipi_panel_init_with_desc(const bk_display_dsi_panel_t *
     return OPRT_OK;
 }
 
-static void test_mipi_auxldo_enable(void)
-{
-    uint32_t reg = REG_READ(SYS_ANA_REG_BASE + LDO_ANA_REG * 4);
-
-    reg &= ~((0x7 << 23) | (0xF << 19));
-    reg |= (0x2 << 23) | (0x7 << 19) | (0x3 << 30);
-    REG_WRITE(SYS_ANA_REG_BASE + LDO_ANA_REG * 4, reg);
-}
-
 static void test_mipi_runtime_reset(void)
 {
     os_memset(&s_mipi_flush_frame, 0, sizeof(s_mipi_flush_frame));
@@ -217,7 +212,7 @@ static void test_mipi_camera_runtime_reset(void)
     s_mipi_camera_cfg.sensor_width = MIPI_TEST_CAMERA_SENSOR_W;
     s_mipi_camera_cfg.sensor_height = MIPI_TEST_CAMERA_SENSOR_H;
     s_mipi_camera_cfg.sensor_fps = MIPI_TEST_CAMERA_SENSOR_FPS;
-    s_mipi_camera_cfg.sensor_input_format = BK_PIXEL_FORMAT_RGGB10;
+    s_mipi_camera_cfg.sensor_input_format = BK_PIXEL_FORMAT_BGGR10;
     s_mipi_camera_cfg.output_width = MIPI_TEST_CAMERA_SENSOR_W;
     s_mipi_camera_cfg.output_height = MIPI_TEST_CAMERA_SENSOR_H;
     s_mipi_camera_cfg.output_format = BK_PIXEL_FORMAT_NV12;
@@ -598,7 +593,6 @@ static OPERATE_RET test_mipi_lcd_ensure_open(const char *panel_name)
         return (ret == OPRT_OK) ? OPRT_NOT_FOUND : ret;
     }
 
-    test_mipi_auxldo_enable();
     test_mipi_frame_buffer_init_once();
     ret = test_mipi_panel_cfg_apply();
     if (ret != OPRT_OK) {
@@ -824,7 +818,6 @@ static OPERATE_RET test_mipi_camera_mipi_open(uint16_t sensor_width,
     s_mipi_camera_cfg.output_width = output_width;
     s_mipi_camera_cfg.output_height = output_height;
 
-    test_mipi_auxldo_enable();
     test_mipi_frame_buffer_init_once();
 
     ret = tkl_camera_mipi_init(&s_mipi_camera_cfg);
@@ -867,7 +860,6 @@ static OPERATE_RET test_mipi_camera_mipi_open_gpu(uint16_t sensor_width,
     s_mipi_camera_cfg.enable_flexa = TRUE;
     s_mipi_camera_cfg.work_mode = 1U;
 
-    test_mipi_auxldo_enable();
     test_mipi_frame_buffer_init_once();
 
     ret = tkl_camera_mipi_init(&s_mipi_camera_cfg);
@@ -894,7 +886,8 @@ static OPERATE_RET test_mipi_camera_mipi_open_gpu_sp(uint16_t sensor_width,
                                                      uint16_t output_width,
                                                      uint16_t output_height,
                                                      uint16_t sp_width,
-                                                     uint16_t sp_height)
+                                                     uint16_t sp_height,
+                                                     uint32_t sp_format)
 {
     OPERATE_RET ret;
 
@@ -914,11 +907,11 @@ static OPERATE_RET test_mipi_camera_mipi_open_gpu_sp(uint16_t sensor_width,
     s_mipi_camera_cfg.sp_enable = TRUE;
     s_mipi_camera_cfg.sp_width = sp_width;
     s_mipi_camera_cfg.sp_height = sp_height;
-    s_mipi_camera_cfg.sp_format = MIPI_TEST_FACE_SP_FORMAT;
+    s_mipi_camera_cfg.sp_format = sp_format;
     s_mipi_camera_cfg.sp_buf_cnt = 2U;
+    s_mipi_camera_cfg.sp_enable_flexa = FALSE;
     s_mipi_camera_cfg.sp_work_mode = 0U;
 
-    test_mipi_auxldo_enable();
     test_mipi_frame_buffer_init_once();
 
     ret = tkl_camera_mipi_init(&s_mipi_camera_cfg);
@@ -972,6 +965,38 @@ BOOL_T test_mipi_camera_is_started(void)
 BOOL_T test_mipi_camera_flexa_enabled(void)
 {
     return (s_mipi_camera_cfg.enable_flexa != FALSE) ? TRUE : FALSE;
+}
+
+OPERATE_RET test_mipi_camera_get_sp_info(UINT16_T *width,
+                                        UINT16_T *height,
+                                        UINT32_T *format,
+                                        UINT32_T *timeout_ms)
+{
+    if (s_mipi_camera_cfg.sp_enable != TRUE) {
+        return OPRT_RESOURCE_NOT_READY;
+    }
+
+    if (s_mipi_camera_cfg.sp_enable_flexa != FALSE || s_mipi_camera_cfg.sp_work_mode != 0U) {
+        return OPRT_NOT_SUPPORTED;
+    }
+
+    if (width != NULL) {
+        *width = s_mipi_camera_cfg.sp_width;
+    }
+
+    if (height != NULL) {
+        *height = s_mipi_camera_cfg.sp_height;
+    }
+
+    if (format != NULL) {
+        *format = s_mipi_camera_cfg.sp_format;
+    }
+
+    if (timeout_ms != NULL) {
+        *timeout_ms = s_mipi_camera_cfg.read_timeout_ms;
+    }
+
+    return OPRT_OK;
 }
 
 OPERATE_RET test_mipi_camera_get_flexa_source(TUYA_CAMERA_MIPI_FLEXA_SOURCE_T *source)
@@ -1109,16 +1134,24 @@ static OPERATE_RET test_mipi_camera_mipi_switch_output(uint16_t output_width, ui
     return OPRT_OK;
 }
 
-static OPERATE_RET test_mipi_camera_mipi_get_frame(void)
+OPERATE_RET test_mipi_camera_capture_frame(TUYA_CAMERA_MIPI_FRAME_T *frame)
 {
     OPERATE_RET ret;
-    TUYA_CAMERA_MIPI_FRAME_T frame;
-    uint8_t head[MIPI_TEST_CAMERA_HEAD_BYTES] = {0};
-    uint32_t head_len;
+
+    if (frame == NULL) {
+        return OPRT_INVALID_PARM;
+    }
 
     if (s_mipi_camera_started != true) {
         tkl_log_output( "mipi camera is not started\r\n");
         return OPRT_RESOURCE_NOT_READY;
+    }
+
+    if (s_mipi_camera_cfg.enable_flexa != FALSE || s_mipi_camera_cfg.work_mode != 0U) {
+        tkl_log_output( "mp get_frame requires frame mode, flexa=%u work_mode=%u\r\n",
+                        (unsigned int)s_mipi_camera_cfg.enable_flexa,
+                        (unsigned int)s_mipi_camera_cfg.work_mode);
+        return OPRT_NOT_SUPPORTED;
     }
 
     ret = test_mipi_camera_frame_prepare();
@@ -1126,21 +1159,37 @@ static OPERATE_RET test_mipi_camera_mipi_get_frame(void)
         return ret;
     }
 
-    os_memset(&frame, 0, sizeof(frame));
-    frame.buffer = s_mipi_camera_frame;
-    frame.size = s_mipi_camera_frame_size;
-    frame.timeout_ms = s_mipi_camera_cfg.read_timeout_ms;
+    os_memset(frame, 0, sizeof(*frame));
+    frame->buffer = s_mipi_camera_frame;
+    frame->size = s_mipi_camera_frame_size;
+    frame->timeout_ms = s_mipi_camera_cfg.read_timeout_ms;
+    frame->channel_id = TUYA_CAMERA_MIPI_CHANNEL_MP;
 
-    ret = tkl_camera_mipi_get_frame(&frame);
+    ret = tkl_camera_mipi_get_frame(frame);
     if (ret != OPRT_OK) {
         tkl_log_output( "camera get_frame failed: %d\r\n", ret);
         return ret;
     }
 
-    s_mipi_camera_last_frame_len = frame.out_len;
-    s_mipi_camera_last_frame_width = frame.width;
-    s_mipi_camera_last_frame_height = frame.height;
-    s_mipi_camera_last_frame_format = frame.format;
+    s_mipi_camera_last_frame_len = frame->out_len;
+    s_mipi_camera_last_frame_width = frame->width;
+    s_mipi_camera_last_frame_height = frame->height;
+    s_mipi_camera_last_frame_format = frame->format;
+
+    return OPRT_OK;
+}
+
+OPERATE_RET test_mipi_camera_mipi_get_frame(void)
+{
+    OPERATE_RET ret;
+    TUYA_CAMERA_MIPI_FRAME_T frame;
+    uint8_t head[MIPI_TEST_CAMERA_HEAD_BYTES] = {0};
+    uint32_t head_len;
+
+    ret = test_mipi_camera_capture_frame(&frame);
+    if (ret != OPRT_OK) {
+        return ret;
+    }
 
     head_len = (frame.out_len < MIPI_TEST_CAMERA_HEAD_BYTES) ? frame.out_len : MIPI_TEST_CAMERA_HEAD_BYTES;
     if (head_len > 0U) {
@@ -1164,6 +1213,454 @@ static OPERATE_RET test_mipi_camera_mipi_get_frame(void)
     return OPRT_OK;
 }
 
+/**
+ * @brief Set camera mirror/flip and sync local cfg
+ * @param[in] hmirror 0=off, non-zero=on
+ * @param[in] vflip 0=off, non-zero=on
+ * @return OPRT_OK on success
+ */
+static OPERATE_RET test_mipi_camera_set_mirror_flip(UINT8_T hmirror, UINT8_T vflip)
+{
+    OPERATE_RET ret;
+
+    if (s_mipi_camera_inited != true) {
+        tkl_log_output("mipi camera is not open\r\n");
+        return OPRT_RESOURCE_NOT_READY;
+    }
+
+    ret = tkl_camera_mipi_set_mirror_flip(hmirror, vflip);
+    if (ret != OPRT_OK) {
+        tkl_log_output("camera set_mirror_flip failed: %d\r\n", ret);
+        return ret;
+    }
+
+    s_mipi_camera_cfg.hmirror = (hmirror != 0U) ? 1U : 0U;
+    s_mipi_camera_cfg.vflip = (vflip != 0U) ? 1U : 0U;
+    tkl_log_output("camera mirror set ok, hmirror=%u vflip=%u (started=%u)\r\n",
+                   s_mipi_camera_cfg.hmirror,
+                   s_mipi_camera_cfg.vflip,
+                   (unsigned int)s_mipi_camera_started);
+    return OPRT_OK;
+}
+
+/**
+ * @brief Get camera mirror/flip from TKL
+ * @param[out] hmirror optional
+ * @param[out] vflip optional
+ * @return OPRT_OK on success
+ */
+static OPERATE_RET test_mipi_camera_get_mirror_flip(UINT8_T *hmirror, UINT8_T *vflip)
+{
+    OPERATE_RET ret;
+    UINT8_T h = 0U;
+    UINT8_T v = 0U;
+
+    if (s_mipi_camera_inited != true) {
+        tkl_log_output("mipi camera is not open\r\n");
+        return OPRT_RESOURCE_NOT_READY;
+    }
+
+    ret = tkl_camera_mipi_get_mirror_flip(&h, &v);
+    if (ret != OPRT_OK) {
+        tkl_log_output("camera get_mirror_flip failed: %d\r\n", ret);
+        return ret;
+    }
+
+    if (hmirror != NULL) {
+        *hmirror = h;
+    }
+    if (vflip != NULL) {
+        *vflip = v;
+    }
+
+    tkl_log_output("camera mirror get ok, hmirror=%u vflip=%u\r\n", h, v);
+    return OPRT_OK;
+}
+
+/**
+ * @brief Rolling checksum for frame payload
+ * @param[in] buf data buffer
+ * @param[in] len byte length
+ * @return checksum
+ */
+static uint32_t test_mipi_frame_checksum(const uint8_t *buf, uint32_t len)
+{
+    uint32_t sum = 0U;
+    uint32_t i;
+
+    if (buf == NULL || len == 0U) {
+        return 0U;
+    }
+
+    for (i = 0U; i < len; i++) {
+        sum = (sum * 131U) + buf[i];
+    }
+    return sum;
+}
+
+/**
+ * @brief Checksum of a vertical Y strip [x, x+cols)
+ * @param[in] y Y plane base
+ * @param[in] width image width
+ * @param[in] height image height
+ * @param[in] stride Y stride in bytes
+ * @param[in] x start column
+ * @param[in] cols column count
+ * @return checksum
+ */
+static uint32_t test_mipi_y_strip_checksum(const uint8_t *y,
+                                          uint16_t width,
+                                          uint16_t height,
+                                          uint32_t stride,
+                                          uint16_t x,
+                                          uint16_t cols)
+{
+    uint32_t sum = 0U;
+    uint16_t row;
+    uint16_t col;
+
+    if (y == NULL || width == 0U || height == 0U || stride == 0U || cols == 0U) {
+        return 0U;
+    }
+    if ((uint32_t)x + (uint32_t)cols > (uint32_t)width) {
+        return 0U;
+    }
+
+    for (row = 0U; row < height; row++) {
+        const uint8_t *line = y + ((uint32_t)row * stride) + x;
+        for (col = 0U; col < cols; col++) {
+            sum = (sum * 131U) + line[col];
+        }
+    }
+    return sum;
+}
+
+/**
+ * @brief Drop frames then capture one for mirror compare
+ * @param[out] frame captured frame
+ * @param[out] checksum full-buffer checksum
+ * @param[out] left_edge left Y strip checksum
+ * @param[out] right_edge right Y strip checksum
+ * @return OPRT_OK on success
+ */
+static OPERATE_RET test_mipi_camera_capture_mirror_sample(TUYA_CAMERA_MIPI_FRAME_T *frame,
+                                                          uint32_t *checksum,
+                                                          uint32_t *left_edge,
+                                                          uint32_t *right_edge)
+{
+    OPERATE_RET ret;
+    UINT32_T i;
+    UINT16_T edge_cols;
+    UINT32_T y_stride;
+    UINT32_T y_size;
+
+    if (frame == NULL || checksum == NULL || left_edge == NULL || right_edge == NULL) {
+        return OPRT_INVALID_PARM;
+    }
+
+    for (i = 0U; i < MIPI_TEST_MIRROR_SETTLE_FRAMES; i++) {
+        ret = test_mipi_camera_capture_frame(frame);
+        if (ret != OPRT_OK) {
+            return ret;
+        }
+    }
+
+    ret = test_mipi_camera_capture_frame(frame);
+    if (ret != OPRT_OK) {
+        return ret;
+    }
+
+    *checksum = test_mipi_frame_checksum(frame->buffer, frame->out_len);
+
+    y_stride = (frame->y_stride != 0U) ? frame->y_stride : (UINT32_T)frame->width;
+    y_size = y_stride * (UINT32_T)frame->height;
+    if (frame->format != BK_PIXEL_FORMAT_NV12 || frame->out_len < y_size || frame->width < 16U) {
+        *left_edge = 0U;
+        *right_edge = 0U;
+        return OPRT_OK;
+    }
+
+    edge_cols = MIPI_TEST_MIRROR_EDGE_COLS;
+    if (edge_cols > (frame->width / 4U)) {
+        edge_cols = (UINT16_T)(frame->width / 4U);
+    }
+    if (edge_cols == 0U) {
+        edge_cols = 1U;
+    }
+
+    *left_edge = test_mipi_y_strip_checksum(frame->buffer,
+                                            frame->width,
+                                            frame->height,
+                                            y_stride,
+                                            0U,
+                                            edge_cols);
+    *right_edge = test_mipi_y_strip_checksum(frame->buffer,
+                                             frame->width,
+                                             frame->height,
+                                             y_stride,
+                                             (UINT16_T)(frame->width - edge_cols),
+                                             edge_cols);
+    return OPRT_OK;
+}
+
+/**
+ * @brief Verify mirror/flip API and that image content changes
+ * @return OPRT_OK if set/get and content change checks pass
+ * @note Requires frame-mode camera already started. Point lens at a non-uniform scene.
+ */
+static OPERATE_RET test_mipi_camera_mirror_test(void)
+{
+    OPERATE_RET ret;
+    TUYA_CAMERA_MIPI_FRAME_T frame;
+    UINT8_T saved_h = 0U;
+    UINT8_T saved_v = 0U;
+    UINT8_T got_h = 0U;
+    UINT8_T got_v = 0U;
+    uint32_t base_sum = 0U;
+    uint32_t base_left = 0U;
+    uint32_t base_right = 0U;
+    uint32_t h_sum = 0U;
+    uint32_t h_left = 0U;
+    uint32_t h_right = 0U;
+    uint32_t v_sum = 0U;
+    uint32_t v_left = 0U;
+    uint32_t v_right = 0U;
+    uint32_t hv_sum = 0U;
+    uint32_t hv_left = 0U;
+    uint32_t hv_right = 0U;
+    BOOL_T pass = TRUE;
+
+    if (s_mipi_camera_started != true) {
+        tkl_log_output("mirror_test needs started camera: xmipi camera open && xmipi camera start\r\n");
+        return OPRT_RESOURCE_NOT_READY;
+    }
+
+    if (s_mipi_camera_cfg.enable_flexa != FALSE || s_mipi_camera_cfg.work_mode != 0U) {
+        tkl_log_output("mirror_test needs frame mode (not flexa), use: xmipi camera open ...\r\n");
+        return OPRT_NOT_SUPPORTED;
+    }
+
+    ret = test_mipi_camera_get_mirror_flip(&saved_h, &saved_v);
+    if (ret != OPRT_OK) {
+        return ret;
+    }
+
+    /* Baseline: no mirror/flip */
+    ret = test_mipi_camera_set_mirror_flip(0U, 0U);
+    if (ret != OPRT_OK) {
+        return ret;
+    }
+    ret = test_mipi_camera_get_mirror_flip(&got_h, &got_v);
+    if (ret != OPRT_OK || got_h != 0U || got_v != 0U) {
+        tkl_log_output("mirror_test FAIL: get after set(0,0) h=%u v=%u ret=%d\r\n",
+                       got_h, got_v, ret);
+        pass = FALSE;
+        goto restore;
+    }
+    ret = test_mipi_camera_capture_mirror_sample(&frame, &base_sum, &base_left, &base_right);
+    if (ret != OPRT_OK) {
+        pass = FALSE;
+        goto restore;
+    }
+    tkl_log_output("mirror_test base: sum=0x%08x left=0x%08x right=0x%08x %ux%u\r\n",
+                   (unsigned int)base_sum, (unsigned int)base_left, (unsigned int)base_right,
+                   frame.width, frame.height);
+
+    /* Horizontal mirror */
+    ret = test_mipi_camera_set_mirror_flip(1U, 0U);
+    if (ret != OPRT_OK) {
+        pass = FALSE;
+        goto restore;
+    }
+    ret = test_mipi_camera_get_mirror_flip(&got_h, &got_v);
+    if (ret != OPRT_OK || got_h != 1U || got_v != 0U) {
+        tkl_log_output("mirror_test FAIL: get after set(1,0) h=%u v=%u ret=%d\r\n",
+                       got_h, got_v, ret);
+        pass = FALSE;
+        goto restore;
+    }
+    ret = test_mipi_camera_capture_mirror_sample(&frame, &h_sum, &h_left, &h_right);
+    if (ret != OPRT_OK) {
+        pass = FALSE;
+        goto restore;
+    }
+    tkl_log_output("mirror_test hmirror: sum=0x%08x left=0x%08x right=0x%08x\r\n",
+                   (unsigned int)h_sum, (unsigned int)h_left, (unsigned int)h_right);
+    if (h_sum == base_sum) {
+        tkl_log_output("mirror_test FAIL: hmirror checksum unchanged (flat scene or not applied)\r\n");
+        pass = FALSE;
+    } else {
+        tkl_log_output("mirror_test PASS: hmirror changed frame checksum\r\n");
+    }
+    if (base_left != 0U && base_right != 0U && h_left != 0U && h_right != 0U) {
+        /* Soft check: mirrored left edge should be closer to original right edge. */
+        uint32_t d_lr = (base_left > h_right) ? (base_left - h_right) : (h_right - base_left);
+        uint32_t d_ll = (base_left > h_left) ? (base_left - h_left) : (h_left - base_left);
+        if (d_lr < d_ll) {
+            tkl_log_output("mirror_test PASS: hmirror edge swap looks correct (d_lr=%u < d_ll=%u)\r\n",
+                           (unsigned int)d_lr, (unsigned int)d_ll);
+        } else {
+            tkl_log_output("mirror_test WARN: hmirror edge soft-check weak (d_lr=%u d_ll=%u), check scene\r\n",
+                           (unsigned int)d_lr, (unsigned int)d_ll);
+        }
+    }
+
+    /* Vertical flip */
+    ret = test_mipi_camera_set_mirror_flip(0U, 1U);
+    if (ret != OPRT_OK) {
+        pass = FALSE;
+        goto restore;
+    }
+    ret = test_mipi_camera_get_mirror_flip(&got_h, &got_v);
+    if (ret != OPRT_OK || got_h != 0U || got_v != 1U) {
+        tkl_log_output("mirror_test FAIL: get after set(0,1) h=%u v=%u ret=%d\r\n",
+                       got_h, got_v, ret);
+        pass = FALSE;
+        goto restore;
+    }
+    ret = test_mipi_camera_capture_mirror_sample(&frame, &v_sum, &v_left, &v_right);
+    if (ret != OPRT_OK) {
+        pass = FALSE;
+        goto restore;
+    }
+    tkl_log_output("mirror_test vflip: sum=0x%08x left=0x%08x right=0x%08x\r\n",
+                   (unsigned int)v_sum, (unsigned int)v_left, (unsigned int)v_right);
+    if (v_sum == base_sum || v_sum == h_sum) {
+        tkl_log_output("mirror_test FAIL: vflip checksum not distinct (flat scene or not applied)\r\n");
+        pass = FALSE;
+    } else {
+        tkl_log_output("mirror_test PASS: vflip changed frame checksum\r\n");
+    }
+
+    /* Both */
+    ret = test_mipi_camera_set_mirror_flip(1U, 1U);
+    if (ret != OPRT_OK) {
+        pass = FALSE;
+        goto restore;
+    }
+    ret = test_mipi_camera_get_mirror_flip(&got_h, &got_v);
+    if (ret != OPRT_OK || got_h != 1U || got_v != 1U) {
+        tkl_log_output("mirror_test FAIL: get after set(1,1) h=%u v=%u ret=%d\r\n",
+                       got_h, got_v, ret);
+        pass = FALSE;
+        goto restore;
+    }
+    ret = test_mipi_camera_capture_mirror_sample(&frame, &hv_sum, &hv_left, &hv_right);
+    if (ret != OPRT_OK) {
+        pass = FALSE;
+        goto restore;
+    }
+    tkl_log_output("mirror_test both: sum=0x%08x left=0x%08x right=0x%08x\r\n",
+                   (unsigned int)hv_sum, (unsigned int)hv_left, (unsigned int)hv_right);
+    if (hv_sum == base_sum) {
+        tkl_log_output("mirror_test FAIL: both mirror+flip checksum unchanged\r\n");
+        pass = FALSE;
+    } else {
+        tkl_log_output("mirror_test PASS: mirror+flip changed frame checksum\r\n");
+    }
+
+restore:
+    (void)test_mipi_camera_set_mirror_flip(saved_h, saved_v);
+    if (pass != TRUE) {
+        tkl_log_output("mirror_test FAILED\r\n");
+        return OPRT_COM_ERROR;
+    }
+    tkl_log_output("mirror_test ALL PASSED\r\n");
+    return OPRT_OK;
+}
+
+/**
+ * @brief Query ISP exposure luminance once
+ * @param[out] luminance optional output
+ * @return OPRT_OK on success
+ */
+static OPERATE_RET test_mipi_camera_get_luminance(UINT32_T *luminance)
+{
+    OPERATE_RET ret;
+    UINT32_T lum = 0U;
+
+    if (s_mipi_camera_started != true) {
+        tkl_log_output("luminance needs started camera\r\n");
+        return OPRT_RESOURCE_NOT_READY;
+    }
+
+    ret = tkl_camera_mipi_get_exposure_luminance(&lum);
+    if (ret != OPRT_OK) {
+        tkl_log_output("camera get_exposure_luminance failed: %d\r\n", ret);
+        return ret;
+    }
+
+    tkl_log_output("camera luminance=%u (meanLum*1000, range 0~%u)\r\n",
+                   (unsigned int)lum, (unsigned int)MIPI_TEST_LUMINANCE_MAX);
+    if (luminance != NULL) {
+        *luminance = lum;
+    }
+    return OPRT_OK;
+}
+
+/**
+ * @brief Sample exposure luminance repeatedly and validate range
+ * @param[in] count sample count
+ * @param[in] interval_ms delay between samples
+ * @return OPRT_OK if all samples succeed and stay in range
+ */
+static OPERATE_RET test_mipi_camera_luminance_test(UINT32_T count, UINT32_T interval_ms)
+{
+    OPERATE_RET ret;
+    UINT32_T i;
+    UINT32_T lum = 0U;
+    UINT32_T min_lum = 0xFFFFFFFFU;
+    UINT32_T max_lum = 0U;
+    UINT64_T sum = 0U;
+    BOOL_T pass = TRUE;
+
+    if (count == 0U) {
+        count = MIPI_TEST_LUMINANCE_DEFAULT_CNT;
+    }
+    if (interval_ms == 0U) {
+        interval_ms = MIPI_TEST_LUMINANCE_DEFAULT_MS;
+    }
+
+    tkl_log_output("luminance_test start, count=%u interval=%ums\r\n",
+                   (unsigned int)count, (unsigned int)interval_ms);
+
+    for (i = 0U; i < count; i++) {
+        ret = test_mipi_camera_get_luminance(&lum);
+        if (ret != OPRT_OK) {
+            pass = FALSE;
+            break;
+        }
+        if (lum > MIPI_TEST_LUMINANCE_MAX) {
+            tkl_log_output("luminance_test FAIL: sample[%u]=%u out of range\r\n",
+                           (unsigned int)i, (unsigned int)lum);
+            pass = FALSE;
+            break;
+        }
+        if (lum < min_lum) {
+            min_lum = lum;
+        }
+        if (lum > max_lum) {
+            max_lum = lum;
+        }
+        sum += (UINT64_T)lum;
+        if ((i + 1U) < count) {
+            tkl_system_sleep(interval_ms);
+        }
+    }
+
+    if (pass != TRUE) {
+        tkl_log_output("luminance_test FAILED\r\n");
+        return OPRT_COM_ERROR;
+    }
+
+    tkl_log_output("luminance_test PASS: samples=%u min=%u max=%u avg=%u\r\n",
+                   (unsigned int)count,
+                   (unsigned int)min_lum,
+                   (unsigned int)max_lum,
+                   (unsigned int)(sum / (UINT64_T)count));
+    return OPRT_OK;
+}
+
 void cli_tuya_mipi_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv)
 {
     OPERATE_RET ret;
@@ -1184,7 +1681,7 @@ void cli_tuya_mipi_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char 
 
     if (argc < 3) {
         snprintf(pcWriteBuffer, xWriteBufferLen,
-                 "Usage: xmipi lcd <open [panel]|open_gpu [panel] [compress]|flush|stop_flush|close>; xmipi camera <open [sw sh fps ow oh]|open_gpu [sw sh fps ow oh]|open_gpu_sp [sw sh fps ow oh spw sph]|start|switch <ow> <oh>|get_frame|stop|close>");
+                 "Usage: xmipi lcd <open [panel]|open_gpu [panel] [compress]|flush|stop_flush|close>; " MIPI_TEST_CAMERA_USAGE);
         return;
     }
 
@@ -1273,20 +1770,27 @@ void cli_tuya_mipi_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char 
             snprintf(pcWriteBuffer, xWriteBufferLen,
                      "xmipi camera open_gpu %s (%d)\r\n", (ret == OPRT_OK) ? "ok" : "failed", ret);
         } else if (os_strcmp(cmd, "open_gpu_sp") == 0) {
+            uint32_t sp_format = MIPI_TEST_FACE_SP_FORMAT;
+
+            if (argc >= 11 && os_strcmp(argv[10], "nv12") == 0) {
+                sp_format = BK_PIXEL_FORMAT_NV12;
+            }
+
             ret = test_mipi_camera_mipi_open_gpu_sp(sensor_width,
                                                    sensor_height,
                                                    sensor_fps,
                                                    output_width,
                                                    output_height,
                                                    sp_width,
-                                                   sp_height);
+                                                   sp_height,
+                                                   sp_format);
             snprintf(pcWriteBuffer, xWriteBufferLen,
                      "xmipi camera open_gpu_sp %s (%d), sp=%ux%u fmt=%u\r\n",
                      (ret == OPRT_OK) ? "ok" : "failed",
                      ret,
                      sp_width,
                      sp_height,
-                     (unsigned int)MIPI_TEST_FACE_SP_FORMAT);
+                     (unsigned int)sp_format);
         } else if (os_strcmp(cmd, "start") == 0) {
             ret = test_mipi_camera_mipi_start();
             snprintf(pcWriteBuffer, xWriteBufferLen,
@@ -1305,6 +1809,65 @@ void cli_tuya_mipi_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char 
                 snprintf(pcWriteBuffer, xWriteBufferLen,
                          "xmipi camera get_frame failed (%d)\r\n", ret);
             }
+        } else if (os_strcmp(cmd, "mirror") == 0) {
+            UINT8_T hmirror = 0U;
+            UINT8_T vflip = 0U;
+
+            if (argc < 4) {
+                ret = test_mipi_camera_get_mirror_flip(&hmirror, &vflip);
+                snprintf(pcWriteBuffer, xWriteBufferLen,
+                         "xmipi camera mirror get %s (%d), hmirror=%u vflip=%u\r\n",
+                         (ret == OPRT_OK) ? "ok" : "failed",
+                         ret,
+                         hmirror,
+                         vflip);
+            } else if (argc < 5) {
+                snprintf(pcWriteBuffer, xWriteBufferLen,
+                         "Usage: xmipi camera mirror [hmirror vflip]\r\n");
+            } else {
+                hmirror = (UINT8_T)((os_strtoul(argv[3], NULL, 10) != 0U) ? 1U : 0U);
+                vflip = (UINT8_T)((os_strtoul(argv[4], NULL, 10) != 0U) ? 1U : 0U);
+                ret = test_mipi_camera_set_mirror_flip(hmirror, vflip);
+                snprintf(pcWriteBuffer, xWriteBufferLen,
+                         "xmipi camera mirror set %s (%d), hmirror=%u vflip=%u\r\n",
+                         (ret == OPRT_OK) ? "ok" : "failed",
+                         ret,
+                         hmirror,
+                         vflip);
+            }
+        } else if (os_strcmp(cmd, "mirror_test") == 0) {
+            ret = test_mipi_camera_mirror_test();
+            snprintf(pcWriteBuffer, xWriteBufferLen,
+                     "xmipi camera mirror_test %s (%d)\r\n",
+                     (ret == OPRT_OK) ? "ok" : "failed",
+                     ret);
+        } else if (os_strcmp(cmd, "luminance") == 0 || os_strcmp(cmd, "lum") == 0) {
+            UINT32_T lum = 0U;
+
+            ret = test_mipi_camera_get_luminance(&lum);
+            if (ret == OPRT_OK) {
+                snprintf(pcWriteBuffer, xWriteBufferLen,
+                         "xmipi camera luminance ok (%d), luminance=%u\r\n",
+                         ret, (unsigned int)lum);
+            } else {
+                snprintf(pcWriteBuffer, xWriteBufferLen,
+                         "xmipi camera luminance failed (%d)\r\n", ret);
+            }
+        } else if (os_strcmp(cmd, "luminance_test") == 0 || os_strcmp(cmd, "lum_test") == 0) {
+            UINT32_T count = MIPI_TEST_LUMINANCE_DEFAULT_CNT;
+            UINT32_T interval_ms = MIPI_TEST_LUMINANCE_DEFAULT_MS;
+
+            if (argc >= 4) {
+                count = (UINT32_T)os_strtoul(argv[3], NULL, 10);
+            }
+            if (argc >= 5) {
+                interval_ms = (UINT32_T)os_strtoul(argv[4], NULL, 10);
+            }
+            ret = test_mipi_camera_luminance_test(count, interval_ms);
+            snprintf(pcWriteBuffer, xWriteBufferLen,
+                     "xmipi camera luminance_test %s (%d)\r\n",
+                     (ret == OPRT_OK) ? "ok" : "failed",
+                     ret);
         } else if (os_strcmp(cmd, "stop") == 0) {
             ret = test_mipi_camera_mipi_stop();
             snprintf(pcWriteBuffer, xWriteBufferLen,
@@ -1330,11 +1893,10 @@ void cli_tuya_mipi_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char 
             snprintf(pcWriteBuffer, xWriteBufferLen,
                      "xmipi camera close %s (%d)\r\n", (ret == OPRT_OK) ? "ok" : "failed", ret);
         } else {
-            snprintf(pcWriteBuffer, xWriteBufferLen,
-                     "Usage: xmipi camera <open [sw sh fps ow oh]|open_gpu [sw sh fps ow oh]|open_gpu_sp [sw sh fps ow oh spw sph]|start|switch <ow> <oh>|get_frame|stop|close>");
+            snprintf(pcWriteBuffer, xWriteBufferLen, "%s", MIPI_TEST_CAMERA_USAGE);
         }
     } else {
         snprintf(pcWriteBuffer, xWriteBufferLen,
-                 "Usage: xmipi lcd <open [panel]|open_gpu [panel] [compress]|flush|stop_flush|close>; xmipi camera <open [sw sh fps ow oh]|open_gpu [sw sh fps ow oh]|open_gpu_sp [sw sh fps ow oh spw sph]|start|switch <ow> <oh>|get_frame|stop|close>");
+                 "Usage: xmipi lcd <open [panel]|open_gpu [panel] [compress]|flush|stop_flush|close>; " MIPI_TEST_CAMERA_USAGE);
     }
 }

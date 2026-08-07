@@ -34,13 +34,9 @@
 #include "cache.h"
 #include "sys_ahbp_ll.h"
 #include "multicore_driver.h"
+#include <driver/dma.h>
 
 extern uint64_t check_IRQ_pending(void);
-
-static inline uint32_t bk_dma_check_chn_status(void)
-{
-	return 0U;
-}
 
 #define portNVIC_SYSTICK_CTRL_REG             ( *( ( volatile uint32_t * ) 0xe000e010 ) )
 #define portNVIC_SYSTICK_LOAD_REG             ( *( ( volatile uint32_t * ) 0xe000e014 ) )
@@ -556,7 +552,7 @@ void sys_hal_enter_cpu_wfi()
 			}
 
 #if CONFIG_CPU_HOTPLUG
-			bk_cpu_hp_offline(CPU1_CORE_ID);
+			bk_cpu_hp_offline(CPU3_CORE_ID);
 #endif
 
 			shared_info.pm_ap0_sleep_state = 1;
@@ -574,7 +570,7 @@ void sys_hal_enter_cpu_wfi()
 			portNVIC_SYSTICK_CTRL_REG = systick_ctrl_value;
 
 #if CONFIG_CPU_HOTPLUG
-			bk_cpu_hp_online(CPU1_CORE_ID);
+			bk_cpu_hp_online(CPU3_CORE_ID);
 #endif
 
 			sys_ahbp_ll_set_reg10_value(int_state0_31);
@@ -1162,6 +1158,10 @@ bk_err_t sys_hal_auxldo_enable(auxldo_sel_t auxldo_sel,uint32_t value)
 		default:
 			return BK_ERR_PARAM;
 	}
+	if(value != 0)
+	{
+		bk_delay_us(10);
+	}
 	return BK_OK;
 }
 uint32_t sys_hal_auxldo_enable_state_get(auxldo_sel_t auxldo_sel)
@@ -1334,14 +1334,4 @@ void sys_hal_low_power_hardware_init()
 
 	/*dco cali*/
 	sys_hal_dco_cali(DCO_CALIB_SPEED_240M);
-}
-
-void sys_hal_set_ota_finish(uint32_t value)
-{
-	aon_pmu_ll_set_r0_ota_finish(value);
-}
-
-uint32_t sys_hal_get_ota_finish(void)
-{
-	return aon_pmu_ll_get_r0_ota_finish();
 }

@@ -26,6 +26,9 @@
 #include "wpa_ctrl.h"
 #include "wpa_err.h"
 #include "main_none.h"
+#if CONFIG_P2P && CONFIG_P2P_SOFTAP_CHAN_ALIGN
+#include "wifi_v2.h"
+#endif
 
 beken_queue_t wpah_queue = NULL;
 static struct hapd_global s_hapd_global;
@@ -78,6 +81,19 @@ struct hostapd_config *hostapd_config_read(const char *fname)
 	conf->driver = wpa_drivers[0];
 	conf->last_bss = conf->bss[0];
 	conf->channel = g_ap_param_ptr->chann;
+
+#if CONFIG_P2P && CONFIG_P2P_SOFTAP_CHAN_ALIGN
+	if (!conf->channel) {
+		uint8_t ch = bk_wifi_p2p_go_get_channel();
+
+		if (!ch)
+			ch = bk_wifi_p2p_go_get_planned_channel();
+		if (ch)
+			conf->channel = ch;
+	}
+	if (!conf->channel)
+		conf->channel = bk_wlan_ap_get_default_channel();
+#endif
 
 	if (conf->channel >= 1 && conf->channel<= 14)
 		conf->hw_mode = HOSTAPD_MODE_IEEE80211G;
@@ -260,11 +276,15 @@ struct hostapd_config *hostapd_config_read(const char *fname)
 	//	bss->wpa_key_mgmt = WPA_KEY_MGMT_SAE;;
 	//	bss->ieee80211w = MGMT_FRAME_PROTECTION_OPTIONAL;
 	//}
-	if (g_ap_param_ptr->cipher_suite == BK_SECURITY_TYPE_WPA3_SAE) {
+#ifdef CONFIG_IEEE80211W_AP
+	if (g_ap_param_ptr->cipher_suite == WIFI_SECURITY_WPA3_SAE) {
 		bss->wpa_key_mgmt = WPA_KEY_MGMT_SAE;
-	} else if (g_ap_param_ptr->cipher_suite == BK_SECURITY_TYPE_WPA3_WPA2_MIXED) {
+		bss->ieee80211w = MGMT_FRAME_PROTECTION_REQUIRED;
+	} else if (g_ap_param_ptr->cipher_suite == WIFI_SECURITY_WPA3_WPA2_MIXED) {
 		bss->wpa_key_mgmt |= WPA_KEY_MGMT_SAE;
+		bss->ieee80211w = MGMT_FRAME_PROTECTION_REQUIRED;
 	}
+#endif
 	//WPA_LOGD("%s: wpa_key_mgmt 0x%x, cipher_suite %d\n", __func__,
 	//			bss->wpa_key_mgmt, g_ap_param_ptr->cipher_suite);
 
@@ -689,8 +709,9 @@ static int hostapd_config_fill(struct hostapd_config *conf,
 	} else if (os_strcmp(buf, "disassoc_low_ack") == 0) {
 		bss->disassoc_low_ack = atoi(pos);
 #ifdef CONFIG_SAE_AP
-	} else if (os_strcmp(buf, "sae_anti_clogging_threshold") == 0) {
-		bss->sae_anti_clogging_threshold = atoi(pos);
+	} else if (os_strcmp(buf, "sae_anti_clogging_threshold") == 0 ||
+			os_strcmp(buf, "anti_clogging_threshold") == 0) {
+		bss->anti_clogging_threshold = atoi(pos);
 	} else if (os_strcmp(buf, "sae_groups") == 0) {
 		if (hostapd_parse_intlist(&bss->sae_groups, pos)) {
 			wpa_printf(MSG_ERROR,

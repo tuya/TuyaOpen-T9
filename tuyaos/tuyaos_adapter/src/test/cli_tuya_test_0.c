@@ -155,7 +155,12 @@ static void cli_system_info_cmd(char *pcWriteBuffer, int xWriteBufferLen, int ar
     __get_flash_id();
 
     uint8_t dev_id[EFUSE_DEVICE_ID_BYTE_NUM];
-    bk_otp_apb_read(OTP_DEVICE_ID, dev_id, EFUSE_DEVICE_ID_BYTE_NUM);
+    bk_err_t ret = bk_otp_ahb_read(OTP_DEVICE_ID, dev_id, EFUSE_DEVICE_ID_BYTE_NUM);
+    if (ret != BK_OK) {
+        shell_assert_out(1, "read chip id failed, error: %d\r\n", ret);
+        return;
+    }
+    shell_assert_out(1, "read chip id success, error: %d\r\n", ret);
     shell_assert_out(1, "chip id: 0x%02x%02x%02x%02x%02x, %d\r\n",
             dev_id[0], dev_id[1], dev_id[2], dev_id[3], dev_id[4], OTP_DEVICE_ID);
 

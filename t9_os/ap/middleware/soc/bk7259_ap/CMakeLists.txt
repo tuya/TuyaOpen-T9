@@ -33,7 +33,6 @@ list(APPEND srcs
 	"misc/stack_base.c"
 	"vt_relocate.c"
 	"soc_init.c"
-	"misc/soc_flash_dump.c"
 	"hal/psram_ll.c"
 	"hal/pwm_hal_debug.c"
 	"hal/timer_hal_debug.c"
@@ -75,6 +74,7 @@ list(APPEND srcs
 	#"hal/scr_hal.c"
 	#"hal/scr_hal_debug.c"
 	"hal/spi_hal.c"
+	"hal/i3c_hal.c"
 	"hal/qspi_hal.c"
 	#"hal/can_hal_debug.c"
 	#"hal/irda_hal.c"
@@ -88,6 +88,14 @@ list(APPEND srcs
 if (CONFIG_MAILBOX_V2_0)
 list(APPEND srcs
 	"hal/mbox0_hal.c"
+)
+endif()
+
+# Crash-dump-to-flash writer: only build when the dump output method is Flash.
+# Avoids pulling in the BK_PARTITION_OTA reference when dumps go to UART.
+if (CONFIG_DUMP_BY_FLASH)
+list(APPEND srcs
+	"misc/soc_flash_dump.c"
 )
 endif()
 
@@ -137,7 +145,7 @@ add_custom_command(
 			-I ${armino_path}/middleware/boards/${target}/partitions
 			-I $ENV{SECURITY_PREBUILD_DIR}/
 			-I $ENV{PARTITIONS_DIR}
-	MAIN_DEPENDENCY ${LD_DIR}/${target}.ld ${sdkconfig_header}
+	MAIN_DEPENDENCY ${LD_FILE} ${sdkconfig_header}
 	DEPENDS ${ld_header_dependencies}
 	COMMENT "Generating linker script..."
 	VERBATIM)

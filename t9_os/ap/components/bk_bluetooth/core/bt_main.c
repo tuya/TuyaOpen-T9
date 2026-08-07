@@ -14,11 +14,15 @@
 
 #include "os/os.h"
 #include "components/bluetooth/bk_dm_bluetooth.h"
+#include <components/system.h>
 #include <components/log.h>
+
 #if CONFIG_BLUETOOTH_HOST_ONLY
-#include "bt_os_adapter.h"
 #include "bluetooth_internal.h"
+#if !CONFIG_BLE_MESH_ZEPHYR
+#include "bt_os_adapter.h"
 #include "hal_hci_core.h"
+#endif
 #endif
 #if CONFIG_BLUETOOTH_SUPPORT_IPC
 #include "bt_ipc_core.h"
@@ -98,6 +102,7 @@ bt_err_t bk_bluetooth_init(void)
     bk_enable_bt();
 
 #if CONFIG_BLUETOOTH_HOST_ONLY
+#if !CONFIG_BLE_MESH_ZEPHYR
     ret = bk_bt_os_adapter_init();
     if (ret)
     {
@@ -125,6 +130,7 @@ bt_err_t bk_bluetooth_init(void)
         }
     }
 #endif
+#endif //!CONFIG_BLE_MESH_ZEPHYR
 
     ret = bluetooth_host_init();
     if (ret)
@@ -135,7 +141,7 @@ bt_err_t bk_bluetooth_init(void)
 
 #endif
 
-#if CONFIG_BLUETOOTH_SUPPORT_AP_PWD_ALL || CONFIG_BLUETOOTH_HOST_ONLY
+#if CONFIG_BLUETOOTH_SUPPORT_AP_PWD_ALL || (CONFIG_BLUETOOTH_HOST_ONLY && !CONFIG_BLE_MESH_ZEPHYR)
 #if defined (CONFIG_BLE_AT_ENABLE) && defined(CONFIG_BLE)
     extern void ble_at_cmd_init(void);
     ble_at_cmd_init();
@@ -179,7 +185,9 @@ bt_err_t bk_bluetooth_deinit(void)
         return ret;
     }
 
+#if !CONFIG_BLE_MESH_ZEPHYR
     hal_hci_driver_close();
+#endif
 #endif
 
     bk_disable_bt();
@@ -236,6 +244,25 @@ ble_err_t bk_ble_tx_power_set(float pwr_gain)
     os_memcpy(&cmd_data[2], &pwr_gain , 4);
     bt_ipc_hci_send_vendor_cmd(cmd_data, sizeof(cmd_data));
     return 0;
+}
+
+void bk_ble_dut_start(uint8_t uart_id)
+{
+    uint8_t cmd_data[3];
+
+    cmd_data[0] = BT_VENDOR_SUB_OPCODE_BLE_DUT_START >> 8;
+    cmd_data[1] = BT_VENDOR_SUB_OPCODE_BLE_DUT_START & 0xff;
+    cmd_data[2] = uart_id;
+    bt_ipc_hci_send_vendor_cmd(cmd_data, sizeof(cmd_data));
+}
+
+void bk_ble_dut_stop(void)
+{
+    uint8_t cmd_data[2];
+
+    cmd_data[0] = BT_VENDOR_SUB_OPCODE_BLE_DUT_STOP >> 8;
+    cmd_data[1] = BT_VENDOR_SUB_OPCODE_BLE_DUT_STOP & 0xff;
+    bt_ipc_hci_send_vendor_cmd(cmd_data, sizeof(cmd_data));
 }
 #endif
 

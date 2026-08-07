@@ -40,7 +40,22 @@ The follow four shared memory address area mapping to the same physical memory
 
 __AP_APP_IRAM_OFFSET = 0x0; /* 0x20000000;*/
 
-__AP_APP_IRAM_BASE = CONFIG_AP_RAM_ADDR - __AP_APP_IRAM_OFFSET;  /*0x08100000 = 0x28100000 - __CP_APP_IRAM_OFFSET*/
+#if CONFIG_SRAM_DIRECT_ADDR
+__AP_APP_RAM_OFFSET = 0x04000000;
+#else
+__AP_APP_RAM_OFFSET = 0x0;
+#endif
+
+#if CONFIG_SPE
+__AP_SWAP_NS_OFFSET = 0x0;
+#else
+__AP_SWAP_NS_OFFSET = 0x10000000;
+#endif
+
+__AP_APP_RAM_BASE = CONFIG_AP_RAM_ADDR + __AP_APP_RAM_OFFSET;
+__AP_SWAP_BASE = CONFIG_SWAP_ADDR + __AP_SWAP_NS_OFFSET + __AP_APP_RAM_OFFSET;
+
+__AP_APP_IRAM_BASE = __AP_APP_RAM_BASE - __AP_APP_IRAM_OFFSET;
 __AP_APP_IRAM_SIZE = CONFIG_AP_RAM_SIZE;
 
 MEMORY
@@ -48,8 +63,8 @@ MEMORY
   FLASH (rx)            : ORIGIN = (SOC_FLASH_DATA_BASE + CONFIG_AP_VIRTUAL_PARTITION_OFFSET), LENGTH = CONFIG_AP_VIRTUAL_PARTITION_SIZE
   IRAM (rx)             : ORIGIN = __AP_APP_IRAM_BASE, LENGTH = __AP_APP_IRAM_SIZE
 
-  RAM (rwx)             : ORIGIN = CONFIG_AP_RAM_ADDR, LENGTH = CONFIG_AP_RAM_SIZE
-  SWAP (rwx)            : ORIGIN = CONFIG_SWAP_ADDR, LENGTH = CONFIG_SWAP_SIZE
+  RAM (rwx)             : ORIGIN = __AP_APP_RAM_BASE, LENGTH = CONFIG_AP_RAM_SIZE
+  SWAP (rwx)            : ORIGIN = __AP_SWAP_BASE, LENGTH = CONFIG_SWAP_SIZE
 
   DTCM (rwx)            : ORIGIN = SOC_DTCM_DATA_BASE + 0, LENGTH = CONFIG_DTCM_SIZE
 #if CONFIG_PSRAM
@@ -233,6 +248,10 @@ SECTIONS
         LONG (__data_start__)
         LONG ((__data_end__ - __data_start__) / 4)
 
+        LONG (__sram_spinlock_flash_begin)
+        LONG (__sram_spinlock_start__)
+        LONG ((__sram_spinlock_end__ - __sram_spinlock_start__) / 4)
+
         LONG (__dtcm_content)
         LONG (__dtcm_start__)
         LONG ((__dtcm_end__ - __dtcm_start__) / 4)
@@ -272,6 +291,7 @@ SECTIONS
         PROVIDE(__dtcm_content = LOADADDR(.dtcm));
         __dtcm_start__ = .;
 
+#if CONFIG_SPE
         . = ALIGN(512);
         KEEP(*(.vectors_iram))
 
@@ -296,11 +316,13 @@ SECTIONS
         *(.dtcm_section*)
         *(.dtcm_sec_data*)
         . = ALIGN(4);
+#endif
 
 
         __dtcm_end__ = .;
     } > DTCM AT > FLASH
 
+#if CONFIG_SPE
     /* NOLOAD DTCM region: scratch buffers that need no init value.
      * Not in copy.table (no flash copy) and not in zero.table, so it adds
      * nothing to boot-time b_data_copy_dtcm(). */
@@ -310,6 +332,7 @@ SECTIONS
         *(.dtcm_noinit*)
         . = ALIGN(4);
     } > DTCM
+#endif
 
     .iram :
     {
@@ -318,6 +341,16 @@ SECTIONS
         __iram_start__ = .;
         *(.iram)
         . = ALIGN(4);
+
+#if !CONFIG_SPE
+        __itcm_start__ = .;
+        *(.itcm)
+        *(.itcm_section*)
+        *(.itcm_sec_code*)
+        *(.interrupt)
+        __itcm_end__ = .;
+        . = ALIGN(4);
+#endif
 
         __iram_end__ = .;
     } > IRAM AT > FLASH
@@ -328,13 +361,31 @@ SECTIONS
         . = ALIGN(512);
     } > RAM AT > FLASH
 
+#if CONFIG_SPE
     .data :
+#else
+    .data (ORIGIN(RAM) + 0x1000) :
+#endif
     {
         PROVIDE(__etext = LOADADDR(.data));
         PROVIDE(__data_flash_begin = LOADADDR(.data));
 
         . = ALIGN(4);
         __data_start__ = .;
+
+#if !CONFIG_SPE
+#if CONFIG_SOC_SMP
+        __vector_core1_table = .;
+        KEEP(*(.vectors_core1))
+
+        . = ALIGN(512);
+#endif
+        KEEP(*(.vectors_iram))
+
+        *(.dtcm)
+        *(.dtcm_section*)
+        *(.dtcm_sec_data*)
+#endif
 
 #ifdef CONFIG_GCOV
         /* added in template for gcov: */
@@ -344,7 +395,6 @@ SECTIONS
         PROVIDE_HIDDEN (__init_array_end = .);
         . = ALIGN(4);
 #endif
-        *(.sram_spinlock_section)
         *(.data)
         *(".data.*")
         *(.sdata)
@@ -359,6 +409,16 @@ SECTIONS
     _data_ram_begin = __data_start__;
     _data_ram_end = .;
 
+    .sram_spinlock_section :
+    {
+        PROVIDE(__sram_spinlock_flash_begin = LOADADDR(.sram_spinlock_section));
+        . = ALIGN(4);
+        __sram_spinlock_start__ = .;
+        *(.sram_spinlock_section)
+        . = ALIGN(4);
+        __sram_spinlock_end__ = .;
+    } > RAM AT > FLASH
+
     .uninitialized (NOLOAD):
     {
         . = ALIGN(32);
@@ -367,6 +427,9 @@ SECTIONS
         *(".uninitialized.*")
         *(.noinit)
         *(.noinit*)
+#if !CONFIG_SPE
+        *(.dtcm_noinit*)
+#endif
         KEEP(*(.keep.uninitialized))
         . = ALIGN(32);
         __uninitialized_end = .;
@@ -546,6 +609,17 @@ SECTIONS
      * size of stack_dummy section */
     __MSPTop = ORIGIN(RAM) + LENGTH(RAM);
     __MSPLimit = __MSPTop - __MSP_STACK_SIZE;
+
+    #if (CONFIG_SOC_SMP && !CONFIG_SPE)
+        /* The secure boot shim branches core1 to this fixed Non-Secure vector; keep
+        * it in sync with AP_CORE1_NS_VECTOR in the secure world. */
+        ASSERT((__iram_end__ <= ORIGIN(RAM) + 0x1000), "AP IRAM overlaps core1 vector")
+    #if CONFIG_SRAM_DIRECT_ADDR
+        ASSERT((__vector_core1_table == 0x3C181000), "AP core1 NS vector moved: update AP_CORE1_NS_VECTOR")
+    #else
+        ASSERT((__vector_core1_table == 0x38181000), "AP core1 NS vector moved: update AP_CORE1_NS_VECTOR")
+    #endif
+    #endif
 
     ASSERT((s_rom_end < ORIGIN(FLASH) + LENGTH(FLASH)), "ROM overflow!!!")
     ASSERT(((ORIGIN(RAM) + LENGTH(RAM)) > (_heap_start + __MSP_STACK_SIZE + 8)), "Stack overflowed with bss")

@@ -35,12 +35,6 @@
 #define RBL_HEAD_POS            (0x1000)
 #define RT_OTA_HASH_FNV_SEED    (0x811C9DC5)
 
-/** @brief   This macro defines the status of the download.  */
-#if CONFIG_OTA_EVADE_METHOD
-#define DOWNLOAD_STATUS_POS			(12)
-#define DOWNLOAD_START_FLAG			(0xFE)
-#define DOWNLOAD_SUCCESS_FLAG		(0xFC)
-#endif
 /**
  * OTA firmware encryption algorithm and compression algorithm
  */
@@ -103,6 +97,14 @@ int bk_ota_process_data(char*receive_data, uint32_t len, uint32_t received, uint
 int ota_get_init_status(void);
 int ota_do_init_operation(void);
 void ota_do_deinit_operation(void);
+/* Success-finalize point for every transport: runs the backend finish hook
+ * before deinit + reboot. Transports call this instead of deinit+bk_reboot(). */
+void bk_ota_finish_and_reboot(void);
+#if CONFIG_SECURE_OTA_XIP
+/* Secure DIRECT_XIP A/B OTA back-end (ota_secure_xip.c), selected in
+ * ota_do_init_operation() in place of the default non-secure back-end. */
+const f_ota_func_t *bk_ota_secure_xip_backend(void);
+#endif
 int ota_do_open_sysfile(void);
 void ota_do_umount_sysfile(void);
 ota_wr_destination_t ota_get_dest_id(void);

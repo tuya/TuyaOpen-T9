@@ -10,6 +10,7 @@ set(incs
 	hal
 	./
 	./misc
+	../../../components/bk_pm/include
 	)
 set(srcs "misc/stub.c")
 
@@ -33,7 +34,6 @@ list(APPEND srcs
 	"misc/stack_base.c"
 	"vt_relocate.c"
 	"soc_init.c"
-	"misc/soc_flash_dump.c"
 	"hal/psram_ll.c"
 	"hal/pwm_hal_debug.c"
 	"hal/timer_hal_debug.c"
@@ -51,8 +51,6 @@ list(APPEND srcs
 	"hal/efuse_hal_debug.c"
 	# "hal/adc_hal_debug.c"
 	# "hal/adc_ll.c"
-	"hal/spi_hal_debug.c"
-	"hal/spi_ll.c"
 	"hal/sys_hal.c"
 	"hal/sys_hal_debug.c"
 	# "hal/sys_aonp_hal_debug.c"
@@ -61,7 +59,6 @@ list(APPEND srcs
 	"hal/sys_pm_hal_ctrl.c"
 	"hal/sys_pm_hal_debug.c"
 	#"hal/i2s_hal_debug.c"
-	"hal/i2c_hal_debug.c"
 	# "hal/jpeg_hal_debug.c"
 	# "hal/jpeg_ll.c"
 	"hal/flash_hal_debug.c"
@@ -69,17 +66,12 @@ list(APPEND srcs
 	"hal/aon_pmu_hal.c"
 	"hal/aon_pmu_hal_debug.c"
 	#"hal/sdio_hal_debug.c"
-	"hal/qspi_hal_debug.c"
 	"hal/i2s_hal.c"
 	"hal/ckmn_hal_debug.c"
 	"hal/lin_hal_debug.c"
 	"hal/scr_hal.c"
 	"hal/scr_hal_debug.c"
-	"hal/spi_hal.c"
-	"hal/qspi_hal.c"
-	"hal/can_hal_debug.c"
 	"hal/irda_hal.c"
-	"hal/i3c_hal.c"
 	"hal/mcheck_hal.c"
 	"hal/multicore_hal.c"
 	"hal/wwdt_hal.c"
@@ -89,6 +81,14 @@ list(APPEND srcs
 if (CONFIG_MAILBOX_V2_0)
 list(APPEND srcs
 	"hal/mbox0_hal.c"
+)
+endif()
+
+# Crash-dump-to-flash writer: only build when the dump output method is Flash.
+# Avoids pulling in the BK_PARTITION_OTA reference when dumps go to UART.
+if (CONFIG_DUMP_BY_FLASH)
+list(APPEND srcs
+	"misc/soc_flash_dump.c"
 )
 endif()
 

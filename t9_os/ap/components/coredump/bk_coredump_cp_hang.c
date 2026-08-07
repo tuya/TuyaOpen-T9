@@ -14,6 +14,7 @@
 #include "sys_sw_regs.h"
 
 #if CONFIG_SUPPORT_WWDT
+#include <driver/wwdt.h>
 #include "wwdt_driver.h"
 #endif
 
@@ -22,8 +23,13 @@
 #define CP_HANG_MONITOR_STACK_SIZE 2048U
 #define CP_HANG_MONITOR_PRIORITY (BEKEN_DEFAULT_WORKER_PRIORITY - 1)
 #define CP_HANG_MONITOR_CHECK_MS 500U
+/* A monitor loop gap this much larger than the fixed check interval means the AP
+ * core was powered off (LV/deep sleep) and just resumed: rtos_get_time() jumped. */
+#define CP_HANG_MONITOR_WAKE_JUMP_MS (CP_HANG_MONITOR_CHECK_MS * 3U)
 #define CP_HANG_TIMEOUT_MARGIN_MS 2000U
 #define CP_HANG_TIMEOUT_FALLBACK_MS 6000U
+#define CP_HANG_TIMEOUT_MIN_MS (CONFIG_CP_HANG_DUMP_BY_AP_PERIOD_MS + 500U)
+#define CP_HANG_TIMEOUT_MAX_MS (UINT16_MAX)
 #define CP_HANG_AON_WDT_PERIOD_MAX 0x00ffffffU
 #define CP_HANG_AON_WDT_KEY_1ST 0x5aU
 #define CP_HANG_AON_WDT_KEY_2ND 0xa5U
@@ -52,9 +58,23 @@ static void cp_hang_set_ap_dumping(uint32_t value)
 	bk_sys_sw_regs_set_ap_cp_hang_dumping(value);
 }
 
+static inline uint32_t cp_hang_effective_timeout_ms(void)
+{
+	uint32_t timeout_ms = s_cp_hang_state.timeout_ms;
+
+	if (timeout_ms < CP_HANG_TIMEOUT_MIN_MS) {
+		timeout_ms = CP_HANG_TIMEOUT_MIN_MS;
+	}
+	if (timeout_ms > CP_HANG_TIMEOUT_MAX_MS) {
+		timeout_ms = CP_HANG_TIMEOUT_MAX_MS;
+	}
+
+	return timeout_ms;
+}
+
 __attribute__((weak)) void bk_cp_hang_dump_by_ap_feed_aon_wdt(void)
 {
-	uint32_t period_ms = (uint32_t)s_cp_hang_state.timeout_ms + CP_HANG_TIMEOUT_MARGIN_MS;
+	uint32_t period_ms = cp_hang_effective_timeout_ms() + CP_HANG_TIMEOUT_MARGIN_MS;
 	uint32_t ctrl_val;
 
 	if (period_ms > CP_HANG_AON_WDT_PERIOD_MAX) {
@@ -84,9 +104,6 @@ static inline uint32_t cp_hang_elapsed(uint32_t now, uint32_t last)
 
 static inline void cp_hang_feed_watchdog(void)
 {
-#if CONFIG_SUPPORT_WWDT
-	bk_wwdt_force_feed();
-#endif
 	bk_cp_hang_dump_by_ap_feed_aon_wdt();
 }
 
@@ -145,7 +162,7 @@ static void cp_hang_dump_window(const char *name, uint32_t start, uint32_t size)
 static void cp_hang_dump_observer_context(uint32_t now)
 {
 	uint32_t last_tick = s_cp_hang_state.last_tick;
-	uint16_t timeout_ms = s_cp_hang_state.timeout_ms;
+	uint16_t timeout_ms = (uint16_t)cp_hang_effective_timeout_ms();
 	uint8_t src_cpu = s_cp_hang_state.src_cpu;
 
 	bk_coredump_write_prompt("***********************************************************************************************\r\n");
@@ -286,6 +303,9 @@ static void cp_hang_dump_from_ap(uint32_t now)
 		now = cp_hang_now();
 	}
 
+#if CONFIG_SUPPORT_WWDT
+	bk_wwdt_driver_deinit();
+#endif
 	cp_hang_feed_watchdog();
 	rtos_disable_int();
 	cp_hang_stop_other_ap_cores();
@@ -319,28 +339,50 @@ static void cp_hang_dump_from_ap(uint32_t now)
 
 static void cp_hang_monitor_task(void *param)
 {
+	uint32_t last_check;
+
 	(void)param;
+
+	last_check = cp_hang_now();
 
 	while (1) {
 		uint32_t now;
 		uint32_t last_tick;
+		uint32_t loop_gap;
 
 		rtos_delay_milliseconds(CP_HANG_MONITOR_CHECK_MS);
+
+		now = cp_hang_now();
+		/* AP self power-down / LV deep-sleep guard: while the AP core is powered
+		 * off the monitor task cannot be scheduled, so on resume rtos_get_time()
+		 * jumps far past the fixed check interval. During that window the CP has
+		 * deliberately paused its heartbeat (it waits for "AP power on"), so a
+		 * stale last_tick must NOT be treated as a CP timeout. Rebase the
+		 * heartbeat reference to now and grant one full timeout window of grace. */
+		loop_gap = cp_hang_elapsed(now, last_check);
+		last_check = now;
+		if (loop_gap > CP_HANG_MONITOR_WAKE_JUMP_MS) {
+			s_cp_hang_state.last_tick = now;
+			continue;
+		}
 
 		if ((s_cp_hang_state.seen == 0U) || (s_cp_hang_state.dumping != 0U)) {
 			continue;
 		}
 
-		now = cp_hang_now();
 		last_tick = s_cp_hang_state.last_tick;
-		if (cp_hang_elapsed(now, last_tick) < s_cp_hang_state.timeout_ms) {
+		if (cp_hang_elapsed(now, last_tick) < cp_hang_effective_timeout_ms()) {
 			continue;
 		}
 
 		s_cp_hang_state.dumping = 1U;
 		s_cp_hang_state.timeout_tick = now;
+		/* Publish "AP is taking over due to CP hang" before any logging so the
+		 * shell log path stops forwarding to the (dead) CP over the mailbox and
+		 * the dump can go straight out the UART. */
+		cp_hang_set_ap_dumping(1U);
 		BK_LOGE(CP_HANG_TAG, "CP heartbeat timeout: last=%u now=%u timeout=%u src=%u\r\n",
-			last_tick, now, s_cp_hang_state.timeout_ms, s_cp_hang_state.src_cpu);
+			last_tick, now, (unsigned)cp_hang_effective_timeout_ms(), s_cp_hang_state.src_cpu);
 		cp_hang_dump_from_ap(now);
 	}
 }

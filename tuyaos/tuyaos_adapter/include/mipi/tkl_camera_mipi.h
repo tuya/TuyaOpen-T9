@@ -32,6 +32,8 @@ typedef struct {
     UINT16_T sensor_height;
     UINT8_T sensor_fps;
     UINT32_T sensor_input_format;   /* bk_pixel_format_t, default RAW10 */
+    UINT8_T hmirror;                /* Horizontal mirror: 0=off, 1=on */
+    UINT8_T vflip;                  /* Vertical flip: 0=off, 1=on */
 
     UINT16_T output_width;
     UINT16_T output_height;
@@ -59,6 +61,8 @@ typedef struct {
     UINT16_T height;
     UINT32_T format;                /* bk_pixel_format_t */
     UINT8_T channel_id;             /* TUYA_CAMERA_MIPI_CHANNEL_*, default MP */
+    UINT32_T y_stride;              /* bytes per Y/RGB row in buffer after get_frame */
+    UINT32_T uv_stride;             /* bytes per UV row for NV12; 0 if N/A */
 } TUYA_CAMERA_MIPI_FRAME_T;
 
 typedef struct {
@@ -78,6 +82,29 @@ OPERATE_RET tkl_camera_mipi_deinit(void);
 OPERATE_RET tkl_camera_mipi_start(void);
 OPERATE_RET tkl_camera_mipi_stop(void);
 OPERATE_RET tkl_camera_mipi_set_output(UINT16_T width, UINT16_T height);
+/**
+ * @brief Set sensor horizontal mirror and vertical flip
+ * @param[in] hmirror 0=off, non-zero=on
+ * @param[in] vflip 0=off, non-zero=on
+ * @return OPRT_OK on success
+ * @note If camera has started, applies immediately via sensor registers.
+ *       If not started yet, values are saved and applied on next start.
+ */
+OPERATE_RET tkl_camera_mipi_set_mirror_flip(UINT8_T hmirror, UINT8_T vflip);
+/**
+ * @brief Get current mirror/flip config
+ * @param[out] hmirror current hmirror (0/1), may be NULL
+ * @param[out] vflip current vflip (0/1), may be NULL
+ * @return OPRT_OK on success
+ */
+OPERATE_RET tkl_camera_mipi_get_mirror_flip(UINT8_T *hmirror, UINT8_T *vflip);
+/**
+ * @brief Get ISP weighted mean exposure luminance
+ * @param[out] luminance mean luminance scaled by 1000 (typical range 0~255000)
+ * @return OPRT_OK on success
+ * @note Requires camera started. Wraps BK_CAM_IOCTL_GET_EXPOSURE_LUMINANCE.
+ */
+OPERATE_RET tkl_camera_mipi_get_exposure_luminance(UINT32_T *luminance);
 OPERATE_RET tkl_camera_mipi_get_frame(TUYA_CAMERA_MIPI_FRAME_T *frame);
 OPERATE_RET tkl_camera_mipi_get_isp_handle(VOID **isp_handle);
 OPERATE_RET tkl_camera_mipi_get_flexa_source(TUYA_CAMERA_MIPI_FLEXA_SOURCE_T *source);

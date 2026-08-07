@@ -101,9 +101,17 @@
 #if CONFIG_AT_DATA_MODE
 #define SHELL_CMD_BUF_LEN		4096
 #else
+#if CONFIG_OPENTHREAD
+#define SHELL_CMD_BUF_LEN		256
+#else
 #define SHELL_CMD_BUF_LEN		200
 #endif
+#endif
+#if CONFIG_OPENTHREAD
+#define SHELL_RSP_BUF_LEN		256
+#else
 #define SHELL_RSP_BUF_LEN		140
+#endif
 #define SHELL_IND_BUF_LEN		132
 
 #define SHELL_RSP_QUEUE_ID	    (7)
@@ -826,9 +834,39 @@ static int log_tx_complete(u8 *pbuf, u16 buf_tag)
 		if( ( buf_tag != block_tag ) || (blk_id >= free_q->blk_num) ||
 			( (&free_q->log_buf[blk_id * free_q->blk_len]) != pbuf) )
 		{
-			/* something wrong!!! */
-			/*        FAULT !!!!      */
-			shell_assert_out(bTRUE, "FATAL:%x,%x\r\n", buf_tag, block_tag);
+			/* The finished block is not at the FIFO head. This happens when
+			 * forwarded (cross-core) logs interleave with local ones, so their
+			 * TX completions can arrive out of enqueue order. Recover instead of
+			 * dropping the block: locate it in the busy queue, remove it, and
+			 * free it so logging keeps running. */
+			if( (blk_id < free_q->blk_num) &&
+				((&free_q->log_buf[blk_id * free_q->blk_len]) == pbuf) )
+			{
+				u16 in_flight = SHELL_LOG_BUSY_NUM - log_busy_queue.free_cnt;
+				u16 idx = log_busy_queue.list_out_idx;
+				for(u16 n = 0; n < in_flight; n++)
+				{
+					if(log_busy_queue.blk_list[idx] == buf_tag)
+					{
+						u16 cur = idx;
+						for(u16 m = n; (m + 1) < in_flight; m++)
+						{
+							u16 nxt = ((cur + 1) < SHELL_LOG_BUSY_NUM) ? (cur + 1) : 0;
+							log_busy_queue.blk_list[cur] = log_busy_queue.blk_list[nxt];
+							cur = nxt;
+						}
+						log_busy_queue.list_in_idx = (log_busy_queue.list_in_idx == 0) ?
+							(SHELL_LOG_BUSY_NUM - 1) : (log_busy_queue.list_in_idx - 1);
+						log_busy_queue.free_cnt++;
+						free_log_blk(buf_tag);
+						if (log_buf_semaphore != NULL) {
+							rtos_set_semaphore(&log_buf_semaphore);
+						}
+						return 1;
+					}
+					idx = ((idx + 1) < SHELL_LOG_BUSY_NUM) ? (idx + 1) : 0;
+				}
+			}
 
 			return -1;
 		}
@@ -1861,23 +1899,23 @@ static int get_fwd_blk_id(void)
 static void fwd_mb_log_state(void)
 {
 	int ret = 0;
-	int blk_id = get_fwd_blk_id();
-	if (blk_id < 0) {
-		return;
+	int blk_id;
+
+	while ((blk_id = get_fwd_blk_id()) >= 0) {
+		int try_cnt = FORWARD_TRY_COUNT;
+		do {
+			ret = result_fwd(blk_id);
+			try_cnt--;
+			if (ret) {
+				break;
+			}
+			if (try_cnt == 0) {
+				shell_assert_out(1, "Error: forward mb log state fail! blk: %x\r\n", blk_id);
+				break;
+			}
+			rtos_delay_milliseconds(SHELL_LOG_FWD_WAIT_TIME);
+		} while (1);
 	}
-	int try_cnt = FORWARD_TRY_COUNT;
-	do {
-		ret = result_fwd(blk_id);
-		try_cnt--;
-		if (ret) {
-			break;
-		}
-		if (try_cnt == 0) {
-			shell_assert_out(1, "Error: forward mb log state fail! blk: %x\r\n", blk_id);
-			break;
-		}
-		rtos_delay_milliseconds(SHELL_LOG_FWD_WAIT_TIME);
-	} while (1);
 }
 
 static void output_mb_log_ex(void)
@@ -1945,7 +1983,6 @@ void shell_task( void *para )
 
 		if(Events & SHELL_EVENT_RX_IND)
 		{
-			wakeup_process();
 			rx_ind_process();
 		}
 
@@ -2554,9 +2591,11 @@ int shell_cmd_forward(char *cmd, u16 cmd_len)
 	    if(try_cnt < 4)
 	        continue;
 	    else
+	    {
 	        return 0;
+	    }
 	}
-	
+
 	rtos_get_semaphore(&cmd_line_buf.cmd_fwd_semaphore, SHELL_WAIT_OUT_TIME);
 	return ret_code;
 }

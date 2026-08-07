@@ -56,13 +56,6 @@ if(CONFIG_MAILBOX)
 	endif()
 endif()
 
-if(CONFIG_QSPI)
-	list(APPEND srcs
-		"hal/qspi_hal.c"
-	)
-endif()
-
-
 if(CONFIG_AON_RTC)
 	list(APPEND srcs
 		"hal/aon_rtc_hal_64bit.c"
@@ -123,12 +116,6 @@ endif()
 if(CONFIG_IPI)
 	list(APPEND srcs
 		"hal/ipi_hal.c"
-	)
-endif()
-
-if(CONFIG_CAN) 
-	list(APPEND srcs 
-		"hal/can_hal.c" 
 	)
 endif()
 

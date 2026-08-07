@@ -71,8 +71,10 @@
  *         standalone application that drove this pipeline first.
  */
 
- #include "os/os.h"
- #include "os/mem.h"
+#include <stdint.h>
+
+#include "os/os.h"
+#include "os/mem.h"
  
  #include "components/avdk_utils/avdk_check.h"
  #include "components/bk_decode/bk_h264_decode_ctlr.h"
@@ -84,7 +86,21 @@
  #include "components/bk_gpu_types.h"
  #include "components/bk_video_player/bk_video_player_types.h"
  #include "components/bk_video_player/video_decoder/bk_video_player_hw_h264_decoder.h"
+ #include <soc/soc.h>
  
+#if defined(H264_FLEXA_RAW_ARGB8888_ENABLE) && defined(VIDEO_PLAY_H264_FLEXA_RAW_ARGB8888_ENABLE) && \
+    (H264_FLEXA_RAW_ARGB8888_ENABLE != VIDEO_PLAY_H264_FLEXA_RAW_ARGB8888_ENABLE)
+#error "H264_FLEXA_RAW_ARGB8888_ENABLE and VIDEO_PLAY_H264_FLEXA_RAW_ARGB8888_ENABLE must match"
+#endif
+
+#ifndef H264_FLEXA_RAW_ARGB8888_ENABLE
+#ifdef VIDEO_PLAY_H264_FLEXA_RAW_ARGB8888_ENABLE
+#define H264_FLEXA_RAW_ARGB8888_ENABLE VIDEO_PLAY_H264_FLEXA_RAW_ARGB8888_ENABLE
+#else
+#define H264_FLEXA_RAW_ARGB8888_ENABLE 0
+#endif
+#endif
+
  #define TAG "vp_h264_dec"
  
  #define LOGE(...) BK_LOGE(TAG, ##__VA_ARGS__)
@@ -170,7 +186,7 @@ static inline uint32_t hw_h264_frame_buf_alloc_size(uint32_t payload_plus_pad)
   * H264_DECODER_SEG_HEIGHT_MB * 16; the GPU and H264 IP have to agree on
   * this value. */
  #define H264_DECODER_GPU_FLEXA_LINES        16U
- 
+
  /* HSRAM Flexa ring buffer alignment: 64-byte cache line. */
  #define H264_DECODER_FLEXA_PP_ALIGN         64U
  
@@ -188,7 +204,7 @@ static inline uint32_t hw_h264_frame_buf_alloc_size(uint32_t payload_plus_pad)
  {
  #if defined(CONFIG_AP_HSRAM_HEAP_ADDR) && defined(CONFIG_AP_HSRAM_HEAP_SIZE) && (CONFIG_AP_HSRAM_HEAP_SIZE > 0)
      const uintptr_t addr  = (uintptr_t)ptr;
-     const uintptr_t start = (uintptr_t)CONFIG_AP_HSRAM_HEAP_ADDR;
+     const uintptr_t start = (uintptr_t)SOC_SRAM_CPU_ADDR(CONFIG_AP_HSRAM_HEAP_ADDR);
      const uintptr_t end   = start + (uintptr_t)CONFIG_AP_HSRAM_HEAP_SIZE;
  
      return (addr >= start && addr < end);
@@ -228,8 +244,10 @@ static inline uint32_t hw_h264_frame_buf_alloc_size(uint32_t payload_plus_pad)
      uint16_t src_h;
      uint16_t mb_w;       /* MB-aligned src width  (16 px aligned) */
      uint16_t mb_h;       /* MB-aligned src height (16 px aligned) */
-     uint16_t out_w;      /* Post-rotation visible width  (reported to engine) */
+    uint16_t out_w;      /* Post-rotation visible width  (reported to engine) */
     uint16_t out_h;      /* Post-rotation visible height (reported to engine) */
+    uint16_t display_w;  /* Target display profile width, 0 = use MB-aligned source */
+    uint16_t display_h;  /* Target display profile height, 0 = use MB-aligned source */
     uint16_t rotate_degree;
     bool     scale_enable;
  
@@ -429,19 +447,47 @@ static video_player_video_decoder_ops_t s_ops_template;
  // Annex-B / AVCC handling. Unchanged from the previous frame-mode path.
  // ---------------------------------------------------------------------------
  
- static bool hw_h264_buffer_is_annex_b(const uint8_t *buf, uint32_t len)
- {
-     const uint32_t scan = (len > 64U) ? 64U : len;
-     for (uint32_t i = 0; i + 3U < scan; i++)
-     {
-         if (buf[i] == 0x00 && buf[i + 1U] == 0x00)
-         {
-             if (buf[i + 2U] == 0x01) return true;
-             if (buf[i + 2U] == 0x00 && buf[i + 3U] == 0x01) return true;
-         }
-     }
-     return false;
- }
+static bool hw_h264_buffer_is_annex_b(const uint8_t *buf, uint32_t len)
+{
+    const uint32_t scan = (len > 64U) ? 64U : len;
+    for (uint32_t i = 0; i + 3U < scan; i++)
+    {
+        if (buf[i] == 0x00 && buf[i + 1U] == 0x00)
+        {
+            if (buf[i + 2U] == 0x01) return true;
+            if (buf[i + 2U] == 0x00 && buf[i + 3U] == 0x01) return true;
+        }
+    }
+    return false;
+}
+
+static bool hw_h264_buffer_is_avcc(const uint8_t *buf, uint32_t len, uint8_t length_size)
+{
+    if (buf == NULL || (length_size != 1U && length_size != 2U && length_size != 4U))
+    {
+        return false;
+    }
+
+    uint32_t i = 0U;
+    uint32_t nalu_count = 0U;
+    while (i + length_size <= len)
+    {
+        uint32_t nalu_len = 0U;
+        for (uint8_t k = 0U; k < length_size; k++)
+        {
+            nalu_len = (nalu_len << 8) | (uint32_t)buf[i + k];
+        }
+        i += length_size;
+        if (nalu_len == 0U || nalu_len > (len - i))
+        {
+            return false;
+        }
+        i += nalu_len;
+        nalu_count++;
+    }
+
+    return (i == len) && (nalu_count > 0U);
+}
  
  static bool hw_h264_au_contains_idr_annexb(const uint8_t *data, uint32_t len)
  {
@@ -807,11 +853,9 @@ static uint32_t hw_h264_calc_flexa_pp_size(uint16_t mb_w)
         3U / 2U;
 }
 
-#define H264_DECODER_PANEL_WIDTH   1080U
-#define H264_DECODER_PANEL_HEIGHT  1920U
-
 static void hw_h264_decoder_resolve_dims(hw_h264_decoder_ctx_t *ctx,
-                                        uint16_t width, uint16_t height)
+                                        uint16_t width, uint16_t height,
+                                        uint16_t display_width, uint16_t display_height)
 {
     ctx->src_w = width;
     ctx->src_h = height;
@@ -821,13 +865,10 @@ static void hw_h264_decoder_resolve_dims(hw_h264_decoder_ctx_t *ctx,
     ctx->mb_h  = (uint16_t)((height + 15U) & ~15U);
 
 
-    ctx->out_w = width;
-    ctx->out_h = height;
-    if (ctx->rotate_degree == 90U || ctx->rotate_degree == 270U)
-    {
-        ctx->out_w = height;
-        ctx->out_h = width;
-    }
+    ctx->out_w = ctx->mb_w;
+    ctx->out_h = ctx->mb_h;
+    ctx->display_w = display_width;
+    ctx->display_h = display_height;
     ctx->scale_enable = false;
 }
 
@@ -853,14 +894,41 @@ static avdk_err_t hw_h264_decoder_setup_pipeline(hw_h264_decoder_ctx_t *ctx)
         __func__, ctx->flexa_pp_buf, (unsigned)ctx->flexa_pp_size,
         ((uintptr_t)ctx->flexa_pp_buf & 0x3FU) == 0U ? 1U : 0U);
 
-    /* dst must stay 16-aligned for DEC400 compression. We use the MB-aligned
-    * source dims directly: scale=false (set in resolve_dims) means the
-    * GPU does not actually scale, and the H264 IP recon write stride is
-    * already mb_w wide, so passing dst=mb keeps the GPU's Flexa segment
-    * stride identical to the H264 IP's segment stride. Any non-16 dst
-    * (e.g. dst=1080) would trip vg_lite "dec align error". */
-    const uint16_t dst_w = ctx->mb_w;
-    const uint16_t dst_h = ctx->mb_h;
+    /* Raw output keeps the experiment's direct visible surface path. The
+     * default DEC400 path keeps the DPU on the display profile supplied by the
+     * upper layer and lets Flexa GPU scale the decoded H264 image to it. */
+#if H264_FLEXA_RAW_ARGB8888_ENABLE
+    uint16_t dst_w = (ctx->display_w != 0U) ? ctx->display_w : ctx->mb_w;
+    uint16_t dst_h = (ctx->display_h != 0U) ? ctx->display_h : ctx->mb_h;
+    if (ctx->rotate_degree == 90U || ctx->rotate_degree == 270U)
+    {
+        uint16_t tmp = dst_w;
+        dst_w = dst_h;
+        dst_h = tmp;
+    }
+    const bool horizontal_mirror = ((dst_w & 15U) == 0U);
+    ctx->out_w = dst_w;
+    ctx->out_h = dst_h;
+    ctx->scale_enable = (dst_w != ctx->mb_w || dst_h != ctx->mb_h);
+    const bool gpu_compress = false;
+    const bool gpu_scale = ctx->scale_enable;
+#else
+    uint16_t dst_w = (ctx->display_w != 0U) ? ctx->display_w : ctx->mb_w;
+    uint16_t dst_h = (ctx->display_h != 0U) ? ctx->display_h : ctx->mb_h;
+    if (ctx->rotate_degree == 90U || ctx->rotate_degree == 270U)
+    {
+        uint16_t tmp = dst_w;
+        dst_w = dst_h;
+        dst_h = tmp;
+    }
+    const bool horizontal_mirror = ((dst_w & 15U) == 0U);
+    ctx->out_w = dst_w;
+    ctx->out_h = dst_h;
+    ctx->scale_enable = (dst_w != ctx->mb_w || dst_h != ctx->mb_h);
+    
+    const bool gpu_compress = true;
+    const bool gpu_scale = ctx->scale_enable;
+#endif
 
     bk_gpu_ctlr_config_t gpu_cfg;
     os_memset(&gpu_cfg, 0, sizeof(gpu_cfg));
@@ -871,8 +939,9 @@ static avdk_err_t hw_h264_decoder_setup_pipeline(hw_h264_decoder_ctx_t *ctx)
     gpu_cfg.dst_height        = dst_h;
     gpu_cfg.src_format        = BK_PIXEL_FORMAT_NV12;
     gpu_cfg.dst_format        = BK_PIXEL_FORMAT_ARGB8888;
-    gpu_cfg.scale             = ctx->scale_enable;
-    gpu_cfg.compress          = true;   /* DEC400 tile compressed for DPU */
+    gpu_cfg.scale             = gpu_scale;
+    gpu_cfg.compress          = gpu_compress;
+    gpu_cfg.horizontal_mirror = horizontal_mirror;
     gpu_cfg.src_buffer        = ctx->flexa_pp_buf;
     gpu_cfg.flexa             = true;
     gpu_cfg.flexa_lines       = H264_DECODER_GPU_FLEXA_LINES;
@@ -1048,8 +1117,10 @@ static avdk_err_t hw_h264_decoder_init(struct video_player_video_decoder_ops_s *
     AVDK_RETURN_ON_FALSE(params, AVDK_ERR_INVAL, TAG, "params is NULL");
     hw_h264_decoder_ctx_t *ctx = &self->ctx;
 
-    LOGI("%s: width=%u height=%u format=%u fps=%u codec_cfg=%p sz=%u\n",
-        __func__, params->width, params->height, params->format, params->fps,
+    LOGI("%s: width=%u height=%u display=%ux%u format=%u fps=%u codec_cfg=%p sz=%u\n",
+        __func__, params->width, params->height,
+        params->display_width, params->display_height,
+        params->format, params->fps,
         params->codec_config, params->codec_config_size);
 
     if (params->format != VIDEO_PLAYER_VIDEO_FORMAT_H264)
@@ -1066,6 +1137,14 @@ static avdk_err_t hw_h264_decoder_init(struct video_player_video_decoder_ops_s *
     {
         LOGW("%s: GPU pipeline requires even width/height, got %ux%u\n",
             __func__, params->width, params->height);
+        return AVDK_ERR_UNSUPPORTED;
+    }
+    if (((params->display_width == 0U) != (params->display_height == 0U)) ||
+        (params->display_width > UINT16_MAX) || (params->display_height > UINT16_MAX) ||
+        ((params->display_width | params->display_height) & 1U))
+    {
+        LOGW("%s: invalid display size %ux%u\n",
+            __func__, params->display_width, params->display_height);
         return AVDK_ERR_UNSUPPORTED;
     }
     if (s_active_ctx != NULL)
@@ -1149,7 +1228,9 @@ static avdk_err_t hw_h264_decoder_init(struct video_player_video_decoder_ops_s *
 
     hw_h264_decoder_resolve_dims(ctx,
                                 (uint16_t)params->width,
-                                (uint16_t)params->height);
+                                (uint16_t)params->height,
+                                (uint16_t)params->display_width,
+                                (uint16_t)params->display_height);
 
     s_active_ctx = ctx;
 
@@ -1226,13 +1307,17 @@ static avdk_err_t hw_h264_decoder_decode(struct video_player_video_decoder_ops_s
     AVDK_RETURN_ON_FALSE(ctx->h264_handle,       AVDK_ERR_GENERIC, TAG, "h264 not initialized");
     AVDK_RETURN_ON_FALSE(ctx->gpu_handle,        AVDK_ERR_GENERIC, TAG, "gpu not initialized");
 
-    (void)out_fmt; /* GPU pipeline always emits compressed ARGB8888; the
-                    * engine's requested format is ignored intentionally. */
+    (void)out_fmt; /* Flexa GPU output is ARGB8888; compression is controlled
+                    * by H264_FLEXA_RAW_ARGB8888_ENABLE, not out_fmt. */
 
     /* Step 1: Annex-B prep (same as the frame-mode path). */
     uint8_t  *bs_data = in_buffer->data;
     uint32_t  bs_len  = in_buffer->length;
-    bool      is_annexb_input = hw_h264_buffer_is_annex_b(in_buffer->data, in_buffer->length);
+
+    bool      is_avcc_input   = hw_h264_buffer_is_avcc(in_buffer->data, in_buffer->length,
+                                                       ctx->nalu_length_size);
+    bool      is_annexb_input = !is_avcc_input &&
+                                hw_h264_buffer_is_annex_b(in_buffer->data, in_buffer->length);
     const bool need_inject_before = ctx->need_inject_params;
     avdk_err_t ret = AVDK_ERR_OK;
 

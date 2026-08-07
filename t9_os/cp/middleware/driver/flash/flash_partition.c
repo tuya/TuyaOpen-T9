@@ -32,7 +32,17 @@
 
 #define PARTITION_AMOUNT    50
 
+/* When hardware flash CRC is enabled, every 32 logical bytes occupy 34 physical
+ * bytes (2 CRC bytes per 32). BK7259 runs with CRC disabled
+ * (CONFIG_FLASH_CRC_ENABLE=0), so physical == logical and the LOGICAL_2_PHY /
+ * PHY_2_LOGICAL macros below must be identity. Only inflate by 34/32 when CRC is
+ * actually enabled (CONFIG_FLASH_CRC_ENABLE comes from partitions_gen.h via
+ * <driver/flash_partition.h> -> <partitions.h>). */
+#if CONFIG_FLASH_CRC_ENABLE
 #define FLASH_PHYSICAL_ADDR_UNIT_SIZE     34
+#else
+#define FLASH_PHYSICAL_ADDR_UNIT_SIZE     32
+#endif
 #define FLASH_LOGICAL_ADDR_UNIT_SIZE      32
 
 #define FLASH_PHY_ADDR_VALID(addr)    (((addr) % FLASH_PHYSICAL_ADDR_UNIT_SIZE) < FLASH_LOGICAL_ADDR_UNIT_SIZE)
@@ -61,12 +71,29 @@ static const bk_logic_partition_t bk_flash_partitions[] = BK_FLASH_PARTITIONS_MA
 
 static bool flash_partition_is_valid(bk_partition_t partition)
 {
-	if ((partition >= BK_PARTITION_BOOTLOADER)
-		&& (partition < ARRAY_SIZE(bk_flash_partitions))) {
-		return true;
-	} else {
+	/* Valid iff: in range, slot populated, and physically AT/AFTER the bootloader.
+	 * The pre-bootloader region (bl1_control/boot_flag/partition/primary_manifest)
+	 * is the protected boot area and must stay inaccessible via this API.
+	 *
+	 * Protect by flash OFFSET, not by partition ID: IDs are generated and their
+	 * order is NOT the flash order. The old `partition >= BK_PARTITION_BOOTLOADER`
+	 * check only worked when the bootloader had the smallest ID (non-secure app).
+	 * In secureboot_xip the bootloader lands at a high ID, so real partitions
+	 * (sys_rf/sys_net/ota...) were wrongly rejected -> get_info() NULL ->
+	 * get_rf_firmware_info() dereferenced NULL@0x8 -> NS SecureFault. */
+	if (partition >= ARRAY_SIZE(bk_flash_partitions)) {
 		return false;
 	}
+	if (bk_flash_partitions[partition].partition_description == NULL) {
+		/* unused/zero-filled reserved slot (e.g. ID 0/1 in secureboot_xip) */
+		return false;
+	}
+	if (bk_flash_partitions[partition].partition_start_addr <
+		bk_flash_partitions[BK_PARTITION_BOOTLOADER].partition_start_addr) {
+		/* physically before the bootloader -> protected boot region */
+		return false;
+	}
+	return true;
 }
 
 static int is_alpha(char c)
@@ -197,6 +224,13 @@ static bk_err_t flash_partition_write_perm_check(bk_logic_partition_t *partition
 		return BK_OK;  // not write current running partition.
 	}
 
+	/* Diagnostic: rejected because the target partition contains the running
+	 * code (fun_flash_phy_addr). Print the boundaries so we can tell a real
+	 * running-partition overlap from a wrong length/boundary calculation. */
+	FLASH_LOGW("write perm reject: run_phy:0x%x part:%s start:0x%x len:0x%x end:0x%x\r\n",
+	           fun_flash_phy_addr, partition_info->partition_description,
+	           partition_info->partition_start_addr, partition_info->partition_length,
+	           partition_info->partition_start_addr + partition_info->partition_length);
 	return BK_FAIL;  // not permit to write current running partition.
 #else
 	return BK_OK;
@@ -418,8 +452,12 @@ bk_err_t bk_flash_partition_write_perm_check_by_addr(uint32_t addr, uint32_t siz
 
 	bk_err_t   ret_val = flash_partition_addr_check(partition_info, offset, size);
 
-	if(ret_val != BK_OK)
+	if(ret_val != BK_OK) {
+		FLASH_LOGW("write perm addr_check fail: addr:0x%x size:0x%x part:%s start:0x%x len:0x%x\r\n",
+		           addr, size, partition_info->partition_description,
+		           partition_info->partition_start_addr, partition_info->partition_length);
 		return ret_val;
+	}
 
 	return flash_partition_write_perm_check(partition_info);
 }

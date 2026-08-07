@@ -43,6 +43,7 @@
 #endif
 #include "bk_uart_debug.h"
 #include "bk_api_cli.h"
+#include "soc_debug.h"
 #ifdef CONFIG_WIFI_DRIVER_DEBUG
 #include "wdrv_debug.h"
 #endif
@@ -1474,9 +1475,6 @@ int bk_cli_init(void)
 #endif
 
 /*--------------BT&MultMedia cli command init end------------------*/
-
-
-
 /*----------------platform cli command init begin------------------*/
 #if CONFIG_DEBUG_VERSION
 #if !CONFIG_CLI_CODE_SIZE_OPTIMIZE_ENABLE
@@ -1516,6 +1514,10 @@ int bk_cli_init(void)
 
 #if (CLI_FATFS == 1)
 	cli_fatfs_init();
+#endif
+
+#if CONFIG_DHARA_FTL
+	cli_nand_ftl_init();
 #endif
 
 #if (CLI_CFG_VFS == 1)

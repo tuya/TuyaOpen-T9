@@ -37,6 +37,15 @@ if (CONFIG_BLUETOOTH_AP)
     endif()
 
 	if (CONFIG_BLUETOOTH_HOST_ONLY OR CONFIG_BLUETOOTH_SUPPORT_AP_PWD_ALL)
+		list(APPEND incs
+			include
+			include/private
+			at
+			.
+		)
+	endif()
+
+	if ((CONFIG_BLUETOOTH_HOST_ONLY OR CONFIG_BLUETOOTH_SUPPORT_AP_PWD_ALL) AND NOT CONFIG_BLE_MESH_ZEPHYR)
 		if (CONFIG_BLUETOOTH_HOST_ONLY)
 			list(APPEND srcs
 				"core/hci/hal_hci_core.c"
@@ -99,6 +108,12 @@ if (CONFIG_BLUETOOTH_AP)
 				api/bk_hfp_api.c
 				api/bk_pan_api.c
 			)
+
+			if (CONFIG_BLUETOOTH_ENABLE_BT_DUT_TEST)
+				list(APPEND srcs
+					core/dut/dut_test.c
+				)
+			endif()
 		endif()
 
 		if (CONFIG_BLE)
@@ -106,13 +121,6 @@ if (CONFIG_BLUETOOTH_AP)
 				api/ble_gap_export_api.c
 			)
 		endif()
-
-		list(APPEND incs
-			include
-			include/private
-			at
-			.
-			)
 
 		if (CONFIG_BLUETOOTH_HOST_ONLY)
 			list(APPEND srcs core/feat_config/bt_feature_config.c)
@@ -196,7 +204,7 @@ if (CONFIG_BLUETOOTH_AP)
 
 	# BLE boarding/provisioning (formerly the separate bt/ sub-component).
 	# ble_boarding.c: direct BLE implementation kept under service/common.
-	if (CONFIG_BLE AND NOT CONFIG_BTDM_CONTROLLER_ONLY)
+	if (CONFIG_BLE AND NOT CONFIG_BTDM_CONTROLLER_ONLY AND NOT CONFIG_BLE_MESH_ZEPHYR)
 		list(APPEND srcs
 			service/common/ble_boarding.c
 			)
@@ -206,6 +214,25 @@ if (CONFIG_BLUETOOTH_AP)
             list(APPEND srcs service/common/dm_ble_boarding.c)
         endif()
 
+	endif()
+
+	if (CONFIG_BLE_LE_AUDIO)
+		list(APPEND srcs
+			service/dm/ble/le_audio/bk_dm_le_audio_gap.c
+			service/dm/ble/le_audio/bap/bk_dm_bap.c
+			service/dm/ble/le_audio/vcp/bk_dm_vcp.c
+			service/dm/ble/le_audio/micp/bk_dm_micp.c
+			service/dm/ble/le_audio/csip/bk_dm_csip.c
+			service/dm/ble/le_audio/mcp/bk_dm_mcp.c
+			service/dm/ble/le_audio/ccp/bk_dm_ccp.c
+			service/dm/ble/le_audio/bass/bk_dm_bass.c
+		)
+		list(APPEND incs
+			include
+			include/private
+			service/dm/ble/le_audio
+			.
+		)
 	endif()
 endif()
 
@@ -234,12 +261,14 @@ if (CONFIG_BLUETOOTH_AP)
     set(bt_host_exist 0)
     set(bt_host_basename)
 
-    if(CONFIG_BLUETOOTH_HOST_ONLY)
+    if(CONFIG_BLUETOOTH_HOST_ONLY AND NOT CONFIG_BLE_MESH_ZEPHYR)
         set(bt_host_exist 1)
     endif()
 
     if(CONFIG_BLUETOOTH_HOST_ONLY)
-		if(CONFIG_BLE AND CONFIG_BT)
+		if(CONFIG_BLE_LE_AUDIO)
+			set(bt_host_basename ${bt_host_dm}_dual_ap_le_audio)
+		elseif(CONFIG_BLE AND CONFIG_BT)
 			set(bt_host_basename ${bt_host_dm}_dual_ap)
 		elseif(CONFIG_BLE)
 			if(CONFIG_BLUETOOTH_BLE_SLAVE_ONLY)

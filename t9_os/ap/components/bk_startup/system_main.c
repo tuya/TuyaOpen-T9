@@ -46,6 +46,11 @@
 #endif
 
 #include "soc/soc.h"
+#include "soc_debug.h"
+
+#if CONFIG_HSPL
+extern bk_err_t bk_hspl_driver_early_init(void);
+#endif
 
 static beken_thread_function_t s_user_app_entry = NULL;
 beken_semaphore_t user_app_sema = NULL;
@@ -195,15 +200,11 @@ void start_cpu1_core(void)
 {
 #if CONFIG_SPE
 	uint32  addr = get_partition_addr(1);
-#else
-	uint32  addr = CONFIG_PRIMARY_TFM1_S_VIRTUAL_CODE_START;
-#endif
-
-#if CONFIG_SPE
 	reset_cpu1_core(SOC_FLASH_DATA_BASE + addr, 1);
 #else
-	reset_cpu1_core(SOC_FLASH_DATA_BASE - SOC_S_NS_ADDR_DIFF + addr, 1);
-#endif /* CONFIG_SPE */
+	/* Non-Secure SMP: secondary core enters the Secure boot shim in SRAM. */
+	reset_cpu1_core(0x28100000u, 1);
+#endif
 
 	mb_ipc_reset_notify(1, 1);
 }
@@ -406,12 +407,10 @@ static void app_main_thread(void *arg)
 	//if nessary ,close the main() function.
 #endif
 
-#if CONFIG_TFM_FWU
-	bk_ota_accept_image();
-#endif
 	bk_pm_ap_thread_main();
 
 	main();
+	BK_LOGI(NULL, "AP main running...\r\n");
 
 #if CONFIG_MATTER_START && CONFIG_SUPPORT_MATTER
 #ifdef CONFIG_MATTER_EXAMPLE
@@ -446,6 +445,9 @@ void entry_main(void)
 	save_mtime_point(CPU_MAIN_ENTRY_TIME);
 #endif
     set_ap_startup_index(AP_ENTER_ENTRY_MAIN);
+#if CONFIG_HSPL
+	bk_hspl_driver_early_init();
+#endif
 	rtos_init();
 
 #if CONFIG_GCOV

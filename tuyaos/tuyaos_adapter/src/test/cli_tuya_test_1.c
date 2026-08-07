@@ -122,6 +122,8 @@ static const struct cli_command tuya_cli_commands[] = {
     // {"xspi",    "spi test",         cli_tkl_spi_test},
     {"xtimer",  "timer test",       cli_tkl_timer_test},
     // {"xface",   "face tflm test",   cli_tuya_face_cmd},
+    // {"xmbedtls", "mbedtls test",    cli_xmbedtls_cmd},
+    // {"xplat",   "platform perf matrix", cli_xplat_cmd},
 #if 0
     {"xlp",     "lp test",          cli_lp_test_cmd},
     {"xtimer",  "timer test",       cli_tkl_timer_test},

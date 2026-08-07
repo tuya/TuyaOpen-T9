@@ -5,6 +5,7 @@
 extern "C" {
 #endif
 #include <stdbool.h>
+#include <stdint.h>
 
 #include <components/avdk_utils/avdk_error.h>
 #include <components/bk_video_player/bk_video_player_types.h>
@@ -16,6 +17,27 @@ extern "C" {
 #define LCD_LDO_PIN          (GPIO_13)
 #define GPIO_INVALID_ID      (0xFF)
 
+#ifndef VIDEO_PLAY_H264_FRAME_RGB888_ENABLE
+#define VIDEO_PLAY_H264_FRAME_RGB888_ENABLE 0
+#endif
+
+#if defined(H264_FLEXA_RAW_ARGB8888_ENABLE) && defined(VIDEO_PLAY_H264_FLEXA_RAW_ARGB8888_ENABLE) && \
+    (H264_FLEXA_RAW_ARGB8888_ENABLE != VIDEO_PLAY_H264_FLEXA_RAW_ARGB8888_ENABLE)
+#error "H264_FLEXA_RAW_ARGB8888_ENABLE and VIDEO_PLAY_H264_FLEXA_RAW_ARGB8888_ENABLE must match"
+#endif
+
+#ifndef H264_FLEXA_RAW_ARGB8888_ENABLE
+#ifdef VIDEO_PLAY_H264_FLEXA_RAW_ARGB8888_ENABLE
+#define H264_FLEXA_RAW_ARGB8888_ENABLE VIDEO_PLAY_H264_FLEXA_RAW_ARGB8888_ENABLE
+#else
+#define H264_FLEXA_RAW_ARGB8888_ENABLE 0
+#endif
+#endif
+
+#ifndef VIDEO_PLAY_H264_FLEXA_RAW_ARGB8888_ENABLE
+#define VIDEO_PLAY_H264_FLEXA_RAW_ARGB8888_ENABLE H264_FLEXA_RAW_ARGB8888_ENABLE
+#endif
+
 #ifdef CONFIG_DVP_CTRL_POWER_GPIO_ID
 #define DVP_POWER_GPIO_ID CONFIG_DVP_CTRL_POWER_GPIO_ID
 #else
@@ -26,6 +48,8 @@ typedef enum
 {
     VIDEO_PLAY_LCD_VIDEO_FMT_NV12_RAW = 0,
     VIDEO_PLAY_LCD_VIDEO_FMT_RGB565_RAW,
+    VIDEO_PLAY_LCD_VIDEO_FMT_RGB888_RAW,
+    VIDEO_PLAY_LCD_VIDEO_FMT_ARGB8888_RAW,
     VIDEO_PLAY_LCD_VIDEO_FMT_ARGB8888_COMPRESSED,
 } video_play_lcd_video_fmt_t;
 
@@ -38,6 +62,7 @@ avdk_err_t video_play_lcd_apply_format(bk_display_ctlr_handle_t handle,
 avdk_err_t video_play_lcd_ensure_open(bk_display_ctlr_handle_t *out_handle,
                                       video_play_lcd_video_fmt_t fmt);
 video_play_lcd_video_fmt_t video_play_lcd_format_for_video_codec(video_player_video_format_t format);
+bool video_play_lcd_get_size(uint16_t *width, uint16_t *height);
 avdk_err_t video_play_lcd_close(void);
 int sd_card_mount(void);
 int sd_card_unmount(void);

@@ -2,6 +2,7 @@
 #include "cli_tuya_test.h"
 #include "sdkconfig.h"
 #include "ram_regions.h"
+#include <soc/soc.h>
 
 #include <stdint.h>
 #include <stddef.h>
@@ -223,8 +224,8 @@ static void memory_show_heap(void)
                            (uint32_t)xPortGetExtSramFreeHeapSize(),
                            (uint32_t)xPortGetExtSramMinimumFreeHeapSize());
     bk_printf("ext_sram range: [0x%08x, 0x%08x)\r\n",
-              CONFIG_AP_EXT_SRAM_HEAP_ADDR,
-              CONFIG_AP_EXT_SRAM_HEAP_ADDR + CONFIG_AP_EXT_SRAM_HEAP_SIZE);
+              (uint32_t)SOC_SRAM_CPU_ADDR(CONFIG_AP_EXT_SRAM_HEAP_ADDR),
+              (uint32_t)SOC_SRAM_CPU_ADDR(CONFIG_AP_EXT_SRAM_HEAP_ADDR + CONFIG_AP_EXT_SRAM_HEAP_SIZE));
 #endif
 }
 
@@ -532,9 +533,10 @@ static void memory_ext_sram_free_wrapper(void *ptr)
 static uint8_t memory_ptr_in_ext_sram(const void *ptr)
 {
     uintptr_t addr = (uintptr_t)ptr;
+    uintptr_t start = (uintptr_t)SOC_SRAM_CPU_ADDR(CONFIG_AP_EXT_SRAM_HEAP_ADDR);
+    uintptr_t end = (uintptr_t)SOC_SRAM_CPU_ADDR(CONFIG_AP_EXT_SRAM_HEAP_ADDR + CONFIG_AP_EXT_SRAM_HEAP_SIZE);
 
-    return ((addr >= (uintptr_t)CONFIG_AP_EXT_SRAM_HEAP_ADDR) &&
-            (addr < (uintptr_t)(CONFIG_AP_EXT_SRAM_HEAP_ADDR + CONFIG_AP_EXT_SRAM_HEAP_SIZE))) ? 1U : 0U;
+    return ((addr >= start) && (addr < end)) ? 1U : 0U;
 }
 
 static void memory_test_os_fallback(uint32_t block_size, uint32_t max_blocks)
@@ -713,8 +715,8 @@ void cli_memory_test_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, cha
                                (uint32_t)xPortGetExtSramFreeHeapSize(),
                                (uint32_t)xPortGetExtSramMinimumFreeHeapSize());
         bk_printf("ext_sram range: [0x%08x, 0x%08x)\r\n",
-                  CONFIG_AP_EXT_SRAM_HEAP_ADDR,
-                  CONFIG_AP_EXT_SRAM_HEAP_ADDR + CONFIG_AP_EXT_SRAM_HEAP_SIZE);
+                  (uint32_t)SOC_SRAM_CPU_ADDR(CONFIG_AP_EXT_SRAM_HEAP_ADDR),
+                  (uint32_t)SOC_SRAM_CPU_ADDR(CONFIG_AP_EXT_SRAM_HEAP_ADDR + CONFIG_AP_EXT_SRAM_HEAP_SIZE));
 #else
         bk_printf("AP_EXT_SRAM_HEAP is not configured.\r\n");
 #endif

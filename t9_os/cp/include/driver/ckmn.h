@@ -96,6 +96,51 @@ bk_err_t bk_ckmn_unregister_isr(ckmn_int_type_t int_type);
 bk_err_t bk_ckmn_soft_reset(void);
 
 /**
+ * @brief     Backup CKMN registers before sleep
+ *
+ * This API saves CKMN R/W configuration registers before low voltage sleep.
+ *
+ * @return
+ *    - BK_OK: succeed
+ *    - others: other errors.
+ */
+bk_err_t bk_ckmn_sleep_regs_backup(void);
+
+/**
+ * @brief     Restore CKMN registers after wakeup
+ *
+ * This API reinitializes CKMN interrupt/HAL state and restores CKMN R/W
+ * configuration registers saved before sleep.
+ *
+ * @return
+ *    - BK_OK: succeed
+ *    - others: other errors.
+ */
+bk_err_t bk_ckmn_sleep_regs_restore(void);
+
+/**
+ * @brief     Power down CKMN before low voltage sleep
+ *
+ * Disable ckest/correction and clear CKMN control registers to minimize
+ * AON leakage during sleep.
+ *
+ * @return
+ *    - BK_OK: succeed
+ *    - others: other errors.
+ */
+bk_err_t bk_ckmn_power_down_for_sleep(void);
+
+/**
+ * @brief     Get last CKMN sleep backup register values
+ *
+ * @param global_ctrl saved CKMN_CTRL
+ * @param rc32k_ctrl saved CKMN_RC32K_CTRL
+ * @param corr_cfg saved CKMN_CORR_CFG
+ */
+void bk_ckmn_sleep_regs_get_backup(uint32_t *global_ctrl, uint32_t *rc32k_ctrl,
+	uint32_t *corr_cfg);
+
+/**
  * @brief    Set the number of counts for RC32K accuracy statistics
  *
  * This API 26m digital clock measurement 32k analog clock.
@@ -422,6 +467,14 @@ bk_err_t bk_ckmn_clear_cor26m_intr_status(void);
  *    - others: other errors.
  */
 bk_err_t bk_ckmn_clear_cor32k_intr_status(void);
+
+/**
+ * @brief Start the clock monitor (init + set 26M/32K targets + enable autosw).
+ *
+ * Convenience wrapper used by the TF-M secure firmware. Implemented for BK7259
+ * in the TF-M platform shim (beken/bk7259/sys_drv_int_shim.c).
+ */
+void bk_ckmn_start(void);
 
 /**
  * @}

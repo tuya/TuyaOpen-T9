@@ -76,17 +76,6 @@ uint32_t sys_hal_flash_get_clk_div(void);
 
 /** Platform flash End **/
 
-/** Platform qspi Start **/
-void sys_hal_set_qspi_vddram_voltage(uint32_t param);
-
-void sys_hal_set_qspi_io_voltage(uint32_t param);
-
-void sys_hal_qspi_clk_sel(uint32_t id, uint32_t param);
-
-void sys_hal_qspi_set_src_clk_div(uint32_t id, uint32_t value);
-
-/** Platform qspi End **/
-
 /** Platform SDIO Start **/
 void sys_hal_set_sdio_clk_en(uint32_t value);
 void sys_hal_set_cpu0_sdio_int_en(uint32_t value);
@@ -103,9 +92,14 @@ void sys_hal_enter_deep_sleep(void *param);
 void sys_hal_enter_normal_sleep();
 void sys_hal_enter_normal_wakeup();
 void sys_hal_enter_low_voltage(void);
+bk_err_t sys_hal_set_alo2core_power_switch(uint32_t value);
+#if CONFIG_DEEP_LV_DEBUG_LOG
+void sys_hal_lv_aon_debug_flush(void);
+#endif
 void sys_hal_enter_cpu_wfi(void);
 void sys_hal_module_power_ctrl(power_module_name_t module,power_module_state_t power_state);
 void sys_hal_wakeup_interrupt_clear(wakeup_source_t interrupt_source);
+bk_err_t sys_hal_ap_clock_power_ctrl(power_module_state_t power_state);
 void sys_hal_module_power_ctrl(power_module_name_t module,power_module_state_t power_state);
 void sys_hal_module_RF_power_ctrl (module_name_t module,power_module_state_t power_state);
 void sys_hal_cpu0_main_int_ctrl(dev_clk_pwr_ctrl_t clock_state);
@@ -116,6 +110,8 @@ void sys_hal_set_cpu1_pwr_dw(uint32_t is_pwr_down);
 void sys_hal_set_cpu2_boot_address_offset(uint32_t address_offset);
 void sys_hal_set_cpu2_reset(uint32_t reset_value);
 void sys_hal_set_cpu2_pwr_dw(uint32_t is_pwr_down);
+void sys_hal_set_cpu3_reset(uint32_t reset_value);
+void sys_hal_set_cpu3_pwr_dw(uint32_t is_pwr_down);
 void sys_hal_enable_mac_wakeup_source();
 void sys_hal_disable_mac_wakeup_source();
 void sys_hal_enable_bt_wakeup_source();
@@ -154,6 +150,8 @@ bk_err_t sys_hal_cpu_freq_dump();
 void sys_hal_set_cpu0_rxevt_sel(uint32_t param);
 void sys_hal_set_cpu1_rxevt_sel(uint32_t param);
 void sys_hal_set_cpu2_rxevt_sel(uint32_t param);
+bk_err_t sys_hal_switch_cpu_bus_freq_high_to_low(pm_cpu_freq_e cpu_bus_freq);
+bk_err_t sys_hal_switch_cpu_bus_freq_low_to_high(pm_cpu_freq_e cpu_bus_freq);
 
 /*low power feature end*/
 uint32 sys_hal_get_chip_id(void);
@@ -193,6 +191,8 @@ dev_clk_select_t sys_hal_get_clk_select(dev_clk_select_id_t dev);
 void sys_hal_set_dco_div(dev_clk_dco_div_t div);
 //DCO divider is valid for all of the peri-devices.
 dev_clk_dco_div_t sys_hal_get_dco_div(void);
+__IRAM_SEC void sys_hal_adjust_dpll(void);
+__IRAM_SEC void sys_hal_adjust_dco(void);
 /*clock power control end*/
 
 /* UART select clock    DIRTY **/
@@ -469,6 +469,7 @@ void sys_hal_enable_modem_rc_int(void);
 void sys_hal_enable_hsu_int(void);
 void sys_hal_set_debug_mux(int type);
 void sys_hal_diag_debug_mac(void);
+void sys_hal_diag_debug_mac802154(void);
 void sys_hal_diag_debug_phy(void);
 void dbg_enable_debug_gpio(void);
 void sys_hal_rf_clk_ctrl(bool clk_en);
@@ -759,6 +760,7 @@ int sys_hal_set_lv_ctrl_hf(bool lp_ena);
 int sys_hal_set_lv_ctrl_flash(bool lp_ena);
 int sys_hal_set_lv_ctrl_core(bool lp_ena);
 int sys_hal_set_lpo_src(sys_lpo_src_t src);
+bk_err_t sys_hal_xtal_rx_tx_anabuf_ctrl(pm_xtal_rx_tx_anabuf_state_e sleep_mode);
 void sys_hal_dump_ctrl(void);
 void sys_hal_set_ram_sph_cfg(uint32_t value);
 void sys_hal_set_ram_tph_cfg(uint32_t value);

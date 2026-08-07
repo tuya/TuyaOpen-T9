@@ -1,3 +1,4 @@
+# KCONFIG_GROUP: Device Drivers::USB
 menu "Bk_usb"
 
 	config USB
@@ -38,6 +39,13 @@ menu "Bk_usb"
 		config USB_DEVICE
 			bool "Enable USB Device Mode"
 			default n
+
+		config USB_HSET
+			depends on USB_DEVICE && BK_USB_CHERRYUSB_V1_6
+			bool "Enable USB HSET device mode"
+			default n
+			help
+				Enable USB 2.0 HS test modes via SET_FEATURE(TEST_MODE)
 
 		config TASK_USB_PRIO
 			int "Set Task Usb Prio"
@@ -98,6 +106,16 @@ menu "Bk_usb"
 		config USBD_MSC
 			bool "Enable Usb Device MSC"
 			default n
+
+		config USBD_MSC_STORAGE_QSPI_NAND
+			bool "Back USB MSC with QSPI SPI-NAND (Dhara FTL) instead of SD card"
+			depends on USBD_MSC && QSPI_NAND_FLASH && DHARA_FTL
+			default n
+			help
+				Route the USB Mass Storage LUN to the QSPI SPI-NAND FTL block
+				device (512B sectors) so a PC sees the on-board NAND as a
+				removable FAT disk. When disabled, the LUN keeps using the SD
+				card backend.
 
 		config USBD_MTP
 			bool "Enable Usb Device MTP"

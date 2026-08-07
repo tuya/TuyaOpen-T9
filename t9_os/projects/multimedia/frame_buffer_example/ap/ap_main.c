@@ -10,6 +10,7 @@
 #include "bk_api_ipc_test.h"
 
 #include "frame_buffer_test.h"
+#include "frame_queue_test.h"
 
 #define APP_TIMEOUT_VALUE    BEKEN_WAIT_FOREVER
 
@@ -105,9 +106,8 @@ extern int cli_network_provisioning_init(void);
     bk_ipc_test_init();
 #endif
 
-    bk_printf("M55 main running...\r\n");
-
     frame_buffer_test();
+    frame_queue_test();
 
     return 0;
 }

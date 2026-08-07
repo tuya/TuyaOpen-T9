@@ -758,8 +758,9 @@ OPERATE_RET tkl_qspi_comand(TUYA_QSPI_NUM_E port, TUYA_QSPI_CMD_T *command)
     qspi_cmd_t qcmd = {0};
     TKL_QSPI_PORT_CTX_T *ctx = NULL;
     TUYA_QSPI_IRQ_CB cb = NULL;
-    qspi_wire_mode_t wire_mode = QSPI_1WIRE;
-    uint32_t max_wire = 0;
+    qspi_wire_mode_t addr_wire_mode = QSPI_1WIRE;
+    qspi_wire_mode_t data_wire_mode = QSPI_1WIRE;
+    TUYA_QSPI_WIRE_MODE_E data_lines = TUYA_QSPI_1WIRE;
     uint32_t cmd = 0;
     uint32_t addr = 0;
 
@@ -794,18 +795,23 @@ OPERATE_RET tkl_qspi_comand(TUYA_QSPI_NUM_E port, TUYA_QSPI_CMD_T *command)
         return OPRT_NOT_SUPPORTED;
     }
 
-    max_wire = ctx->cfg.dma_data_lines;
-    if ((command->cmd_size > 0U) && (command->cmd_lines > max_wire)) {
-        max_wire = command->cmd_lines;
-    }
-    if ((command->addr_size > 0U) && (command->addr_lines > max_wire)) {
-        max_wire = command->addr_lines;
-    }
-    if ((command->data_size > 0U) && (command->data_lines > max_wire)) {
-        max_wire = command->data_lines;
+    /* Jul-12 qspi_cmd_t split wire_mode into addr/data wire modes. */
+    if (command->addr_size > 0U) {
+        ret = tkl_qspi_map_wire_mode(command->addr_lines, &addr_wire_mode);
+        if (ret != OPRT_OK) {
+            tkl_qspi_port_unlock(ctx);
+            return ret;
+        }
     }
 
-    ret = tkl_qspi_map_wire_mode((TUYA_QSPI_WIRE_MODE_E)max_wire, &wire_mode);
+    if (command->data_size > 0U) {
+        data_lines = command->data_lines;
+    } else if (command->cmd_size > 0U) {
+        data_lines = command->cmd_lines;
+    } else {
+        data_lines = ctx->cfg.dma_data_lines;
+    }
+    ret = tkl_qspi_map_wire_mode(data_lines, &data_wire_mode);
     if (ret != OPRT_OK) {
         tkl_qspi_port_unlock(ctx);
         return ret;
@@ -821,12 +827,15 @@ OPERATE_RET tkl_qspi_comand(TUYA_QSPI_NUM_E port, TUYA_QSPI_CMD_T *command)
     }
 
     qcmd.op = (command->op == TUYA_QSPI_READ) ? QSPI_READ : QSPI_WRITE;
-    qcmd.wire_mode = wire_mode;
     qcmd.work_mode = INDIRECT_MODE;
     qcmd.cmd = cmd;
     qcmd.addr = addr;
+    qcmd.addr_len = command->addr_size;
+    qcmd.addr_wire_mode = addr_wire_mode;
     qcmd.dummy_cycle = command->dummy_cycle;
+    qcmd.dummy_mode = 0;
     qcmd.data_len = command->data_size;
+    qcmd.data_wire_mode = data_wire_mode;
     qcmd.device = tkl_qspi_map_device(ctx->cfg.type);
 
     if ((qcmd.op == QSPI_WRITE) && (command->data_size > 0U)) {

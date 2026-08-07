@@ -17,7 +17,6 @@
 #ifdef CONFIG_HTTP_AB_PARTITION
 #include "modules/ota.h"
 #include "driver/flash_partition.h"
-extern part_flag update_part_flag;
 #endif
 
 #ifdef CONFIG_HTTP_OTA_WITH_BLE
@@ -66,18 +65,12 @@ static int ota_do_init(f_ota_t* ota_ptr)
     OTA_MALLOC(ota_ptr->rd_buf, OTA_FLASH_BUFFER_LENGTH);
 
 #ifdef CONFIG_HTTP_AB_PARTITION
-    exec_flag ret = bk_ota_get_current_partition();
-    OTA_LOGI("ret :0x%x \r\n",ret);
-    if(ret == EXEC_B_PART){
-        update_part_flag = UPDATE_A_PART;
-    } else{
-        update_part_flag = UPDATE_B_PART;
-    }
-
 #if CONFIG_OTA_POSITION_INDEPENDENT_AB
+    part_flag update_part = bk_ota_get_update_partition();
+
 	ota_ptr->partition_length = http_get_sapp_partition_length(BK_PARTITION_S_APP);
     OTA_LOGI("ota_ptr->partition_lenth :0x%x \r\n",ota_ptr->partition_length);
-    if(update_part_flag == UPDATE_B_PART){
+    if(update_part == UPDATE_B_PART){
         OTA_LOGI("UPDATE_B_PART\r\n");
         ota_ptr->pt = bk_flash_partition_get_info(BK_PARTITION_S_APP); //update B_parition
     }else{
@@ -96,6 +89,7 @@ static int ota_do_init(f_ota_t* ota_ptr)
     ota_ptr->received_total_size  = 0;
     ota_ptr->wr_last_len          = 0;
     ota_ptr->wr_flash_flag        = 0;
+    ota_ptr->wr_err               = 0;
     ota_ptr->ota_crc.crc          = 0xFFFFFFFF;
     ota_ptr->wr_address           = ota_ptr->pt->partition_start_addr;
     ota_ptr->protect_type         = bk_flash_get_protect_type();
@@ -118,6 +112,8 @@ static int ota_do_write_flash(f_ota_t* ota_ptr, uint16_t len)
     uint32_t  anchor_time = 0;
     uint32_t  temp_time = 0;
     uint8_t   flash_erase_ready = 0;
+    bk_err_t  erase_ret = BK_OK;
+    bk_err_t  write_ret = BK_OK;
 
     OTA_CHECK_POINTER(ota_ptr);
 
@@ -151,7 +147,7 @@ static int ota_do_write_flash(f_ota_t* ota_ptr, uint16_t len)
                 if((len != 0) && (((u32)ota_ptr->wr_address + len) <= (ota_ptr->pt->partition_start_addr + ota_ptr->pt->partition_length)))
 #endif
                 {
-                    bk_flash_erase_sector(ota_ptr->wr_address);
+                    erase_ret = bk_flash_erase_sector(ota_ptr->wr_address);
                 }
                 flash_erase_ready = 0;
                 break;
@@ -190,13 +186,31 @@ static int ota_do_write_flash(f_ota_t* ota_ptr, uint16_t len)
 
                 if(flash_erase_ready == 1)
                 {
-                    bk_flash_write_bytes(ota_ptr->wr_address, (uint8_t *)ota_ptr->wr_buf, len);
+                    write_ret = bk_flash_write_bytes(ota_ptr->wr_address, (uint8_t *)ota_ptr->wr_buf, len);
 
                     if (ota_ptr->rd_buf) {
                         bk_flash_read_bytes(ota_ptr->wr_address, (uint8_t *)ota_ptr->rd_buf, len);
                         if (!os_memcmp(ota_ptr->wr_buf, ota_ptr->rd_buf, len)) {
                         } else{
-                            OTA_LOGE("wr flash write err\n");
+                            /* Diagnostic: locate first mismatching byte so we can
+                             * tell a fixed offset (partition/CRC) apart from a
+                             * random one (dual-core/timing) on the next repro. */
+                            uint16_t mis = 0;
+                            while (mis < len && ota_ptr->wr_buf[mis] == ota_ptr->rd_buf[mis]) {
+                                mis++;
+                            }
+                            OTA_LOGE("wr flash write err addr:0x%x len:0x%x mis_off:0x%x exp:0x%02x got:0x%02x\n",
+                                     ota_ptr->wr_address, len, mis,
+                                     (mis < len) ? ota_ptr->wr_buf[mis] : 0,
+                                     (mis < len) ? ota_ptr->rd_buf[mis] : 0);
+                            /* Diagnostic: erase/write driver return codes + the
+                             * live protect type. got==0xff with erase/write ret
+                             * OK strongly implies the block is write-protected
+                             * (e.g. last-block protection covering the A-slot
+                             * tail next to the running B slot at 0x285000). */
+                            OTA_LOGE("wr flash write err erase_ret:%d write_ret:%d protect:%d\n",
+                                     erase_ret, write_ret, bk_flash_get_protect_type());
+                            ota_ptr->wr_err = 1;
                             return BK_FAIL;
                         }
                     }
@@ -226,6 +240,13 @@ static int ota_do_process_data_wifi(f_ota_t *ota_ptr, uint16_t len, ota_wr_callb
 {
     int ret = BK_FAIL;
     uint32_t write_len = 0, i = 0;
+
+    /* A previous chunk already failed to write flash: abort the whole session
+     * instead of retrying every incoming chunk (which floods the log with
+     * "wr flash write err"/"wr 1k data fail"). */
+    if (ota_ptr->wr_err) {
+        return BK_FAIL;
+    }
 
     OTA_LOGD("wr_addr:0x%x, len :0x%x \r\n", ota_ptr->wr_address, len);
     while (i < len)
@@ -280,6 +301,10 @@ static int ota_do_process_data_wifi(f_ota_t *ota_ptr, uint16_t len, ota_wr_callb
                 {
                     OTA_LOGE("wr 1k data fail \r\n");
                     ret = BK_FAIL;
+                    /* Stop processing this chunk on the first failure; the
+                     * sticky wr_err flag aborts the session, and breaking here
+                     * avoids re-writing/re-logging the remaining 1K sub-blocks. */
+                    break;
                 }
             }
             else
@@ -302,6 +327,11 @@ static int ota_do_process_data_ble(f_ota_t *ota_ptr, uint16_t len, ota_wr_callba
 
     int ret = BK_FAIL;
     uint32_t write_len = 0, i = 0;
+
+    /* A previous chunk already failed to write flash: abort the session. */
+    if (ota_ptr->wr_err) {
+        return BK_FAIL;
+    }
 
     OTA_LOGV("wr_addr:0x%x, new_seq:0x%x, curr_seq :0x%x,len :0x%x \r\n",
              ota_ptr->wr_address, ota_ptr->new_sequence_number, ota_ptr->curr_sequence_number, len);
@@ -563,6 +593,7 @@ static const f_ota_func_t s_ota_fun ={
     .data_process = ota_do_process_data,
     .crc          = ota_do_check_crc,
     .deinit       = ota_do_deinit,
+    .finish       = NULL,
 #if (CONFIG_REMOTE_VFS_CLIENT || CONFIG_VFS)
     .mount        = ota_do_mount,
     .open         = ota_do_open_file,

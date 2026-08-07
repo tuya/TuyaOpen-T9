@@ -1,4 +1,5 @@
 #include <components/netif.h>
+#include "bk_netif.h"
 #include <components/log.h>
 #include <common/bk_err.h>
 #include <os/mem.h>
@@ -16,11 +17,11 @@
 #include "bk_private/bk_wifi.h"
 #include "wifi_api_ipc.h"
 #endif
+#if CONFIG_P2P
+#include "wifi_api.h"
+#endif
 
 uint8 sta_static_ip_flag = 0;
-#ifdef CONFIG_WIFI_VNET_CONTROLLER
-extern wdrv_wlan wdrv_host_env;
-#endif
 
 bk_err_t bk_netif_static_ip(netif_ip4_config_t static_ip4_config)
 {
@@ -60,44 +61,8 @@ bk_err_t netif_wifi_event_cb(void *arg, event_module_t event_module,
 	switch (event_id) {
 #ifdef CONFIG_WIFI_VNET_CONTROLLER
     case EVENT_WIFI_STA_CONNECTED:
-    {
-        netif_ip4_config_t wdrv_static_ip;
-        os_snprintf(wdrv_static_ip.ip, NETIF_IP4_STR_LEN, "%u.%u.%u.%u",
-        (wdrv_host_env.connect_ind.ip >> 0) & 0xff, (wdrv_host_env.connect_ind.ip >> 8) & 0xff,
-        (wdrv_host_env.connect_ind.ip >> 16) & 0xff, (wdrv_host_env.connect_ind.ip >> 24) & 0xff);
-
-        os_snprintf(wdrv_static_ip.mask, NETIF_IP4_STR_LEN, "%u.%u.%u.%u",
-        (wdrv_host_env.connect_ind.mk >> 0) & 0xff, (wdrv_host_env.connect_ind.mk >> 8) & 0xff,
-        (wdrv_host_env.connect_ind.mk >> 16) & 0xff, (wdrv_host_env.connect_ind.mk >> 24) & 0xff);
-
-        os_snprintf(wdrv_static_ip.gateway, NETIF_IP4_STR_LEN, "%u.%u.%u.%u",
-        (wdrv_host_env.connect_ind.gw >> 0) & 0xff, (wdrv_host_env.connect_ind.gw >> 8) & 0xff,
-        (wdrv_host_env.connect_ind.gw >> 16) & 0xff, (wdrv_host_env.connect_ind.gw >> 24) & 0xff);
-
-        os_snprintf(wdrv_static_ip.dns, NETIF_IP4_STR_LEN, "%u.%u.%u.%u",
-        (wdrv_host_env.connect_ind.dns >> 0) & 0xff, (wdrv_host_env.connect_ind.dns >> 8) & 0xff,
-        (wdrv_host_env.connect_ind.dns >> 16) & 0xff, (wdrv_host_env.connect_ind.dns >> 24) & 0xff);
-
-        sta_ip_mode_set(0);
-        sta_ip_down();
-        BK_LOG_ON_ERR(bk_netif_set_ip4_config(NETIF_IF_STA, &wdrv_static_ip));
-        sta_ip_start();
-    }
-#endif
 		break;
-	case EVENT_WIFI_STA_GOT_IPV6:
-	{
-#ifdef CONFIG_IPV6
-		struct ipv6_config ipv6_configs[MAX_IPV6_ADDRESSES];
-		LWIP_LOGE("%s IPv6 address count: %d\n", __func__, wdrv_host_env.ipv6_ind.addr_count);
-		for (int i = 0; i < wdrv_host_env.ipv6_ind.addr_count && i < MAX_IPV6_ADDRESSES; i++) {
-			os_memcpy(&ipv6_configs[i].address, wdrv_host_env.ipv6_ind.ipv6_addr[i].address, 16);
-			ipv6_configs[i].addr_state = wdrv_host_env.ipv6_ind.ipv6_addr[i].addr_state;
-		}
-		net_configure_ipv6_address(ipv6_configs, wdrv_host_env.ipv6_ind.addr_count, net_get_sta_handle());
 #endif
-	}
-		break;
 	case EVENT_WIFI_STA_DISCONNECTED:
 #if CONFIG_NETIF_LWIP
 		sta_ip_down();
@@ -106,8 +71,15 @@ bk_err_t netif_wifi_event_cb(void *arg, event_module_t event_module,
 #endif
 		break;
 #if CONFIG_P2P
-	case EVENT_WIFI_GO_DISCONNECTED:
-		bk_wifi_p2p_cancel();
+	case EVENT_WIFI_GC_CONNECTED:
+#if CONFIG_NETIF_LWIP && !CONFIG_WIFI_VNET_CONTROLLER
+		p2p_gc_ip_start();
+#endif
+		break;
+	case EVENT_WIFI_GC_DISCONNECTED:
+#if CONFIG_NETIF_LWIP
+		p2p_gc_ip_down();
+#endif
 		break;
 #endif
 	default:
@@ -139,32 +111,15 @@ bk_err_t netif_validate_ip4_config(const netif_ip4_config_t *ip4_config)
 	return BK_OK;
 }
 
-bk_err_t bk_netif_set_ip4_config(netif_if_t ifx, const netif_ip4_config_t *ip4_config)
+bk_err_t bk_netif_set_ip4_config_local(netif_if_t ifx, const netif_ip4_config_t *ip4_config)
 {
 	netif_ip4_config_t *config = (netif_ip4_config_t*)ip4_config;
 	int ret;
-	uint32_t len_ip4_config = sizeof(netif_ip4_config_t);
-	void *buffer_to_ipc = NULL;
 
 	ret = netif_validate_ip4_config(ip4_config);
 	if (ret != BK_OK) {
 		return ret;
 	}
-
-	buffer_to_ipc = os_malloc(len_ip4_config);
-	if (!buffer_to_ipc)
-	{
-		BK_LOGE(NULL, "%s malloc failed\r\n", __func__);
-		return BK_ERR_NO_MEM;
-	}
-	os_memcpy(buffer_to_ipc, ip4_config, len_ip4_config);
-	ret = wifi_send_com_api_cmd(AP_NETIF_IP4_CONFIG, 1, (uint32_t)buffer_to_ipc);
-	if (ret != BK_OK)
-	{
-		BK_LOGE(NULL, "%s set ap netif ip4 config failed, ret=%d\n", __func__, ret);
-		return ret;
-	}
-	os_free(buffer_to_ipc);
 
 	if (ifx == NETIF_IF_STA) {
 		ip_address_set(1 /*STA*/, 0/*static IP*/, config->ip, config->mask, config->gateway, config->dns);
@@ -175,6 +130,49 @@ bk_err_t bk_netif_set_ip4_config(netif_if_t ifx, const netif_ip4_config_t *ip4_c
 	}
 
 	return BK_OK;
+}
+
+bk_err_t bk_netif_set_ip4_config(netif_if_t ifx, const netif_ip4_config_t *ip4_config)
+{
+	int ret;
+#ifdef CONFIG_WIFI_VNET_CONTROLLER
+	uint32_t cmd_id;
+	uint32_t len_ip4_config = sizeof(netif_ip4_config_t);
+	void *buffer_to_ipc = NULL;
+#endif
+
+	ret = netif_validate_ip4_config(ip4_config);
+	if (ret != BK_OK) {
+		return ret;
+	}
+
+#ifdef CONFIG_WIFI_VNET_CONTROLLER
+	if (ifx == NETIF_IF_STA) {
+		cmd_id = STA_NETIF_IP4_CONFIG;
+	} else if (ifx == NETIF_IF_AP) {
+		cmd_id = AP_NETIF_IP4_CONFIG;
+	} else {
+		return BK_ERR_NETIF_IF;
+	}
+
+	buffer_to_ipc = os_malloc(len_ip4_config);
+	if (!buffer_to_ipc)
+	{
+		BK_LOGE(NULL, "%s malloc failed\r\n", __func__);
+		return BK_ERR_NO_MEM;
+	}
+	os_memcpy(buffer_to_ipc, ip4_config, len_ip4_config);
+	ret = wifi_send_com_api_cmd(cmd_id, 1, (uint32_t)buffer_to_ipc);
+	if (ret != BK_OK)
+	{
+		BK_LOGE(NULL, "%s set netif(%d) ip4 config failed, ret=%d\n", __func__, ifx, ret);
+		os_free(buffer_to_ipc);
+		return ret;
+	}
+	os_free(buffer_to_ipc);
+#endif
+
+	return bk_netif_set_ip4_config_local(ifx, ip4_config);
 }
 
 bk_err_t bk_netif_get_ip4_config(netif_if_t ifx, netif_ip4_config_t *ip4_config)
@@ -209,6 +207,17 @@ bk_err_t bk_netif_get_ip4_config(netif_if_t ifx, netif_ip4_config_t *ip4_config)
 #if CONFIG_BK_MODEM
 	} else if (ifx == NETIF_IF_MODEM) {
 		net_get_if_addr(&addr, net_get_modem_handle());
+#endif
+#if CONFIG_P2P
+	} else if (ifx == NETIF_IF_P2P) {
+		int role = 0;
+
+		if (bk_wifi_p2p_get_role(&role) != BK_OK || role == 0)
+			return BK_ERR_NETIF_IF;
+		if (role == 1)
+			net_get_p2p_go_if_addr(&addr);
+		else
+			net_get_p2p_gc_if_addr(&addr);
 #endif
 	} else {
 		return BK_ERR_NETIF_IF;

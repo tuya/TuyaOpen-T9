@@ -32,19 +32,19 @@
 
 #define SOC_FLASH_DATA_BASE      (0x04000000 + SOC_ADDR_OFFSET)
 #define SOC_ROM_DATA_BASE        (0x02000000 + SOC_ADDR_OFFSET)
-#define SOC_SRAM0_DATA_BASE      (0x28000000 + SOC_ADDR_OFFSET) //128K
+#define SOC_SRAM0_DATA_BASE      (0x2C000000 + SOC_ADDR_OFFSET) //128K
 #define SOC_SRAM0_DATA_SIZE      0x20000
-#define SOC_SRAM1_DATA_BASE      (0x28020000 + SOC_ADDR_OFFSET) //128K
+#define SOC_SRAM1_DATA_BASE      (0x2C020000 + SOC_ADDR_OFFSET) //128K
 #define SOC_SRAM1_DATA_SIZE      0x20000
-#define SOC_SRAM2_DATA_BASE      (0x28040000 + SOC_ADDR_OFFSET) //128K
+#define SOC_SRAM2_DATA_BASE      (0x2C040000 + SOC_ADDR_OFFSET) //128K
 #define SOC_SRAM2_DATA_SIZE      0x20000
-#define SOC_SRAM3_DATA_BASE      (0x28100000 + SOC_ADDR_OFFSET) //256K
+#define SOC_SRAM3_DATA_BASE      (0x2C100000 + SOC_ADDR_OFFSET) //256K
 #define SOC_SRAM3_DATA_SIZE      0x40000
-#define SOC_SRAM4_DATA_BASE      (0x28140000 + SOC_ADDR_OFFSET) //256K
+#define SOC_SRAM4_DATA_BASE      (0x2C140000 + SOC_ADDR_OFFSET) //256K
 #define SOC_SRAM4_DATA_SIZE      0x40000
-#define SOC_SRAM5_DATA_BASE      (0x28180000 + SOC_ADDR_OFFSET) //256K
+#define SOC_SRAM5_DATA_BASE      (0x2C180000 + SOC_ADDR_OFFSET) //256K
 #define SOC_SRAM5_DATA_SIZE      0x40000
-#define SOC_SRAM6_DATA_BASE      (0x281C0000 + SOC_ADDR_OFFSET) //128K
+#define SOC_SRAM6_DATA_BASE      (0x2C1C0000 + SOC_ADDR_OFFSET) //128K
 #define SOC_SRAM6_DATA_SIZE      0x20000
 #define SOC_SRAM_DATA_END       (SOC_SRAM6_DATA_BASE +SOC_SRAM6_DATA_SIZE)
 #define SOC_M55_TCM_BASE         (0x28200000 + SOC_ADDR_OFFSET)
@@ -57,8 +57,8 @@
 /*
  * SRAM direct-address (0x2Cxxxxxx) -> peripheral-address (0x28xxxxxx)
  *
- * When CONFIG_SRAM_DIRECT_ADDR is enabled, the CP(M52) OS places its data in
- * the 0x2Cxxxxxx SRAM alias (Bit26 set) because the M52 core accesses that
+ * When CONFIG_SRAM_DIRECT_ADDR is enabled, the CP OS places its data in
+ * the 0x2Cxxxxxx SRAM alias (Bit26 set) because the CP core accesses that
  * alias faster. Peripherals (DMA / codec / display / ...) can ONLY access the
  * 0x28xxxxxx SRAM alias, so an SRAM buffer pointer handed to a peripheral must
  * be translated back first.
@@ -69,15 +69,36 @@
  * is returned unchanged so the macro is safe to apply unconditionally.
  */
 #define SOC_SRAM_DIRECT_ADDR_BIT     (0x04000000U)   /* Bit26 */
-#define SOC_SRAM_DIRECT_ADDR_BASE    (0x2C000000U)
 #define SOC_SRAM_DIRECT_ADDR_MASK    (0xFF000000U)
+
+#define SOC_SRAM_DIRECT_ADDR_BASE    (0x2C000000U)
+#define SOC_SRAM_DIRECT_ADDR_BASE_SECURE    (0x3C000000U)
+
+#define SOC_SRAM_NORMAL_ADDR_BASE    (0x28000000U)
+#define SOC_SRAM_NORMAL_ADDR_BASE_SECURE    (0x38000000U)
 
 #define SOC_SRAM_PERI_ADDR(addr) \
     ((((unsigned int)(addr) & SOC_SRAM_DIRECT_ADDR_MASK) == SOC_SRAM_DIRECT_ADDR_BASE) ? \
      ((unsigned int)(addr) & ~SOC_SRAM_DIRECT_ADDR_BIT) : ((unsigned int)(addr)))
+
+#define SOC_SRAM_PERI_ADDR_SECURE(addr) \
+    ((((unsigned int)(addr) & SOC_SRAM_DIRECT_ADDR_MASK) == SOC_SRAM_DIRECT_ADDR_BASE_SECURE) ? \
+     ((unsigned int)(addr) & ~SOC_SRAM_DIRECT_ADDR_BIT) : ((unsigned int)(addr)))
+
+#define SOC_SRAM_PERI_ADDR_NORMAL(addr) \
+    ((((unsigned int)(addr) & SOC_SRAM_DIRECT_ADDR_MASK) == SOC_SRAM_NORMAL_ADDR_BASE) ? \
+     ((unsigned int)(addr) | SOC_SRAM_DIRECT_ADDR_BIT) : ((unsigned int)(addr)))
+
+#define SOC_SRAM_PERI_ADDR_NORMAL_SECURE(addr) \
+    ((((unsigned int)(addr) & SOC_SRAM_DIRECT_ADDR_MASK) == SOC_SRAM_NORMAL_ADDR_BASE_SECURE) ? \
+     ((unsigned int)(addr) | SOC_SRAM_DIRECT_ADDR_BIT) : ((unsigned int)(addr)))
 #else
 #define SOC_SRAM_PERI_ADDR(addr) (addr)
+#define SOC_SRAM_PERI_ADDR_SECURE(addr) (addr)
+#define SOC_SRAM_PERI_ADDR_NORMAL(addr) (addr)
+#define SOC_SRAM_PERI_ADDR_NORMAL_SECURE(addr) (addr)
 #endif /* CONFIG_SRAM_DIRECT_ADDR */
+
 
 #if CONFIG_PSRAM_INTERLEAVE
 #define SOC_PSRAM0_DATA_BASE     ((unsigned int)(0x60000000UL + SOC_ADDR_OFFSET + CONFIG_PSRAM_INTERLEAVE_OFFSET))
@@ -207,9 +228,9 @@
 #define SOC_OTP_AHB_BASE         (0x42010000 + SOC_ADDR_OFFSET)
 #define SOC_OTP_APB_BASE         (0x42100000 + SOC_ADDR_OFFSET)
 #define SOC_SHANHAI_BASE         (0x42110000 + SOC_ADDR_OFFSET)
-#define SOC_WWDT_REG_BASE        (0xE0050000 + SOC_ADDR_OFFSET)
+#define SOC_WWDT_REG_BASE        (0xE0050000)
 
-/* M55 start */
+/* AP start */
 #define SOC_SYS_AHBP_REG_BASE    (0x48000000 + SOC_ADDR_OFFSET)
 #define SOC_QSPI0_REG_BASE       (0x48020000 + SOC_ADDR_OFFSET)
 #define SOC_QSPI1_REG_BASE       (0x48030000 + SOC_ADDR_OFFSET)
@@ -230,11 +251,10 @@
 #define SOC_DPU_REG_BASE         (0x4C2C0000 + SOC_ADDR_OFFSET)
 #define SOC_GPU_REG_BASE         (0x4C280000 + SOC_ADDR_OFFSET)
 #define SOC_PPHS_REG_BASE        (0x480D0000 + SOC_ADDR_OFFSET)
-/* M55 end */
+/* AP end */
 
 
-// The following base addresses not exist in the m52 address mapping.
+// The following base addresses not exist in the CP address mapping.
 #define SOC_IRDA_REG_BASE        SOC_IRDA0_REG_BASE
-#define SOC_CAN_REG_BASE         SOC_CAN0_REG_BASE
 #define SOC_SDIO_REG_BASE        SOC_SDIO0_REG_BASE
 

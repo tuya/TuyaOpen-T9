@@ -24,6 +24,39 @@
 #include "spinlock.h"
 
 #include "cache.h"
+#include <driver/aon_rtc.h>
+#include "soc_debug.h"
+
+/* Max time to wait for the peer core (CP) to consume a synchronous mailbox log
+ * buffer. A healthy CP acks within microseconds; exceeding this means the CP is
+ * unresponsive (e.g. hung), so we abandon the send instead of hard-spinning with
+ * interrupts disabled -- which would escalate a CP hang into an AP watchdog.
+ * AON-RTC is used because systick / rtos_get_time() is frozen while interrupts
+ * are disabled in this path. */
+#define SHELL_MB_SYNC_TX_TIMEOUT_US   (50 * 1000)
+
+/* Nonzero once AP has detected a CP hang and is taking over the dump: stop
+ * pushing logs to the (dead) CP over the mailbox. Provided by sys_sw_regs. */
+extern uint32_t bk_sys_sw_regs_get_ap_cp_hang_dumping(void);
+
+#if CONFIG_CACHE_MAINTENANCE
+/* True only for buffers in the L2-cacheable PSRAM heap (MPU attr5: Outer/L2
+ * write-back, Inner/L1 non-cacheable). The static log pool and os_malloc dynamic
+ * logs live in non-cacheable SRAM (attr1) and need no cache maintenance.
+ * ptr_is_psram_heap() lives in the (non-exported) heap_manager, declared here. */
+#if CONFIG_PSRAM_AS_SYS_MEMORY
+extern bool ptr_is_psram_heap(void *ptr);
+#endif
+static inline bool shell_mb_payload_needs_cache_clean(void *payload)
+{
+#if CONFIG_PSRAM_AS_SYS_MEMORY
+	return ptr_is_psram_heap(payload);
+#else
+	(void)payload;
+	return false;
+#endif
+}
+#endif
 
 #define ACK_STATE_MASK   0xFFFF
 
@@ -244,6 +277,20 @@ static void shell_mb_tx_isr2(shell_mb_ext_t *mb_ext)
 		cmd_buf->len = mb_ext->packet_len;
 		cmd_buf->tag = mb_ext->packet_tag;
 
+#if CONFIG_CACHE_MAINTENANCE
+		/* Mailbox carries only a POINTER; the CP reads the payload from shared memory
+		 * and invalidates first. During a burst dynamic logs spill to the PSRAM heap
+		 * (L2 write-back, L1 non-cacheable), so this side must clean (write back) the
+		 * payload to main memory before handing the pointer over, else the CP reads
+		 * stale/uninitialised PSRAM -> 0x55 garble. Non-cacheable SRAM buffers (static
+		 * pool / os_malloc) are skipped by the ptr_is_psram_heap gate. */
+		if(shell_mb_payload_needs_cache_clean(mb_ext->cur_packet) &&
+			(mb_ext->packet_len > 0))
+		{
+			flush_dcache(mb_ext->cur_packet, mb_ext->packet_len);
+		}
+#endif
+
 		bk_err_t		ret_code;
 
 		ret_code = mb_chnl_write(mb_ext->chnl_id, &mb_cmd_buf);
@@ -267,53 +314,51 @@ static void shell_mb_tx_isr2(shell_mb_ext_t *mb_ext)
 	}
 }
 
-/* Returns whether CP signalled flow-control BLOCK for this packet. Frees the
- * completed buffer via tx_complete_callback (must run OUTSIDE the pump lock). */
-static u8 shell_mb_tx_cmpl_isr2(shell_mb_ext_t *mb_ext, mb_chnl_ack_t *ack_buf)
+static void shell_mb_tx_cmpl_isr(shell_mb_ext_t *mb_ext, mb_chnl_ack_t *ack_buf)
 {
-	u8 set_block = 0;
+	u8    *done_packet = NULL;
+	u16    done_tag = 0;
+	u8     do_free = 0;
+	u8     set_block = 0;
 
 	if(ack_buf->hdr.cmd != MB_CMD_LOG_OUT)
 	{
 		/*
 		 *   !!!  FAULT  !!!
 		 */
-
-	//	return;
 	}
-	
-	if ( ((ack_buf->hdr.state & CHNL_STATE_COM_FAIL) == 0) && 
+
+	if ( ((ack_buf->hdr.state & CHNL_STATE_COM_FAIL) == 0) &&
      		(ack_buf->ack_state & ACK_STATE_BLOCK) ) {
 		set_block = 1;
 	}
 
-	/* MB_CMD_LOG_OUT tx complete. */
-
-	if( (ack_buf->hdr.state & CHNL_STATE_COM_FAIL) 
+	if( (ack_buf->hdr.state & CHNL_STATE_COM_FAIL)
 		|| ((ack_buf->ack_state & ACK_STATE_MASK) != ACK_STATE_PENDING) )
 	{
-		/* MB_CMD_LOG_OUT handle complete. */
-		/* so notify app to free buffer. */
-		if(mb_ext->tx_complete_callback != NULL)
-		{
-			mb_ext->tx_complete_callback(mb_ext->cur_packet, mb_ext->packet_tag);
-		}
+		do_free = 1;
 	}
 
-	return set_block;
-}
-
-static void shell_mb_tx_cmpl_isr(shell_mb_ext_t *mb_ext, mb_chnl_ack_t *ack_buf)
-{
-	/* callback (frees buffer / releases semaphore) runs outside the pump lock. */
-	u8 set_block = shell_mb_tx_cmpl_isr2(mb_ext, ack_buf);
-
-	/* log_blocked update + tx pump must be atomic vs the producer (write_async). */
 	uint32_t flags = mb_pump_enter();
+	if(do_free)
+	{
+		done_packet = mb_ext->cur_packet;
+		done_tag    = mb_ext->packet_tag;
+		mb_ext->cur_packet = NULL;
+		mb_ext->packet_len = 0;
+	}
 	if(set_block)
 	{
 		mb_ext->log_blocked = 1;
 	}
+	mb_pump_exit(flags);
+
+	if(do_free && (mb_ext->tx_complete_callback != NULL))
+	{
+		mb_ext->tx_complete_callback(done_packet, done_tag);
+	}
+
+	flags = mb_pump_enter();
 	shell_mb_tx_isr2(mb_ext);
 	mb_pump_exit(flags);
 	return;
@@ -331,6 +376,15 @@ static bk_err_t write_sync(shell_mb_ext_t *mb_ext, u8 * p_buf, u16 buf_len)
 		return BK_OK;
 	}
 #endif //#if (!CONFIG_SOC_BK7259) ///TODO: BK7259_BringUP
+
+#if CONFIG_CP_HANG_DUMP_BY_AP
+	/* CP is known hung (AP is running the cp-hang dump): never push logs to it
+	 * over the mailbox, it will never ack and we would spin forever. */
+	if(bk_sys_sw_regs_get_ap_cp_hang_dumping())
+	{
+		return BK_FAIL;
+	}
+#endif
 
 	if(mb_ext->tx_sync_buf == NULL)
 	{
@@ -356,8 +410,42 @@ static bk_err_t write_sync(shell_mb_ext_t *mb_ext, u8 * p_buf, u16 buf_len)
 		}
 
 		buff_busy = (volatile u8 * )&tx_buff[0];
+
+		/* Wait for any in-flight transfer on this shared buffer to complete before
+		 * reusing it, so a concurrent writer (e.g. the INSRT sync path racing the
+		 * async pump across AP cores) cannot stomp a buffer the CP is still reading.
+		 * Bounded by the same timeout so a hung CP cannot hard-hang this core. */
+		{
+			uint64_t reuse_start_us = bk_aon_rtc_get_us();
+
+			while(*buff_busy)
+			{
+				#if CONFIG_SUPPORT_CACHEABLE_SRAM
+				flush_dcache((void *)buff_busy, 1);
+				#endif
+
+				if((bk_aon_rtc_get_us() - reuse_start_us) >= SHELL_MB_SYNC_TX_TIMEOUT_US)
+				{
+					ret_code = BK_ERR_MAILBOX_TIMEOUT;
+					break;
+				}
+			}
+
+			if(ret_code != BK_OK)
+			{
+				break;
+			}
+		}
+
 		tx_buff[0] = 1;  /* the buffer is busy. */
 		memcpy(&tx_buff[1], p_buf, cpy_len);
+
+		#if CONFIG_SUPPORT_CACHEABLE_SRAM
+		/* Clean (write back) the busy flag + payload to shared SRAM before signalling
+		 * the CP, so the CP reads the freshly written content instead of a stale /
+		 * uninitialised (0x55) cache line. flush_dcache = clean + invalidate. */
+		flush_dcache((void *)tx_buff, cpy_len + 1);
+		#endif
 
 		mb_chnl_cmd_t	mb_cmd_buf;
 		log_cmd_t * cmd_buf = (log_cmd_t *)&mb_cmd_buf;
@@ -372,12 +460,27 @@ static bk_err_t write_sync(shell_mb_ext_t *mb_ext, u8 * p_buf, u16 buf_len)
 
 		if(ret_code == BK_OK)
 		{
+			uint64_t start_us = bk_aon_rtc_get_us();
+
 			while(*buff_busy)
 			{
 				/* wait buffer to be free (*buff_busy == 0). */
 				#if CONFIG_SUPPORT_CACHEABLE_SRAM
 				flush_dcache((void *)buff_busy, 1);
 				#endif
+
+				/* Bail out if the peer (CP) never consumes the buffer, so a hung
+				 * CP cannot hard-hang this core with interrupts disabled. */
+				if((bk_aon_rtc_get_us() - start_us) >= SHELL_MB_SYNC_TX_TIMEOUT_US)
+				{
+					ret_code = BK_ERR_MAILBOX_TIMEOUT;
+					break;
+				}
+			}
+
+			if(ret_code != BK_OK)
+			{
+				break;
 			}
 		}
 		else
@@ -593,7 +696,15 @@ static u16 shell_mb_write_sync(shell_dev_t * shell_dev, u8 * pBuf, u16 BufLen)
 
 	bk_err_t		ret_code;
 
+	/* Serialise with the async tx pump across AP cores: the pump manipulates the
+	 * same shared tx_sync_buf under mb_pump_lock, while this sync (INSRT fallback)
+	 * path previously only disabled local interrupts and gave no cross-core
+	 * exclusion on SMP - the root cause of the 0x55 log corruption. The internal
+	 * write_sync() never takes this lock itself, so acquiring it here cannot
+	 * self-deadlock. */
+	uint32_t flags = mb_pump_enter();
 	ret_code = write_sync(mb_ext, pBuf, BufLen);
+	mb_pump_exit(flags);
 
 	if(ret_code != BK_OK)
 		return 0;

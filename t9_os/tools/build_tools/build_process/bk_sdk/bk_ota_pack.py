@@ -10,7 +10,7 @@ import zlib
 from pathlib import Path
 
 import bk_packager
-from bk_crc import bk_crc16
+from bk_flash_partiton import adapt_partition_name
 from bk_misc import parse_format_size
 from bk_ota_partition import bk_ota_partition
 
@@ -103,16 +103,6 @@ def build_metadata(magic: int, entry_size: int, entries: bytes, ota_scheme: int)
     return header + entries
 
 
-def _adapt_partition_name(name: str, execute: bool, app_count: int) -> tuple[str, int]:
-    """Replicate bk_flash_partition._part_adapter naming so on-flash names match App."""
-    if "bootloader" in name and execute:
-        return "bootloader", app_count
-    if execute:
-        adapted = "application" + (str(app_count) if app_count else "")
-        return adapted, app_count + 1
-    return name, app_count
-
-
 def serialize_partitions_table(partitions_json: Path) -> bytes:
     """Serialize the FULL App partition table (App naming/semantics) from partitions.json."""
     if not partitions_json.exists():
@@ -125,7 +115,7 @@ def serialize_partitions_table(partitions_json: Path) -> bytes:
     app_count = 0
     for part in sections:
         execute = bool(part["Execute"])
-        name, app_count = _adapt_partition_name(part["Name"], execute, app_count)
+        name, app_count = adapt_partition_name(part["Name"], execute, app_count)
         options = 0
         if part["Read"]:
             options |= PAR_OPT_READ_EN
@@ -279,25 +269,71 @@ def pack_ota_rbl_non_ab(origin_ota_app_bin: Path):
     return ota_bin
 
 
+def rebuild_format_all_app_bin(
+    pack_dir: Path, ota_bin: Path, all_app_bin: Path
+) -> None:
+    """Rebuild the format all-app.bin so slot A is the combined AB image.
+
+    firmware_package() first builds the format all-app.bin from the split
+    app/app1 payload, which leaves the slot tail (the RBL head) unwritten. The AB
+    bootloader validates each slot as a single combined image whose RBL head sits
+    at the slot tail, so slot A must be packaged as the one app_ab_crc.rbl image
+    while the non-executable partitions (AB flag) stay as separate sections.
+    """
+    build_partitions_dir = curr_project.project_build_parititons_dir
+
+    # configurationab.json already describes the combined AB slot layout
+    # (bootloader + one slot-sized app image at the slot base).
+    with (build_partitions_dir / "configurationab.json").open("r") as f:
+        format_info = json.load(f)
+    sections: list[dict] = format_info["section"]
+
+    # the slot-A section firmware is app_ab.bin; feed it the combined AB image.
+    slot_image = pack_dir / "app_ab.bin"
+    shutil.copy(ota_bin, slot_image)
+
+    # keep the pre-provisioned non-executable partitions (AB flag) in the package.
+    with (build_partitions_dir / "bk_package.json").open("r") as f:
+        pack_info = json.load(f)
+    extra_partitions = set(curr_project.extra_pack_partitions)
+    present = {part["partition"] for part in sections}
+    for part in pack_info["section"]:
+        if part["partition"] in extra_partitions and part["partition"] not in present:
+            sections.append(part)
+    format_info["count"] = len(sections)
+
+    format_json = pack_dir / "all_app_format.json"
+    with format_json.open("w") as f:
+        json.dump(format_info, f, indent=4)
+
+    packager = curr_project.get_packager(pack_dir, format_json, all_app_bin)
+    packager.pack()
+
+    # match cmake_Gen_img / pack_all_bin 32-byte alignment.
+    padding_len = (32 - all_app_bin.stat().st_size % 32) % 32
+    if padding_len:
+        with all_app_bin.open("ab") as f:
+            f.write(bytes([0xFF]) * padding_len)
+    logger.info("rebuild format all-app.bin: slot A = app_ab.bin + extra partitions")
+
+
 def pack_ota_rbl_ab(
     pack_dir: Path, bootloader_size: int, origin_ota_app_bin: Path, all_app_bin: Path
 ):
     ota_bin = Path("app_ab_crc.rbl")
-    ota_app_temp_bin = pack_dir / "ota_app_temp.bin"
     soc_name = curr_project.soc_name
     cmd = (
-        f"python3 {ota_tool} -i {origin_ota_app_bin} -o {ota_app_temp_bin} "
+        f"python3 {ota_tool} -i {origin_ota_app_bin} -o {ota_bin} "
         + f"-g {header_path} -ap {armino_path} -soc {soc_name} -pjd {project_dir} packager"
     )
-    # raise RuntimeError(cmd)
     ret = os.system(cmd)
     if ret != 0:
         raise RuntimeError("generate ota rbl file fail.")
-
-    crc_handler = bk_crc16()
-    crc_handler.crc_file(ota_app_temp_bin, ota_bin)
     logger.info(f"generate ota firmware {ota_bin}")
-    ota_app_temp_bin.unlink()
+
+    if curr_project.use_format_packager:
+        rebuild_format_all_app_bin(pack_dir, ota_bin, all_app_bin)
+        return ota_bin
 
     with all_app_bin.open("rb+") as dest_f, ota_bin.open("rb") as src_f:
         dest_f.seek(bootloader_size)
@@ -331,11 +367,13 @@ def pack_ota_app_bin(pack_dir: Path, output_bin: Path):
     with pack_json.open("r") as f:
         apps_part_info = json.load(f)
     sections: list[dict[str, str]] = apps_part_info["section"]
-    for index, part in enumerate(sections):
-        if "bootloader" in part["partition"]:
-            sections.pop(index)
-            apps_part_info["count"] -= 1
-            break
+    sections[:] = [part for part in sections if "bootloader" not in part["partition"]]
+    extra_partitions = set(curr_project.extra_pack_partitions)
+    if extra_partitions:
+        sections[:] = [
+            part for part in sections if part["partition"] not in extra_partitions
+        ]
+    apps_part_info["count"] = len(sections)
 
     if curr_project.flash_crc_enable:
         for part in sections:

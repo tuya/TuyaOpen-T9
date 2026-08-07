@@ -155,14 +155,16 @@ typedef enum {
  */
 typedef enum {
 	EVENT_WIFI_SCAN_DONE = 0,	   /**< WiFi scan done event */
-	EVENT_WIFI_STA_ASSOCIATED,	   /**< WiFi associated event */
 	EVENT_WIFI_STA_CONNECTED,	   /**< The BK STA is connected */
-	EVENT_WIFI_STA_GOT_IPV6,	   /**< The BK STA got ipv6 address*/
 	EVENT_WIFI_STA_DISCONNECTED,   /**< The BK STA is disconnected */
 
-	EVENT_WIFI_AP_CONNECTED,	   /**< A STA is connected to the BK AP */
-	EVENT_WIFI_AP_DISCONNECTED,    /**< A STA is disconnected from the BK AP */
-	EVENT_WIFI_GO_DISCONNECTED,    /**< A GC is disconnected from the BK GO */
+	EVENT_WIFI_AP_CONNECTED,	   /**< A STA is connected to the BK AP (SoftAP role) */
+	EVENT_WIFI_AP_DISCONNECTED,    /**< A STA is disconnected from the BK AP (SoftAP role) */
+
+	EVENT_WIFI_GO_CONNECTED,	   /**< A GC is connected to the local P2P GO */
+	EVENT_WIFI_GO_DISCONNECTED,    /**< A GC is disconnected from the local P2P GO */
+	EVENT_WIFI_GC_CONNECTED,	   /**< The local P2P GC is connected to the remote GO */
+	EVENT_WIFI_GC_DISCONNECTED,    /**< The local P2P GC is disconnected from the remote GO */
 
 	EVENT_WIFI_NETWORK_FOUND,	   /**< The BK STA find target AP */
 	EVENT_WIFI_COUNT,			   /**< WiFi event count */
@@ -681,16 +683,6 @@ typedef struct {
 	char    ssid[WIFI_SSID_STR_LEN];      /**< SSID of connected AP */
 	uint8_t bssid[WIFI_BSSID_LEN];        /**< BSSID of connected AP*/
 } wifi_event_sta_connected_t;
-
-#define MAX_IPV6_ADDRESSES_IN_MSG 3
-typedef struct {
-    uint8_t addr_count;
-    struct {
-        uint8_t address[16];  // (128 bits = 16 bytes)
-        uint8_t addr_state;
-        uint8_t addr_type;
-    } ipv6_addr[MAX_IPV6_ADDRESSES_IN_MSG];
-} wifi_event_got_ipv6_t;
 
 typedef struct {
 	int disconnect_reason;                /**< Disconnect reason of BK STA */

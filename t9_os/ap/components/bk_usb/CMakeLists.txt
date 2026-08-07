@@ -38,7 +38,6 @@ if (CONFIG_USB)
 	if (CONFIG_BK_USB_CHERRYUSB_V1_6)
 		list(APPEND srcs
 			cherryusb_adapter/v1_6/bk_cherryusb_adapter_v1_6.c
-			${BK_CHERRYUSB_DIR}/port/beken_musb_v1_6/usb_glue_beken_7259.c
 		)
 	else()
 		list(APPEND srcs
@@ -72,6 +71,22 @@ if (CONFIG_USB)
 			${BK_CHERRYUSB_DIR}/core/usbd_core.c
 			${BK_CHERRYUSB_DIR}/port/beken_musb/usb_dc_beken_musb_mhdrc.c
 		)
+
+		# USB 2.0 device test mode (SET_FEATURE TEST_MODE -> MUSB TESTMODE reg).
+		# CONFIG_USBDEV_TEST_MODE gates the device-core dispatch (usbd_core.c)
+		# and the port implementation
+		# (usb_dc_beken_musb_mhdrc.c::usbd_execute_test_mode). It also needs the
+		# device-side CDC-ACM class driver used by the usb_hset CDC device;
+		# it is pulled in here (rather than via CONFIG_USB_CDC, which would also
+		# require the host usbh_cdc_acm.c that is not shipped in this SDK tree).
+		# Opt-in via CONFIG_USB_HSET; harmless to existing device builds
+		# when off. See ap/components/bk_usb/Kconfig.
+		if (CONFIG_USB_HSET)
+			add_compile_definitions(CONFIG_USBDEV_TEST_MODE)
+			list(APPEND srcs
+				${BK_CHERRYUSB_DIR}/class/cdc/usbd_cdc_acm.c
+			)
+		endif()
 
 		list(APPEND incs
 			${BK_CHERRYUSB_DIR}/demo/beken/usb_device
@@ -167,7 +182,7 @@ if (CONFIG_USB)
 			)
 		endif() # CONFIG_USBH_UVC
 
-		if (CONFIG_USBH_UAC AND NOT CONFIG_BK_USB_CHERRYUSB_V1_6)
+		if (CONFIG_USBH_UAC)
 			list(APPEND srcs
 				${BK_CHERRYUSB_DIR}/class/audio/usbh_audio.c
 			)
@@ -245,4 +260,8 @@ endif() # CONFIG_ATE
 # the VFS public headers.
 # utf8 provides conv_utf8 / Utf8ToGb2312 used by bk_mtp/bk_usbd_mtp.c for
 # GB2312<->UTF filename conversion when CONFIG_USBD_MTP && CONFIG_VFS.
-armino_component_register(SRCS "${srcs}" INCLUDE_DIRS "${incs}" PRIV_REQUIRES bk_common driver bk_vfs utf8)
+set(usb_priv_req bk_common driver bk_vfs utf8)
+if (CONFIG_USBD_MSC_STORAGE_QSPI_NAND)
+	list(APPEND usb_priv_req dhara)
+endif()
+armino_component_register(SRCS "${srcs}" INCLUDE_DIRS "${incs}" PRIV_REQUIRES "${usb_priv_req}")

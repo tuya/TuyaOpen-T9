@@ -7,6 +7,10 @@ extern "C" {
 #include <common/avdk_pixel_types.h>
 
 #include "tkl_camera_mipi.h"
+#include "tuya_cloud_types.h"
+
+extern BOOL_T test_mipi_lcd_is_open(void);
+extern void test_mipi_lcd_get_geometry(UINT16_T *width, UINT16_T *height);
 }
 
 #include <stdio.h>
@@ -24,8 +28,6 @@ extern "C" {
 #define FACE_TEST_FRAME_SIZE        (FACE_TEST_WIDTH * FACE_TEST_HEIGHT * FACE_TEST_BYTES_PER_PIXEL)
 #define FACE_TEST_LOOP_FOREVER      (0xFFFFFFFFU)
 #define FACE_TEST_DEFAULT_DELAY_MS  (200U)
-#define FACE_TEST_DISPLAY_WIDTH     1920U
-#define FACE_TEST_DISPLAY_HEIGHT    1080U
 
 static beken_thread_t s_face_thread = NULL;
 static volatile int s_face_stop = 0;
@@ -37,6 +39,9 @@ static bool s_face_model_ready = false;
 
 static void face_test_box_cb(Box *boxes, int count)
 {
+    UINT16_T lcd_width = 0U;
+    UINT16_T lcd_height = 0U;
+
     if (boxes == NULL || count <= 0) {
         box_detection_path_clear();
         return;
@@ -50,16 +55,30 @@ static void face_test_box_cb(Box *boxes, int count)
               boxes[0].w,
               boxes[0].h);
 
-    if (s_face_model != NULL) {
-        box_detection_path_build(boxes,
-                                 count,
-                                 count,
-                                 0,
-                                 s_face_model->getWidth(),
-                                 s_face_model->getHeight(),
-                                 FACE_TEST_DISPLAY_WIDTH,
-                                 FACE_TEST_DISPLAY_HEIGHT);
+    if (s_face_model == NULL) {
+        return;
     }
+
+    if (test_mipi_lcd_is_open() != TRUE) {
+        bk_printf("[xface] lcd not open, skip box draw\r\n");
+        return;
+    }
+
+    test_mipi_lcd_get_geometry(&lcd_width, &lcd_height);
+    if (lcd_width == 0U || lcd_height == 0U) {
+        bk_printf("[xface] invalid lcd geometry %ux%u, skip box draw\r\n",
+                  (unsigned int)lcd_width, (unsigned int)lcd_height);
+        return;
+    }
+
+    box_detection_path_build(boxes,
+                             count,
+                             count,
+                             0,
+                             s_face_model->getWidth(),
+                             s_face_model->getHeight(),
+                             (int)lcd_width,
+                             (int)lcd_height);
 }
 
 static void face_test_usage(void)

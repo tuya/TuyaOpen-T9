@@ -70,6 +70,27 @@ typedef struct vcdec_config_t {
 	void               *args;
 } vcdec_config_t;
 
+/** PP output pixel format (shared by H.264 and JPEG decoders). */
+typedef enum {
+	VCDEC_PP_OUT_NV12 = 0,
+	VCDEC_PP_OUT_RGB565,
+	VCDEC_PP_OUT_RGB888,
+} vcdec_pp_out_format_e;
+
+typedef struct vcdec_pp_osd_config_t {
+	uint32_t enable;
+	int32_t originX;
+	int32_t originY;
+	uint32_t height;
+	uint32_t width;
+	uint32_t alphaBlendEna;
+	uint8_t *blendComponentBase;
+	int32_t blendOriginX;
+	int32_t blendOriginY;
+	uint32_t blendWidth;
+	uint32_t blendHeight;
+} vcdec_pp_osd_config_t;
+
 #ifdef __cplusplus
 }
 #endif

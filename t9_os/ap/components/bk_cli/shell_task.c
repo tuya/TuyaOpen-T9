@@ -20,6 +20,7 @@
 #endif
 #include "spinlock.h"
 #include <arch_interrupt.h>
+#include "soc_debug.h"
 
 #define DEV_UART        1
 #define DEV_MAILBOX     2
@@ -789,8 +790,10 @@ static void shell_cmd_tx_complete(u8 *pbuf, u16 buf_tag)
 	shell_task_exit_critical(int_mask);
 }
 
-/* call from log TX ISR. */
-static int log_tx_complete(u8 *pbuf, u16 buf_tag)
+/* call from log TX ISR. Must be called with shell_spin_lock held. */
+static int log_tx_complete(u8 *pbuf, u16 buf_tag,
+			   bool_t *need_log_buf_sem,
+			   bool_t *need_dym_free_event)
 {
 	u16     block_tag;
 	u8      queue_id = GET_QUEUE_ID(buf_tag);
@@ -824,9 +827,39 @@ static int log_tx_complete(u8 *pbuf, u16 buf_tag)
 		if( ( buf_tag != block_tag ) || (blk_id >= free_q->blk_num) ||
 			( (&free_q->log_buf[blk_id * free_q->blk_len]) != pbuf) )
 		{
-			/* something wrong!!! */
-			/*        FAULT !!!!      */
-			shell_assert_out(bTRUE, "FATAL:%x,%x\r\n", buf_tag, block_tag);
+			/* The finished block is not at the FIFO head. This happens when
+			 * logs from both cores interleave, so their TX completions can
+			 * arrive out of enqueue order. Recover instead of dropping the
+			 * block: locate it in the busy queue, remove it, and free it so
+			 * logging keeps running. */
+			if( (blk_id < free_q->blk_num) &&
+				((&free_q->log_buf[blk_id * free_q->blk_len]) == pbuf) )
+			{
+				u16 in_flight = SHELL_LOG_BUSY_NUM - log_busy_queue.free_cnt;
+				u16 idx = log_busy_queue.list_out_idx;
+				for(u16 n = 0; n < in_flight; n++)
+				{
+					if(log_busy_queue.blk_list[idx] == buf_tag)
+					{
+						u16 cur = idx;
+						for(u16 m = n; (m + 1) < in_flight; m++)
+						{
+							u16 nxt = ((cur + 1) < SHELL_LOG_BUSY_NUM) ? (cur + 1) : 0;
+							log_busy_queue.blk_list[cur] = log_busy_queue.blk_list[nxt];
+							cur = nxt;
+						}
+						log_busy_queue.list_in_idx = (log_busy_queue.list_in_idx == 0) ?
+							(SHELL_LOG_BUSY_NUM - 1) : (log_busy_queue.list_in_idx - 1);
+						log_busy_queue.free_cnt++;
+						free_log_blk(buf_tag);
+						if (log_buf_semaphore != NULL) {
+							rtos_set_semaphore(&log_buf_semaphore);
+						}
+						return 1;
+					}
+					idx = ((idx + 1) < SHELL_LOG_BUSY_NUM) ? (idx + 1) : 0;
+				}
+			}
 
 			return -1;
 		}
@@ -844,19 +877,21 @@ static int log_tx_complete(u8 *pbuf, u16 buf_tag)
 		free_log_blk(block_tag);
 
 		if (log_buf_semaphore != NULL) {
-			rtos_set_semaphore(&log_buf_semaphore);
+			*need_log_buf_sem = bTRUE;
 		}
 
 		return 1;
 	}
 
 	if (queue_id == SHELL_DYM_QUEUE_ID) {
+
 		dynamic_log_node *node = dynamic_list_pop_front(pbuf);
 		if (node != NULL) {
 			free_list_push_front(node);
 			if (log_buf_semaphore != NULL)
-				set_shell_event(&shell_log_event, SHELL_EVENT_DYM_FREE);
+				*need_dym_free_event = bTRUE;
 		}
+
 		return 1;
 	}
 	return 0;
@@ -865,9 +900,13 @@ static int log_tx_complete(u8 *pbuf, u16 buf_tag)
 /* call from TX ISR. */
 static void shell_log_tx_complete(u8 *pbuf, u16 buf_tag)
 {
+	bool_t need_log_buf_sem = bFALSE;
+	bool_t need_dym_free_event = bFALSE;
 	u32  int_mask = shell_task_enter_critical();
 
-	int log_tx_req = log_tx_complete(pbuf, buf_tag);
+	int log_tx_req = log_tx_complete(pbuf, buf_tag,
+					 &need_log_buf_sem,
+					 &need_dym_free_event);
 
 	if(log_tx_req == 1)
 	{
@@ -881,11 +920,20 @@ static void shell_log_tx_complete(u8 *pbuf, u16 buf_tag)
 	}
 
 	shell_task_exit_critical(int_mask);
+
+	if (need_log_buf_sem) {
+		rtos_set_semaphore(&log_buf_semaphore);
+	}
+	if (need_dym_free_event) {
+		set_shell_event(&shell_log_event, SHELL_EVENT_DYM_FREE);
+	}
 }
 
 /* call from TX ISR. */
 static void shell_tx_complete(u8 *pbuf, u16 buf_tag)
 {
+	bool_t need_log_buf_sem = bFALSE;
+	bool_t need_dym_free_event = bFALSE;
 	u32  int_mask = shell_task_enter_critical();
 
 	int tx_req = 0;
@@ -894,7 +942,9 @@ static void shell_tx_complete(u8 *pbuf, u16 buf_tag)
 
 	if(tx_req == 0) /* not a cmd tx event, maybe it is a log tx event. */
 	{
-		tx_req = log_tx_complete(pbuf, buf_tag);
+		tx_req = log_tx_complete(pbuf, buf_tag,
+					 &need_log_buf_sem,
+					 &need_dym_free_event);
 	}
 
 	if(tx_req == 1)
@@ -909,6 +959,13 @@ static void shell_tx_complete(u8 *pbuf, u16 buf_tag)
 	}
 
 	shell_task_exit_critical(int_mask);
+
+	if (need_log_buf_sem) {
+		rtos_set_semaphore(&log_buf_semaphore);
+	}
+	if (need_dym_free_event) {
+		set_shell_event(&shell_log_event, SHELL_EVENT_DYM_FREE);
+	}
 }
 
 /* call from RX ISR. */
@@ -1524,6 +1581,7 @@ static void rx_ind_process(void)
 			BK_ASSERT(ret == kNoErr);
 
 			cmd_line_buf.rsp_buff[0] = 0;
+
 			/* handle command. */
 			if( cmd_line_buf.cmd_data_len > 0 )
 			{
@@ -1911,23 +1969,23 @@ static int get_fwd_blk_id(void)
 static void fwd_mb_log_state(void)
 {
 	int ret = 0;
-	int blk_id = get_fwd_blk_id();
-	if (blk_id < 0) {
-		return;
+	int blk_id;
+
+	while ((blk_id = get_fwd_blk_id()) >= 0) {
+		int try_cnt = FORWARD_TRY_COUNT;
+		do {
+			ret = result_fwd(blk_id);
+			try_cnt--;
+			if (ret) {
+				break;
+			}
+			if (try_cnt == 0) {
+				shell_assert_out(1, "Error: forward mb log state fail! blk: %x\r\n", blk_id);
+				break;
+			}
+			rtos_delay_milliseconds(SHELL_LOG_FWD_WAIT_TIME);
+		} while (1);
 	}
-	int try_cnt = FORWARD_TRY_COUNT;
-	do {
-		ret = result_fwd(blk_id);
-		try_cnt--;
-		if (ret) {
-			break;
-		}
-		if (try_cnt == 0) {
-			shell_assert_out(1, "Error: forward mb log state fail! blk: %x\r\n", blk_id);
-			break;
-		}
-		rtos_delay_milliseconds(SHELL_LOG_FWD_WAIT_TIME);
-	} while (1);
 }
 
 static void output_mb_log_ex(void)

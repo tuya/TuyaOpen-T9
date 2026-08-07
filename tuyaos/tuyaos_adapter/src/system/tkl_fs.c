@@ -25,6 +25,8 @@ extern void bk_printf(const char *fmt, ...);
 
 #define FILE_HANDLE_OFFSET 0x100
 
+#define TKL_FS_PATH_MAX 256
+
 /**
  * @brief Make directory
  *
@@ -49,6 +51,77 @@ TUYA_WEAK_ATTRIBUTE INT_T tkl_fs_mkdir(CONST CHAR_T *path)
     }
 
     return 0;
+}
+
+/**
+* @brief Make directory recursively
+*
+* @param[in] path: path of directory
+*
+* @note This API is used for making a directory
+*
+* @return 0 on success. Others on failed
+*/
+/* Create a single directory, treating "already exists" as success.
+ * The mkdir return-code convention differs between backends (FatFs returns a
+ * positive FRESULT such as FR_EXIST=8, littlefs a negative errno, a posix
+ * layer sets errno), so instead of decoding it we just verify the path is
+ * already a usable directory. opendir() is used rather than stat() because it
+ * also works on filesystem mount roots (e.g. "/sdcard"), which f_stat() cannot
+ * stat. */
+static INT_T __fs_mkdir_one(CONST CHAR_T *path)
+{
+    DIR *dirp;
+    int ret = mkdir(path, 0777);
+    if (ret == 0) {
+        return 0;
+    }
+
+    dirp = opendir(path);
+    if (dirp != NULL) {
+        closedir(dirp);
+        return 0;
+    }
+
+    bk_printf("tkl_fs_mkdir_r failed, path:%s ret=%d errno=%d\n", path, ret, errno);
+    return -1;
+}
+
+INT_T tkl_fs_mkdir_r(CONST CHAR_T* path)
+{
+    char tmp[TKL_FS_PATH_MAX];
+    char *p = NULL;
+    size_t len;
+
+    if (path == NULL) {
+        return -1;
+    }
+
+    len = strlen(path);
+    if (len == 0 || len >= sizeof(tmp)) {
+        bk_printf("tkl_fs_mkdir_r invalid path, len=%d\n", (int)len);
+        return -1;
+    }
+
+    strcpy(tmp, path);
+    /* strip a trailing slash so the last component is created too */
+    if (tmp[len - 1] == '/') {
+        tmp[len - 1] = '\0';
+    }
+
+    /* create every intermediate directory along the path */
+    for (p = tmp + 1; *p; p++) {
+        if (*p == '/') {
+            *p = '\0';
+            if (__fs_mkdir_one(tmp) != 0) {
+                return -1;
+            }
+            *p = '/';
+        }
+    }
+
+    /* create the final directory */
+    return __fs_mkdir_one(tmp);
 }
 
 /**
@@ -86,6 +159,76 @@ TUYA_WEAK_ATTRIBUTE INT_T tkl_fs_remove(CONST CHAR_T *path)
         return -1;
     }
     // bk_printf("tkl_fs_remove %s %s\n", path, ret == 0 ? "success" : "failed");
+
+    return ret;
+}
+
+/**
+* @brief Remove directory recursively
+*
+* @param[in] path: path of directory
+*
+* @note This API is used for removing a directory
+*
+* @return 0 on success. Others on failed
+*/
+INT_T tkl_fs_remove_r(CONST CHAR_T* path)
+{
+    struct stat path_stat;
+    DIR *dirp;
+    struct dirent *dp;
+    char child[TKL_FS_PATH_MAX];
+    int ret = 0;
+
+    if (path == NULL) {
+        return -1;
+    }
+
+    if (stat(path, &path_stat) != 0) {
+        bk_printf("tkl_fs_remove_r stat failed, path:%s\n", path);
+        return -1;
+    }
+
+    /* regular file (or anything that is not a directory): unlink directly */
+    if (!S_ISDIR(path_stat.st_mode)) {
+        ret = unlink(path);
+        if (ret != 0) {
+            bk_printf("tkl_fs_remove_r unlink failed, path:%s\n", path);
+        }
+        return ret;
+    }
+
+    /* directory: remove all of its children first */
+    dirp = opendir(path);
+    if (dirp == NULL) {
+        bk_printf("tkl_fs_remove_r opendir failed, path:%s\n", path);
+        return -1;
+    }
+
+    while ((dp = readdir(dirp)) != NULL) {
+        if (strcmp(dp->d_name, ".") == 0 || strcmp(dp->d_name, "..") == 0) {
+            continue;
+        }
+
+        ret = snprintf(child, sizeof(child), "%s/%s", path, dp->d_name);
+        if (ret < 0 || (size_t)ret >= sizeof(child)) {
+            bk_printf("tkl_fs_remove_r path too long: %s/%s\n", path, dp->d_name);
+            closedir(dirp);
+            return -1;
+        }
+
+        if (tkl_fs_remove_r(child) != 0) {
+            closedir(dirp);
+            return -1;
+        }
+    }
+    closedir(dirp);
+
+    /* finally remove the now-empty directory itself */
+    ret = rmdir(path);
+    if (ret != 0) {
+        bk_printf("tkl_fs_remove_r rmdir failed, path:%s\n", path);
+    }
 
     return ret;
 }

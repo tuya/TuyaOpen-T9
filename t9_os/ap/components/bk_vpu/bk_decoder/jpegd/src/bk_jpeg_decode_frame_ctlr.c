@@ -21,9 +21,14 @@
 #include "bk_flexa_bond_types.h"
 #include "components/bk_decode/bk_jpeg_decode_ctlr.h"
 #include "private_jpeg_decode_ctlr.h"
+#include "bk_decode_pp_helper.h"
 #include "hw_decoder_ctlr.h"
+#if CONFIG_L2_CACHE_ENABLE || CONFIG_DCACHE
+#include "cache.h"
+#endif
 #include "modules/vcdec/vcdec_jpeg_api.h"
 #include "avdk_monitor.h"
+#include "common/avdk_pixel_types.h"
 
 #define TAG "bk_jpeg_dec"
 
@@ -40,6 +45,13 @@ static void frame_done_cb(int status, void *args)
         LOGE("control is NULL\r\n");
         return;
     }
+#if CONFIG_L2_CACHE_ENABLE || CONFIG_DCACHE
+    if (status == BK_OK && ctrl->decode_config.output_buffer != NULL &&
+        ctrl->decode_config.output_size > 0U) {
+        flush_dcache(ctrl->decode_config.output_buffer,
+                     (long)ctrl->decode_config.output_size);
+    }
+#endif
     if (ctrl->config.frame_done_cb != NULL)
     {
         ctrl->config.frame_done_cb(status, ctrl->config.frame_done_args);
@@ -113,6 +125,14 @@ static avdk_err_t jpeg_decode_callback(void *param)
         return AVDK_ERR_INVAL;
     }
 
+#if CONFIG_L2_CACHE_ENABLE || CONFIG_DCACHE
+    if (ctrl->decode_config.input_stream != NULL &&
+        ctrl->decode_config.input_stream_len > 0U) {
+        flush_dcache(ctrl->decode_config.input_stream,
+                     (long)ctrl->decode_config.input_stream_len);
+    }
+#endif
+
     DECODE_FRAME_START;
     vcdec_ret_e ret = vcdec_jpeg_decode_frame(ctrl->vcdec_handle, &ctrl->decode_config);
     if (ret != VCDEC_FRAME_READY && ret != VCDEC_OK) {
@@ -138,25 +158,31 @@ static avdk_err_t jpeg_decode_ctlr_decode_frame(bk_jpeg_decode_ctlr_handle_t han
     uint8_t *out_buffer = input->out_buffer;
     uint32_t out_buffer_size = input->out_buffer_size;
 
-    const uint32_t rb_h = (uint32_t)ctrl->config.out_height;
     const uint32_t out_w = (uint32_t)ctrl->config.out_width;
+    const uint32_t out_h = (uint32_t)ctrl->config.out_height;
+    uint32_t need_size = 0U;
 
     if (!out_buffer || out_buffer_size == 0U) {
         LOGE("No output buffer or size\r\n");
         return AVDK_ERR_INVAL;
     }
 
-    if (out_buffer_size < out_w * rb_h * 3 / 2) {
-        LOGE("output buffer too small: have=%u need=%u\r\n", out_buffer_size, out_w * rb_h * 3 / 2);
-        return AVDK_ERR_NOMEM;
+    if (out_w != 0U && out_h != 0U) {
+        need_size = bk_decode_pp_output_size(ctrl->config.out_format,
+                                             ctrl->config.out_width, ctrl->config.out_height);
+        if (out_buffer_size < need_size) {
+            LOGE("output buffer too small: have=%u need=%u\r\n", out_buffer_size, need_size);
+            return AVDK_ERR_NOMEM;
+        }
     }
 
     ctrl->decode_config.input_stream = input->stream;
     ctrl->decode_config.input_stream_len = input->stream_len;
     ctrl->decode_config.output_buffer = out_buffer;
     ctrl->decode_config.output_size = out_buffer_size;
-    ctrl->decode_config.width = ctrl->config.out_width;
-    ctrl->decode_config.height = ctrl->config.out_height;
+    ctrl->decode_config.out_width = ctrl->config.out_width;
+    ctrl->decode_config.out_height = ctrl->config.out_height;
+    ctrl->decode_config.out_format = bk_decode_pp_map_out_format(ctrl->config.out_format);
     ctrl->decode_config.segment_height = 1U;
     ctrl->decode_config.segment_number = 1U;
 

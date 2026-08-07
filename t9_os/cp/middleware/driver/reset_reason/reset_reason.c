@@ -175,10 +175,17 @@ void show_reset_reason(void)
 #endif
 	}
 
-	if((s_start_type == RESET_SOURCE_POWERON) || (s_start_type == RESET_SOURCE_REBOOT) || (s_start_type == RESET_SOURCE_WATCHDOG))
+	if((s_start_type == RESET_SOURCE_POWERON)
+	|| (s_start_type == RESET_SOURCE_REBOOT)
+	|| (s_start_type == RESET_SOURCE_WATCHDOG)
+	|| (s_start_type == RESET_SOURCE_DEEPPS_GPIO)
+	|| (s_start_type == RESET_SOURCE_DEEPPS_RTC)
+	|| (s_start_type == RESET_SOURCE_DEEPPS_TOUCH)
+	|| (s_start_type == RESET_SOURCE_DEEPPS_VAD))
 	{
 		bk_pm_ap_first_boot_set(true);
 	}
+
 	BK_LOGD(TAG, "regs - %x, %x, %x\r\n", s_start_type, s_misc_value_save, s_mem_value_save);
 }
 
@@ -297,9 +304,6 @@ uint32_t reset_reason_init(void)
 	bk_misc_set_cp_reset_reason(RESET_SOURCE_POWERON);
 	bk_misc_set_ap_reset_reason(RESET_SOURCE_POWERON);
 
-	#if !CONFIG_SOC_BK7259 ///TODO:
-	arch_init_exception_magic_status();
-	#endif //!CONFIG_SOC_BK7259 ///TODO:
 	s_initialized = true;
 	return s_start_type;
 }

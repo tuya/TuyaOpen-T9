@@ -299,6 +299,11 @@ static bk_err_t pm_cp0_mailbox_send_data(uint32_t cmd, uint32_t param1, uint32_t
 
 bk_err_t bk_pm_cp1_recovery_module_state_ctrl(pm_cp1_prepare_close_module_name_e module,pm_cp1_module_recovery_state_e state)
 {
+	if (module >= PM_CP1_PREPARE_CLOSE_MODULE_NAME_MAX)
+	{
+		return BK_ERR_PARAM;
+	}
+
 	if(state == PM_CP1_MODULE_RECOVERY_STATE_INIT)
 	{
 		s_pm_cp1_module_recovery_state &= ~(0x1ULL << module);
@@ -335,6 +340,7 @@ boot_ap:
 		#if CONFIG_PM_AP_POWERDOWN_WHEN_LV
 		bk_pm_module_vote_sleep_ctrl(PM_SLEEP_MODULE_NAME_CPU1, 0, 0);
 		bk_pm_module_vote_cpu_freq(PM_DEV_ID_CPU1,PM_CPU_FRQ_240M);
+		bk_pm_module_vote_xtal_rx_tx_anabuf_ctrl(PM_XTAL_RX_TX_ANABUF_MODULE_NAME_AP, PM_XTAL_RX_TX_ANABUF_EXIT_SLEEP);
 		#endif
 		#if CONFIG_DEEP_LV
 		if(g_enter_sleep == 0x1)
@@ -352,11 +358,6 @@ boot_ap:
 		bk_wwdt_feed();
 		#endif
 		LOGI("Ap_power_on: vote_on + reset_notify(on)\r\n");
-		// #if defined(RECV_LOG_FROM_MBOX)
-		// void reset_forward_log_status(void);
-		// // reset cpu1's log transfer status on cpu0.
-		// reset_forward_log_status();
-		// #endif
 		extern void bk_delay_us(UINT32 us);
 		bk_delay_us(200);
 		#if CONFIG_PSRAM
@@ -504,6 +505,7 @@ static void pm_module_shutdown_cpu1(pm_power_module_name_e module)
 
 			#if CONFIG_PM_AP_POWERDOWN_WHEN_LV
 			bk_pm_module_vote_sleep_ctrl(PM_SLEEP_MODULE_NAME_CPU1, 1, 0);
+			bk_pm_module_vote_xtal_rx_tx_anabuf_ctrl(PM_XTAL_RX_TX_ANABUF_MODULE_NAME_AP, PM_XTAL_RX_TX_ANABUF_ENTER_SLEEP);
 			bk_pm_module_vote_cpu_freq(PM_DEV_ID_CPU1,PM_CPU_FRQ_DEFAULT);
 			#endif
 			bk_printf_nonblock(4,NULL,"Shutdown_cp1[%d][%d][%d]\r\n",s_pm_cp1_closing,ret,s_pm_cp1_sema_count); //4:BK_LOG_DEBUG
@@ -520,6 +522,11 @@ bk_err_t bk_pm_module_vote_boot_ap_ctrl(pm_boot_ap_module_name_e module,pm_power
 	uint64_t lock_end_tick = 0;
 	uint64_t lock_wait_ms = 0;
 	GLOBAL_INT_DECLARATION();
+
+	if (module >= PM_BOOT_AP_MODULE_NAME_MAX)
+	{
+		return BK_ERR_PARAM;
+	}
 
 	if (pm_cp1_vote_mutex_init() != BK_OK)
 	{
@@ -598,9 +605,9 @@ bk_err_t bk_pm_module_vote_boot_ap_ctrl(pm_boot_ap_module_name_e module,pm_power
 						#endif
 						LOGI("pm_dbg ap_close: ap_sleep_state ready, start shutdown\r\n");
 						pm_ap_powerdown_proof_log("ap_sleep_ready");
-#if CONFIG_HSPL_LEAK_DEBUG
+						#if CONFIG_HSPL_LEAK_DEBUG
 						pm_check_ap_hspl_leak();
-#endif
+						#endif
 						pm_module_shutdown_cpu1(POWER_SUB_DOMAIN_NAME_AP_CPU);
 						pm_ap_powerdown_proof_log("shutdown_func_return");
 						LOGI("AP_PD_PROOF callback_begin: AP power already off, run CP callbacks\r\n");

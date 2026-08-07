@@ -1,5 +1,6 @@
 #include <os/os.h>
 #include <os/mem.h>
+#include <cache.h>
 
 #include <avdk_check.h>
 #include <components/bk_uvc_camera.h>
@@ -23,6 +24,8 @@
 #endif
 
 #define UVC_TASK_STACK_SIZE (CONFIG_UVC_TASK_STACK_SIZE == 0 ? 2048 : CONFIG_UVC_TASK_STACK_SIZE)
+
+#define UVC_CACHE_LINE_SIZE                 32
 
 #define UVC_HEADER_LEN_DEFAULT              12
 #define UVC_HEADER_LEN_BASIC                 2
@@ -351,13 +354,14 @@ static void uvc_camera_stream_timer_handle(void *arg1)
     {
         for (uint8_t i = 0; i < UVC_PORT_MAX; i++)
         {
-            LOGI("port:%d:%u[%u %uKB]\n", i + 1,
-                ((pro_config->frame_id[i] - pro_config->later_id[i]) / UVC_TIME_INTERVAL),
-                pro_config->frame_id[i], (pro_config->curr_length[i] / 1024));
+            uint32_t frame_delta = pro_config->frame_id[i] - pro_config->later_id[i];
+
+            if (frame_delta == 0 && pro_config->frame_id[i] != 0)
+            {
+                /* Keep later_id updated below; no periodic diagnostic output. */
+            }
             pro_config->later_id[i] = pro_config->frame_id[i];
         }
-
-        LOGI("packets[all:%u, err:%u]\n", pro_config->all_packet_num, pro_config->packet_err_num);
     }
 }
 #endif
@@ -765,12 +769,24 @@ static avdk_err_t uvc_camera_stream_packet_urb(uvc_param_t *uvc_param)
     }
 
     uvc_device = (struct usbh_video *)(uvc_param->port_info->usb_device);
+#if CONFIG_BK_USB_CHERRYUSB_V1_6
+    /* v1.6 URBs are addressed by (hport, ep-descriptor), not a pipe handle.
+     * usbh_video_open() points uvc_device->isoin at the ISO IN ep descriptor for
+     * ISO cameras, and uvc_device->bulkin for BULK cameras; pick the right one. */
+    urb->hport = uvc_device->hport;
+    urb->ep = uvc_device->is_bulk ? uvc_device->bulkin : uvc_device->isoin;
+    if (urb->ep == NULL || urb->hport == NULL)
+    {
+        LOGE("%s, %d\n", __func__, __LINE__);
+    }
+#else
     //hport = uvc_param->port_info->hport;
     urb->pipe = (usbh_pipe_t)(uvc_device->isoin);
     if (urb->pipe == NULL)
     {
         LOGE("%s, %d\n", __func__, __LINE__);
     }
+#endif
     urb->complete = (usbh_complete_callback_t)uvc_camera_stream_receive_complete_callback;
     urb->arg = (void *)uvc_param;
     urb->timeout = 0;//150us
@@ -902,13 +918,13 @@ static avdk_err_t uvc_camera_stream_start_handle(uvc_stream_handle_t *handle, ui
     struct usbh_urb *urb = NULL;
     frame_buffer_t *new_frame = NULL;
     uvc_param_t *uvc_param = &handle->camera[param - 1];
-    bk_image_format_t format = uvc_param->info->format;
     uvc_pro_config_t *pro_config = handle->pro_config;
 
     if (uvc_param->stream_state != UVC_STREAM_CONNECTED_STATE)
     {
-        LOGE("%s, %d, port:%d, state:%d\r\n", __func__, __LINE__, uvc_param->info->port, uvc_param->stream_state);
-        return AVDK_ERR_UNSUPPORTED;
+        LOGE("%s, %d, port:%d, state:%d\r\n", __func__, __LINE__, param, uvc_param->stream_state);
+        ret = AVDK_ERR_UNSUPPORTED;
+        goto out;
     }
 
     LOGI("%s, %d, port_info:%p\r\n", __func__, __LINE__, uvc_param->port_info);
@@ -923,6 +939,13 @@ static avdk_err_t uvc_camera_stream_start_handle(uvc_stream_handle_t *handle, ui
 
     uvc_camera_stream_reset_port_sync_state(uvc_param);
     uvc_param->stream_state = UVC_STREAM_CONFIGING_STATE;
+
+    if (uvc_param->info == NULL || uvc_param->port_info == NULL)
+    {
+        LOGE("%s, %d, info is NULL\r\n", __func__, __LINE__);
+        ret = AVDK_ERR_UNKNOWN;
+        goto out;
+    }
 
     ret = uvc_camera_stream_check_config(uvc_param);
     if (ret != AVDK_ERR_OK)
@@ -943,6 +966,8 @@ static avdk_err_t uvc_camera_stream_start_handle(uvc_stream_handle_t *handle, ui
         LOGE("%s, %d\n", __func__, __LINE__);
         goto out;
     }
+
+    bk_image_format_t format = uvc_param->info->format;
 
     if (uvc_param->frame == NULL)
     {
@@ -998,6 +1023,14 @@ static avdk_err_t uvc_camera_stream_start_handle(uvc_stream_handle_t *handle, ui
 
     // make sure transmission mode
     bk_uvc_config_t *uvc_config = (bk_uvc_config_t *)uvc_param->port_info->usb_device_param_config;
+
+    if (uvc_config == NULL)
+    {
+        LOGE("%s, %d, Hub disconnect, please retry...\r\n", __func__, __LINE__);
+        ret = AVDK_ERR_NODEV;
+        goto out;
+    }
+
     pro_config->transfer_bulk[uvc_param->info->port - 1] = ((uvc_config->ep_desc->bmAttributes & 0x3) == USB_ENDPOINT_BULK_TRANSFER) ? true : false;
     pro_config->max_packet_size[uvc_param->info->port - 1] = uvc_config->ep_desc->wMaxPacketSize > 1024 ? 1024 : uvc_config->ep_desc->wMaxPacketSize;
     LOGI("/*****port:%d, transmission mode:%s, max_packet_zise:%d*****/\r\n", uvc_param->info->port, pro_config->transfer_bulk[uvc_param->info->port - 1] == 1 ? "BULK" : "ISO",
@@ -1026,7 +1059,7 @@ out:
 
         if (uvc_param->frame)
         {
-            handle->callback->frame_complete(uvc_param->info->port, uvc_param->frame->fmt, uvc_param->frame, ret);
+            handle->callback->frame_complete(param, uvc_param->frame->fmt, uvc_param->frame, ret);
             uvc_param->frame = NULL;
         }
 
@@ -1058,7 +1091,7 @@ static avdk_err_t uvc_camera_stream_stop_handle(uvc_stream_handle_t *handle, uin
     uint32_t flags = uvc_stream_enter_critical();
     stream_state = uvc_param->stream_state;
 
-    if (stream_state != UVC_STREAM_STREAMING_STATE)
+    if (stream_state != UVC_STREAM_CLOSING_STATE)
     {
         uvc_stream_exit_critical(flags);
         LOGW("%s, %d, port:%d, state:%d\r\n", __func__, __LINE__, param, stream_state);
@@ -1067,7 +1100,6 @@ static avdk_err_t uvc_camera_stream_stop_handle(uvc_stream_handle_t *handle, uin
 
     wait_inflight = (uvc_param->urb != NULL);
     uvc_param->stop_requested = true;
-    uvc_param->stream_state = UVC_STREAM_CLOSING_STATE;
     uvc_stream_exit_critical(flags);
 
     if (wait_inflight && rtos_get_semaphore(&uvc_param->sem, 1000) != BK_OK)
@@ -1275,6 +1307,12 @@ static void uvc_camera_stream_connect_callback(bk_usb_hub_port_info *port_info, 
     uvc_param_t *uvc_param = &stream_handle->camera[port_info->port_index - 1];
     uint32_t flags = uvc_stream_enter_critical();
     uvc_param->port_info = port_info;
+    if (uvc_param->stream_state == UVC_STREAM_CLOSING_STATE)
+    {
+        uvc_stream_exit_critical(flags);
+        LOGW("%s, %d, Stream is closing\r\n", __func__, __LINE__);
+        return;
+    }
     uvc_param->stream_state = UVC_STREAM_CONNECTED_STATE;
     uvc_stream_exit_critical(flags);
 
@@ -1450,7 +1488,6 @@ static void uvc_camera_stream_data_request_handle(uvc_stream_handle_t *stream_ha
                 ret = uvc_camera_stream_data_request_retry_handle(uvc_param, ret);
                 if (ret != AVDK_ERR_OK)
                 {
-                    LOGW("%s, %d, port:%d, retry error:%d.....\r\n", __func__, __LINE__, uvc_param->info->port, ret);
                     break;
                 }
             }
@@ -2001,6 +2038,24 @@ static void uvc_camera_process_task_main(beken_thread_arg_t data)
             continue;
         }
 
+#ifdef CONFIG_UVC_USE_PSRAM_ALLOC
+        /* The USB controller DMAs camera data straight into this PSRAM buffer,
+         * which is L2-cacheable (MPU attr 5) but bypassed by the DMA master.
+         * As the consumer, refresh the AP cache before reading, otherwise a
+         * stale L2 line from the previous use of this URB corrupts the stream.
+         * flush_dcache() does L1+L2 clean & invalidate with an internal __DSB().
+         * psram_malloc only guarantees 8-byte alignment, so round the range down
+         * to the 32-byte cache line and pad the length up, since invalidate acts
+         * on whole lines. */
+        if (urb->transfer_buffer != NULL && urb->transfer_buffer_length != 0)
+        {
+            uint32_t flush_start = (uint32_t)urb->transfer_buffer & ~(UVC_CACHE_LINE_SIZE - 1);
+            uint32_t flush_end = ((uint32_t)urb->transfer_buffer + urb->transfer_buffer_length
+                                  + (UVC_CACHE_LINE_SIZE - 1)) & ~(UVC_CACHE_LINE_SIZE - 1);
+            flush_dcache((void *)flush_start, (long)(flush_end - flush_start));
+        }
+#endif
+
         uvc_param = (uvc_param_t *)urb->arg;
         uvc_camera_stream_set_processing(uvc_param, true);
 
@@ -2239,7 +2294,7 @@ avdk_err_t bk_uvc_camera_stream_start(uvc_stream_handle_t *handle, bk_cam_uvc_co
 
     {
         uint32_t flags = uvc_stream_enter_critical();
-    uvc_param->stream_state = UVC_STREAM_CONNECTED_STATE;
+        uvc_param->stream_state = UVC_STREAM_CONNECTED_STATE;
         uvc_stream_exit_critical(flags);
     }
 
@@ -2264,12 +2319,13 @@ out:
     UVC_INIT_END();
     if (uvc_param->info && ret != AVDK_ERR_OK)
     {
-        os_free(uvc_param->info);
-        uvc_param->info = NULL;
         bk_usbh_hub_port_register_connect_callback(config->port, USB_UVC_H26X_DEVICE, NULL, NULL);
         bk_usbh_hub_port_register_disconnect_callback(config->port, USB_UVC_H26X_DEVICE, NULL, NULL);
         bk_usbh_hub_port_register_connect_callback(config->port, USB_UVC_DEVICE, NULL, NULL);
         bk_usbh_hub_port_register_disconnect_callback(config->port, USB_UVC_DEVICE, NULL, NULL);
+
+        os_free(uvc_param->info);
+        uvc_param->info = NULL;
     }
     rtos_unlock_mutex(&handle->lock);
     return ret;
@@ -2288,20 +2344,25 @@ avdk_err_t bk_uvc_camera_stream_stop(uvc_stream_handle_t *handle, uint8_t port)
 
     rtos_lock_mutex(&handle->lock);
 
+    uvc_param = &handle->camera[port - 1];
+
+    uint32_t flags = uvc_stream_enter_critical();
+    if (uvc_param->stream_state == UVC_STREAM_STREAMING_STATE)
+    {
+        uvc_param->stream_state = UVC_STREAM_CLOSING_STATE;
+    }
+    else
+    {
+        ret = AVDK_ERR_UNSUPPORTED;
+    }
+    uvc_stream_exit_critical(flags);
+
     bk_usbh_hub_port_register_connect_callback(port, USB_UVC_H26X_DEVICE, NULL, NULL);
     bk_usbh_hub_port_register_disconnect_callback(port, USB_UVC_H26X_DEVICE, NULL, NULL);
     bk_usbh_hub_port_register_connect_callback(port, USB_UVC_DEVICE, NULL, NULL);
     bk_usbh_hub_port_register_disconnect_callback(port, USB_UVC_DEVICE, NULL, NULL);
 
-    uvc_param = &handle->camera[port - 1];
-
     LOGI("%s, %d, handle:%p, port:%d\n", __func__, __LINE__, handle, port);
-
-    {
-        uint32_t flags = uvc_stream_enter_critical();
-        ret = (uvc_param->stream_state == UVC_STREAM_STREAMING_STATE) ? AVDK_ERR_OK : AVDK_ERR_UNSUPPORTED;
-        uvc_stream_exit_critical(flags);
-    }
 
     if (ret != AVDK_ERR_OK)
     {
@@ -2316,6 +2377,12 @@ avdk_err_t bk_uvc_camera_stream_stop(uvc_stream_handle_t *handle, uint8_t port)
     if (ret != AVDK_ERR_OK)
     {
         LOGE("%s, %d, send disconnect ind failed, port:%d\n", __func__, __LINE__, port);
+        flags = uvc_stream_enter_critical();
+        if (uvc_param->stream_state == UVC_STREAM_CLOSING_STATE)
+        {
+            uvc_param->stream_state = UVC_STREAM_STREAMING_STATE;
+        }
+        uvc_stream_exit_critical(flags);
         goto out;
     }
 

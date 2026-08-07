@@ -69,23 +69,30 @@ typedef struct {
 
 typedef struct
 {
-    //TODO
     beken_thread_t flexa_thd;
     uint32_t line_cnt;
     uint32_t line_frame_seq;
     uint32_t active_frame_seq;
     uint32_t line_err_flag;
+
     beken_semaphore_t gpu_process_sem;
-    beken_semaphore_t gpu_flex_task_sem;
-    bool flexa_stop;
+    beken_semaphore_t gpu_start_sem;
+
+    volatile bool flexa_stop;
     bool flexa_frame_active;
+    bool flexa_abort_notified;
     uint8_t *gpu_contiguous_buffer;
 
+    /* Per-instance OSD blend timing (BK_GPU_IOCTL_SET_OSD_BY_FLEXA):
+     * false = single SRC_OVER at frame end; true = per flexa block. */
+    bool osd_by_flexa;
+
+    /* Multi-slot OSD sprites (update -> display double buffer). */
     bool blit_enable;
-    void *display_blit_buffer;
-    bk_gpu_blit_config_t display_blit_config;
-    void *update_blit_buffer;
-    bk_gpu_blit_config_t update_blit_config;
+    void *display_blit_buffer[BK_GPU_BLIT_SLOT_MAX];
+    bk_gpu_blit_config_t display_blit_config[BK_GPU_BLIT_SLOT_MAX];
+    void *update_blit_buffer[BK_GPU_BLIT_SLOT_MAX];
+    bk_gpu_blit_config_t update_blit_config[BK_GPU_BLIT_SLOT_MAX];
     beken_mutex_t blit_mutex;
     beken_mutex_t gpu_mutex;
 

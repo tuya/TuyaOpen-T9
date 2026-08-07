@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include "hspl_driver.h"
+#include <sdkconfig.h>
 #include <components/log.h>
 #include <driver/int.h>
 #include <modules/pm.h>
@@ -34,24 +35,24 @@
 #define HSPL_REG_LOCK0       (0x10) /* 0x10..0x1F: LOCK registers for channel 0..15 */
 #define HSPL_REG_STA0        (0x20) /* 0x20..0x2F: STA registers for channel 0..15 (read-only helper) */
 
-/* HSPL lock register encoding (based on BK7259 verification tests) */
+/* HSPL lock register encoding (from verification tests) */
 #define HSPL_LOCK_SUCCESS_BIT     (1U << 0)  /* read returns 1 when lock succeeds */
 #define HSPL_LOCK_OWNER_SHIFT     (1)
 #define HSPL_LOCK_OWNER_MASK      (0xFU << HSPL_LOCK_OWNER_SHIFT)
 #define HSPL_LOCK_OWNER_VALID_BIT (1U << 5)  /* read returns 6'b1xxxx0 when already locked */
 
-/* HSPL STA register encoding (based on BK7259 verification tests) */
+/* HSPL STA register encoding (from verification tests) */
 #define HSPL_STA_OWNER_SHIFT      (1)
 #define HSPL_STA_OWNER_MASK       (0xFU << HSPL_STA_OWNER_SHIFT)
 #define HSPL_STA_OWNER_VALID_BIT  (1U << 5)
 
-/* Timeout config (based on BK7259 verification tests) */
+/* Timeout config (from verification tests) */
 #define HSPL_TIMEOUT_EN_BIT       (1U << 24)
 #define HSPL_TIMEOUT_SEL_SHIFT    (20)
 #define HSPL_TIMEOUT_SEL_MASK     (0xFU << HSPL_TIMEOUT_SEL_SHIFT)
 #define HSPL_TIMEOUT_TH_MASK      (0xFFFFFU) /* bits[19:0] */
 
-/* Timeout control (based on BK7259 verification tests) */
+/* Timeout control (from verification tests) */
 #define HSPL_TIMEOUT_IRQ_CLR_BIT  (1U << 0)
 #define HSPL_TIMEOUT_IRQ_EN_BIT   (1U << 1)
 
@@ -74,6 +75,7 @@ static inline uintptr_t hspl_get_base(bk_hspl_id_t hspl_id)
 #define HSPL_REG_WR32(base, offset, val) (*((volatile uint32_t *)((base) + (offset) * 4)) = (val))
 
 static bool s_hspl_driver_init = false;
+static bool s_hspl_hw_init = false;
 
 typedef struct {
 	hspl_timeout_callback_t cb;
@@ -88,13 +90,42 @@ static inline bool hspl_is_valid_channel(uint8_t channel)
 	return channel < HSPL_CHANNEL_MAX;
 }
 
+static void hspl_hw_reset_init(void)
+{
+	uintptr_t base0 = hspl_get_base(BK_HSPL_ID_0);
+	uintptr_t base1 = hspl_get_base(BK_HSPL_ID_1);
+
+	/* Enable clock / deassert reset (best-effort for both instances). */
+	if (base0) {
+		HSPL_REG_WR32(base0, HSPL_REG_CLKRST, 0x1);
+		HSPL_REG_WR32(base0, HSPL_REG_TIMEOUT_CFG, 0x0);
+		HSPL_REG_WR32(base0, HSPL_REG_TIMEOUT_CTL, 0x0);
+	}
+	if (base1) {
+		HSPL_REG_WR32(base1, HSPL_REG_CLKRST, 0x1);
+		HSPL_REG_WR32(base1, HSPL_REG_TIMEOUT_CFG, 0x0);
+		HSPL_REG_WR32(base1, HSPL_REG_TIMEOUT_CTL, 0x0);
+	}
+}
+
+bk_err_t bk_hspl_driver_early_init(void)
+{
+	if (s_hspl_hw_init) {
+		return BK_OK;
+	}
+
+	hspl_hw_reset_init();
+	s_hspl_hw_init = true;
+	return BK_OK;
+}
+
 static inline void hspl_lazy_init(void)
 {
 	if (s_hspl_driver_init) {
 		return;
 	}
 
-	(void)bk_hspl_driver_init();
+	bk_hspl_driver_init();
 }
 
 static uint32_t hspl_get_bus_clock_hz(pm_cpu_freq_e cpu_freq)
@@ -215,8 +246,8 @@ static void hspl_dump_timeout_state(bk_hspl_id_t hspl_id)
 
 /*
  * Local HSPL interrupt handling:
- * - CP(M52) handles BK_HSPL_ID_0
- * - AP(M55) handles BK_HSPL_ID_1
+ * - CP handles BK_HSPL_ID_0
+ * - AP handles BK_HSPL_ID_1
  */
 /* AP side: handle BK_HSPL_ID_1 */
 #define HSPL_LOCAL_HSPL_ID  BK_HSPL_ID_1
@@ -225,33 +256,18 @@ static void hspl_dump_timeout_state(bk_hspl_id_t hspl_id)
 
 bk_err_t bk_hspl_driver_init(void)
 {
-	uintptr_t base0 = hspl_get_base(BK_HSPL_ID_0);
-	uintptr_t base1 = hspl_get_base(BK_HSPL_ID_1);
-
 	if (s_hspl_driver_init) {
 		return BK_OK;
 	}
 
-	/* Enable clock / deassert reset (best-effort for both instances) */
-	if (base0) {
-		HSPL_REG_WR32(base0, HSPL_REG_CLKRST, 0x1);
-		HSPL_REG_WR32(base0, HSPL_REG_TIMEOUT_CFG, 0x0);
-		HSPL_REG_WR32(base0, HSPL_REG_TIMEOUT_CTL, 0x0);
-	}
-	if (base1) {
-		HSPL_REG_WR32(base1, HSPL_REG_CLKRST, 0x1);
-		HSPL_REG_WR32(base1, HSPL_REG_TIMEOUT_CFG, 0x0);
-		HSPL_REG_WR32(base1, HSPL_REG_TIMEOUT_CTL, 0x0);
-	}
-
+	bk_hspl_driver_early_init();
 	hspl_timeout_monitor_init(HSPL_LOCAL_HSPL_ID);
 
 	/* Register HSPL interrupt for local domain */
 	bk_int_isr_register(HSPL_LOCAL_INT_SRC, bk_hspl_isr_dispatch, NULL);
 
 	s_hspl_driver_init = true;
-	// HSPL_LOGI("init ok, hspl0_base=0x%08X hspl1_base=0x%08X\r\n",
-	//           (unsigned int)base0, (unsigned int)base1);
+	// HSPL_LOGI("init ok\r\n");
 	return BK_OK;
 }
 
@@ -312,6 +328,31 @@ bk_err_t bk_hspl_get_state(bk_hspl_id_t hspl_id, uint8_t channel, hspl_state_t *
 	state->owner_valid = (sta & HSPL_STA_OWNER_VALID_BIT) ? 1 : 0;
 	state->locked = state->owner_valid ? 1 : 0;
 	state->owner_id = (uint8_t)((sta & HSPL_STA_OWNER_MASK) >> HSPL_STA_OWNER_SHIFT);
+	return BK_OK;
+}
+
+bk_err_t bk_hspl_try_lock_direct(bk_hspl_id_t hspl_id, uint8_t channel)
+{
+	uint32_t val;
+	uintptr_t base = hspl_get_base(hspl_id);
+
+	if (!hspl_is_valid_channel(channel) || !base) {
+		return BK_FAIL;
+	}
+
+	val = bk_hspl_read_lock_raw(hspl_id, channel);
+	return (val & HSPL_LOCK_SUCCESS_BIT) ? BK_OK : BK_FAIL;
+}
+
+bk_err_t bk_hspl_unlock_direct(bk_hspl_id_t hspl_id, uint8_t channel)
+{
+	uintptr_t base = hspl_get_base(hspl_id);
+
+	if (!hspl_is_valid_channel(channel) || !base) {
+		return BK_FAIL;
+	}
+
+	HSPL_REG_WR32(base, HSPL_REG_LOCK0 + channel, HSPL_UNLOCK_MAGIC);
 	return BK_OK;
 }
 

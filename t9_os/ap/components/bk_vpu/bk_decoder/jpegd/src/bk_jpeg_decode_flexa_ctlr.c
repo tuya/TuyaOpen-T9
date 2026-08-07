@@ -21,9 +21,14 @@
 #include "bk_flexa_bond_types.h"
 #include "components/bk_decode/bk_jpeg_decode_ctlr.h"
 #include "private_jpeg_decode_ctlr.h"
+#include "bk_decode_pp_helper.h"
 #include "hw_decoder_ctlr.h"
+#if CONFIG_L2_CACHE_ENABLE || CONFIG_DCACHE
+#include "cache.h"
+#endif
 #include "modules/vcdec/vcdec_jpeg_api.h"
 #include "avdk_monitor.h"
+#include "common/avdk_pixel_types.h"
 
 #define TAG "bk_jpeg_dec"
 
@@ -34,12 +39,21 @@
 
 #define JPEG_DECODE_PORT_DONE_BIT(id) (1U << (id))
 
+/*
+ * Compute and advance the hardware read pointer. Caller must hold the critical
+ * section (rtos_enter_critical).
+ * Key fix: exclude ports that already reported the full-frame value (done) from
+ * the backpressure min. An aborted/finished consumer must not pin the watermark
+ * at the full-frame value; min then tracks only the slowest port still reading,
+ * so the hardware read pointer can climb from 0 again on a new frame, avoiding
+ * the previous frame's full-frame report latching the watermark across frames.
+ */
 static void jpeg_decode_apply_min_rd_to_hw(private_jpeg_decode_flexa_ctlr_t *ctrl)
 {
     uint32_t min_rd = 0xFFFFFFFFU;
 
     for (uint32_t i = 0; i < BK_JPEG_DECODE_RD_PORT_MAX; i++) {
-        if (ctrl->port[i].bond != NULL && ctrl->port[i].first_bond == 0) {
+        if (ctrl->port[i].bond != NULL && ctrl->port[i].first_bond == 0 && ctrl->port[i].done == 0) {
             if (ctrl->port[i].rd_blocks < min_rd) {
                 min_rd = ctrl->port[i].rd_blocks;
             }
@@ -52,13 +66,12 @@ static void jpeg_decode_apply_min_rd_to_hw(private_jpeg_decode_flexa_ctlr_t *ctr
             DECODE_LINE_START;
             vcdec_jpeg_set_rd_ptr(ctrl->vcdec_handle, min_rd);
         }
-        else if(min_rd < ctrl->all_ports_min_rd)
-        {
-            LOGW("%s %d min_rd %u is less than all_ports_min_rd %u\r\n", __func__, __LINE__, min_rd, ctrl->all_ports_min_rd);
-        }
-        else if(min_rd == ctrl->all_ports_min_rd)
-        {
-            // LOGE("%s %d min_rd %u is equal to all_ports_min_rd %u\r\n", __func__, __LINE__, min_rd, ctrl->all_ports_min_rd);
+        else if (min_rd < ctrl->all_ports_min_rd) {
+            /* Keep this warning: a rolling report below the frame's current watermark
+             * indicates a dropped/stale-frame anomaly; use it to observe whether the
+             * done-exclusion defense holds during long soak. */
+            LOGW("%s %d min_rd %u is less than all_ports_min_rd %u\r\n",
+                 __func__, __LINE__, min_rd, ctrl->all_ports_min_rd);
         }
     }
 }
@@ -137,6 +150,13 @@ static void frame_done_cb(int status, void *args)
         LOGE("control is NULL\r\n");
         return;
     }
+#if CONFIG_L2_CACHE_ENABLE || CONFIG_DCACHE
+    if (status == BK_OK && ctrl->decode_config.output_buffer != NULL &&
+        ctrl->decode_config.output_size > 0U) {
+        flush_dcache(ctrl->decode_config.output_buffer,
+                     (long)ctrl->decode_config.output_size);
+    }
+#endif
     if (ctrl->config.frame_done_cb != NULL)
     {
         ctrl->config.frame_done_cb(status, ctrl->config.frame_done_args);
@@ -157,6 +177,9 @@ static void flexa_done_cb(uint32_t wr_ptr, void *args)
             continue;
         }
         bk_flexa_bond_t *b = (bk_flexa_bond_t *)ctrl->port[i].bond;
+        /* Hand the current decode frame_seq to the consumer with its lines, so a
+         * report generated for this frame can be seq-matched by the decoder. */
+        b->last_seq = ctrl->frame_seq;
         /* On the first REGISTER_BOND, do not dispatch the remaining flexa line interrupts of the current frame; normal dispatch resumes from wr_ptr == 1 in the next frame. */
         if (ctrl->port[i].first_bond) {
             if (wr_ptr == 1U) {
@@ -258,13 +281,34 @@ static avdk_err_t jpeg_decode_callback(void *param)
     if (ctrl->mode == BK_JPEG_DECODE_FLEXA_MODE_FLEXA) {
         jpeg_decode_flexa_clear_port_done_events(ctrl);
     }
+    /* Frame-boundary reset (lock-free): clears the watermark and per-port state at
+     * the start of each frame. No critical section is taken; correctness relies on
+     * the done flag, which excludes full-frame ports from the backpressure min so a
+     * concurrent/late full-frame report cannot pin the watermark. Shared word writes
+     * are atomic on SMP and apply's monotonic guard only advances the watermark. */
     ctrl->all_ports_min_rd = 0;
     for (uint32_t i = 0; i < BK_JPEG_DECODE_RD_PORT_MAX; i++) {
         if (ctrl->port[i].bond == NULL) {
             continue;
         }
         ctrl->port[i].rd_blocks = 0;
+        ctrl->port[i].done = 0;
     }
+    /* Advance the monotonic decode frame counter (never 0). Consumers echo the
+     * value they were handed (bond->last_seq) in their reports, letting the
+     * decoder drop reports that belong to an already-finished frame. */
+    ctrl->frame_seq++;
+    if (ctrl->frame_seq == 0U) {
+        ctrl->frame_seq = 1U;
+    }
+#if CONFIG_L2_CACHE_ENABLE || CONFIG_DCACHE
+    if (ctrl->decode_config.input_stream != NULL &&
+        ctrl->decode_config.input_stream_len > 0U) {
+        flush_dcache(ctrl->decode_config.input_stream,
+                     (long)ctrl->decode_config.input_stream_len);
+    }
+#endif
+
     DECODE_FRAME_START;
     DECODE_LINE_START;
     vcdec_ret_e ret = vcdec_jpeg_decode_frame(ctrl->vcdec_handle, &ctrl->decode_config);
@@ -300,8 +344,17 @@ static avdk_err_t jpeg_decode_ctlr_decode_frame(bk_jpeg_decode_ctlr_handle_t han
 
     const uint16_t seg_ht_mb = ctrl->config.segment_height;
     const uint8_t seg_num = ctrl->config.segment_number;
-    const uint32_t rb_h = 16U * (uint32_t)seg_ht_mb * (uint32_t)seg_num;
     const uint32_t out_w = (uint32_t)ctrl->config.out_width;
+    uint32_t rb_size;
+    vcdec_pp_out_format_e out_fmt;
+
+    if (ctrl->config.out_format == BK_PIXEL_FORMAT_RGB565 ||
+        ctrl->config.out_format == BK_PIXEL_FORMAT_RGB888) {
+        LOGE("JPEG flexa RGB output is not supported; use frame RGB mode instead\r\n");
+        return AVDK_ERR_INVAL;
+    }
+    out_fmt = bk_decode_pp_map_out_format(ctrl->config.out_format);
+    rb_size = bk_decode_pp_flexa_rb_size(ctrl->config.out_width, seg_ht_mb, seg_num);
 
     if (out_w == 0U) {
         LOGE("Flexa mode requires out_width set via ioctl\r\n");
@@ -313,8 +366,8 @@ static avdk_err_t jpeg_decode_ctlr_decode_frame(bk_jpeg_decode_ctlr_handle_t han
         return AVDK_ERR_INVAL;
     }
 
-    if (out_buffer_size < out_w * rb_h * 3 / 2) {
-        LOGE("output buffer too small: have=%u need=%u\r\n", out_buffer_size, out_w * rb_h * 3 / 2);
+    if (out_buffer_size < rb_size) {
+        LOGE("output buffer too small: have=%u need=%u\r\n", out_buffer_size, rb_size);
         return AVDK_ERR_NOMEM;
     }
 
@@ -322,8 +375,9 @@ static avdk_err_t jpeg_decode_ctlr_decode_frame(bk_jpeg_decode_ctlr_handle_t han
     ctrl->decode_config.input_stream_len = input->stream_len;
     ctrl->decode_config.output_buffer = out_buffer;
     ctrl->decode_config.output_size = out_buffer_size;
-    ctrl->decode_config.width = ctrl->config.out_width;
-    ctrl->decode_config.height = ctrl->config.out_height;
+    ctrl->decode_config.out_width = ctrl->config.out_width;
+    ctrl->decode_config.out_height = ctrl->config.out_height;
+    ctrl->decode_config.out_format = out_fmt;
     ctrl->decode_config.segment_height = seg_ht_mb;
     ctrl->decode_config.segment_number = seg_num;
 
@@ -450,22 +504,51 @@ static avdk_err_t jpeg_decode_ctlr_ioctl(bk_jpeg_decode_ctlr_handle_t handle, ui
         break;
 
     case BK_JPEG_DECODE_IOCTL_PORT_SET_RD_PTR: {
-        uint32_t flags = rtos_enter_critical();
         bk_jpeg_decode_port_rd_t *p = (bk_jpeg_decode_port_rd_t *)arg;
         AVDK_RETURN_ON_FALSE(p, AVDK_ERR_INVAL, TAG, "%s %d arg is NULL", __func__, __LINE__);
+        uint32_t max_lines = ((uint32_t)ctrl->config.out_height + 15U) / 16U;
+
+        uint32_t flags = rtos_enter_critical();
         uint32_t i = 0;
+        uint32_t drop = 0U;
         for (i = 0; i < BK_JPEG_DECODE_RD_PORT_MAX; i++) {
             if (ctrl->port[i].bond == p->port_ptr) {
+                uint32_t is_full = (p->rd_blocks >= max_lines) ? 1U : 0U;
+                /* Scheme B seq-gate: a report carrying a known (non-zero) frame_seq that
+                 * differs from the current decode frame is a stale cross-frame report --
+                 * the consumer worker finished/aborted an older frame after the decoder
+                 * already advanced. Drop it so it cannot re-pin this frame's watermark.
+                 * frame_seq == 0 (legacy/rolling reports) is always accepted. The current
+                 * frame's own (matching-seq) report is always accepted, so backpressure is
+                 * still released once per frame (hard constraint preserved). */
+                if (p->frame_seq != 0U && p->frame_seq != ctrl->frame_seq) {
+                    drop = 1U;
+                    break;
+                }
+                /* Same-frame duplicate full-frame report (e.g. GPU decode_error broadcast
+                 * + worker abort both fire for this frame): the first already released
+                 * backpressure; drop the rest. The first full-frame report is kept. */
+                if (is_full && ctrl->port[i].done) {
+                    drop = 1U;
+                    break;
+                }
                 ctrl->port[i].rd_blocks = p->rd_blocks;
+                /* A full-frame value = the consumer's "frame end/abort" signal:
+                 * mark done and exclude it from the backpressure min so it no longer
+                 * pins the watermark at the full-frame value. A later normal rolling
+                 * report (< full-frame) clears done and rejoins backpressure. */
+                ctrl->port[i].done = is_full;
                 break;
             }
         }
         if (i == BK_JPEG_DECODE_RD_PORT_MAX) {
-            LOGE("%s %d no free port\r\n", __func__, __LINE__);
             rtos_exit_critical(flags);
+            LOGE("%s %d no free port\r\n", __func__, __LINE__);
             return AVDK_ERR_NOMEM;
         }
-        jpeg_decode_apply_min_rd_to_hw(ctrl);
+        if (!drop) {
+            jpeg_decode_apply_min_rd_to_hw(ctrl);
+        }
         rtos_exit_critical(flags);
         break;
     }
@@ -479,6 +562,8 @@ static avdk_err_t jpeg_decode_ctlr_ioctl(bk_jpeg_decode_ctlr_handle_t handle, ui
             if (ctrl->port[i].bond == NULL) {
                 ctrl->port[i].bond = bond_ptr;
                 ctrl->port[i].first_bond = 1U;
+                ctrl->port[i].rd_blocks = 0;
+                ctrl->port[i].done = 0;
                 break;
             }
         }
@@ -497,6 +582,7 @@ static avdk_err_t jpeg_decode_ctlr_ioctl(bk_jpeg_decode_ctlr_handle_t handle, ui
                 ctrl->port[i].bond = NULL;
                 ctrl->port[i].first_bond = 0;
                 ctrl->port[i].rd_blocks = 0;
+                ctrl->port[i].done = 0;
                 break;
             }
         }

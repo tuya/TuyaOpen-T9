@@ -10,6 +10,7 @@ extern "C" {
 #endif
 
 #include "lvgl.h"
+#include <common/bk_err.h>
 #include "components/media_types.h"
 #include "components/bk_display.h"
 #include <driver/hpdma.h>
@@ -76,6 +77,7 @@ typedef struct {
     hpdma_id_t lv_hpdma_id;
     beken_semaphore_t lv_hpdma_sem;
     bool lv_hpdma_in_use;
+    bool gpu_inited;
     lv_area_t d_area;
 } lv_vnd_data_t;
 
@@ -94,6 +96,10 @@ void lv_vendor_free(void *ptr);
 bk_err_t lv_vendor_init(lv_vnd_config_t *config);
 
 void lv_vendor_deinit(void);
+
+bk_err_t lv_vendor_set_dynamic_rotation(rott_angle_t rotation);
+
+rott_angle_t lv_vendor_get_rotation(void);
 
 void lv_vendor_start(void);
 
@@ -116,6 +122,45 @@ void lv_vendor_gpu_unlock(bool locked);
 void *lv_vendor_get_ready_frame_buffer(void);
 
 void lv_vendor_set_ready_frame_buffer(void *frame_buffer);
+
+/**
+ * @brief Queue one complete LVGL keypad click.
+ *
+ * Hardware-specific drivers should translate their physical key events to
+ * LV_KEY_* values and call this API. The LVGL port emits a PRESSED sample
+ * followed by a RELEASED sample through the generic keypad input device.
+ */
+bk_err_t lv_vendor_keypad_send_key(uint32_t key);
+
+/**
+ * @brief Queue an explicit keypad state sample.
+ *
+ * Use this for press-and-hold flows: send LV_INDEV_STATE_PRESSED when the
+ * hardware key goes down and LV_INDEV_STATE_RELEASED when it goes up.
+ */
+bk_err_t lv_vendor_keypad_send_key_state(uint32_t key, lv_indev_state_t state);
+
+/**
+ * @brief Drop all pending keypad samples.
+ */
+void lv_vendor_keypad_reset(void);
+
+/**
+ * @brief Return the registered LVGL keypad input device, or NULL before init.
+ */
+lv_indev_t *lv_vendor_keypad_get_indev(void);
+
+/**
+ * @brief Return the shared default group used by the generic keypad.
+ */
+lv_group_t *lv_vendor_keypad_get_default_group(void);
+
+/**
+ * @brief Bind the generic keypad to a page-owned group.
+ *
+ * Passing NULL restores the shared default group.
+ */
+bk_err_t lv_vendor_keypad_set_group(lv_group_t *group);
 
 #ifdef __cplusplus
 } /*extern "C"*/

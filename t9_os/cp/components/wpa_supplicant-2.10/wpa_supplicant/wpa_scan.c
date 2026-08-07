@@ -2904,7 +2904,9 @@ wpa_supplicant_get_scan_results(struct wpa_supplicant *wpa_s,
 				sta_disconnected.local_generated = true;
 
 				#if CONFIG_WIFI_VNET_CONTROLLER
-				cif_handle_bk_cmd_disconnect_ind(sta_disconnected.local_generated, sta_disconnected.disconnect_reason);
+				cif_handle_bk_cmd_wifi_event_ind(CIF_WIFI_EVT_STA_DISCONNECTED,
+								 &sta_disconnected,
+								 sizeof(sta_disconnected));
 				#endif
 
 				BK_LOG_ON_ERR(bk_event_post(EVENT_MOD_WIFI, EVENT_WIFI_STA_DISCONNECTED,
@@ -3010,8 +3012,15 @@ void scan_only_handler(struct wpa_supplicant *wpa_s,
 #ifdef BK_SUPPLICANT
 	wpas_notify_scan_results(wpa_s, manual_scan_use_id);
 	#if CONFIG_WIFI_VNET_CONTROLLER
-	uint32_t scan_use_time = wpa_s->scan_use_time.sec*1000000 + wpa_s->scan_use_time.usec;
-	cif_handle_bk_cmd_scan_wifi_ind(manual_scan_use_id, scan_use_time);
+	if (manual_scan_use_id != 0) {
+		wifi_event_scan_done_t event_data = {0};
+
+		event_data.scan_id = manual_scan_use_id;
+		event_data.scan_use_time = wpa_s->scan_use_time.sec * 1000000 +
+					   wpa_s->scan_use_time.usec;
+		cif_handle_bk_cmd_wifi_event_ind(CIF_WIFI_EVT_SCAN_DONE,
+						 &event_data, sizeof(event_data));
+	}
 	#endif
 #else
 	wpas_notify_scan_results(wpa_s);

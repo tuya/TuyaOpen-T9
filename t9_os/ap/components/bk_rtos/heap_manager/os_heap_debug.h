@@ -48,9 +48,11 @@ void bk_heap_sram_debug_init(void);
 void bk_heap_hsram_debug_init(void);
 void bk_heap_ext_sram_debug_init(void);
 void bk_heap_psram_debug_init(void);
+void bk_heap_psram_nocache_debug_init(void);
 
 size_t sram_get_allocated_size(void *ptr);
 size_t psram_get_allocated_size(void *ptr);
+size_t psram_nocache_get_allocated_size(void *ptr);
 size_t hsram_get_allocated_size(void *ptr);
 size_t ext_sram_get_allocated_size(void *ptr);
 

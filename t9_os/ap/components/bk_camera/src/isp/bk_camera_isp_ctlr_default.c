@@ -30,6 +30,20 @@ static void isp_camera_ctlr_task_entry(void *param)
     isp_channel_config_t *config = NULL;
     while (cam_control->thread_enable)
     {
+        // Modified by TUYA Start
+        /*
+         * Idle until bk_isp_camera_read() arms read_enable.
+         * Otherwise with MP flexa + SP frame (open_gpu_sp), this thread keeps
+         * watching default chnl=0 (MP) and spam-logs flexa-not-supported.
+         * Also avoid pop/free on an idle channel (would drop frames).
+         */
+        if (cam_control->read_enable == false || cam_control->frame == NULL)
+        {
+            rtos_delay_milliseconds(10);
+            continue;
+        }
+        // Modified by TUYA End
+
         uint8_t chnl_id = cam_control->chnl;
         config = &isp_control->chn[chnl_id];
         if (config == NULL || config->enable == false)
@@ -42,7 +56,12 @@ static void isp_camera_ctlr_task_entry(void *param)
         if (config->enable_flexa)
         {
             LOGE("%s, %d channel %d flexa mode not supported read frame\n", __func__, __LINE__, chnl_id);
-            rtos_delay_milliseconds(1000);
+            // Modified by TUYA Start
+            cam_control->size = 0;
+            cam_control->read_enable = false;
+            cam_control->frame = NULL;
+            rtos_set_semaphore(&cam_control->sem);
+            // Modified by TUYA End
             continue;
         }
 
@@ -503,6 +522,12 @@ static avdk_err_t isp_camera_ctlr_ioctl(bk_isp_camera_ctlr_handle_t handle, bk_c
     {
         case BK_CAM_IOCTL_SOFTRESET:
             bk_isp_soft_reset(&controller->isp_handle);
+            break;
+        case BK_CAM_IOCTL_GET_EXPOSURE_LUMINANCE:
+            AVDK_RETURN_ON_FALSE(arg, AVDK_ERR_INVAL, TAG, "arg is NULL");
+            AVDK_RETURN_ON_ERROR(
+                bk_isp_get_exposure_luminance(&controller->isp_handle, (uint32_t *)arg),
+                TAG, "get exposure luminance failed");
             break;
         default:
             return AVDK_ERR_INVAL;

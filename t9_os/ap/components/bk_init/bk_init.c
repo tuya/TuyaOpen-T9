@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #include <components/log.h>
+#include "soc_debug.h"
 #include <modules/wifi.h>
 #include <components/netif.h>
 #include <components/event.h>
@@ -47,11 +48,6 @@
 #include <driver/can.h>
 #endif
 
-#if (CONFIG_OTA_UPDATE_DEFAULT_PARTITION && CONFIG_HTTP_AB_PARTITION)
-#include <modules/ota.h>
-extern void bk_ota_confirm_update_partition(ota_confirm_flag ota_confirm_val);
-#endif
-
 #if CONFIG_SUPPORT_MULTICORE
 #include "multicore_driver.h"
 #endif
@@ -78,6 +74,9 @@ extern void bk_ota_confirm_update_partition(ota_confirm_flag ota_confirm_val);
 #if (CONFIG_NTP_SYNC_RTC)
 #include <components/ate.h>
 #include <components/app_time_intf.h>
+#endif
+#if (CONFIG_OTA_POSITION_INDEPENDENT_AB)
+#include "modules/ota.h"
 #endif
 
 #define TAG "bk_init"
@@ -110,6 +109,7 @@ extern bk_err_t bk_dbg_init(void);
 // #endif
 #if CONFIG_WIFI_VNET_CONTROLLER
 #include "wifi_api.h"
+#include "bk_netif.h"
 #endif
 
 void rtos_user_app_launch_over(void);
@@ -317,12 +317,9 @@ int bk_init(void)
 	demo_wifi_fast_connect();
 #endif
 
-#if (CONFIG_OTA_UPDATE_DEFAULT_PARTITION&& CONFIG_HTTP_AB_PARTITION)
 #if (CONFIG_OTA_POSITION_INDEPENDENT_AB)
 	bk_ota_double_check_for_execution();
 #endif
-#endif
-
 
 #if CONFIG_PSRAM
 	REG_READ(SOC_PSRAM_DATA_BASE);//check psram whether valid

@@ -15,6 +15,9 @@
 #include "bk_phy_adapter.h"
 #include "driver/wdt.h"
 #include "bk_wdt.h"
+#if CONFIG_SUPPORT_WWDT
+#include "driver/wwdt.h"
+#endif
 #include "bk_wifi.h"
 #include "adc_driver.h"
 #include "sys_driver.h"
@@ -68,6 +71,11 @@ static void bk_set_g_saradc_flag(UINT8 flag)
 static uint32_t bk_get_hardware_chip_id_version_wrapper(void)
 {
     return bk_get_hardware_chip_id_version();
+}
+
+static uint32_t aon_pmu_hal_get_chip_model_wrapper(void)
+{
+    return (uint32_t)aon_pmu_hal_get_chip_model();
 }
 
 static void shell_set_log_level_wrapper(int level)
@@ -508,14 +516,32 @@ static void sys_drv_optim_dpd_tx(uint32_t vbias)
 }
 
 static int bk_wdt_stop_wrapper(void) {
-#if (CONFIG_TASK_WDT)
+#if CONFIG_INT_WDT
+    extern void close_wdt(void);
+
+    close_wdt();
+
+#if CONFIG_SUPPORT_WWDT
+    bk_wwdt_stop();
+#endif
+
+#if INT_AON_WDT
+    bk_wdt_suspend();
+#endif
+
+#if CONFIG_TASK_WDT
     bk_task_wdt_stop();
 #endif
-#if CONFIG_WDT_EN
+
+    return BK_OK;
+#elif CONFIG_WDT_EN
     return bk_wdt_stop();
 #else
-    return BK_FAIL;
+#if CONFIG_TASK_WDT
+    bk_task_wdt_stop();
 #endif
+    return BK_FAIL;
+#endif /* CONFIG_INT_WDT */
 }
 
 static bk_err_t bk_cal_saradc_start(int32_t adc_channel, int32_t adc_clk, int32_t steady_time)
@@ -704,6 +730,7 @@ const phy_os_funcs_t g_phy_os_funcs = {
     ._aon_pmu_drv_band_cal_get          = aon_pmu_drv_band_cal_get,
     ._aon_pmu_drv_get_adc_cal           = aon_pmu_drv_get_adc_cal,
     ._aon_pmu_hal_get_chipid            = aon_pmu_hal_get_chipid,
+    ._aon_pmu_hal_get_chip_model        = aon_pmu_hal_get_chip_model_wrapper,
     ._sys_drv_set_pwd_anabuf_lownoise   = sys_drv_set_pwd_anabuf_lownoise,
     ._sys_drv_rfband                    = sys_drv_rfband,
     ._sys_drv_rf_ctrl                   = sys_drv_rf_ctrl,
@@ -837,6 +864,10 @@ const phy_os_variable_t g_phy_os_variable = {
     ._pm_chip_id_mpw_v2_3    = PM_CHIP_ID_MPW_V2_3,
     ._pm_chip_id_mpw_v4      = PM_CHIP_ID_MPW_V4,
     ._pm_chip_id_mp_A        = PM_CHIP_ID_MP_A,
+    ._bk7259_chip_model_v2_mpw  = BK7259_CHIP_MODEL_V2_MPW,
+    ._bk7259_chip_model_v3a     = BK7259_CHIP_MODEL_V3A,
+    ._bk7259_chip_model_v3b     = BK7259_CHIP_MODEL_V3B,
+    ._bk7259_chip_model_unknown = BK7259_CHIP_MODEL_UNKNOWN,
     ._cmd_get_device_id             = CMD_GET_DEVICE_ID,
     ._cmd_sctrl_ble_powerdown       = CMD_SCTRL_BLE_POWERDOWN,
     ._cmd_sctrl_ble_powerup         = CMD_SCTRL_BLE_POWERUP,

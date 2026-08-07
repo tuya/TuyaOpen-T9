@@ -15,6 +15,7 @@
 #include <common/bk_include.h>
 #include <os/os.h>
 #include <os/mem.h>
+#include <os/str.h>
 #include "FreeRTOS.h"
 #include "task.h"
 #include "cache.h"
@@ -52,9 +53,10 @@ bk_err_t bk_multicore_stop(uint32_t cpu_id)
 #if CONFIG_CPU_HOTPLUG
 
 #define AP_HOTPLUG_TIMEOUT_STAPS        (3)
+#define AP_HOTPLUG_TIMEOUT_STAPS_ONLINE (20)
 #define AP_HOTPLUG_TIMEOUT_ONE_STEP     (1)
-#define AP_HOTPLUG_TIMEOUT_ONE_STEP_US  (AP_HOTPLUG_TIMEOUT_ONE_STEP * 500) /* 1500us */
-#define AP_HOTPLUG_TIMEOUT_ONE_STEP_MS  (AP_HOTPLUG_TIMEOUT_ONE_STEP)       /* 3ms */
+#define AP_HOTPLUG_TIMEOUT_ONE_STEP_US  (AP_HOTPLUG_TIMEOUT_ONE_STEP * 500) /* 500us */
+#define AP_HOTPLUG_TIMEOUT_ONE_STEP_MS  (AP_HOTPLUG_TIMEOUT_ONE_STEP)       /* 1ms */
 #define AP_HOTPLUG_CPU3_ROUTE_REGS      (3)
 #define AP_HOTPLUG_PRIMARY_ROUTE_REGS   (2)
 #define AP_HOTPLUG_NVIC_WORDS           (4)
@@ -150,14 +152,14 @@ static inline void _cpu_hp_barrier(void)
 	__asm volatile("isb sy" ::: "memory");
 }
 
-static inline void _cpu_hp_disable_local_irq(void)
+static inline uint32_t _cpu_hp_disable_local_irq(void)
 {
-	__asm volatile("cpsid i" ::: "memory");
+	return rtos_disable_int();
 }
 
-static inline void _cpu_hp_enable_local_irq(void)
+static inline void _cpu_hp_enable_local_irq(uint32_t irq_level)
 {
-	__asm volatile("cpsie i" ::: "memory");
+	rtos_enable_int(irq_level);
 }
 
 static inline void _cpu_hp_wfi(void)
@@ -316,8 +318,6 @@ static bk_err_t _cpu_hotplug_wait_ack(volatile uint32_t *ack, uint32_t timeout_s
 	return BK_OK;
 }
 
-///////////////////////////////////////////////////////////////////////////////
-
 uint32_t bk_cpu_hp_is_online(uint32_t cpu_id)
 {
 	cpu_hp_domain_t *domain = _cpu_hp_domain(cpu_id);
@@ -413,7 +413,7 @@ uint32_t bk_cpu_hp_get_domain_offline_mask(uint32_t cpu_id)
 	return (domain == NULL) ? 0 : domain->offline_mask;
 }
 
-static bk_err_t _cpu_hp_offline_internal(uint32_t cpu_id)
+static bk_err_t _cpu_hp_offline_internal(uint32_t cpu_id, uint32_t from_atomic)
 {
 	cpu_hp_domain_t *domain = _cpu_hp_domain(cpu_id);
 	uint32_t cpu_mask = BK_CPU_MASK(cpu_id);
@@ -437,12 +437,14 @@ static bk_err_t _cpu_hp_offline_internal(uint32_t cpu_id)
 	}
 
 	smp_core = (BaseType_t)_cpu_hp_get_smp_core_id(domain, cpu_id);
-	ret = _cpu_hp_lock_init();
-	if (ret != BK_OK) {
-		goto nolock_out;
-	}
 
-	rtos_lock_mutex(&_cpu_hp_lock);
+	if (!from_atomic) {
+		ret = _cpu_hp_lock_init();
+		if (ret != BK_OK) {
+			goto nolock_out;
+		}
+		rtos_lock_mutex(&_cpu_hp_lock);
+	}
 
 	if ((domain->online_mask & cpu_mask) == 0) {
 		ret = BK_OK;
@@ -508,12 +510,13 @@ continue_offline:
 	}
 
 out:
-	rtos_unlock_mutex(&_cpu_hp_lock);
+	if (!from_atomic)
+		rtos_unlock_mutex(&_cpu_hp_lock);
 nolock_out:
 	return ret;
 }
 
-static bk_err_t _cpu_hp_online_internal(uint32_t cpu_id)
+static bk_err_t _cpu_hp_online_internal(uint32_t cpu_id, uint32_t from_atomic)
 {
 	cpu_hp_domain_t *domain = _cpu_hp_domain(cpu_id);
 	uint32_t cpu_mask = BK_CPU_MASK(cpu_id);
@@ -535,13 +538,15 @@ static bk_err_t _cpu_hp_online_internal(uint32_t cpu_id)
 		goto nolock_out;
 	}
 
-	ret = _cpu_hp_lock_init();
-	if (ret != BK_OK) {
-		goto nolock_out;
-	}
-
 	smp_core = (BaseType_t)_cpu_hp_get_smp_core_id(domain, cpu_id);
-	rtos_lock_mutex(&_cpu_hp_lock);
+
+	if (!from_atomic) {
+		ret = _cpu_hp_lock_init();
+			if (ret != BK_OK) {
+				goto nolock_out;
+		}
+		rtos_lock_mutex(&_cpu_hp_lock);
+	}
 
 	if (domain->cpu_state[cpu_id] == BK_CPU_HP_STATE_ONLINE) {
 		ret = BK_OK;
@@ -562,9 +567,6 @@ static bk_err_t _cpu_hp_online_internal(uint32_t cpu_id)
 	_cpu3_irq_route_mask_all();
 	vTaskHotplugResetIdleTaskContext(smp_core);
 #if CONFIG_CPU_HOTPLUG_BOOT_OFFLINE
-	} else {
-		_cpu3_irq_route_backup();
-		domain->cold_boot = 0;
 	}
 #endif
 	vPortHotplugResetCoreState(smp_core);
@@ -573,9 +575,10 @@ static bk_err_t _cpu_hp_online_internal(uint32_t cpu_id)
 	_cpu_hp_set_state(domain, cpu_id, BK_CPU_HP_STATE_SECONDARY_BOOT);
 
 	ret = bk_multicore_start(CPU3_CORE_ID);
-	if (ret == BK_OK) {
-		ret = _cpu_hotplug_wait_ack(&_cpu3_online_ack, AP_HOTPLUG_TIMEOUT_STAPS);
-	}
+	if (ret == BK_OK)
+		ret = _cpu_hotplug_wait_ack(&_cpu3_online_ack, AP_HOTPLUG_TIMEOUT_STAPS_ONLINE);
+	else
+		goto fail_online;
 
 	if (ret == BK_OK) {
 #if CONFIG_TASK_WDT
@@ -584,7 +587,14 @@ static bk_err_t _cpu_hp_online_internal(uint32_t cpu_id)
 		(void)smp_core;
 #endif
 		_cpu_hp_domain_set_online(domain, cpu_id, 1);
+#if CONFIG_CPU_HOTPLUG_BOOT_OFFLINE
+		if (domain->cold_boot == 1)
+			domain->cold_boot = 0;
+		else
+			_cpu3_irq_route_restore();
+#else
 		_cpu3_irq_route_restore();
+#endif
 		mbox0_init_on_current_core(CPU3_CORE_ID);
 		_cpu_hp_domain_set_active(domain, cpu_id, 1);
 		_cpu_hp_set_state(domain, cpu_id, BK_CPU_HP_STATE_ONLINE);
@@ -592,15 +602,18 @@ static bk_err_t _cpu_hp_online_internal(uint32_t cpu_id)
 		 * outgoing doorbell that was lost while CPU3 was still joining, so a
 		 * stuck "busy" flag can't swallow the next hotplug STOP. */
 		crosscore_int_reset_send();
-	} else {
-		bk_multicore_stop(CPU3_CORE_ID);
-		_cpu_hp_domain_set_active(domain, cpu_id, 0);
-		_cpu_hp_domain_set_online(domain, cpu_id, 0);
-		_cpu_hp_set_state(domain, cpu_id, BK_CPU_HP_STATE_OFFLINE);
+		goto out;
 	}
 
+fail_online:
+	bk_multicore_stop(CPU3_CORE_ID);
+	_cpu_hp_domain_set_active(domain, cpu_id, 0);
+	_cpu_hp_domain_set_online(domain, cpu_id, 0);
+	_cpu_hp_set_state(domain, cpu_id, BK_CPU_HP_STATE_OFFLINE);
+
 out:
-	rtos_unlock_mutex(&_cpu_hp_lock);
+	if (!from_atomic)
+		rtos_unlock_mutex(&_cpu_hp_lock);
 nolock_out:
 	return ret;
 }
@@ -624,48 +637,95 @@ void bk_cpu_hp_exit_primary(uint32_t old_core_id)
 	(void)xTaskHotplugSetCurrentTaskCoreID(old_core_id);
 }
 
-bk_err_t bk_cpu_hp_offline(uint32_t cpu_id)
+static bk_err_t cpu_hp_offline_do(uint32_t cpu_id)
 {
 	bk_err_t ret = BK_FAIL;
 	uint32_t old_core_id;
-	uint32_t is_in_interrupt_context = platform_is_in_interrupt_context();
+	uint32_t from_atomic;
 
-	if (is_in_interrupt_context == BK_FALSE)
-		old_core_id = bk_cpu_hp_enter_primary();
+	BK_ASSERT(platform_is_in_interrupt_context() == BK_FALSE);
 
-	if (portGET_CORE_ID() == SMP_CORE0_ID)
-		ret = _cpu_hp_offline_internal(cpu_id);
-	else
+	old_core_id = bk_cpu_hp_enter_primary();
+
+	if (portGET_CORE_ID() == SMP_CORE0_ID) {
+		from_atomic = platform_local_irq_disabled();
+		ret = _cpu_hp_offline_internal(cpu_id, from_atomic);
+	} else {
 		MULTICORE_LOGW("cpu%u offline must run on primary core, current SMP core=%d\r\n",
 			cpu_id, portGET_CORE_ID());
+	}
 
-	if (is_in_interrupt_context == BK_FALSE)
-		bk_cpu_hp_exit_primary(old_core_id);
+	bk_cpu_hp_exit_primary(old_core_id);
 
 	return ret;
+}
+
+static bk_err_t cpu_hp_online_do(uint32_t cpu_id)
+{
+	bk_err_t ret = BK_FAIL;
+	uint32_t old_core_id;
+	uint32_t from_atomic;
+
+	BK_ASSERT(platform_is_in_interrupt_context() == BK_FALSE);
+
+	old_core_id = bk_cpu_hp_enter_primary();
+
+	if (portGET_CORE_ID() == SMP_CORE0_ID) {
+		from_atomic = platform_local_irq_disabled();
+		ret = _cpu_hp_online_internal(cpu_id, from_atomic);
+	} else {
+		MULTICORE_LOGW("cpu%u online must run on primary core, current SMP core=%d\r\n",
+			cpu_id, portGET_CORE_ID());
+	}
+
+	bk_cpu_hp_exit_primary(old_core_id);
+
+	return ret;
+}
+
+bk_err_t bk_cpu_hp_offline_direct(uint32_t cpu_id)
+{
+#if CONFIG_CPU_HP_VOTE
+	MULTICORE_LOGW("cpu%u offline_direct: bypassing vote layer, vote tally may desync\r\n",
+		cpu_id);
+#endif
+	return cpu_hp_offline_do(cpu_id);
+}
+
+bk_err_t bk_cpu_hp_online_direct(uint32_t cpu_id)
+{
+#if CONFIG_CPU_HP_VOTE
+	MULTICORE_LOGW("cpu%u online_direct: bypassing vote layer, vote tally may desync\r\n",
+		cpu_id);
+#endif
+	return cpu_hp_online_do(cpu_id);
+}
+
+bk_err_t bk_cpu_hp_offline(uint32_t cpu_id)
+{
+#if CONFIG_CPU_HP_VOTE
+	MULTICORE_LOGW("cpu%u offline: CPU_HP_VOTE enabled, use bk_cpu_hp_vote_* (or _force)\r\n",
+		cpu_id);
+	return BK_ERR_NOT_SUPPORT;
+#else
+	return cpu_hp_offline_do(cpu_id);
+#endif
 }
 
 bk_err_t bk_cpu_hp_online(uint32_t cpu_id)
 {
-	bk_err_t ret = BK_FAIL;
-	uint32_t old_core_id;
-	uint32_t is_in_interrupt_context = platform_is_in_interrupt_context();
-
-	if (is_in_interrupt_context == BK_FALSE)
-		old_core_id = bk_cpu_hp_enter_primary();
-
-	if (portGET_CORE_ID() == SMP_CORE0_ID)
-		ret = _cpu_hp_online_internal(cpu_id);
-
-	if (is_in_interrupt_context == BK_FALSE)
-		bk_cpu_hp_exit_primary(old_core_id);
-
-	return ret;
+#if CONFIG_CPU_HP_VOTE
+	MULTICORE_LOGW("cpu%u online: CPU_HP_VOTE enabled, use bk_cpu_hp_vote_* (or _force)\r\n",
+		cpu_id);
+	return BK_ERR_NOT_SUPPORT;
+#else
+	return cpu_hp_online_do(cpu_id);
+#endif
 }
 
 void multicore_stop_core1(void)
 {
-	(void)bk_cpu_hp_offline(CPU3_CORE_ID);
+	(void)cpu_hp_offline_do(CPU3_CORE_ID);
 }
 
 void bk_cpu_hp_core_stop_hmb_isr(void)
@@ -681,21 +741,26 @@ void bk_cpu_hp_core_stop_hmb_isr(void)
 	_cpu_hp_domain_set_active(domain, cpu_id, 0);
 }
 
-void bk_cpu_hp_idle_handler(void)
+static void _cpu_hp_idle_handler_online(cpu_hp_domain_t *domain, uint32_t cpu_id)
 {
-	cpu_hp_domain_t *domain = &_ap_domain;
-	uint32_t cpu_id = CPU3_CORE_ID;
-
-	if (portGET_CORE_ID() != SMP_CORE1_ID) {
-		return;
+	if ((portGET_CORE_ID() == SMP_CORE1_ID) &&
+	    (_ap_domain.cpu_state[CPU3_CORE_ID] == BK_CPU_HP_STATE_SECONDARY_BOOT)) {
+		_cpu_hp_set_state(&_ap_domain, CPU3_CORE_ID, BK_CPU_HP_STATE_JOIN_SCHEDULER);
+		_cpu3_online_ack = 1;
+		_cpu_hp_barrier();
 	}
+	_cpu3_wants_offline = -1;
+}
 
-	_cpu_hp_disable_local_irq();
+static void _cpu_hp_idle_handler_offline(cpu_hp_domain_t *domain, uint32_t cpu_id)
+{
+	uint32_t irq_level;
+	irq_level = _cpu_hp_disable_local_irq();
 	spin_lock(&_cpu_hp_spin_lock);
 	if (_cpu3_wants_offline != 1) {
 		_cpu_hp_domain_set_active(domain, cpu_id, 1);
 		spin_unlock(&_cpu_hp_spin_lock);
-		_cpu_hp_enable_local_irq();
+		_cpu_hp_enable_local_irq(irq_level);
 		return;
 	}
 
@@ -717,7 +782,7 @@ void bk_cpu_hp_idle_handler(void)
 		AP_HOTPLUG_NVIC_ICPR_BASE[i] = 0xffffffff;
 	}
 
-#if CONFIG_DCACHE
+#if CONFIG_CACHE_MAINTENANCE
 	flush_all_dcache();
 #endif
 	vTaskHotplugClearCurrentTCB(SMP_CORE1_ID);
@@ -731,15 +796,19 @@ void bk_cpu_hp_idle_handler(void)
 	}
 }
 
-void bk_cpu_hp_core_online(void)
+void bk_cpu_hp_idle_handler(void)
 {
-	if ((portGET_CORE_ID() == SMP_CORE1_ID) &&
-	    (_ap_domain.cpu_state[CPU3_CORE_ID] == BK_CPU_HP_STATE_SECONDARY_BOOT)) {
-		_cpu_hp_set_state(&_ap_domain, CPU3_CORE_ID, BK_CPU_HP_STATE_JOIN_SCHEDULER);
-		_cpu3_online_ack = 1;
-		_cpu_hp_barrier();
+	cpu_hp_domain_t *domain = &_ap_domain;
+	uint32_t cpu_id = CPU3_CORE_ID;
+
+	if (portGET_CORE_ID() != SMP_CORE1_ID) {
+		return;
 	}
-	_cpu3_wants_offline = 0;
+
+	if (domain->offline_mask & BK_CPU_MASK(cpu_id))
+		_cpu_hp_idle_handler_online(domain, cpu_id);
+	else
+		_cpu_hp_idle_handler_offline(domain, cpu_id);
 }
 
 #if CONFIG_CPU_HP_GOVERNOR
@@ -854,7 +923,7 @@ static void cpu_hp_gov_try_online(cpu_hp_gov_t *g)
 		return;
 	}
 
-	if (bk_cpu_hp_online(CPU3_CORE_ID) == BK_OK) {
+	if (cpu_hp_online_do(CPU3_CORE_ID) == BK_OK) {
 		g->online_cnt++;
 		g->cooldown_left_ms = CPU_HP_GOV_COOLDOWN_MS;
 		cpu_hp_gov_reset_window(g);
@@ -879,7 +948,7 @@ static void cpu_hp_gov_try_offline(cpu_hp_gov_t *g)
 		return;
 	}
 
-	bk_err_t ret = bk_cpu_hp_offline(CPU3_CORE_ID);
+	bk_err_t ret = cpu_hp_offline_do(CPU3_CORE_ID);
 	if (ret == BK_OK) {
 		g->offline_cnt++;
 		g->cooldown_left_ms = CPU_HP_GOV_COOLDOWN_MS;
@@ -901,7 +970,7 @@ static void cpu_hp_gov_task(void *arg)
 #if CONFIG_CPU_HOTPLUG_BOOT_OFFLINE
 	if (!bk_cpu_hp_is_online(CPU3_CORE_ID) &&
 	    (xTaskHasTasksPinnedToCore(SMP_CORE1_ID) == pdTRUE)) {
-		if (bk_cpu_hp_online(CPU3_CORE_ID) == BK_OK) {
+		if (cpu_hp_online_do(CPU3_CORE_ID) == BK_OK) {
 			g->online_cnt++;
 			g->cooldown_left_ms = CPU_HP_GOV_COOLDOWN_MS;
 			MULTICORE_LOGI("governor: online cpu3 (pinned tasks present at boot)\r\n");
@@ -996,5 +1065,383 @@ void bk_cpu_hp_governor_get_status(bk_cpu_hp_governor_status_t *status)
 }
 
 #endif /* CONFIG_CPU_HP_GOVERNOR */
+
+#if CONFIG_CPU_HP_VOTE
+
+#define CPU_HP_VOTE_MAX_VOTERS          (CONFIG_CPU_HP_VOTE_MAX_VOTERS)
+#define CPU_HP_VOTE_BITMAP_WORDS        ((CPU_HP_VOTE_MAX_VOTERS + 31u) / 32u)
+#define CPU_HP_VOTE_TARGET_CPU          (CPU3_CORE_ID)  /* only CPU3 is hotpluggable */
+
+struct cpu_hp_voter {
+	uint32_t bit;				/* this voter's ticket index [0, MAX) */
+#if CONFIG_CPU_HP_VOTE_DUMP
+	struct cpu_hp_voter *next;		/* registry list link */
+#endif
+#if CONFIG_CPU_HP_VOTE_NAME
+	char name[CONFIG_CPU_HP_VOTE_NAME_LEN];	/* diagnostic / lookup label */
+#endif
+};
+
+static uint32_t s_alloc_mask[CPU_HP_VOTE_BITMAP_WORDS];	/* shadow reg: bit set == ticket in use */
+static uint32_t s_online_mask[CPU_HP_VOTE_BITMAP_WORDS];	/* online-voting ticket bits */
+#if CONFIG_CPU_HP_VOTE_DUMP
+static struct cpu_hp_voter *s_voter_list;		/* registry of live voters */
+#endif
+
+#if CONFIG_CPU_HP_VOTE_STATIC
+static struct cpu_hp_voter s_voters[CPU_HP_VOTE_MAX_VOTERS];	/* static handle pool (no malloc); slot index == ticket bit */
+#endif
+
+static uint32_t s_online_count;	/* voters voting online (popcount s_online_mask) */
+static uint32_t s_voter_count;	/* registered voters (popcount s_alloc_mask) */
+
+static beken_mutex_t s_vote_lock;
+
+static bk_err_t cpu_hp_vote_lock_init(void)
+{
+	bk_err_t ret = BK_OK;
+	uint32_t level;
+
+	level = rtos_enter_critical();
+	if (s_vote_lock == NULL) {
+		ret = rtos_init_mutex(&s_vote_lock);
+	}
+	rtos_exit_critical(level);
+
+	return ret;
+}
+
+static inline uint32_t cpu_hp_vote_bit_test(const uint32_t *mask, uint32_t bit)
+{
+	return (mask[bit >> 5] >> (bit & 31u)) & 1u;
+}
+
+static inline void cpu_hp_vote_bit_set(uint32_t *mask, uint32_t bit)
+{
+	mask[bit >> 5] |= (1u << (bit & 31u));
+}
+
+static inline void cpu_hp_vote_bit_clear(uint32_t *mask, uint32_t bit)
+{
+	mask[bit >> 5] &= ~(1u << (bit & 31u));
+}
+
+static uint32_t cpu_hp_vote_is_valid_locked(const cpu_hp_voter_handle_t voter)
+{
+	if ((voter == NULL) || (voter->bit >= CPU_HP_VOTE_MAX_VOTERS))
+		return 0;
+
+	return cpu_hp_vote_bit_test(s_alloc_mask, voter->bit);
+}
+
+/**
+ * @brief Change @voter's vote and drive the hotplug core only when s_online_count crosses zero (0->1 online, 1->0 offline). The no-change guard keeps repeated votes idempotent. Returns the hotplug result on a transition, else BK_OK.
+ * 
+ * @param voter voter handle
+ * @param want_online 1 to vote online, 0 to vote offline
+ * @return bk_err_t BK_OK if the vote is applied successfully, otherwise an error code.
+ */
+static bk_err_t cpu_hp_vote_apply_locked(cpu_hp_voter_handle_t voter, uint32_t want_online)
+{
+	bk_err_t ret = BK_OK;
+
+	if (cpu_hp_vote_bit_test(s_online_mask, voter->bit) == want_online)
+		return ret;
+
+	if (want_online) {
+		if (!bk_cpu_hp_is_online(CPU_HP_VOTE_TARGET_CPU)) {
+			ret = cpu_hp_online_do(CPU_HP_VOTE_TARGET_CPU);
+			MULTICORE_LOGI("cpu_hp_vote: try to online cpu%u (voters=%u) ret=%d\r\n",
+				CPU_HP_VOTE_TARGET_CPU, s_online_count + 1, ret);
+			if (ret != BK_OK)
+				return ret;
+		}
+		cpu_hp_vote_bit_set(s_online_mask, voter->bit);
+		s_online_count++;
+	} else {
+		if (s_online_count == 1) {
+			ret = cpu_hp_offline_do(CPU_HP_VOTE_TARGET_CPU);
+			MULTICORE_LOGI("cpu_hp_vote: try to offline cpu%u (all released) ret=%d\r\n",
+				CPU_HP_VOTE_TARGET_CPU, ret);
+			if (ret != BK_OK)
+				return ret;
+		}
+		cpu_hp_vote_bit_clear(s_online_mask, voter->bit);
+		s_online_count--;
+	}
+
+	return ret;
+}
+
+/**
+ * @brief Grab a free ticket bit and allocate its handle. Caller holds
+ * s_vote_lock. NULL if the ticket pool is full or allocation fails.
+ */
+static cpu_hp_voter_handle_t cpu_hp_vote_alloc_locked(const char *name)
+{
+	uint32_t bit = CPU_HP_VOTE_MAX_VOTERS;
+	cpu_hp_voter_handle_t voter;
+
+	for (uint32_t i = 0; i < CPU_HP_VOTE_MAX_VOTERS; i++) {
+		if (!cpu_hp_vote_bit_test(s_alloc_mask, i)) {
+			bit = i;
+			break;
+		}
+	}
+	if (bit == CPU_HP_VOTE_MAX_VOTERS)
+		return NULL;
+
+#if CONFIG_CPU_HP_VOTE_STATIC
+	/* static pool: slot index maps 1:1 to the ticket bit */
+	voter = &s_voters[bit];
+	os_memset(voter, 0, sizeof(*voter));
+#else
+	voter = (cpu_hp_voter_handle_t)os_zalloc(sizeof(*voter));
+	if (voter == NULL)
+		return NULL;
+#endif
+
+	voter->bit = bit;
+#if CONFIG_CPU_HP_VOTE_NAME
+	if (name != NULL) {
+		os_strncpy(voter->name, name, CONFIG_CPU_HP_VOTE_NAME_LEN - 1);
+		voter->name[CONFIG_CPU_HP_VOTE_NAME_LEN - 1] = '\0';
+	}
+#else
+	(void)name;
+#endif
+
+	cpu_hp_vote_bit_set(s_alloc_mask, bit);
+	s_voter_count++;
+
+	/* adopt the current core state so s_online_count tracks reality */
+	if (bk_cpu_hp_is_online(CPU_HP_VOTE_TARGET_CPU)) {
+		cpu_hp_vote_bit_set(s_online_mask, bit);
+		s_online_count++;
+	}
+
+#if CONFIG_CPU_HP_VOTE_DUMP
+	voter->next = s_voter_list;
+	s_voter_list = voter;
+#endif
+
+	return voter;
+}
+
+/**
+ * @brief Release a voter: unlink it, clear its ticket bits, and release the
+ * handle (heap free in dynamic mode; nothing to free for the static pool).
+ * Caller holds s_vote_lock.
+ */
+static void cpu_hp_vote_free_locked(cpu_hp_voter_handle_t voter)
+{
+#if CONFIG_CPU_HP_VOTE_DUMP
+	cpu_hp_voter_handle_t *pp = &s_voter_list;
+
+	while ((*pp != NULL) && (*pp != voter))
+		pp = &(*pp)->next;
+	if (*pp == voter)
+		*pp = voter->next;
+#endif
+
+	/* online bit is normally cleared by apply(offline) before free; be defensive */
+	if (cpu_hp_vote_bit_test(s_online_mask, voter->bit)) {
+		cpu_hp_vote_bit_clear(s_online_mask, voter->bit);
+		if (s_online_count != 0)
+			s_online_count--;
+	}
+	cpu_hp_vote_bit_clear(s_alloc_mask, voter->bit);
+	s_voter_count--;
+
+#if !CONFIG_CPU_HP_VOTE_STATIC
+	os_free(voter);
+#endif
+}
+
+cpu_hp_voter_handle_t bk_cpu_hp_vote_register(const char *name)
+{
+	cpu_hp_voter_handle_t voter;
+
+	if (name == NULL)
+		return NULL;
+
+	if (cpu_hp_vote_lock_init() != BK_OK) {
+		MULTICORE_LOGE("cpu_hp_vote: lock init failed\r\n");
+		return NULL;
+	}
+
+	rtos_lock_mutex(&s_vote_lock);
+	voter = cpu_hp_vote_alloc_locked(name);
+	rtos_unlock_mutex(&s_vote_lock);
+
+	if (voter == NULL) {
+		MULTICORE_LOGE("cpu_hp_vote: table full (max=%u)\r\n", CPU_HP_VOTE_MAX_VOTERS);
+	} else {
+		MULTICORE_LOGI("cpu_hp_vote: register '%s'\r\n", name);
+	}
+
+	return voter;
+}
+
+bk_err_t bk_cpu_hp_vote_unregister(cpu_hp_voter_handle_t voter)
+{
+	bk_err_t ret;
+
+	/* A NULL handle is always a parameter error, regardless of init state. */
+	if (voter == NULL) {
+		return BK_ERR_PARAM;
+	}
+
+	if (s_vote_lock == NULL) {
+		return BK_ERR_NOT_INIT;
+	}
+
+	rtos_lock_mutex(&s_vote_lock);
+
+	if (!cpu_hp_vote_is_valid_locked(voter)) {
+		rtos_unlock_mutex(&s_vote_lock);
+		return BK_ERR_PARAM;
+	}
+
+	/* unregister == vote offline, then free the slot */
+	ret = cpu_hp_vote_apply_locked(voter, 0);
+	cpu_hp_vote_free_locked(voter);
+
+	rtos_unlock_mutex(&s_vote_lock);
+
+	return ret;
+}
+
+#if CONFIG_CPU_HP_VOTE_FIND
+cpu_hp_voter_handle_t bk_cpu_hp_vote_find(const char *name)
+{
+	cpu_hp_voter_handle_t voter = NULL;
+
+	if ((s_vote_lock == NULL) || (name == NULL)) {
+		return NULL;
+	}
+
+	rtos_lock_mutex(&s_vote_lock);
+	for (cpu_hp_voter_handle_t v = s_voter_list; v != NULL; v = v->next) {
+		if (os_strcmp(v->name, name) == 0) {
+			voter = v;
+			break;
+		}
+	}
+	rtos_unlock_mutex(&s_vote_lock);
+
+	return voter;
+}
+#endif /* CONFIG_CPU_HP_VOTE_FIND */
+
+bk_err_t bk_cpu_hp_vote_online(cpu_hp_voter_handle_t voter)
+{
+	bk_err_t ret;
+
+	if (voter == NULL)
+		return BK_ERR_PARAM;
+
+	if (s_vote_lock == NULL)
+		return BK_ERR_NOT_INIT;
+
+	rtos_lock_mutex(&s_vote_lock);
+
+	if (!cpu_hp_vote_is_valid_locked(voter)) {
+		rtos_unlock_mutex(&s_vote_lock);
+		return BK_ERR_PARAM;
+	}
+
+	ret = cpu_hp_vote_apply_locked(voter, 1);
+
+	rtos_unlock_mutex(&s_vote_lock);
+
+	return ret;
+}
+
+bk_err_t bk_cpu_hp_vote_offline(cpu_hp_voter_handle_t voter)
+{
+	bk_err_t ret;
+
+	if (voter == NULL)
+		return BK_ERR_PARAM;
+
+	if (s_vote_lock == NULL)
+		return BK_ERR_NOT_INIT;
+
+	rtos_lock_mutex(&s_vote_lock);
+
+	if (!cpu_hp_vote_is_valid_locked(voter)) {
+		rtos_unlock_mutex(&s_vote_lock);
+		return BK_ERR_PARAM;
+	}
+
+	ret = cpu_hp_vote_apply_locked(voter, 0);
+
+	rtos_unlock_mutex(&s_vote_lock);
+
+	return ret;
+}
+
+bk_err_t bk_cpu_hp_vote_get_wanted(cpu_hp_voter_handle_t voter, uint32_t *wanted)
+{
+	bk_err_t ret = BK_ERR_PARAM;
+
+	if ((voter == NULL) || (wanted == NULL))
+		return BK_ERR_PARAM;
+
+	if (s_vote_lock == NULL)
+		return BK_ERR_NOT_INIT;
+
+	rtos_lock_mutex(&s_vote_lock);
+	if (cpu_hp_vote_is_valid_locked(voter)) {
+		*wanted = cpu_hp_vote_bit_test(s_online_mask, voter->bit);
+		ret = BK_OK;
+	}
+	rtos_unlock_mutex(&s_vote_lock);
+
+	return ret;
+}
+
+uint32_t bk_cpu_hp_vote_get_online_count(void)
+{
+	return s_online_count;
+}
+
+uint32_t bk_cpu_hp_vote_get_voter_count(void)
+{
+	return s_voter_count;
+}
+
+#if CONFIG_CPU_HP_VOTE_DUMP
+void bk_cpu_hp_vote_dump(void)
+{
+	if (s_vote_lock == NULL) {
+		MULTICORE_LOGI("cpu_hp_vote: not initialized\r\n");
+		return;
+	}
+
+	rtos_lock_mutex(&s_vote_lock);
+
+	MULTICORE_LOGI("cpu_hp_vote: target=cpu%u online=%s online_votes=%u voters=%u\r\n",
+		CPU_HP_VOTE_TARGET_CPU,
+		bk_cpu_hp_is_online(CPU_HP_VOTE_TARGET_CPU) ? "on" : "off",
+		s_online_count, s_voter_count);
+	for (cpu_hp_voter_handle_t v = s_voter_list; v != NULL; v = v->next) {
+#if CONFIG_CPU_HP_VOTE_NAME
+		MULTICORE_LOGI(" voter[%u] '%s' vote=%s\r\n",
+			v->bit, v->name,
+			cpu_hp_vote_bit_test(s_online_mask, v->bit) ? "on" : "off");
+#else
+		MULTICORE_LOGI(" voter[%u] vote=%s\r\n",
+			v->bit,
+			cpu_hp_vote_bit_test(s_online_mask, v->bit) ? "on" : "off");
+#endif
+	}
+
+	rtos_unlock_mutex(&s_vote_lock);
+}
+#endif /* CONFIG_CPU_HP_VOTE_DUMP */
+
+#endif /* CONFIG_CPU_HP_VOTE */
 
 #endif /* CONFIG_CPU_HOTPLUG */

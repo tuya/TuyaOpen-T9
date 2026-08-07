@@ -2,7 +2,6 @@
 
 ## 约定
 - **MIPI sensor 默认参数**：1920x1080@20fps
-- **DVP sensor 默认参数**：1280x720@30fps
 - **输出格式默认值**：23 (NV12)
 
 ## 命令格式
@@ -12,13 +11,19 @@
 
 ### 2. isp open
 ```
-isp open <mipi|dvp> <mp|sp> <sensor_width> <sensor_height> <fps> <isp_output_width> <isp_output_height> <frame|flexa> [output_fmt]
+isp open <mp|sp> <sensor_width> <sensor_height> <fps> <isp_output_width> <isp_output_height> <frame|flexa> [output_fmt]
 ```
 
 ### 3. isp close
 ```
 isp close <mp|sp>
 ```
+
+### 4. isp read
+```
+isp read <mp|sp>
+```
+单次（阻塞轮询）读取一帧并以 hexdump 打印，便于快速验证数据通路。
 
 ---
 
@@ -35,75 +40,43 @@ isp close <mp|sp>
 ### 二、MIPI 传感器测试（默认 1920x1080@20fps）
 
 #### 2.1 MP 通道 - Frame 模式
-- **用例 2.1.1**: `isp open mipi mp 1920 1080 20 1920 1080 frame`
+- **用例 2.1.1**: `isp open mp 1920 1080 20 1920 1080 frame`
   - **描述**: MIPI MP通道，传感器输出1920x1080@20fps，ISP输出1920x1080@20fps，frame模式
   - **预期**: 成功打开，ISR统计正常
 
-- **用例 2.1.2**: `isp open mipi mp 1920 1080 20 1920 1080 frame 23`
+- **用例 2.1.2**: `isp open mp 1920 1080 20 1920 1080 frame 23`
   - **描述**: 同上，显式指定输出格式23 (NV12)
   - **预期**: 成功打开
 
-- **用例 2.1.3**: `isp open mipi mp 1920 1080 20 1280 720 frame`
+- **用例 2.1.3**: `isp open mp 1920 1080 20 1280 720 frame`
   - **描述**: MIPI MP通道，传感器输出1920x1080@20fps，ISP输出1280x720@20fps（缩小），frame模式
   - **预期**: 成功打开（支持缩小）
 
-- **用例 2.1.4**: `isp open mipi mp 1920 1080 20 2560 1440 frame`
+- **用例 2.1.4**: `isp open mp 1920 1080 20 2560 1440 frame`
   - **描述**: MIPI MP通道，传感器输出1920x1080@20fps，ISP输出2560x1440（放大）
   - **预期**: **应该失败**（硬件不支持放大）
 
 #### 2.2 MP 通道 - Flexa 模式
-- **用例 2.2.1**: `isp open mipi mp 1920 1080 20 1920 1080 flexa`
+- **用例 2.2.1**: `isp open mp 1920 1080 20 1920 1080 flexa`
   - **描述**: MIPI MP通道，flexa模式，传感器输出1920x1080@20fps，ISP输出1920x1080@20fps
   - **预期**: 成功打开，ISR统计正常
 
-- **用例 2.2.2**: `isp open mipi mp 1920 1080 20 1280 720 flexa`
+- **用例 2.2.2**: `isp open mp 1920 1080 20 1280 720 flexa`
   - **描述**: MIPI MP通道，flexa模式，传感器输出1920x1080@20fps，ISP输出1280x720@20fps（缩小）
   - **预期**: 成功打开
 
 #### 2.3 SP 通道 - Frame 模式
-- **用例 2.3.1**: `isp open mipi sp 1920 1080 20 1920 1080 frame`
+- **用例 2.3.1**: `isp open sp 1920 1080 20 1920 1080 frame`
   - **描述**: MIPI SP通道，frame模式，传感器输出1920x1080@20fps，ISP输出1920x1080@20fps
   - **预期**: 成功打开
 
-- **用例 2.3.2**: `isp open mipi sp 1920 1080 20 640 480 frame`
+- **用例 2.3.2**: `isp open sp 1920 1080 20 640 480 frame`
   - **描述**: MIPI SP通道，传感器输出1920x1080@20fps，ISP输出640x480@20fps（缩小）
   - **预期**: 成功打开
 
 #### 2.4 SP 通道 - Flexa 模式
-- **用例 2.4.1**: `isp open mipi sp 1920 1080 20 1920 1080 flexa`
+- **用例 2.4.1**: `isp open sp 1920 1080 20 1920 1080 flexa`
   - **描述**: MIPI SP通道，flexa模式，传感器输出1920x1080@20fps，ISP输出1920x1080@20fps
-  - **预期**: 成功打开
-
----
-
-### 三、DVP 传感器测试（默认 1280x720@30fps）
-
-#### 3.1 MP 通道 - Frame 模式
-- **用例 3.1.1**: `isp open dvp mp 1280 720 30 1280 720 frame`
-  - **描述**: DVP MP通道，传感器输出1280x720@30fps，ISP输出1280x720@30fps，frame模式
-  - **预期**: 成功打开
-
-- **用例 3.1.2**: `isp open dvp mp 1280 720 30 640 360 frame`
-  - **描述**: DVP MP通道，传感器输出1280x720@30fps，ISP输出640x360@30fps（缩小）
-  - **预期**: 成功打开
-
-- **用例 3.1.3**: `isp open dvp mp 1280 720 30 1920 1080 frame`
-  - **描述**: DVP MP通道，传感器输出1280x720@30fps，ISP输出1920x1080（放大）
-  - **预期**: **应该失败**（硬件不支持放大）
-
-#### 3.2 MP 通道 - Flexa 模式
-- **用例 3.2.1**: `isp open dvp mp 1280 720 30 1280 720 flexa`
-  - **描述**: DVP MP通道，flexa模式，传感器输出1280x720@30fps，ISP输出1280x720@30fps
-  - **预期**: 成功打开
-
-#### 3.3 SP 通道 - Frame 模式
-- **用例 3.3.1**: `isp open dvp sp 1280 720 30 1280 720 frame`
-  - **描述**: DVP SP通道，frame模式，传感器输出1280x720@30fps，ISP输出1280x720@30fps
-  - **预期**: 成功打开
-
-#### 3.4 SP 通道 - Flexa 模式
-- **用例 3.4.1**: `isp open dvp sp 1280 720 30 1280 720 flexa`
-  - **描述**: DVP SP通道，flexa模式，传感器输出1280x720@30fps，ISP输出1280x720@30fps
   - **预期**: 成功打开
 
 ---
@@ -113,8 +86,8 @@ isp close <mp|sp>
 #### 4.1 先打开 MP，再打开 SP
 - **用例 4.1.1**: 
   ```
-  isp open mipi mp 1920 1080 20 1920 1080 frame
-  isp open mipi sp 1920 1080 20 640 480 frame
+  isp open mp 1920 1080 20 1920 1080 frame
+  isp open sp 1920 1080 20 640 480 frame
   ```
   - **描述**: 先打开MP通道，再打开SP通道
   - **预期**: 
@@ -125,8 +98,8 @@ isp close <mp|sp>
 #### 4.2 先打开 SP，再打开 MP
 - **用例 4.2.1**: 
   ```
-  isp open mipi sp 1920 1080 20 640 480 frame
-  isp open mipi mp 1920 1080 20 1920 1080 frame
+  isp open sp 1920 1080 20 640 480 frame
+  isp open mp 1920 1080 20 1920 1080 frame
   ```
   - **描述**: 先打开SP通道，再打开MP通道
   - **预期**: 
@@ -137,8 +110,8 @@ isp close <mp|sp>
 #### 4.3 MP 和 SP 不同模式组合
 - **用例 4.3.1**: 
   ```
-  isp open mipi mp 1920 1080 20 1920 1080 frame
-  isp open mipi sp 1920 1080 20 640 480 flexa
+  isp open mp 1920 1080 20 1920 1080 frame
+  isp open sp 1920 1080 20 640 480 flexa
   ```
   - **描述**: MP使用frame模式，SP使用flexa模式
   - **预期**: 两个通道都能正常工作
@@ -150,7 +123,7 @@ isp close <mp|sp>
 #### 5.1 单独关闭 MP
 - **用例 5.1.1**: 
   ```
-  isp open mipi mp 1920 1080 20 1920 1080 frame
+  isp open mp 1920 1080 20 1920 1080 frame
   isp close mp
   ```
   - **描述**: 打开MP后关闭MP
@@ -162,7 +135,7 @@ isp close <mp|sp>
 #### 5.2 单独关闭 SP
 - **用例 5.2.1**: 
   ```
-  isp open mipi sp 1920 1080 20 640 480 frame
+  isp open sp 1920 1080 20 640 480 frame
   isp close sp
   ```
   - **描述**: 打开SP后关闭SP
@@ -174,8 +147,8 @@ isp close <mp|sp>
 #### 5.3 关闭所有通道
 - **用例 5.3.1**: 
   ```
-  isp open mipi mp 1920 1080 20 1920 1080 frame
-  isp open mipi sp 1920 1080 20 640 480 frame
+  isp open mp 1920 1080 20 1920 1080 frame
+  isp open sp 1920 1080 20 640 480 frame
   isp close mp
   isp close sp
   ```
@@ -187,7 +160,7 @@ isp close <mp|sp>
 #### 5.4 重复关闭
 - **用例 5.4.1**: 
   ```
-  isp open mipi mp 1920 1080 20 1920 1080 frame
+  isp open mp 1920 1080 20 1920 1080 frame
   isp close mp
   isp close mp
   ```
@@ -199,19 +172,19 @@ isp close <mp|sp>
 ### 六、错误处理测试
 
 #### 6.1 参数错误
-- **用例 6.1.1**: `isp open mipi mp 1920 1080 20 2560 1440 frame`
+- **用例 6.1.1**: `isp open mp 1920 1080 20 2560 1440 frame`
   - **描述**: ISP输出分辨率大于传感器输出分辨率（放大）
   - **预期**: **应该失败**，返回错误（硬件不支持放大）
 
-- **用例 6.1.2**: `isp open mipi mp 0 1080 20 1920 1080 frame`
+- **用例 6.1.2**: `isp open mp 0 1080 20 1920 1080 frame`
   - **描述**: 传感器宽度为0
   - **预期**: **应该失败**，参数验证错误
 
-- **用例 6.1.3**: `isp open mipi mp 1920 1080 0 1920 1080 frame`
+- **用例 6.1.3**: `isp open mp 1920 1080 0 1920 1080 frame`
   - **描述**: 帧率为0
   - **预期**: **应该失败**，参数验证错误
 
-- **用例 6.1.4**: `isp open mipi mp 1920 1080 20 0 1080 frame`
+- **用例 6.1.4**: `isp open mp 1920 1080 20 0 1080 frame`
   - **描述**: ISP输出宽度为0
   - **预期**: **应该失败**，参数验证错误
 
@@ -219,11 +192,11 @@ isp close <mp|sp>
   - **描述**: 无效的相机类型
   - **预期**: **应该失败**，参数验证错误
 
-- **用例 6.1.6**: `isp open mipi invalid 1920 1080 20 1920 1080 frame`
+- **用例 6.1.6**: `isp open invalid 1920 1080 20 1920 1080 frame`
   - **描述**: 无效的通道类型
   - **预期**: **应该失败**，参数验证错误
 
-- **用例 6.1.7**: `isp open mipi mp 1920 1080 20 1920 1080 invalid`
+- **用例 6.1.7**: `isp open mp 1920 1080 20 1920 1080 invalid`
   - **描述**: 无效的flexa模式
   - **预期**: **应该失败**，参数验证错误
 
@@ -236,7 +209,7 @@ isp close <mp|sp>
   - **描述**: 缺少参数
   - **预期**: **应该失败**，显示Usage信息
 
-- **用例 6.2.3**: `isp open mipi mp 1920 1080 20 1920 1080 frame`
+- **用例 6.2.3**: `isp open mp 1920 1080 20 1920 1080 frame`
   - **描述**: 缺少ISP输出高度参数
   - **预期**: **应该失败**，显示Usage信息
 
@@ -245,11 +218,11 @@ isp close <mp|sp>
 ### 七、不同输出格式测试
 
 #### 7.1 不同格式值
-- **用例 7.1.1**: `isp open mipi mp 1920 1080 20 1920 1080 frame 23`
+- **用例 7.1.1**: `isp open mp 1920 1080 20 1920 1080 frame 23`
   - **描述**: 输出格式23 (NV12)
   - **预期**: 成功打开
 
-- **用例 7.1.2**: `isp open mipi mp 1920 1080 20 1920 1080 frame 24`
+- **用例 7.1.2**: `isp open mp 1920 1080 20 1920 1080 frame 24`
   - **描述**: 输出格式24（如果支持）
   - **预期**: 根据实际支持的格式决定
 
@@ -258,11 +231,11 @@ isp close <mp|sp>
 ### 八、不同帧率测试
 
 #### 8.1 不同帧率
-- **用例 8.1.1**: `isp open mipi mp 1920 1080 15 1920 1080 frame`
+- **用例 8.1.1**: `isp open mp 1920 1080 15 1920 1080 frame`
   - **描述**: 传感器15fps，ISP输出@15fps
   - **预期**: 成功打开，ISR统计显示约15fps
 
-- **用例 8.1.2**: `isp open mipi mp 1920 1080 30 1920 1080 frame`
+- **用例 8.1.2**: `isp open mp 1920 1080 30 1920 1080 frame`
   - **描述**: 传感器30fps，ISP输出@30fps
   - **预期**: 成功打开，ISR统计显示约30fps
 
@@ -271,24 +244,24 @@ isp close <mp|sp>
 ### 九、不同分辨率测试
 
 #### 9.1 MIPI 传感器不同分辨率
-- **用例 9.1.1**: `isp open mipi mp 1280 720 20 1280 720 frame`
-  - **描述**: MIPI传感器使用1280x720@20fps（如果支持），ISP输出1280x720@20fps
+- **用例 9.1.1**: `isp open mp 1280 720 20 1280 720 frame`
+  - **描述**: MIPI 传感器使用1280x720@20fps（如果支持），ISP输出1280x720@20fps
   - **预期**: 根据传感器实际支持的分辨率决定
 
-- **用例 9.1.2**: `isp open mipi mp 640 480 20 640 480 frame`
-  - **描述**: MIPI传感器使用640x480@20fps（如果支持），ISP输出640x480@20fps
+- **用例 9.1.2**: `isp open mp 640 480 20 640 480 frame`
+  - **描述**: MIPI 传感器使用640x480@20fps（如果支持），ISP输出640x480@20fps
   - **预期**: 根据传感器实际支持的分辨率决定
 
 #### 9.2 ISP 输出不同分辨率（缩小）
-- **用例 9.2.1**: `isp open mipi mp 1920 1080 20 1600 900 frame`
+- **用例 9.2.1**: `isp open mp 1920 1080 20 1600 900 frame`
   - **描述**: ISP输出1600x900@20fps（缩小）
   - **预期**: 成功打开（支持缩小）
 
-- **用例 9.2.2**: `isp open mipi mp 1920 1080 20 800 600 frame`
+- **用例 9.2.2**: `isp open mp 1920 1080 20 800 600 frame`
   - **描述**: ISP输出800x600@20fps（缩小）
   - **预期**: 成功打开（支持缩小）
 
-- **用例 9.2.3**: `isp open mipi mp 1920 1080 20 320 240 frame`
+- **用例 9.2.3**: `isp open mp 1920 1080 20 320 240 frame`
   - **描述**: ISP输出320x240@20fps（缩小）
   - **预期**: 成功打开（支持缩小）
 
@@ -299,11 +272,11 @@ isp close <mp|sp>
 #### 10.1 多次打开/关闭
 - **用例 10.1.1**: 
   ```
-  isp open mipi mp 1920 1080 20 1920 1080 frame
+  isp open mp 1920 1080 20 1920 1080 frame
   isp close mp
-  isp open mipi mp 1920 1080 20 1920 1080 frame
+  isp open mp 1920 1080 20 1920 1080 frame
   isp close mp
-  isp open mipi mp 1920 1080 20 1920 1080 frame
+  isp open mp 1920 1080 20 1920 1080 frame
   isp close mp
   ```
   - **描述**: 多次打开/关闭MP通道
@@ -312,9 +285,9 @@ isp close <mp|sp>
 #### 10.2 快速切换
 - **用例 10.2.1**: 
   ```
-  isp open mipi mp 1920 1080 20 1920 1080 frame
+  isp open mp 1920 1080 20 1920 1080 frame
   isp close mp
-  isp open mipi sp 1920 1080 20 640 480 frame
+  isp open sp 1920 1080 20 640 480 frame
   isp close sp
   ```
   - **描述**: 快速在MP和SP之间切换
@@ -323,8 +296,8 @@ isp close <mp|sp>
 #### 10.3 MP和SP同时工作长时间运行
 - **用例 10.3.1**: 
   ```
-  isp open mipi mp 1920 1080 20 1920 1080 frame
-  isp open mipi sp 1920 1080 20 640 480 frame
+  isp open mp 1920 1080 20 1920 1080 frame
+  isp open sp 1920 1080 20 640 480 frame
   # 等待一段时间（例如30秒），观察ISR统计
   isp close mp
   isp close sp
@@ -340,17 +313,17 @@ isp close <mp|sp>
 ### 十一、边界测试
 
 #### 11.1 最大分辨率
-- **用例 11.1.1**: `isp open mipi mp 1920 1080 20 1920 1080 frame`
+- **用例 11.1.1**: `isp open mp 1920 1080 20 1920 1080 frame`
   - **描述**: 使用最大支持分辨率（根据硬件规格）
   - **预期**: 成功打开
 
 #### 11.2 最小分辨率
-- **用例 11.2.1**: `isp open mipi mp 1920 1080 20 160 120 frame`
+- **用例 11.2.1**: `isp open mp 1920 1080 20 160 120 frame`
   - **描述**: ISP输出最小分辨率@20fps
   - **预期**: 根据硬件支持决定
 
 #### 11.3 最大帧率
-- **用例 11.3.1**: `isp open mipi mp 1920 1080 30 1920 1080 frame`
+- **用例 11.3.1**: `isp open mp 1920 1080 30 1920 1080 frame`
   - **描述**: 使用传感器支持的最大帧率30fps，ISP输出@30fps
   - **预期**: 成功打开，ISR统计显示正确的帧率
 

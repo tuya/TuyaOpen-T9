@@ -354,19 +354,24 @@ static OPERATE_RET test_adc_loop_start(uint32_t adc_port, uint32_t chan, uint32_
         return ret;
     }
 
-    ret = test_adc_start();
-    if (ret != OPRT_OK) {
-        (void)test_adc_deinit();
-        return ret;
-    }
-
+    /*
+     * Init DAC before ADC start. tkl_aud_dac_init() calls bk_aud_hardware_reset();
+     * if ADC is already started, that wipe leaves capture as silence / distortion.
+     * ADC start re-applies rate/mode/gain after any shared reset.
+     */
     mono_frame_size = s_adc_ctx.frame_size;
     if (s_adc_ctx.chan == TUYA_AUDIO_ADC_CHANNEL_LR) {
         mono_frame_size = mono_frame_size / 2U;
     }
     ret = test_adc_dac_init_start(dac_port, sample_rate, frame_time_ms, dac_volume, mono_frame_size);
     if (ret != OPRT_OK) {
-        (void)test_adc_stop();
+        (void)test_adc_deinit();
+        return ret;
+    }
+
+    ret = test_adc_start();
+    if (ret != OPRT_OK) {
+        test_adc_dac_deinit();
         (void)test_adc_deinit();
         return ret;
     }

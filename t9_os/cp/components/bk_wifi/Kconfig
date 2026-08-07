@@ -1,3 +1,4 @@
+# KCONFIG_GROUP: Wireless Connectivity::Wi-Fi
 #TODO optimize it
 menu "Bk_Wifi"
 
@@ -319,6 +320,16 @@ menu "Bk_Wifi"
 	    bool "Enable P2P Go"
 		default n
 
+	config P2P_SOFTAP_CHAN_ALIGN
+		bool "P2P GO and SoftAP channel coexist policy"
+		depends on P2P
+		default y
+		help
+			Bidirectional channel alignment for P2P GO and SoftAP:
+			SoftAP follows a planned/active GO channel at start; GO
+			follows live SoftAP/STA when no GO channel is set yet;
+			CSA SoftAP to GO after GO comes up on a different channel.
+
 	config TX_BUFING
 		bool "Enable Tx Bufing"
 		default n
@@ -379,9 +390,51 @@ menu "Bk_Wifi"
 		help
 			Enable BK Raw Link
 
+	config DEFAULT_COUNTRY_CODE
+		string "Default country code"
+		default "00"
+		help
+			Specifiy default country code, "00" is world regulatory domain.
+
+	config WIFI_REGDOMAIN
+		bool "Enable Wifi regulatory domain (802.11d)"
+		default n
+		help
+			Enable regulatory domain.
+
+	config WIFI_REGDOMAIN_WMM
+		bool "Enable 802.11d WMM rules"
+		depends on WIFI_REGDOMAIN
+		default n
+		help
+			Enable 802.11d wmm rules.
+
+	config WIFI_REGDOMAIN_FWDB
+		bool "Enable 802.11d WMM rules"
+		depends on WIFI_REGDOMAIN
+		default y
+		help
+			Enable binary regulatory db instead of human readable rules.
+			Enable this feature to save flash usage.
+
+	config WIFI_RADAR_SUPPORT
+		bool "Enable radar support"
+		default n
+		help
+			Enable regulatory radar support.
+
+	config WIFI_REGDOMAIN_UPDATE_BY_SCAN
+		bool "regdomain updated by scan"
+		depends on WIFI_REGDOMAIN
+		default n
+		help
+			Use scan results to update regulatory domain.
 	config PM_DSSS_ONLY
 		bool "Enable DSSS ONLY"
 		default n
 		help
 			Enable DSSS ONLY
+	config KEEP_ALIVE_ARP_REPLY_ENABLE
+		bool "Enable keep alive ARP reply"
+		default n
 endmenu

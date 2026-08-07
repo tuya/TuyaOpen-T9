@@ -7,6 +7,7 @@
 #include "lv_port_disp.h"
 #include "lv_port_indev.h"
 #include "lv_vendor.h"
+#include "gpu_rotate/lv_gpu_rotate.h"
 #include "gpu_core.h"
 #if (CONFIG_VG_LITE_GPU)
 #include <components/bk_gpu.h>
@@ -28,6 +29,73 @@ static beken_queue_t lvgl_frame_queue = NULL;
 static u8 lvgl_task_state = STATE_INIT;
 static bool lv_vendor_initialized = false;
 static void *s_gpu_handle = NULL;
+
+void lv_gpu_init(uint32_t tess_width, uint32_t tess_height);
+void lv_gpu_deinit(void);
+
+static lv_vnd_data_t *lv_vendor_get_data(void)
+{
+#if CONFIG_LVGL_V8
+    lv_disp_t *disp = lv_disp_get_default();
+    if ((disp != NULL) && (disp->driver != NULL)) {
+#if LV_USE_USER_DATA
+        return (lv_vnd_data_t *)disp->driver->user_data;
+#endif
+    }
+    return NULL;
+#else
+    lv_display_t *disp = lv_display_get_default();
+    if (disp == NULL) {
+        return NULL;
+    }
+
+    return (lv_vnd_data_t *)lv_display_get_user_data(disp);
+#endif
+}
+
+static bool lv_vendor_rotation_is_valid(rott_angle_t rotation)
+{
+    return (rotation == ROTATE_NONE) ||
+           (rotation == ROTATE_90) ||
+           (rotation == ROTATE_180) ||
+           (rotation == ROTATE_270);
+}
+
+static bool lv_vendor_is_disp_thread(void)
+{
+    return (g_disp_thread_handle != NULL) &&
+           rtos_is_current_thread(&g_disp_thread_handle);
+}
+
+static bk_err_t lv_vendor_prepare_rotation_resource(lv_vnd_data_t *vnd_data,
+                                                    rott_angle_t rotation)
+{
+    if (vnd_data == NULL || rotation == ROTATE_NONE ||
+        vnd_data->config.output_compress) {
+        return BK_OK;
+    }
+
+    if (vnd_data->rotate_buffer == NULL) {
+        vnd_data->rotate_buffer = lv_vendor_malloc(vnd_data->config.draw_pixel_size);
+        if (vnd_data->rotate_buffer == NULL) {
+            LOGE("%s lvgl rotate buffer malloc fail!\n", __func__);
+            return BK_FAIL;
+        }
+        LOGI("%s allocate rotate buffer size=%u\n", __func__, vnd_data->config.draw_pixel_size);
+    }
+
+#if LV_USE_GPU_ROTATE
+    if (!vnd_data->gpu_inited) {
+        lv_gpu_init(0, 0);
+        vnd_data->gpu_inited = true;
+        LOGI("%s init GPU for dynamic rotation\n", __func__);
+    }
+
+    lv_gpu_rotate_init(vnd_data);
+#endif
+
+    return BK_OK;
+}
 
 void *lv_vendor_malloc(size_t size)
 {
@@ -164,6 +232,36 @@ void lv_vendor_set_ready_frame_buffer(void *frame_buffer)
     }
 }
 
+bk_err_t lv_vendor_keypad_send_key(uint32_t key)
+{
+    return lv_port_keypad_send_key(key);
+}
+
+bk_err_t lv_vendor_keypad_send_key_state(uint32_t key, lv_indev_state_t state)
+{
+    return lv_port_keypad_send_key_state(key, state);
+}
+
+void lv_vendor_keypad_reset(void)
+{
+    lv_port_keypad_reset();
+}
+
+lv_indev_t *lv_vendor_keypad_get_indev(void)
+{
+    return lv_port_keypad_get_indev();
+}
+
+lv_group_t *lv_vendor_keypad_get_default_group(void)
+{
+    return lv_port_keypad_get_default_group();
+}
+
+bk_err_t lv_vendor_keypad_set_group(lv_group_t *group)
+{
+    return lv_port_keypad_set_group(group);
+}
+
 bk_err_t lv_vendor_init(lv_vnd_config_t *config)
 {
     bk_err_t ret;
@@ -191,11 +289,16 @@ bk_err_t lv_vendor_init(lv_vnd_config_t *config)
 
     vnd_data->lv_new_frame_flag = true;
 
-#if (CONFIG_LV_USE_DRAW_VG_LITE)
+#if defined(LV_USE_DRAW_VG_LITE) && LV_USE_DRAW_VG_LITE
     lv_gpu_init(vnd_data->config.width / 4, vnd_data->config.height / 4);
+    vnd_data->gpu_inited = true;
 #else
-    if (vnd_data->config.output_compress || (vnd_data->config.rotation != ROTATE_NONE && LV_USE_GPU_ROTATE)) {
+    if (vnd_data->config.output_compress ||
+        (vnd_data->config.render_mode == RENDER_PARTIAL_MODE &&
+         vnd_data->config.rotation != ROTATE_NONE &&
+         !vnd_data->config.output_compress && LV_USE_GPU_ROTATE)) {
         lv_gpu_init(0, 0);
+        vnd_data->gpu_inited = true;
     }
 #endif
 
@@ -241,19 +344,12 @@ bk_err_t lv_vendor_init(lv_vnd_config_t *config)
 #if CONFIG_LVGL_V8
             vnd_data->config.draw_buf_2_1 = lv_vendor_malloc(vnd_data->config.draw_pixel_size * sizeof(bk_color_t));
 #else
-#if CONFIG_LV_USE_DRAW_VG_LITE
-            vnd_data->config.draw_buf_2_1 = lv_vendor_malloc(vnd_data->config.draw_pixel_size + 64);
-#else
             vnd_data->config.draw_buf_2_1 = lv_vendor_malloc(vnd_data->config.draw_pixel_size);
-#endif
 #endif
             if (vnd_data->config.draw_buf_2_1 == NULL) {
                 LOGE("%s vendor_config.draw_buf_2_1 malloc failed\n", __func__);
                 goto fail;
             }
-#if CONFIG_LV_USE_DRAW_VG_LITE
-            vnd_data->config.draw_buf_2_1 = (void *)(((uintptr_t)vnd_data->config.draw_buf_2_1 + 63) & ~63);
-#endif
         } else {
             LOGW("%s !!!The draw_buf_2_1 is customized instead of default config\n", __func__);
             vnd_data->config.draw_buf_2_1 = config->draw_buf_2_1;
@@ -280,13 +376,8 @@ bk_err_t lv_vendor_init(lv_vnd_config_t *config)
             goto fail;
         }
 
-    #if CONFIG_LV_USE_DRAW_VG_LITE
-        vnd_data->config.draw_buf_2_1 = (void *)(((uintptr_t)vnd_data->config.frame_buffer[0] + 63) & ~63);
-        vnd_data->config.draw_buf_2_2 = (void *)(((uintptr_t)vnd_data->config.frame_buffer[1] + 63) & ~63);
-    #else
         vnd_data->config.draw_buf_2_1 = vnd_data->config.frame_buffer[0];
         vnd_data->config.draw_buf_2_2 = vnd_data->config.frame_buffer[1];
-    #endif
 
         if (config->rotation != ROTATE_NONE) {
             LOGW("%s Direct mode and full mode don't support rotation because of very low frame rate\r\n", __func__);
@@ -329,6 +420,11 @@ fail:
         lvgl_frame_queue = NULL;
     }
 
+    if (vnd_data->gpu_inited) {
+        lv_gpu_deinit();
+        vnd_data->gpu_inited = false;
+    }
+
     if (config->render_mode == RENDER_PARTIAL_MODE) {
         if (config->draw_buf_2_1 == NULL && vnd_data->config.draw_buf_2_1) {
             os_free(vnd_data->config.draw_buf_2_1);
@@ -347,6 +443,81 @@ fail:
     lv_vendor_initialized = false;
 
     return BK_FAIL;
+}
+
+bk_err_t lv_vendor_set_dynamic_rotation(rott_angle_t rotation)
+{
+    if (!lv_vendor_initialized) {
+        LOGW("%s lvgl vendor is not initialized\n", __func__);
+        return BK_FAIL;
+    }
+
+    if (!lv_vendor_rotation_is_valid(rotation)) {
+        LOGW("%s invalid rotation=%d\n", __func__, rotation);
+        return BK_FAIL;
+    }
+
+    bool locked = false;
+    if (!lv_vendor_is_disp_thread()) {
+        lv_vendor_disp_lock();
+        locked = true;
+    }
+
+#if CONFIG_LVGL_V8
+    lv_disp_t *disp = lv_disp_get_default();
+#else
+    lv_display_t *disp = lv_display_get_default();
+#endif
+    if (disp == NULL) {
+        LOGW("%s display is NULL\n", __func__);
+        if (locked) {
+            lv_vendor_disp_unlock();
+        }
+        return BK_FAIL;
+    }
+
+    lv_vnd_data_t *vnd_data = lv_vendor_get_data();
+    if (vnd_data == NULL || vnd_data->config.render_mode != RENDER_PARTIAL_MODE) {
+        LOGW("%s dynamic rotation only supports partial mode\n", __func__);
+        if (locked) {
+            lv_vendor_disp_unlock();
+        }
+        return BK_FAIL;
+    }
+
+    if (lv_vendor_prepare_rotation_resource(vnd_data, rotation) != BK_OK) {
+        LOGE("%s prepare rotation resource failed, rotation=%d\n", __func__, rotation);
+        if (locked) {
+            lv_vendor_disp_unlock();
+        }
+        return BK_FAIL;
+    }
+
+    vnd_data->config.rotation = rotation;
+#if CONFIG_LVGL_V8
+    lv_disp_set_rotation(disp, (lv_disp_rot_t)rotation);
+    lv_obj_invalidate(lv_scr_act());
+#else
+    lv_display_set_rotation(disp, (lv_display_rotation_t)rotation);
+    lv_obj_invalidate(lv_screen_active());
+#endif
+    LOGI("%s set rotation=%d\n", __func__, rotation);
+
+    if (locked) {
+        lv_vendor_disp_unlock();
+    }
+
+    return BK_OK;
+}
+
+rott_angle_t lv_vendor_get_rotation(void)
+{
+    lv_vnd_data_t *vnd_data = lv_vendor_get_data();
+    if (vnd_data == NULL) {
+        return ROTATE_NONE;
+    }
+
+    return vnd_data->config.rotation;
 }
 
 void lv_vendor_deinit(void)
@@ -408,13 +579,10 @@ void lv_vendor_deinit(void)
     }
     lvgl_frame_queue = NULL;
 
-#if (CONFIG_LV_USE_DRAW_VG_LITE)
-    lv_gpu_deinit();
-#else
-    if (vnd_data->config.output_compress || (vnd_data->config.rotation != ROTATE_NONE && LV_USE_GPU_ROTATE)) {
+    if (vnd_data->gpu_inited) {
         lv_gpu_deinit();
+        vnd_data->gpu_inited = false;
     }
-#endif
 
     if (vnd_data->config.render_mode == RENDER_PARTIAL_MODE) {
         if (vnd_data->config.draw_buf_2_1) {
@@ -489,7 +657,7 @@ void lv_vendor_start(void)
         return;
     }
 
-    ret = rtos_create_sram_thread(&g_disp_thread_handle,
+    ret = rtos_create_hsram_thread(&g_disp_thread_handle,
                              CONFIG_LVGL_TASK_PRIORITY,
                              "lvgl",
                              (beken_thread_function_t)lv_task_entry,

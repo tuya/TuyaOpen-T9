@@ -205,21 +205,15 @@ extern void mb_ipc_reset_notify(u32 cpu_id, u32 power_on);
 
 void start_cpu1_core(void)
 {
-#if !CONFIG_SOC_SMP
-	/* When CONFIG_SOC_SMP, CPU1 is started by FreeRTOS port via multicore_launch_core1 */
+#if CONFIG_SOC_SMP
+
 #if CONFIG_SPE
 	uint32  addr = get_partition_addr(1);
-#else
-	uint32  addr = CONFIG_PRIMARY_TFM1_S_VIRTUAL_CODE_START;
-#endif
-
-#if CONFIG_SPE
 	reset_cpu1_core(SOC_FLASH_DATA_BASE + addr, 1);
 #else
-	reset_cpu1_core(SOC_FLASH_DATA_BASE - SOC_S_NS_ADDR_DIFF + addr, 1);
+	//The security project cp side is a single core
 #endif /* CONFIG_SPE */
 
-	mb_ipc_reset_notify(1, 1);
 #endif /* !CONFIG_SOC_SMP */
 }
 
@@ -502,16 +496,13 @@ static void app_main_thread(void *arg)
 	//if nessary ,close the main() function.
 #endif
 
-#if CONFIG_TFM_FWU
-	bk_ota_accept_image();
-#endif
-
 	#if CONFIG_ROSC_CALIB_SW
 	bk_rosc_32k_calib();
 	#endif // CONFIG_ROSC_CALIB_SW
 
 	pm_thread_main();
 	main();
+	BK_LOGI(NULL, "CP main running...\r\n");
 
 #if CONFIG_MATTER_START && CONFIG_SUPPORT_MATTER
 #ifdef CONFIG_MATTER_EXAMPLE

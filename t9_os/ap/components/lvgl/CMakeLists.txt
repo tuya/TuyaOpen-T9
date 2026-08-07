@@ -227,7 +227,7 @@ if(CONFIG_LVGL)
 			lvgl_v9/src/draw/sw/blend/lv_draw_sw_blend_to_rgb565_swapped.c
 			lvgl_v9/src/draw/sw/blend/lv_draw_sw_blend_to_rgb888.c
 			# lvgl_v9/src/draw/sw/blend/neon/lv_blend_neon.S
-			# lvgl_v9/src/draw/sw/blend/helium/lv_blend_helium.S
+			lvgl_v9/src/draw/sw/blend/helium/lv_blend_helium.S
 			lvgl_v9/src/draw/dma2d/lv_draw_dma2d.c
 			lvgl_v9/src/draw/dma2d/lv_draw_dma2d_fill.c
 			lvgl_v9/src/draw/dma2d/lv_draw_dma2d_img.c
@@ -455,30 +455,28 @@ if(CONFIG_LVGL)
 			lvgl_v9/porting/lv_port_indev.c
 		)
 
-		if (CONFIG_LV_USE_DRAW_VG_LITE)
-			list(APPEND srcs
-				lvgl_v9/src/draw/vg_lite/lv_draw_buf_vg_lite.c
-				lvgl_v9/src/draw/vg_lite/lv_draw_vg_lite.c
-				lvgl_v9/src/draw/vg_lite/lv_draw_vg_lite_arc.c
-				lvgl_v9/src/draw/vg_lite/lv_draw_vg_lite_border.c
-				lvgl_v9/src/draw/vg_lite/lv_draw_vg_lite_box_shadow.c
-				lvgl_v9/src/draw/vg_lite/lv_draw_vg_lite_fill.c
-				lvgl_v9/src/draw/vg_lite/lv_draw_vg_lite_img.c
-				lvgl_v9/src/draw/vg_lite/lv_draw_vg_lite_label.c
-				lvgl_v9/src/draw/vg_lite/lv_draw_vg_lite_layer.c
-				lvgl_v9/src/draw/vg_lite/lv_draw_vg_lite_line.c
-				lvgl_v9/src/draw/vg_lite/lv_draw_vg_lite_mask_rect.c
-				lvgl_v9/src/draw/vg_lite/lv_draw_vg_lite_triangle.c
-				lvgl_v9/src/draw/vg_lite/lv_draw_vg_lite_vector.c
-				lvgl_v9/src/draw/vg_lite/lv_vg_lite_decoder.c
-				lvgl_v9/src/draw/vg_lite/lv_vg_lite_grad.c
-				lvgl_v9/src/draw/vg_lite/lv_vg_lite_math.c
-				lvgl_v9/src/draw/vg_lite/lv_vg_lite_path.c
-				lvgl_v9/src/draw/vg_lite/lv_vg_lite_pending.c
-				lvgl_v9/src/draw/vg_lite/lv_vg_lite_stroke.c
-				lvgl_v9/src/draw/vg_lite/lv_vg_lite_utils.c
-			)
-		endif()
+		list(APPEND srcs
+			lvgl_v9/src/draw/vg_lite/lv_draw_buf_vg_lite.c
+			lvgl_v9/src/draw/vg_lite/lv_draw_vg_lite.c
+			lvgl_v9/src/draw/vg_lite/lv_draw_vg_lite_arc.c
+			lvgl_v9/src/draw/vg_lite/lv_draw_vg_lite_border.c
+			lvgl_v9/src/draw/vg_lite/lv_draw_vg_lite_box_shadow.c
+			lvgl_v9/src/draw/vg_lite/lv_draw_vg_lite_fill.c
+			lvgl_v9/src/draw/vg_lite/lv_draw_vg_lite_img.c
+			lvgl_v9/src/draw/vg_lite/lv_draw_vg_lite_label.c
+			lvgl_v9/src/draw/vg_lite/lv_draw_vg_lite_layer.c
+			lvgl_v9/src/draw/vg_lite/lv_draw_vg_lite_line.c
+			lvgl_v9/src/draw/vg_lite/lv_draw_vg_lite_mask_rect.c
+			lvgl_v9/src/draw/vg_lite/lv_draw_vg_lite_triangle.c
+			lvgl_v9/src/draw/vg_lite/lv_draw_vg_lite_vector.c
+			lvgl_v9/src/draw/vg_lite/lv_vg_lite_decoder.c
+			lvgl_v9/src/draw/vg_lite/lv_vg_lite_grad.c
+			lvgl_v9/src/draw/vg_lite/lv_vg_lite_math.c
+			lvgl_v9/src/draw/vg_lite/lv_vg_lite_path.c
+			lvgl_v9/src/draw/vg_lite/lv_vg_lite_pending.c
+			lvgl_v9/src/draw/vg_lite/lv_vg_lite_stroke.c
+			lvgl_v9/src/draw/vg_lite/lv_vg_lite_utils.c
+		)
 	endif()
 
 	list(APPEND incs
@@ -490,6 +488,7 @@ if(CONFIG_LVGL)
 	)
 
 	list(APPEND srcs
+		common/lv_mem_adapt.c
 		common/lv_vendor.c
 		common/camera_blend/lv_camera_blend.c
 		common/hpdma/lv_hpdma.c
@@ -531,6 +530,12 @@ if (CONFIG_LVGL)
 		# Keep lv_memset/lv_memcpy from being emitted as wide stores on PSRAM buffers.
 		set_source_files_properties(lvgl_v9/src/stdlib/builtin/lv_string_builtin.c
 			PROPERTIES COMPILE_OPTIONS "-fno-tree-vectorize"
+		)
+
+		# The ASM compiler path does not inherit the AP CPU flags in this build system.
+		# Keep the native Helium object compatible with the Cortex-M55 AP image.
+		set_source_files_properties(lvgl_v9/src/draw/sw/blend/helium/lv_blend_helium.S
+			PROPERTIES COMPILE_OPTIONS "-mcpu=cortex-m55;-mfloat-abi=hard;-mfpu=fpv5-sp-d16;-mcmse"
 		)
 	endif()
 

@@ -96,6 +96,7 @@ endif()
 		sys_ctrl/sys_bt_driver.c
 		sys_ctrl/sys_wifi_driver.c
 		sys_ctrl/sys_psram_driver.c
+		sys_ctrl/sys_power_driver.c
 		sys_ctrl/sys_touch_driver.c
 		wdt/wdt_driver.c
 		#icu/icu_driver.c
@@ -161,11 +162,7 @@ if (NOT CMAKE_BUILD_EARLY_EXPANSION)
 	add_subdirectory(general_dma)
 	# add_subdirectory(saradc)
 	add_subdirectory(pwm)
-	add_subdirectory(spi)
-	add_subdirectory(i3c)
-	# add_subdirectory(i2c)
 	add_subdirectory(ckmn)
-	add_subdirectory(qspi)
 	#add_subdirectory(scr)
 	add_subdirectory(touch)
 	#add_subdirectory(vault)
@@ -360,19 +357,6 @@ if (CONFIG_SCR)
     list(APPEND srcs
 		"scr/scr_driver_v1_26.c"
 	)
-endif()
-
-if (CONFIG_CAN)
-	list(APPEND incs can)
-	list(APPEND srcs can/can_driver.c can/can_statis.c)
-
-	if (CONFIG_CAN_TEST)
-		list(APPEND srcs can/can_test.c)
-	endif()
-
-	if (CONFIG_CAN_DEMO)
-		list(APPEND srcs can/can_demo.c)
-	endif()
 endif()
 
 if (CONFIG_XDAC)

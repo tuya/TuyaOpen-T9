@@ -16,6 +16,9 @@
 #include <modules/wifi.h>
 #include <components/netif.h>
 #include <components/event.h>
+#if CONFIG_WIFI_ENABLE
+#include "bk_netif.h"
+#endif
 #include <driver/uart.h>
 #include <string.h>
 #include <modules/pm.h>
@@ -41,15 +44,6 @@
 #endif
 #if (CONFIG_TEMP_DETECT || CONFIG_VOLT_DETECT)
 #include <components/sensor.h>
-#endif
-
-#if CONFIG_CAN
-#include <driver/can.h>
-#endif
-
-#if (CONFIG_OTA_UPDATE_DEFAULT_PARTITION && CONFIG_HTTP_AB_PARTITION)
-#include <modules/ota.h>
-extern void bk_ota_confirm_update_partition(ota_confirm_flag ota_confirm_val);
 #endif
 
 #if (CONFIG_CLI)
@@ -381,14 +375,6 @@ int bk_init(void)
 #if (CONFIG_OTA_UPDATE_DEFAULT_PARTITION&& CONFIG_HTTP_AB_PARTITION)
 #if (CONFIG_OTA_POSITION_INDEPENDENT_AB)
 	bk_ota_double_check_for_execution();
-#else
-#ifdef CONFIG_OTA_UPDATE_B_PARTITION
-	BK_LOGD(NULL,"exec part a\r\n");
-	bk_ota_confirm_update_partition(CONFIRM_EXEC_A);
-#else
-	BK_LOGD(NULL,"exec part b\r\n");
-	bk_ota_confirm_update_partition(CONFIRM_EXEC_B);
-#endif
 #endif
 #endif
 
@@ -399,12 +385,11 @@ extern int mp_do_startup(int heap_len);
 
 
 #if CONFIG_CPU_DEFAULT_FREQ_60M
-#if CONFIG_PM_ONLY_CP_ENABLE
-	bk_pm_module_vote_cpu_freq(PM_DEV_ID_DEFAULT,PM_CPU_FRQ_120M);
+	bk_pm_module_vote_cpu_freq(PM_DEV_ID_DEFAULT,PM_CPU_FRQ_60M);
 #else
-	bk_pm_module_vote_cpu_freq(PM_DEV_ID_DEFAULT,PM_CPU_FRQ_240M);
+	bk_pm_module_vote_cpu_freq(PM_DEV_ID_DEFAULT,CONFIG_PM_CPU_FRQ_DEFAULT);
 #endif
-#endif
+
 #if CONFIG_PM_LV_WDT_PROTECTION
 	pm_wifi_event_init();
 #endif

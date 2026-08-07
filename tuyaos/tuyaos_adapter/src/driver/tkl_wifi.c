@@ -14,6 +14,7 @@
 
 #include "components/event.h"
 #include "components/netif.h"
+#include "bk_netif.h"
 #include "modules/wifi.h"
 #include "os/mem.h"
 

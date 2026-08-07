@@ -59,10 +59,24 @@ list(APPEND srcs
 	src/net_param.c
 )
 endif()
+if(CONFIG_WIFI_REGDOMAIN)
+list(APPEND srcs
+	src/regdb.c
+	src/regdb_bin.c
+	src/reg.c
+)
+endif()
+
+set(bk_wifi_priv_requires bk_common wpa_supplicant-2.10 psa_mbedtls lwip_intf_v2_1 uart_debug bk_phy)
+if(CONFIG_OPENTHREAD)
+	# Public API headers (<openthread/...>) live here; PRIV_REQUIRES alone may not add -I for this component.
+	list(APPEND incs ${CMAKE_CURRENT_LIST_DIR}/../openthread/openthread/include)
+	list(APPEND bk_wifi_priv_requires openthread)
+endif()
 
 armino_component_register(SRCS "${srcs}"
     INCLUDE_DIRS "${incs}"
-    PRIV_REQUIRES bk_common wpa_supplicant-2.10 psa_mbedtls lwip_intf_v2_1 uart_debug bk_phy
+    PRIV_REQUIRES ${bk_wifi_priv_requires}
     REQUIRES bk_netif)
 
 
@@ -75,6 +89,8 @@ if(CONFIG_WIFI_ENABLE)
 add_custom_command(
 	TARGET ${target} POST_BUILD
 	COMMAND sh ${CMAKE_CURRENT_LIST_DIR}/scripts/check_generated_headers.sh ${CMAKE_CURRENT_LIST_DIR}
+	COMMAND ${CMAKE_CURRENT_LIST_DIR}/scripts/db2fw.py regulatory.db ${CMAKE_CURRENT_LIST_DIR}/scripts/db.txt
+	COMMAND ${CMAKE_CURRENT_LIST_DIR}/scripts/bin2c.py regulatory.db ${CMAKE_CURRENT_LIST_DIR}/src/regdb_bin.c
 	COMMENT "Check bk_wifi/include/generated/ directory have changes not submitted ..."
 	VERBATIM)
 endif()

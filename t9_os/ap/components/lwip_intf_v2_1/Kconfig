@@ -1,3 +1,4 @@
+# KCONFIG_GROUP: Network Services::TCP IP Stack
 #TODO add depens for CONFIG_HOST (bk7231u)
 menu "Lwip_intf_v2_1"
 
@@ -354,6 +355,12 @@ menu "Lwip_intf_v2_1"
 			It a term related to the TCP (Transmission Control Protocol) 
 			implementation in networking. TCP will queue segments that arrive out of order.
 			Define to 0 if your device is low on memory.
+
+	config LWIP_MAX_LISTENING_SOCKETS_TCP
+		int "Maximum number of TCP listening sockets"
+		default 4
+		help
+			Set the maximum number of TCP listening sockets.
 
 	config LWIP_TCPIP_THREAD_STACKSIZE
 		int "Default stacksize of tcpip thread"

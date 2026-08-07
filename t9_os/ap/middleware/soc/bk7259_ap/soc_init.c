@@ -43,6 +43,7 @@
 
 #include "multicore_driver.h"
 #include "interrupt.h"
+#include "soc_debug.h"
 
 #define TAG "soc_init"
 
@@ -114,7 +115,10 @@ void _soc_start(void)
     uint32_t core_id = portGET_CORE_ID();
     if (core_id == 0) {
 #endif
-        relocate_vector_table();
+    /* Only the primary core relocates to the SRAM vector table. The secondary
+     * core keeps the vector table already selected by its boot path and must not
+     * override it with the primary core's table. */
+    relocate_vector_table();
 #if CONFIG_SOC_SMP
     }
 #endif
@@ -139,15 +143,20 @@ void _soc_start(void)
 	arch_l2_cache_init();
 #endif
 
-	/* Enable L1 caches using new API */
-#if CONFIG_L2_CACHE_ENABLE
-	l1_cache_enable(CACHE_TYPE_ICACHE, true);
-	l1_cache_enable(CACHE_TYPE_DCACHE, true);
-#else
+	/* Discard stale data lines from enabled cache levels before L1 enable. */
+#if CONFIG_CACHE_MAINTENANCE
+	arch_dcache_invd_all();
+#endif
+
+#if CONFIG_ICACHE
 	arch_icache_enable();
+#endif
+
+#if CONFIG_DCACHE
 	arch_dcache_enable();
 #endif
-#if CONFIG_DCACHE
+
+#if CONFIG_CACHE_MAINTENANCE
     flush_all_dcache();
 #endif
 

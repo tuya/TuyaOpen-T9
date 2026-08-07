@@ -53,6 +53,13 @@ bk_err_t cif_bk_cmd_confirm(struct bk_msg_hdr *rx_msg, uint8_t *cfm_data, uint16
     bk_err_t ret = BK_OK;
     //CTRL_IF_CMD("%s\n",__func__);
 
+    if (!cif_env.host_powerup)
+    {
+        CIF_LOGD("%s skip cfm 0x%x, host not power up\n", __func__,
+                 rx_msg ? (rx_msg->cmd_id + BK_CMD_CFM_OFFSET) : 0);
+        return BK_FAIL;
+    }
+
     if (cfm_len > CIF_MAX_CFM_DATA_LEN)
     {
         CTRL_IF_CMD("cif_bk_cmd_confirm data len[%d] is greater than %d, return\n", cfm_len, CIF_MAX_CFM_DATA_LEN);
@@ -95,6 +102,12 @@ bk_err_t cif_bk_send_event(uint16_t event_id, uint8_t *event_data, uint16_t even
     struct ctrl_cmd_hdr * buf = NULL;
     bk_err_t ret = BK_OK;
     CTRL_IF_CMD("%s\n",__func__);
+
+    if (!cif_env.host_powerup)
+    {
+        CIF_LOGD("%s skip event 0x%x, host not power up\n", __func__, event_id);
+        return BK_FAIL;
+    }
 
     // if (!cif_env.host_wifi_init)
     // {
@@ -146,7 +159,7 @@ bk_err_t cif_handle_bk_cmd_connect_req(struct bk_msg_hdr *msg)
     cif_sta_app_init((char *)req->ssid, (char *)req->pw);
     return BK_OK;
 }
-bk_err_t cif_handle_bk_cmd_connect_ind(char *ssid, uint8_t rssi, uint32_t ip, uint32_t gw, uint32_t mk, uint32_t dns)
+bk_err_t cif_handle_bk_cmd_connect_ind(char *ssid, uint8_t rssi, uint32_t ip, uint32_t gw, uint32_t mk, uint32_t dns, uint8_t vif_idx)
 {
     struct bk_msg_connect_ind ind = {0};
 
@@ -156,6 +169,7 @@ bk_err_t cif_handle_bk_cmd_connect_ind(char *ssid, uint8_t rssi, uint32_t ip, ui
     ind.gw = gw;
     ind.mk = mk;
     ind.dns = dns;
+    ind.vif_idx = vif_idx;
     return cif_bk_send_event(BK_EVT_IPV4_IND, (uint8_t *)&ind, sizeof(ind));
 }
 
@@ -194,15 +208,20 @@ bk_err_t cif_handle_bk_cmd_disconnect_req(struct bk_msg_hdr *msg)
     return BK_OK;
 }
 
-bk_err_t cif_handle_bk_cmd_disconnect_ind(bool local_generated, uint16_t reason_code)
+bk_err_t cif_handle_bk_cmd_wifi_event_ind(cif_wifi_event_id_t event_id,
+		const void *data, uint16_t data_len)
 {
-    wifi_event_sta_disconnected_t sta_disconnected = {0};
+	cif_wifi_event_ind_t ind = {0};
 
-    sta_disconnected.disconnect_reason = reason_code;
-    sta_disconnected.local_generated = local_generated;
-    //CTRL_IF_CMD("%s, reason %d,%d\n",__func__,reason_code,local_generated);
+	if (event_id >= CIF_WIFI_EVT_COUNT || !data ||
+	    data_len > CIF_WIFI_EVENT_IND_MAX_DATA)
+		return BK_ERR_PARAM;
 
-    return cif_bk_send_event(BK_EVT_DISCONNECT_IND, (uint8_t *)(&sta_disconnected), sizeof(sta_disconnected));
+	ind.event_id = event_id;
+	ind.data_len = data_len;
+	os_memcpy(ind.data, data, data_len);
+	return cif_bk_send_event(BK_EVT_WIFI_EVENT_IND, (uint8_t *)&ind,
+				 sizeof(ind));
 }
 bk_err_t cif_handle_bk_cmd_set_mac_addr_req(struct bk_msg_hdr *msg)
 {
@@ -336,14 +355,6 @@ bk_err_t cif_handle_bk_cmd_start_ap_ind(uint8_t status)
 
     return cif_bk_send_event(BK_EVT_START_AP_IND, (uint8_t *)&cfm, sizeof(cfm));
 }
-bk_err_t cif_handle_bk_cmd_assoc_ap_ind(uint8_t* mac_addr)
-{
-    return cif_bk_send_event(BK_EVT_ASSOC_AP_IND, mac_addr, 6);
-}
-bk_err_t cif_handle_bk_cmd_disassoc_ap_ind(uint8_t* mac_addr)
-{
-    return cif_bk_send_event(BK_EVT_DISASSOC_AP_IND, mac_addr, 6);
-}
 bk_err_t cif_handle_bk_cmd_stop_ap_req(struct bk_msg_hdr *msg)
 {
     CTRL_IF_CMD("%s\n",__func__);
@@ -401,26 +412,6 @@ bk_err_t cif_handle_bk_cmd_scan_wifi_req(struct bk_msg_hdr *msg)
     return BK_OK;
 
 }
-
-bk_err_t cif_handle_bk_cmd_scan_wifi_ind(uint32_t scan_id,uint32_t scan_use_time)
-{
-    bk_err_t ret = BK_OK;
-
-    //CTRL_IF_CMD("%s,%d\n",__func__,scan_id);
-
-    #if BK_SUPPLICANT
-    if (scan_id != 0) {
-        wifi_event_scan_done_t event_data = {0};
-        event_data.scan_id = scan_id;
-        event_data.scan_use_time = scan_use_time;
-
-        ret = cif_bk_send_event(BK_EVT_SCAN_WIFI_IND, (uint8_t *)(&event_data), sizeof(event_data));
-    }
-    #endif
-
-    return ret;
-}
-
 
 bk_err_t cif_handle_bk_cmd_bcn_cc_ind(uint8_t *cc, uint8_t cc_len)
 {
@@ -867,6 +858,7 @@ bk_err_t cif_handle_bk_cmd(void *head)
 
     CIF_LOGV("cif_handle_bk_cmd cmd_id:%x\n", msg->cmd_id);
     cif_env.no_host = false;
+    cif_env.host_powerup = true;
     cif_env.host_wifi_init = true;
 
     if ((msg->cmd_id >= BK_CMD_WIFI_API_START) && (msg->cmd_id < BK_CMD_WIFI_API_END))
@@ -884,14 +876,14 @@ bk_err_t cif_handle_bk_cmd(void *head)
 }
 
 #if CONFIG_P2P
-bk_err_t cif_handle_bk_cmd_assoc_go_ind(uint8_t* mac_addr)
+bk_err_t cif_handle_bk_cmd_p2p_go_start_ind(uint8_t *mac_addr)
 {
-    return cif_bk_send_event(BK_EVT_ASSOC_GO_IND, mac_addr, 6);
+    return cif_bk_send_event(BK_EVT_P2P_GO_START_IND, mac_addr, mac_addr ? 6 : 0);
 }
 
-bk_err_t cif_handle_bk_cmd_disassoc_go_ind(uint8_t* mac_addr)
+bk_err_t cif_handle_bk_cmd_p2p_go_stop_ind(void)
 {
-    return cif_bk_send_event(BK_EVT_DISASSOC_GO_IND, mac_addr, 6);
+    return cif_bk_send_event(BK_EVT_P2P_GO_STOP_IND, NULL, 0);
 }
 
 bk_err_t cif_send_modexp_req(const uint8_t *base, uint16_t base_len,

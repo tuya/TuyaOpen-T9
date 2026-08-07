@@ -20,9 +20,15 @@
 
 #include "components/bk_decode/bk_h264_decode_ctlr.h"
 #include "private_h264_decode_ctlr.h"
+#include "bk_decode_pp_helper.h"
 #include "hw_decoder_ctlr.h"
+#if CONFIG_L2_CACHE_ENABLE || CONFIG_DCACHE
+#include "cache.h"
+#endif
 #include "modules/vcdec/vcdec_h264_api.h"
+#include "modules/vcdec/vcdec_common.h"
 #include "avdk_monitor.h"
+#include "common/avdk_pixel_types.h"
 
 #define TAG "bk_h264_dec"
 
@@ -30,6 +36,20 @@
 #define LOGW(...) BK_LOGW(TAG, ##__VA_ARGS__)
 #define LOGD(...) BK_LOGD(TAG, ##__VA_ARGS__)
 #define LOGE(...) BK_LOGE(TAG, ##__VA_ARGS__)
+
+static avdk_err_t h264_decode_set_osd(private_h264_decode_frame_ctlr_t *ctrl,
+				      bk_h264_decode_osd_t *osd)
+{
+	AVDK_RETURN_ON_FALSE(ctrl, AVDK_ERR_INVAL, TAG, "control is NULL");
+	AVDK_RETURN_ON_FALSE(osd, AVDK_ERR_INVAL, TAG, "osd is NULL");
+
+	rtos_lock_mutex(&ctrl->osd_mutex);
+	os_memcpy(ctrl->config.osd, osd->osd, sizeof(ctrl->config.osd));
+	ctrl->config.osd_update_cb = osd->osd_update_cb;
+	rtos_unlock_mutex(&ctrl->osd_mutex);
+
+	return AVDK_ERR_OK;
+}
 
 static void frame_done_cb(int status, void *args)
 {
@@ -39,6 +59,13 @@ static void frame_done_cb(int status, void *args)
 		LOGE("control is NULL\r\n");
 		return;
 	}
+#if CONFIG_L2_CACHE_ENABLE || CONFIG_DCACHE
+	if (status == BK_OK && ctrl->decode_config.output_buffer != NULL &&
+	    ctrl->decode_config.output_size > 0U) {
+		flush_dcache(ctrl->decode_config.output_buffer,
+			     (long)ctrl->decode_config.output_size);
+	}
+#endif
 	if (ctrl->config.frame_done_cb != NULL) {
 		ctrl->config.frame_done_cb(status, ctrl->config.frame_done_args);
 	}
@@ -61,6 +88,12 @@ static avdk_err_t h264_decode_ctlr_init(bk_h264_decode_ctlr_handle_t handle)
 		goto error;
 	}
 
+	ret = rtos_init_mutex(&ctrl->osd_mutex);
+	if (ret != AVDK_ERR_OK) {
+		LOGE("%s %d init osd mutex failed\r\n", __func__, __LINE__);
+		goto error;
+	}
+
 	vcdec_config_t cfg = {0};
 	cfg.timeout_ms = (ctrl->config.timeout_ms != 0U) ? ctrl->config.timeout_ms : 1000U;
 	cfg.frame_done_cb = frame_done_cb;
@@ -72,8 +105,8 @@ static avdk_err_t h264_decode_ctlr_init(bk_h264_decode_ctlr_handle_t handle)
 		goto error;
 	}
 
-	if (vcdec_h264_memalloc_register(ctrl->vcdec_handle, h264_decode_mem_malloc, h264_decode_mem_free) != VCDEC_OK) {
-		LOGE("vcdec_h264_memalloc_register failed\r\n");
+	if (vcdec_register_memalloc(ctrl->vcdec_handle, h264_decode_mem_malloc, h264_decode_mem_free) != VCDEC_OK) {
+		LOGE("vcdec_register_memalloc failed\r\n");
 		ret = AVDK_ERR_GENERIC;
 		goto error;
 	}
@@ -89,6 +122,10 @@ error:
 	if (ctrl->decode_done_sem != NULL) {
 		rtos_deinit_semaphore(&ctrl->decode_done_sem);
 		ctrl->decode_done_sem = NULL;
+	}
+	if (ctrl->osd_mutex != NULL) {
+		rtos_deinit_mutex(&ctrl->osd_mutex);
+		ctrl->osd_mutex = NULL;
 	}
 	hw_decoder_unregister(ctrl);
 	return ret;
@@ -118,6 +155,14 @@ static avdk_err_t h264_decode_callback(void *param)
 		return AVDK_ERR_INVAL;
 	}
 
+#if CONFIG_L2_CACHE_ENABLE || CONFIG_DCACHE
+	if (ctrl->decode_config.input_stream != NULL &&
+	    ctrl->decode_config.input_stream_len > 0U) {
+		flush_dcache(ctrl->decode_config.input_stream,
+			     (long)ctrl->decode_config.input_stream_len);
+	}
+#endif
+
 	DECODE_FRAME_START;
 	ret = vcdec_h264_decode_frame(ctrl->vcdec_handle, &ctrl->decode_config);
 	if (ret != VCDEC_FRAME_READY && ret != VCDEC_OK) {
@@ -143,7 +188,9 @@ static avdk_err_t h264_decode_ctlr_decode_frame(bk_h264_decode_ctlr_handle_t han
 	AVDK_RETURN_ON_FALSE(input->out_buffer && input->out_buffer_size > 0U, AVDK_ERR_INVAL, TAG, "invalid output buffer");
 
 	if (ctrl->config.out_width != 0U && ctrl->config.out_height != 0U) {
-		need_size = (uint32_t)ctrl->config.out_width * (uint32_t)ctrl->config.out_height * 3U / 2U;
+		need_size = bk_decode_pp_output_size(ctrl->config.out_format,
+						      ctrl->config.out_width,
+						      ctrl->config.out_height);
 		if (input->out_buffer_size < need_size) {
 			LOGE("output buffer too small: have=%u need=%u\r\n", input->out_buffer_size, need_size);
 			return AVDK_ERR_NOMEM;
@@ -154,8 +201,19 @@ static avdk_err_t h264_decode_ctlr_decode_frame(bk_h264_decode_ctlr_handle_t han
 	ctrl->decode_config.input_stream_len = input->stream_len;
 	ctrl->decode_config.output_buffer = input->out_buffer;
 	ctrl->decode_config.output_size = input->out_buffer_size;
+	ctrl->decode_config.out_width = ctrl->config.out_width;
+	ctrl->decode_config.out_height = ctrl->config.out_height;
+	ctrl->decode_config.out_format = bk_decode_pp_map_out_format(ctrl->config.out_format);
 	ctrl->decode_config.segment_height = 1U;
 	ctrl->decode_config.segment_number = 1U;
+	rtos_lock_mutex(&ctrl->osd_mutex);
+	if (os_memcmp(ctrl->decode_config.osd, ctrl->config.osd, sizeof(ctrl->decode_config.osd)) != 0) {
+		if (ctrl->config.osd_update_cb != NULL) {
+			ctrl->config.osd_update_cb(ctrl->config.osd);
+		}
+	}
+	os_memcpy(ctrl->decode_config.osd, ctrl->config.osd, sizeof(ctrl->decode_config.osd));
+	rtos_unlock_mutex(&ctrl->osd_mutex);
 
 	hw_decoder_msg_t msg = {
 		.decoder_type = HW_DECODER_TYPE_H264,
@@ -194,6 +252,10 @@ static void h264_decode_resources_deinit(private_h264_decode_frame_ctlr_t *ctrl)
 	if (ctrl->decode_done_sem != NULL) {
 		rtos_deinit_semaphore(&ctrl->decode_done_sem);
 		ctrl->decode_done_sem = NULL;
+	}
+	if (ctrl->osd_mutex != NULL) {
+		rtos_deinit_mutex(&ctrl->osd_mutex);
+		ctrl->osd_mutex = NULL;
 	}
 }
 
@@ -245,6 +307,8 @@ static avdk_err_t h264_decode_ctlr_ioctl(bk_h264_decode_ctlr_handle_t handle, ui
 	case BK_H264_DECODE_IOCTL_ABORT:
 		vcdec_h264_abort(ctrl->vcdec_handle);
 		break;
+	case BK_H264_DECODE_IOCTL_SET_OSD:
+		return h264_decode_set_osd(ctrl, (bk_h264_decode_osd_t *)arg);
 	case BK_H264_DECODE_IOCTL_PORT_SET_RD_PTR:
 	case BK_H264_DECODE_IOCTL_REGISTER_BOND:
 	case BK_H264_DECODE_IOCTL_UNREGISTER_BOND:

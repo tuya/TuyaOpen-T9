@@ -7,7 +7,8 @@
 static void fatfs_operate(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv)
 {
 	uint32_t cmd;
-	char *disk_name[DISK_NUMBER_COUNT] = {"ram", "sdio_sd", "udisk", "flash"};
+	char *disk_name[DISK_NUMBER_COUNT] = {"ram", "sdio_sd", "udisk", "flash",
+					      "spi0_flash", "spi1_flash", "qspi0", "qspi1"};
 	DISK_NUMBER drv_num = DISK_NUMBER_SDIO_SD;
 	char file_name[64] = {'d', 'e', 'f', 'a', 'u', 'l', 't', 'f', 'i', 'l', 'e', 'n', 'a', 'm', 'e', '.', 't', 'x', 't', 0};
 	char write_content[64];
@@ -65,6 +66,16 @@ static void fatfs_operate(char *pcWriteBuffer, int xWriteBufferLen, int argc, ch
 		case 'W':
 			test_fatfs_append_write(drv_num, file_name, write_content, content_len);
 			BK_LOGD(NULL, "append and write:%s,%s\r\n", file_name, write_content);
+			break;
+		//fatfstest X dev-num file-name
+		case 'X':
+			if(argc < 4)
+			{
+				BK_LOGD(NULL, "Delete Fatfs argc < 4! Usage: fatfstest X dev-num file-name\r\n");
+				return;
+			}
+			test_fatfs_delete(drv_num, file_name);
+			BK_LOGD(NULL, "delete:%s\r\n", file_name);
 			break;
 		//fatfstest D dev-num file-name start-addr dump-len
 		case 'D':

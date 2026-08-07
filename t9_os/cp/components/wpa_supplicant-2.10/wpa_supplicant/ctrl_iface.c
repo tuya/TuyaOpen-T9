@@ -51,6 +51,13 @@
 #include "bk_hostapd_intf.h"
 //#include "bk_rw.h"
 #include "bk_feature.h"
+#if CONFIG_P2P_SOFTAP_CHAN_ALIGN
+#include "wifi_v2.h"
+#include <components/system.h>
+#endif
+#if CONFIG_P2P
+#include "modules/wifi.h"
+#endif
 //#include "bk_wifi_types.h"
 #include "bssid_ignore.h"
 #include "driver_i.h"
@@ -68,6 +75,8 @@ extern bool site_survey_cc;
 static int wpa_ctrl_debug_info_dump(struct wpa_supplicant *wpas, uint32_t type);
 extern void wpa_driver_scan_timeout(void *eloop_ctx, void *timeout_ctx);
 uint32_t bk_lookup_ipaddr_wrapper(void *addr);
+extern void rwnx_regulatory_hint_11d(int freq, const u8 *country_ie, u8 country_ie_len);
+extern void regulatory_hint_disconnect(void);
 
 int __wpa_ctrl_request(wpa_ctrl_cmd_t cmd, void *data, int wait, uint16_t flags)
 {
@@ -275,6 +284,14 @@ int wpa_supplicant_ctrl_iface_scan_results(
 	}
 
 	dl_list_for_each(bss, &wpa_s->bss_id, struct wpa_bss, list_id) {
+#if CONFIG_WIFI_REGDOMAIN
+		u8 chan;
+
+		/* check country code */
+		ieee80211_freq_to_chan(bss->freq, &chan);
+		if (!rw_ieee80211_is_scan_rst_in_countrycode(chan))
+			continue;
+#endif
 		/* if no ssid specified, or match the specified ssid */
 		if (!ssid ||
 			(bss->ssid_len == ssid_len && !os_memcmp(ssid, bss->ssid, bss->ssid_len))) {
@@ -288,6 +305,14 @@ int wpa_supplicant_ctrl_iface_scan_results(
 	if (!results->ApList)
 		return -1;
 	dl_list_for_each(bss, &wpa_s->bss_id, struct wpa_bss, list_id) {
+#if CONFIG_WIFI_REGDOMAIN
+		u8 chan;
+
+		/* check country code */
+		ieee80211_freq_to_chan(bss->freq, &chan);
+		if (!rw_ieee80211_is_scan_rst_in_countrycode(chan))
+			continue;
+#endif
 		/* if no ssid specified, or match the specified ssid */
 		if (!ssid ||
 			(bss->ssid_len == ssid_len && !os_memcmp(ssid, bss->ssid, bss->ssid_len))) {
@@ -1309,27 +1334,57 @@ int wpa_supplicant_ctrl_iface_receive(wpah_msg_t *msg)
 	case WPA_CTRL_CMD_STA_ENABLE:
 		/* Enable the station */
 		if (!supplicant_started) {
-			uint8_t mac[ETH_ALEN];
+			const u8 *vif_mac;
+			uint8_t sta_mac[ETH_ALEN];
 
 			//sa_station_init();
 
 			res = supplicant_main_entry(NULL);
-			if (!res)
+			if (!res) {
 				supplicant_started = 1;
-			bk_wifi_sta_get_mac((uint8_t *)mac);
-#if CONFIG_QUICK_TRACK
-			os_memcpy(&g_sta_param_ptr->own_mac, mac, ETH_ALEN);
+				wpa_s = wpa_suppliant_ctrl_get_wpas();
+#if CONFIG_P2P
+				if (wpa_s)
+					bk_wifi_p2p_ensure_supplicant_vif(
+						wpa_s,
+						bk_wifi_p2p_get_init_role() ? 1 : 0);
 #endif
+				bk_wifi_sta_get_mac(sta_mac);
+				os_memcpy(&g_sta_param_ptr->own_mac, sta_mac,
+					  ETH_ALEN);
+				vif_mac = (wpa_s && wpa_s->drv_priv) ?
+					wpa_drv_get_mac_addr(wpa_s) : sta_mac;
 #if CONFIG_LWIP
-			net_wlan_add_netif(mac);
+				net_wlan_add_netif((uint8_t *)vif_mac);
 #endif
+			}
 		}
 		break;
 	case WPA_CTRL_CMD_STA_DISABLE:
 		/* disable the station */
+#if CONFIG_P2P_SOFTAP_CHAN_ALIGN
+		if (bk_wifi_p2p_gc_get_channel()) {
+#if CONFIG_LWIP
+			sta_ip_down();
+#endif
+			CHECK_WPA_S();
+			if (wpa_s->current_ssid && !wpa_s->current_ssid->p2p_group)
+				wpa_supplicant_deauthenticate(wpa_s,
+							    WLAN_REASON_DEAUTH_LEAVING);
+			break;
+		}
+#endif
 		if (supplicant_started) {
 #if CONFIG_LWIP
-			net_wlan_remove_netif((uint8_t*)&g_sta_param_ptr->own_mac);
+			uint8_t remove_mac[ETH_ALEN];
+
+			CHECK_WPA_S();
+			if (wpa_s && wpa_s->drv_priv)
+				os_memcpy(remove_mac, wpa_drv_get_mac_addr(wpa_s),
+					  ETH_ALEN);
+			else
+				bk_wifi_sta_get_mac(remove_mac);
+			net_wlan_remove_netif(remove_mac);
 #endif
 			supplicant_main_exit();
 			wpa_hostapd_release_scan_rst();
@@ -1549,7 +1604,19 @@ int wpa_supplicant_ctrl_iface_receive(wpah_msg_t *msg)
 		}
 
 		// try to add a new hostapd_iface if not exist
+#if CONFIG_P2P_SOFTAP_CHAN_ALIGN
+		if (!interfaces->count ||
+		    (hostapd_has_p2p_group_bss() && !hostapd_has_infra_bss())) {
+			uint8_t align_ch;
+
+			align_ch = bk_wifi_p2p_go_get_channel();
+			if (!align_ch)
+				align_ch = bk_wifi_p2p_go_get_planned_channel();
+			if (align_ch && g_ap_param_ptr)
+				bk_wlan_ap_set_channel_config(align_ch);
+#else
 		if (!interfaces->count) {
+#endif
 			char bss_config[] = "bss_config=phy0:dummy.conf";
 			res = hostapd_add_iface(interfaces, bss_config);
 			if (res) {
@@ -1577,6 +1644,11 @@ int wpa_supplicant_ctrl_iface_receive(wpah_msg_t *msg)
 			/* stop receiving mgmt frames */
 			// rw_msg_send_apm_start_done_ind(false);
 			for (i = 0; i < interfaces->count; i++) {
+#if CONFIG_P2P_SOFTAP_CHAN_ALIGN
+				if (interfaces->iface[i]->bss[0] &&
+				    interfaces->iface[i]->bss[0]->p2p_group)
+					continue;
+#endif
 				res = interfaces->reload_config(interfaces->iface[i]);
 				if (res) {
 					res = -1;
@@ -1594,6 +1666,13 @@ int wpa_supplicant_ctrl_iface_receive(wpah_msg_t *msg)
 		if(net_wlan_remove_netif((uint8_t*)&g_ap_param_ptr->bssid)) {
 			WPA_LOGE("%s:remove netif fail!\n", __func__);
 			res = -1;
+			break;
+		}
+#endif
+#if CONFIG_P2P_SOFTAP_CHAN_ALIGN
+		if (hostapd_has_p2p_group_bss()) {
+			if (hostapd_disable_infra_bss() < 0)
+				res = -1;
 			break;
 		}
 #endif
@@ -1707,14 +1786,26 @@ int wpa_supplicant_ctrl_iface_receive(wpah_msg_t *msg)
 
 		res = -1;
 		CHECK_HAPD();
+#if CONFIG_P2P
+		res = ap_infra_channel_switch(new_freq);
+		if (res != 0 && interfaces->iface[0])
+			res = ap_channel_switch(interfaces->iface[0], new_freq);
+#else
 		res = ap_channel_switch(interfaces->iface[0], new_freq);
+#endif
 	}	break;
 
 	case WPA_CTRL_CMD_AP_CHAN_SWITCH_STOP: {
 
 		res = -1;
 		CHECK_HAPD();
+#if CONFIG_P2P
+		res = ap_infra_channel_switch_stop();
+		if (res != 0 && interfaces->iface[0])
+			res = ap_channel_switch_stop(interfaces->iface[0]);
+#else
 		res = ap_channel_switch_stop(interfaces->iface[0]);
+#endif
 	}	break;
 	case WPA_CTRL_CMD_AP_STA_DEAUTH: {
 		wlan_ap_sta_deauth_t *req = (wlan_ap_sta_deauth_t *)msg->argu;
@@ -1784,6 +1875,9 @@ int wpa_supplicant_ctrl_iface_receive(wpah_msg_t *msg)
 		CHECK_WPA_S();
 		char *param = (char *)msg->argu;
 		wpas_p2p_set_ssid_postfix(wpa_s, param);
+#if CONFIG_P2P
+		bk_wifi_p2p_ensure_supplicant_vif(wpa_s, 1);
+#endif
 		break;
 	}
 #endif
@@ -1800,9 +1894,20 @@ int wpa_supplicant_ctrl_iface_receive(wpah_msg_t *msg)
 			// For GC (client), additionally disable supplicant
 			if (wpa_s->current_ssid->mode == WPAS_MODE_INFRA) {
 				// This is GC (client mode)
+#if CONFIG_P2P_SOFTAP_CHAN_ALIGN
+				p2p_gc_ip_down();
+				if (bk_wifi_infra_sta_vif_active() ||
+				    wifi_sta_is_started()) {
+					/* wpas_p2p_disconnect handled GC; keep STA. */
+					break;
+				}
+#endif
 				if (supplicant_started) {
 #if CONFIG_LWIP
-					netif_ret = net_wlan_remove_netif((uint8_t*)g_sta_param_ptr->own_mac);
+					uint8_t gc_mac[ETH_ALEN];
+
+					bk_wifi_p2p_get_device_mac(gc_mac);
+					netif_ret = net_wlan_remove_netif(gc_mac);
 					// ERR_ARG means vif not found, which is OK if already cleaned up
 					if (netif_ret && netif_ret != ERR_ARG) {
 						WPA_LOGW("%s:remove netif failed with error %d\n", __func__, netif_ret);
@@ -1813,14 +1918,23 @@ int wpa_supplicant_ctrl_iface_receive(wpah_msg_t *msg)
 					supplicant_started = 0;
 				}
 			} else {
-				uap_ip_down();
-				netif_ret = net_wlan_remove_netif((uint8_t*)&g_ap_param_ptr->bssid);
+				uint8_t p2p_mac[ETH_ALEN];
+
+				p2p_go_ip_down();
+				bk_get_mac(p2p_mac, MAC_TYPE_P2P);
+				netif_ret = net_wlan_remove_netif(p2p_mac);
 				// ERR_ARG means vif not found, which is OK if already cleaned up by wpas_p2p_disconnect
 				if (netif_ret && netif_ret != ERR_ARG) {
 					WPA_LOGE("%s:remove netif fail! (error %d)\n", __func__, netif_ret);
 					res = -1;
 					break;
 				}
+#if CONFIG_P2P_SOFTAP_CHAN_ALIGN
+				if (hostapd_has_infra_bss()) {
+					hostapd_disable_p2p_bss();
+					break;
+				}
+#endif
 				if (hostapd_started) {
 					hostapd_main_exit();
 					hostapd_started = 0;
@@ -2079,6 +2193,21 @@ int wpa_supplicant_handle_events(wpah_msg_t *msg)
 				data.assoc_info.resp_ies = (u8 *)ind->assoc_ie_buf + ind->assoc_req_ie_len;
 				data.assoc_info.resp_ies_len = ind->assoc_rsp_ie_len;
 				wpa_supplicant_event_sta(wpa_s, EVENT_ASSOC, &data);
+
+#if CONFIG_WIFI_REGDOMAIN
+				/* handle dot11d; current_bss may be NULL during rapid STA switch */
+				const uint8_t *country_ie = get_ie(data.assoc_info.resp_ies,
+						data.assoc_info.resp_ies_len, WLAN_EID_COUNTRY);
+				if (!country_ie && wpa_s->current_bss)
+					country_ie = wpa_bss_get_ie(wpa_s->current_bss, WLAN_EID_COUNTRY);
+				if (country_ie) {
+					int freq = wpa_s->current_bss ?
+						wpa_s->current_bss->freq : ind->chan.prim20_freq;
+
+					rwnx_regulatory_hint_11d(freq, country_ie + 2, *(country_ie + 1));
+				}
+#endif
+
 			} else {
 				union wpa_event_data data;
 
@@ -2183,14 +2312,15 @@ int wpa_supplicant_handle_events(wpah_msg_t *msg)
 	}	break;
 
 	case WPA_CTRL_EVENT_CANCEL_REMAIN_ON_CHANNEL: {
-		if (g_rwnx_hw.roc_elem == NULL) {
-			union wpa_event_data data;
+		union wpa_event_data data;
 
-			os_memset(&data, 0, sizeof(data));
-			data.remain_on_channel.freq = -1;  /* FIXME: P2P */
-			wpa_supplicant_event_sta(wpa_s, EVENT_CANCEL_REMAIN_ON_CHANNEL, &data);
-		} else
-			WPA_LOGE("ROC element is not NULL\n");
+		/* Always notify wpa_supplicant: a new ROC may already be active when
+		 * this async cancel arrives (race after GO neg / group formation). */
+		os_memset(&data, 0, sizeof(data));
+		data.remain_on_channel.freq = -1;
+		wpa_supplicant_event_sta(wpa_s, EVENT_CANCEL_REMAIN_ON_CHANNEL, &data);
+		if (g_rwnx_hw.roc_elem != NULL)
+			WPA_LOGW("ROC cancel while roc_elem still active\n");
 	}	break;
 
 	case WPA_CTRL_EVENT_P2P_GO_NEG_REQUEST: {

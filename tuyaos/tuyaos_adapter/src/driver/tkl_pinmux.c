@@ -19,11 +19,11 @@
 /*
  * Map a Tuya pin function to the SoC GPIO device function. Returns
  * GPIO_DEV_INVALID for funcs that are handled by per-driver setters below
- * (uart/sdio/...) or that have no direct GPIO device mapping.
+ * (spi/sdio/...) or that have no direct GPIO device mapping.
  *
  * This lets tkl_io_pinmux_config() bind a *specific* pin to a peripheral
- * function via gpio_dev_unprotect_map() before the peripheral is initialised,
- * independent of the board's GPIO_DEFAULT_DEV_CONFIG table.
+ * function via gpio_dev_unprotect_map() before the peripheral is initialised.
+ * UART default ownership remains GPIO_DEFAULT_DEV_CONFIG (usr_gpio_cfg).
  */
 static gpio_dev_t __tkl_pinmux_func_to_gpio_dev(TUYA_PIN_FUNC_E pin_func)
 {
@@ -86,7 +86,17 @@ static gpio_dev_t __tkl_pinmux_func_to_gpio_dev(TUYA_PIN_FUNC_E pin_func)
          * (CP IPC) in tkl_io_pinmux_config() instead.
          */
         /*
-         * SPI/UART/SDIO are NOT mapped here: their drivers re-map the pads in
+         * UART pads follow usr_gpio_cfg + driver uart_map_func(); runtime
+         * pinmux uses the same gpio_dev_unprotect_map() path as I2C/PWM.
+         */
+        case TUYA_UART0_TX:  return GPIO_DEV_UART0_TXD;
+        case TUYA_UART0_RX:  return GPIO_DEV_UART0_RXD;
+        case TUYA_UART1_TX:  return GPIO_DEV_UART1_TXD;
+        case TUYA_UART1_RX:  return GPIO_DEV_UART1_RXD;
+        case TUYA_UART2_TX:  return GPIO_DEV_UART2_TXD;
+        case TUYA_UART2_RX:  return GPIO_DEV_UART2_RXD;
+        /*
+         * SPI/SDIO are NOT mapped here: their drivers re-map the pads in
          * their own init() using configurable pin getters, which would override
          * a gpio_dev_unprotect_map() done here (and leave two pads on the same
          * function). They are routed through their __tkl_*_set_*_pin() hooks in
@@ -118,9 +128,6 @@ static gpio_dev_t __tkl_pinmux_func_to_gpio_dev(TUYA_PIN_FUNC_E pin_func)
  ****************************************************************************/
 // extern VOID_T __tkl_i2c_set_scl_pin(TUYA_I2C_NUM_E port, const TUYA_PIN_NAME_E scl_pin);
 // extern VOID_T __tkl_i2c_set_sda_pin(TUYA_I2C_NUM_E port, const TUYA_PIN_NAME_E sda_pin);
-
-extern void __tkl_uart2_set_rx_pin(TUYA_I2C_NUM_E port, const TUYA_PIN_NAME_E pin);
-extern void __tkl_uart2_set_tx_pin(TUYA_I2C_NUM_E port, const TUYA_PIN_NAME_E pin);
 
 extern void __tkl_spi_set_cs_pin(TUYA_SPI_NUM_E port, TUYA_PIN_NAME_E pin);
 extern void __tkl_spi_set_clk_pin(TUYA_SPI_NUM_E port, TUYA_PIN_NAME_E pin);
@@ -180,9 +187,10 @@ OPERATE_RET tkl_io_pinmux_config(TUYA_PIN_NAME_E pin, TUYA_PIN_FUNC_E pin_func)
     }
 
     /*
-     * SPI / UART / SDIO drivers re-map their pads in their own init() from a
+     * SPI / SDIO drivers re-map their pads in their own init() from a
      * configurable pin. Set that pin here so the driver picks it up; a bare
      * gpio_dev_unprotect_map() would be overridden by the driver.
+     * UART pins are owned by usr_gpio_cfg + the path above.
      */
     switch (pin_func) {
         case TUYA_SPI0_CLK:  __tkl_spi_set_clk_pin(TUYA_SPI_NUM_0, pin);  break;
@@ -193,8 +201,6 @@ OPERATE_RET tkl_io_pinmux_config(TUYA_PIN_NAME_E pin, TUYA_PIN_FUNC_E pin_func)
         case TUYA_SPI1_MOSI: __tkl_spi_set_mosi_pin(TUYA_SPI_NUM_1, pin); break;
         case TUYA_SPI1_MISO: __tkl_spi_set_miso_pin(TUYA_SPI_NUM_1, pin); break;
         case TUYA_SPI1_CS:   __tkl_spi_set_cs_pin(TUYA_SPI_NUM_1, pin);   break;
-        case TUYA_UART2_RX:  __tkl_uart2_set_rx_pin(TUYA_UART_NUM_2, pin); break;
-        case TUYA_UART2_TX:  __tkl_uart2_set_tx_pin(TUYA_UART_NUM_2, pin); break;
         case TUYA_SDIO_CLK:   __tkl_sdio_set_clk_pin(TUYA_SDIO_NUM_0, pin); break;
         case TUYA_SDIO_CMD:   __tkl_sdio_set_cmd_pin(TUYA_SDIO_NUM_0, pin); break;
         case TUYA_SDIO_DATA0: __tkl_sdio_set_d0_pin(TUYA_SDIO_NUM_0, pin);  break;

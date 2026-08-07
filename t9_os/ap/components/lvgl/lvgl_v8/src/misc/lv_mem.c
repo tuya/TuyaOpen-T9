@@ -15,6 +15,7 @@
 
 #if LV_MEM_CUSTOM != 0
     #include LV_MEM_CUSTOM_INCLUDE
+    #include <os/mem.h>
 #endif
 
 #ifdef LV_MEM_POOL_INCLUDE

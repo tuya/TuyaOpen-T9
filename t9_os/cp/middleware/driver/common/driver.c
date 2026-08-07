@@ -54,14 +54,6 @@
 #include "bk_ef.h"
 #endif
 
-#if CONFIG_QSPI
-#include <driver/qspi.h>
-#endif
-
-#if CONFIG_SPI
-#include <driver/spi.h>
-#endif
-
 #if CONFIG_CALENDAR
 #include <driver/calendar.h>
 #endif
@@ -251,6 +243,10 @@ int driver_early_init(void)
 	bk_wwdt_driver_init();
 #endif
 
+#if CONFIG_CKMN
+	bk_ckmn_driver_init();
+#endif
+
 	return 0;
 }
 
@@ -278,6 +274,15 @@ int driver_init(void) {
 // #if CONFIG_AON_WDT && !CONFIG_INT_AON_WDT
 // 	bk_aon_wdt_stop();
 // #endif
+
+#if CONFIG_GET_UID_ENABLE
+	/* Init UID (create lock + read OTP once + publish snapshot) BEFORE mailbox/IPC
+	 * comes up. The AP GET_CHIP_UID RPC is served from the IPC worker thread that
+	 * ipc_init() creates below, so doing this first guarantees the OTP is read
+	 * exactly once while still single-threaded and the snapshot is published
+	 * before any RPC can arrive. */
+	bk_uid_driver_init();
+#endif
 
 #if CONFIG_MAILBOX
 	extern bk_err_t ipc_init(void);
@@ -323,18 +328,6 @@ int driver_init(void) {
 	bk_adc_driver_init();
 #endif
 
-#if CONFIG_SPI
-	bk_spi_driver_init();
-#endif
-
-#if CONFIG_I2C
-	bk_i2c_driver_init();
-#endif
-
-#if CONFIG_QSPI
-	bk_qspi_driver_init();
-#endif
-
 #if CONFIG_CALENDAR
 	bk_calendar_driver_init();
 #endif
@@ -356,9 +349,6 @@ int driver_init(void) {
 //	bk_rott_driver_init();
 #endif
 
-#if CONFIG_CKMN
-	bk_ckmn_driver_init();
-#endif
 #if CONFIG_LIN
 	bk_lin_driver_init();
 #endif
@@ -368,16 +358,8 @@ int driver_init(void) {
 	dubhe_driver_init(SOC_SHANHAI_BASE);
 #endif
 
-#if CONFIG_GET_UID_ENABLE
-	bk_uid_driver_init();
-#endif
-
 #if CONFIG_USB //&& CONFIG_MENTOR_USB
 	bk_usb_driver_init();
-#endif
-
-#if CONFIG_CAN
-	bk_can_driver_init();
 #endif
 
 #if CONFIG_PWM

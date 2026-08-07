@@ -1,4 +1,5 @@
 #include "net.h"
+#include <lwip/inet.h>
 #include "bk_wifi_types.h"
 #include "modules/wifi.h"
 #include "bk_wifi.h"
@@ -8,10 +9,50 @@
 #include "cif_main.h"
 #include "cif_ipc.h"
 #include "wifi_v2.h"
+#include "lwip/etharp.h"
 #if CONFIG_BK_RAW_LINK
 #include <modules/raw_link.h>
 #include "cif_raw_link_api.h"
 #endif
+#if CONFIG_WIFI_REGDOMAIN
+extern void bk_wifi_print_regdomain(void);
+#endif
+
+static bk_err_t bk_wifi_sta_get_arp_table(wifi_arp_sync_table_t *table)
+{
+    struct netif *sta_netif = (struct netif *)net_get_sta_handle();
+    ip4_addr_t *ipaddr = NULL;
+    struct netif *netif = NULL;
+    struct eth_addr *ethaddr = NULL;
+
+    if (!table) {
+        return BK_ERR_NULL_PARAM;
+    }
+
+    memset(table, 0, sizeof(*table));
+
+    for (size_t i = 0; i < ARP_TABLE_SIZE && table->count < WIFI_ARP_SYNC_MAX_ENTRY; i++) {
+        if (!etharp_get_entry(i, &ipaddr, &netif, &ethaddr)) {
+            continue;
+        }
+
+        if (netif != sta_netif) {
+            continue;
+        }
+
+        table->entry[table->count].ip = ipaddr->addr;
+        memcpy(table->entry[table->count].mac, ethaddr->addr, sizeof(table->entry[table->count].mac));
+        BK_LOGV("arp_sync", "CP export STA ARP[%d]: ip=%u.%u.%u.%u mac=%02x:%02x:%02x:%02x:%02x:%02x\r\n",
+                table->count,
+                ip4_addr1_16(ipaddr), ip4_addr2_16(ipaddr), ip4_addr3_16(ipaddr), ip4_addr4_16(ipaddr),
+                ethaddr->addr[0], ethaddr->addr[1], ethaddr->addr[2],
+                ethaddr->addr[3], ethaddr->addr[4], ethaddr->addr[5]);
+        table->count++;
+    }
+
+    BK_LOGD("arp_sync", "CP export STA ARP table count=%d\r\n", table->count);
+    return BK_OK;
+}
 
 bk_err_t wifi_monitor_cp_cb(const uint8_t *frame, uint32_t len, const wifi_frame_info_t *frame_info)
 {
@@ -179,14 +220,7 @@ bk_err_t cif_handle_wifi_api_cmd(struct bk_msg_hdr *msg)
         case STA_GET_LINK_STATUS:
         {
             wifi_link_status_t *link_status = (wifi_link_status_t *)arg_info->args[0];
-            if ((wifi_netif_sta_is_connected() || wifi_netif_sta_is_got_ip()))
-            {
-                    bk_wifi_sta_get_link_status(link_status);
-                    link_status->state = WIFI_LINKSTATE_STA_CONNECTED;
-            }
-            else
-                link_status->state = WIFI_LINKSTATE_STA_DISCONNECTED;
-
+            ret = bk_wifi_sta_get_link_status(link_status);
             break;
         }
 
@@ -194,6 +228,17 @@ bk_err_t cif_handle_wifi_api_cmd(struct bk_msg_hdr *msg)
         {
             uint8_t *channel = (uint8_t *)(arg_info->args[0]);
             *channel = bk_wifi_get_channel();
+            break;
+        }
+
+        case WIFI_GET_AP_OPER_CHANNEL:
+        {
+            uint8_t *channel = (uint8_t *)(arg_info->args[0]);
+            if (!channel) {
+                ret = BK_ERR_NULL_PARAM;
+                break;
+            }
+            *channel = bk_wlan_ap_get_channel_config();
             break;
         }
 
@@ -210,6 +255,26 @@ bk_err_t cif_handle_wifi_api_cmd(struct bk_msg_hdr *msg)
             ret = bk_wifi_get_country(country);
             break;
         }
+
+#if CONFIG_WIFI_REGDOMAIN
+        case WIFI_SET_AP_REGD_DOMAIN:
+        {
+            const char *alpha2 = (const char *)(arg_info->args[0]);
+            if (!alpha2) {
+                ret = BK_ERR_NULL_PARAM;
+                break;
+            }
+            ret = bk_wifi_set_country_code(alpha2);
+            break;
+        }
+
+        case WIFI_GET_AP_REGD_DOMAIN:
+        {
+            bk_wifi_print_regdomain();
+            ret = BK_OK;
+            break;
+        }
+#endif
 
         case STA_GET_LISTEN_INTERVAL:
         {
@@ -267,6 +332,18 @@ bk_err_t cif_handle_wifi_api_cmd(struct bk_msg_hdr *msg)
         case STA_SET_IP4_STATIC_IP:
         {
             ret = bk_netif_static_ip(*(netif_ip4_config_t *)arg_info->args[0]);
+            break;
+        }
+
+        case STA_NETIF_IP4_CONFIG:
+        {
+            ret = bk_netif_set_ip4_config(NETIF_IF_STA, (netif_ip4_config_t *)arg_info->args[0]);
+            break;
+        }
+
+        case STA_GET_ARP_TABLE:
+        {
+            ret = bk_wifi_sta_get_arp_table((wifi_arp_sync_table_t *)arg_info->args[0]);
             break;
         }
 
@@ -536,6 +613,109 @@ bk_err_t cif_handle_wifi_api_cmd(struct bk_msg_hdr *msg)
             ret = bk_wifi_ap_start();
             break;
         }
+#if CONFIG_P2P
+        case P2P_GET_MAC:
+        {
+            ret = bk_wifi_p2p_get_mac((uint8_t *)arg_info->args[0]);
+            break;
+        }
+        case P2P_GET_ROLE:
+        {
+            ret = bk_wifi_p2p_get_role((int *)arg_info->args[0]);
+            break;
+        }
+        case P2P_GET_GROUP_CHANNEL:
+        {
+            uint8_t *channel = (uint8_t *)(arg_info->args[0]);
+            if (!channel) {
+                ret = BK_ERR_NULL_PARAM;
+                break;
+            }
+            *channel = bk_wifi_p2p_get_group_channel();
+            break;
+        }
+        case P2P_GET_GC_NETIF_IP4_CONFIG:
+        {
+            netif_ip4_config_t *ip_config = (netif_ip4_config_t *)arg_info->args[0];
+            struct wlan_ip_config addr;
+            int role = 0;
+
+            if (!ip_config) {
+                ret = BK_ERR_NULL_PARAM;
+                break;
+            }
+            os_memset(&addr, 0, sizeof(addr));
+            os_memset(ip_config, 0, sizeof(*ip_config));
+            net_get_if_addr(&addr, net_get_p2p_gc_handle());
+            if (addr.ipv4.address == 0 &&
+                bk_wifi_p2p_get_role(&role) == BK_OK && role == 2)
+                net_get_if_addr(&addr, net_get_sta_handle());
+            os_strcpy(ip_config->ip, inet_ntoa(addr.ipv4.address));
+            os_strcpy(ip_config->mask, inet_ntoa(addr.ipv4.netmask));
+            os_strcpy(ip_config->gateway, inet_ntoa(addr.ipv4.gw));
+            os_strcpy(ip_config->dns, inet_ntoa(addr.ipv4.dns1));
+            ret = BK_OK;
+            break;
+        }
+        case P2P_GET_GO_NETIF_IP4_CONFIG:
+        {
+            netif_ip4_config_t *ip_config = (netif_ip4_config_t *)arg_info->args[0];
+            struct wlan_ip_config addr;
+            int role = 0;
+
+            if (!ip_config) {
+                ret = BK_ERR_NULL_PARAM;
+                break;
+            }
+            os_memset(&addr, 0, sizeof(addr));
+            os_memset(ip_config, 0, sizeof(*ip_config));
+            if (bk_wifi_p2p_get_role(&role) != BK_OK || role != 1) {
+                if (!p2p_go_ip_is_start()) {
+                    ret = BK_OK;
+                    break;
+                }
+            }
+            net_get_if_addr(&addr, net_get_p2p_go_handle());
+            if (addr.ipv4.address == 0 && p2p_go_ip_is_start())
+                net_get_p2p_go_cfg_addr(&addr);
+            os_strcpy(ip_config->ip, inet_ntoa(addr.ipv4.address));
+            os_strcpy(ip_config->mask, inet_ntoa(addr.ipv4.netmask));
+            os_strcpy(ip_config->gateway, inet_ntoa(addr.ipv4.gw));
+            os_strcpy(ip_config->dns, inet_ntoa(addr.ipv4.dns1));
+            ret = BK_OK;
+            break;
+        }
+#else
+        case P2P_GET_MAC:
+        case P2P_GET_ROLE:
+        {
+            ret = BK_ERR_STATE;
+            break;
+        }
+        case P2P_GET_GROUP_CHANNEL:
+        {
+            uint8_t *channel = (uint8_t *)(arg_info->args[0]);
+            if (!channel) {
+                ret = BK_ERR_NULL_PARAM;
+                break;
+            }
+            *channel = 0;
+            ret = BK_ERR_STATE;
+            break;
+        }
+        case P2P_GET_GC_NETIF_IP4_CONFIG:
+        case P2P_GET_GO_NETIF_IP4_CONFIG:
+        {
+            netif_ip4_config_t *ip_config = (netif_ip4_config_t *)arg_info->args[0];
+            if (!ip_config) {
+                ret = BK_ERR_NULL_PARAM;
+                break;
+            }
+            os_memset(ip_config, 0, sizeof(*ip_config));
+            ret = BK_ERR_STATE;
+            break;
+        }
+#endif
         case AP_SET_CHANNEL:
         {
             ret = bk_wifi_set_ap_channel((uint8_t)arg_info->args[0]);
@@ -822,14 +1002,33 @@ bk_err_t cif_handle_wifi_api_cmd(struct bk_msg_hdr *msg)
         }
         case P2P_CANCEL:
         {
-            uap_ip_down();
-            sta_ip_down();
+            int role = 0;
+
+            if (bk_wifi_p2p_get_role(&role) == BK_OK) {
+                if (role == 1)
+                    p2p_go_ip_down();
+                else if (role == 2)
+                    p2p_gc_ip_down();
+            }
             ret = wlan_p2p_cancel();
             break;
         }
         case P2P_DISABLE:
         {
             ret = wlan_p2p_disable();
+            break;
+        }
+#else
+        case P2P_ENABLE:
+        case P2P_ENABLE_WITH_INTENT:
+        case P2P_FIND:
+        case P2P_LISTEN:
+        case P2P_STOP_FIND:
+        case P2P_CONNECT:
+        case P2P_CANCEL:
+        case P2P_DISABLE:
+        {
+            ret = BK_ERR_STATE;
             break;
         }
 #endif

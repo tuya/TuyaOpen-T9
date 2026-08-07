@@ -84,6 +84,8 @@ int cli_lwip_init(void);
 int cli_iperf_init(void);
 int cli_pwr_init(void);
 int cli_cp_hotplug_init(void);
+int cli_basepri_stress_init(void);
+int cli_wfi_basepri_stress_init(void);
 int cli_os_init(void);
 int cli_ota_init(void);
 
@@ -137,6 +139,9 @@ extern int hexstr2bin(const char *hex, u8 *buf, size_t len);
 
 #if (CONFIG_MAC802154_ENABLE)
 int cli_mac802154_init(void);
+#endif
+#if CONFIG_OPENTHREAD
+int cli_openthread_init(void);
 #endif
 
 #ifdef __cplusplus

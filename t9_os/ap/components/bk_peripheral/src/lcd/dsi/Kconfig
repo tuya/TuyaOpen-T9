@@ -1,3 +1,4 @@
+# KCONFIG_GROUP: Multimedia::Display & UI::LCD
 menu "DSI LCD"
 	config LCD_DSI
 		depends on BK_PERIPHERAL
@@ -12,6 +13,11 @@ menu "DSI LCD"
 	config LCD_HX8399C_MIPI_1080x1920
 		depends on LCD_DSI
 		bool "Enable LCD_HX8399C_MIPI_1080x1920 API"
+		default n
+
+	config LCD_EK79007AD_MIPI_1024x600
+		depends on LCD_DSI
+		bool "Enable LCD_EK79007AD_MIPI_1024x600 API"
 		default n
 
 	config LCD_FL7703NP_MIPI_720x1280

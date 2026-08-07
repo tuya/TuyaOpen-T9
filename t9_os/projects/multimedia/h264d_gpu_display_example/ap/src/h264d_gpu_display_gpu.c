@@ -3,6 +3,7 @@
 #include <os/mem.h>
 #include <components/log.h>
 #include <components/bk_frame_buffer.h>
+#include <components/bk_hardware_ram.h>
 #include <components/bk_gpu_ctlr.h>
 #include <components/bk_gpu.h>
 #include <modules/vg_lite_gpu/vg_lite.h>

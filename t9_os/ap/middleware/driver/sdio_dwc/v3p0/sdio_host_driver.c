@@ -345,6 +345,19 @@ int send_cmd(uintptr_t addr, uint8 CMD_INDEX, uint8 RESP_TYPE, uint32 ARGUMENT)
 	}
 
 	//SDIOD_LOGD("send cmd[%d], pstate:0x%x\r\n", CMD_INDEX, pstate);
+
+	/* Drain any stale CMD_COMPLETE token left in the binary semaphore by a
+	 * previous command (e.g. a late/extra completion after the defensive
+	 * CMD12 timeout, or a double CMD_COMPLETE+CMD_TOUT interrupt). Without
+	 * this, a leftover token makes the rtos_get_semaphore() below return
+	 * *before* THIS command completes, so we latch the PREVIOUS command's
+	 * RESP register -> a persistent one-command response shift (observed:
+	 * CMD8 reads 0, CMD8's 0x1aa lands on CMD55, ... RCA parsed from CID,
+	 * then the data read stalls on BUF_RD_READY). Same self-contained
+	 * pattern already used in receive_mult_data(). */
+	if (rtos_get_semaphore(&s_sdio_cmd_done_sema, 0) == 0)
+		SDIOD_LOGW("send_cmd: drained stale cmd_done token before CMD%u\r\n", CMD_INDEX);
+
 	uint32_t int_level = rtos_disable_int();
 
 	/* Clear stale software flags set by the previous command's ISR but
@@ -735,6 +748,9 @@ bk_err_t adma2_receive_data (uintptr_t addr,uint32 SYS_ADDR,uint16 BLOCK_SIZE,ui
  * Replaces the former compile-time SDIO0/SDIO1 selection so both BK7259
  * controllers can be brought up at runtime. */
 // Modified by TUYA Start
+/* Board pinmux: OEM leaves this empty and expects usr_gpio_cfg.h.
+ * Product keeps weak hooks so tuyaos_adapter usr_sdio.c can map pins
+ * at runtime (tuya_app does not put SDIO funcs in usr_gpio_cfg). */
 extern void user_sdio_gpio_init(void) __attribute__((weak));
 extern void user_sdio_set_width(uint8_t width_sel) __attribute__((weak));
 
@@ -856,9 +872,6 @@ bk_err_t sdio_host_init()
 
 	sdio_gpio_init(s_active_id, SDIO_WIRE_WIDTH_SEL_1);
 	PWR_CTRL_R(SDIO_ACTIVE_BASE) = 0x01;
-
-	//tuning_cfg(SDIO_ACTIVE_BASE,0x0,0x0,0,0,0x0,0x0,0,0,1);
-	tuning_cfg(SDIO_ACTIVE_BASE,0x0,0x0,0,0,0x0,0x0,0,0,0);	//TODO: V2 chip positive edge tuning
 
 	ret = mshc_host_init(SDIO_ACTIVE_BASE,0x3,300,0xff,0xa,SD_CARD,UHS_MODE_SDR12,DATA_WIDTH1);	  //400k //addr,sys_div,sdclk_div,tmclk_div,cqetmclk_div,CARD_IS_EMMC,UHS_MODE_SEL,DAT_XFER_WIDTH
 	if(BK_OK != ret)
@@ -1412,6 +1425,7 @@ bk_err_t bk_sdio_host_init(sdio_host_id_t id, const sdio_host_cfg_t *cfg)
 		ret = mshc_host_init(s_active_base, 0x3, 300, 0xff, 0xa,
 				     1 /*CARD_IS_EMMC*/, UHS_MODE_EMMC_DS, DATA_WIDTH1);
 	} else {
+		tuning_cfg(s_active_base, 0, 0, 0, 0, 0, 0, 0, 0, 1);
 		ret = sdio_host_init();         /* SD path, behavior preserved */
 	}
 
@@ -1552,9 +1566,10 @@ bk_err_t bk_sdio_host_send_cmd(sdio_host_id_t id, const sdio_host_cmd_t *cmd,
 	r = (uint32_t)send_cmd(s_active_base, cmd->index,
 			       sdio_host_hw_resp_type(cmd->resp_type), cmd->arg);
 	timeout = sdio_host_last_cmd_timeout();
+	bool crc_err = (CMD_CRC_ERR_STATE != 0);
 	if (resp) {
 		resp->timeout = timeout;
-		resp->crc_err = (CMD_CRC_ERR_STATE != 0);
+		resp->crc_err = crc_err;
 		if (cmd->resp_type == SDIO_HOST_RESP_R2) {
 			/*
 			 * R2 (136-bit CID/CSD): this SDHCI-style MSHC controller stores
@@ -1583,6 +1598,10 @@ bk_err_t bk_sdio_host_send_cmd(sdio_host_id_t id, const sdio_host_cmd_t *cmd,
 		}
 	}
 	sdio_host_unlock();
+
+	SDIOD_LOGD("send_cmd: CMD%u arg=0x%08x rt=%d tout=%d crc=%d resp0=0x%08x\r\n",
+		   cmd->index, cmd->arg, cmd->resp_type, timeout, crc_err, r);
+
 	return timeout ? BK_ERR_SDIO_HOST_CMD_RSP_TIMEOUT : BK_OK;
 }
 

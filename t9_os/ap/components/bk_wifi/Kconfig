@@ -1,3 +1,4 @@
+# KCONFIG_GROUP: Wireless Connectivity::WiFi
 #TODO optimize it
 menu "Bk_Wifi"
 
@@ -374,5 +375,9 @@ menu "Bk_Wifi"
 	config PHY_MB
 		bool "Enable PHY mailbox"
 		default y
+
+	config SOFTAP_WPA3
+		bool "Enable Softap WPA3"
+		default n
 
 endmenu

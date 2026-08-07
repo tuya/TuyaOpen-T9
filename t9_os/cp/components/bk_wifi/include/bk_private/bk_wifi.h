@@ -27,6 +27,14 @@
 #include "bk_private/bk_wifi_types.h"
 #include "modules/wifi_types.h"
 
+#ifndef __IRAM3
+#if CONFIG_SOC_BK7259
+#define __IRAM3 __attribute__((section(".iram3")))
+#else
+#define __IRAM3
+#endif
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -532,6 +540,9 @@ uint32_t bk_wifi_find_ie(uint32_t addr, uint16_t buflen, uint8_t ie_id);
 /* param_config */
 extern general_param_t *g_wlan_general_param;
 extern ap_param_t *g_ap_param_ptr;
+#if CONFIG_P2P
+extern ap_param_t *g_p2p_go_ap_param_ptr;
+#endif
 extern sta_param_t *g_sta_param_ptr;
 
 uint32_t cfg_param_init(void);
@@ -557,8 +568,8 @@ uint8_t bk_wlan_ap_get_channel_config(void);
 VOID bk_wlan_ap_set_channel_config(uint8_t channel);
 uint8_t bk_wlan_has_role(uint8_t role);
 void bk_wlan_reg_csa_cb_coexist_mode(void);
-#ifdef CONFIG_P2P
 uint8_t bk_wlan_ap_get_default_channel(void);
+#ifdef CONFIG_P2P
 void app_p2p_rw_event_func(void *new_evt);
 void app_p2p_restart_thread(void);
 #endif
@@ -668,11 +679,19 @@ uint32_t evm_req_tx_for_ate(uint32_t frame_len);
 uint32_t hal_machw_frame_duration_ate(uint8_t bw, uint8_t modf, uint8_t rate, uint8_t long_preamble, uint8_t short_gi, uint16_t len);
 
 void mdm_set_scramblerctrl(uint32_t value);
+void bk_wifi_print_regdomain();
+const char *reg_current_regd();
+bool bk_wifi_regd_updated_by_scan();
+void bk_wifi_set_regd_updated_by_scan(bool enable);
+struct ieee80211_channel;
+bool chan_need_disabled(struct ieee80211_channel *channel);
+bool regd_chan_available(int freq, const char *alpha2);
+void regulatory_hint_disconnect(void);
 
 //Optimize it
 __attribute__((weak)) uint32_t cfg_ap_is_open_system(void);
 uint8_t bk_wifi_get_ps_status();
-
+uint8_t bk_wifi_get_coex_mode(void);
 #ifdef __cplusplus
 }
 #endif

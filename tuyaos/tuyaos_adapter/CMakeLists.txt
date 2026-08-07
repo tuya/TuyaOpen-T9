@@ -169,7 +169,8 @@ else()
         endif()
 
         list(APPEND incs
-            # src/test/test_media
+            src/test/test_media
+            src/test/test_media/osd_assets
             # src/test/coremark
             # src/test/coremark/posix
         )
@@ -186,6 +187,9 @@ else()
             src/test/test_ringbuffer/rb.c
             src/test/test_media/test_mipi.c
             src/test/test_media/test_gpu.c
+            src/test/test_media/osd_assets/bk_font.c
+            src/test/test_media/osd_assets/bk_img.c
+            src/test/test_media/osd_assets/blend_dsc.c
             src/test/test_media/test_venc.c
             src/test/test_media/test_vdec.c
             src/test/test_media/test_uvc.c
@@ -224,6 +228,8 @@ else()
             src/test/test_sdcard.c
             src/test/test_memory.c
             src/test/test_ota.c
+            # src/test/test_mbedtls.c
+            # src/test/test_plat.c
             # src/test/test_face_recognize/AvdkDetectionModel.cc
             # src/test/test_face_recognize/box.c
             # src/test/test_face_recognize/YolofaceDetectionModel.cc
@@ -305,7 +311,7 @@ endif()
 if ("$ENV{ARMINO_SOC}" STREQUAL "bk7259")
     set(priv_requires_list bk_common bk_log bk_cli lwip_intf_v2_1 os_source)
 elseif ("$ENV{ARMINO_SOC}" STREQUAL "bk7259_ap")
-    set(priv_requires_list bk_common bk_modem bk_log bk_cli lwip_intf_v2_1 os_source lvgl bk_vfs media_service bk_usb audio_record audio_play bk_tflite_micro avdk_utils bk_peripheral)
+    set(priv_requires_list bk_common bk_modem bk_log bk_cli lwip_intf_v2_1 os_source lvgl bk_vfs media_service bk_usb audio_record audio_play bk_tflite_micro avdk_utils bk_peripheral bk_netif bk_encoder bk_gpu bk_draw_osd)
 else()
     message(FATAL_ERROR soc:"$ENV{ARMINO_SOC}" is not valid!)
 endif() # CONFIG_CPU_INDEX

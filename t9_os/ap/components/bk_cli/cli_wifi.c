@@ -5,6 +5,7 @@
 #include <../../lwip_intf_v2_1/lwip-2.1.2/port/net.h>
 #endif
 #include "lwip/ip4.h"
+#include "lwip/inet.h"
 #include "bk_private/bk_wifi.h"
 #include "bk_wifi_private.h"
 #include "bk_cli.h"
@@ -13,7 +14,8 @@
 #include <components/netif.h>
 #include "bk_wifi.h"
 #include "bk_wifi_types.h"
-#include "bk_wifi.h"
+#include "wifi_api.h"
+#include "soc_debug.h"
 
 #include "ftp/ftpd.h"
 
@@ -101,7 +103,14 @@ void cli_wifi_monitor_help(void)
 void cli_wifi_state_help(void)
 {
 	CLI_RAW_LOGI("\r\nstate\n");
-	CLI_RAW_LOGI("  Show the state of station, softap and bridge.\n");
+	CLI_RAW_LOGI("  Show the state of station, softap");
+#if CONFIG_P2P
+	CLI_RAW_LOGI(", p2p go/gc");
+#endif
+#if CONFIG_BRIDGE
+	CLI_RAW_LOGI(" and bridge");
+#endif
+	CLI_RAW_LOGI(".\n");
 	CLI_RAW_LOGI("  -no param\n");
 	CLI_RAW_LOGI("  example1: state\n");
 }
@@ -160,7 +169,7 @@ void cli_wifi_p2p_help(void)
 	CLI_RAW_LOGI("  -find: start peer discovery. \n");
 	CLI_RAW_LOGI("  -listen: enter listen state. \n");
 	CLI_RAW_LOGI("  -stop_find: stop peer discovery. \n");
-	CLI_RAW_LOGI("  -connect <dev> <method> <intent>: connect to peer. \n");
+	CLI_RAW_LOGI("  -connect <mac> <method> <intent>: connect to peer; mac is 12 hex digits (':' optional, same as sta bssid). \n");
 	CLI_RAW_LOGI("  -cancel: cancel ongoing P2P connection. \n");
 	CLI_RAW_LOGI("  -disable: disable P2P. \n");
 }
@@ -205,6 +214,27 @@ static int cli_hexstr2bin(const char *hex, u8 *buf, size_t len)
 		ipos += 2;
 	}
 	return 0;
+}
+
+/* Strip ':' so cli_hexstr2bin can parse MAC from log (%pm) or compact form. */
+static int cli_mac_str_to_bin(const char *mac_str, u8 *mac)
+{
+	char compact[13];
+	size_t di = 0, si = 0;
+
+	if (!mac_str || !mac)
+		return -1;
+
+	while (mac_str[si] && di < sizeof(compact) - 1) {
+		if (mac_str[si] != ':')
+			compact[di++] = mac_str[si];
+		si++;
+	}
+	if (di != 12)
+		return -1;
+
+	compact[12] = '\0';
+	return cli_hexstr2bin(compact, mac, 6);
 }
 
 const char *cli_wifi_sec_type_string(wifi_security_t security)
@@ -409,6 +439,120 @@ error:
 	return;
 }
 
+#endif
+
+#if CONFIG_SOFTAP_WPA3
+void cli_wifi_wpa3_ap_help(void)
+{
+	CLI_RAW_LOGI("\r\nap_wpa3 {ssid} [password] [channel] \n");
+	CLI_RAW_LOGI("  Start a WPA3-SAE softap. \n");
+	CLI_RAW_LOGI("  -ssid <string><mandatory>: SSID of AP. \n");
+	CLI_RAW_LOGI("  -password <string><mandatory>: password of AP, 8~63 bytes (WPA3 passphrase). \n");
+	CLI_RAW_LOGI("  -channel <int><optional>: channel 1~14. Omit to use default channel. \n");
+	CLI_RAW_LOGI("  Note: with 3 args, a token of 1~2 chars is treated as channel, otherwise as password. \n");
+	CLI_RAW_LOGI("  example1: ap_wpa3 myap 12345678 \n");
+	CLI_RAW_LOGI("  example2: ap_wpa3 myap 12345678 6 \n");
+}
+
+void cli_wifi_wpa3_ap_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv)
+{
+	wifi_ap_config_t ap_config = WIFI_DEFAULT_AP_CONFIG();
+	netif_ip4_config_t ip4_config = {0};
+	char *ap_ssid = NULL;
+	char *ap_key = "";
+	char *ap_channel = NULL;
+	int len, key_len;
+	int ret = BK_OK;
+	char *msg = NULL;
+
+	if ((argc < 2) || (argc > 4)) {
+		CLI_LOGE("Invalid parameters\n");
+		cli_wifi_wpa3_ap_help();
+		goto error;
+	}
+
+	if ((argc == 2) && (os_strcmp(argv[1], "help") == 0)) {
+		cli_wifi_wpa3_ap_help();
+		goto succeed;
+	}
+
+	if (argc == 2)
+		ap_ssid = argv[1];
+	else if (argc == 3) {
+		ap_ssid = argv[1];
+		/* A purely numeric token of 1~2 chars is treated as channel */
+		if (os_strlen(argv[2]) <= 2 && argv[2][0] >= '0' && argv[2][0] <= '9')
+			ap_channel = argv[2];
+		else
+			ap_key = argv[2];
+	} else {
+		ap_ssid = argv[1];
+		ap_key = argv[2];
+		ap_channel = argv[3];
+	}
+
+	len = os_strlen(ap_ssid);
+	if (len == 0 || len > 32) {
+		CLI_LOGE("ssid name must be 1~32 Bytes\r\n");
+		goto error;
+	}
+
+	key_len = os_strlen(ap_key);
+	if (key_len < 8) {
+		CLI_LOGE("WPA3 requires password >= 8 bytes\r\n");
+		goto error;
+	}
+	if (key_len > 63) {
+		CLI_LOGE("WPA3 passphrase must be <= 63 bytes\r\n");
+		goto error;
+	}
+
+	os_strlcpy(ap_config.ssid, ap_ssid, sizeof(ap_config.ssid));
+	os_strlcpy(ap_config.password, ap_key, sizeof(ap_config.password));
+
+	if (ap_channel) {
+		int channel;
+		char *end;
+
+		channel = strtol(ap_channel, &end, 0);
+		if (*end || channel < 1 || channel > 14) {
+			CLI_LOGE("Invalid channel '%s', valid range 1~14\r\n", ap_channel);
+			goto error;
+		}
+		ap_config.channel = channel;
+	}
+
+	ap_config.security = WIFI_SECURITY_WPA3_SAE;
+
+	CLI_LOGI("Start WPA3 softap. ssid:%s chan:%d\r\n",
+		 ap_config.ssid, ap_config.channel);
+
+	os_strcpy(ip4_config.ip, WLAN_DEFAULT_IP);
+	os_strcpy(ip4_config.mask, WLAN_DEFAULT_MASK);
+	os_strcpy(ip4_config.gateway, WLAN_DEFAULT_GW);
+	os_strcpy(ip4_config.dns, WLAN_DEFAULT_GW);
+	ret = bk_netif_set_ip4_config(NETIF_IF_AP, &ip4_config);
+	if (ret != BK_OK)
+		goto error;
+
+	ret = bk_wifi_ap_set_config(&ap_config);
+	if (ret != BK_OK)
+		goto error;
+
+	ret = bk_wifi_ap_start();
+	if (ret != BK_OK)
+		goto error;
+
+succeed:
+	msg = WIFI_CMD_RSP_SUCCEED;
+	os_memcpy(pcWriteBuffer, msg, os_strlen(msg));
+	return;
+
+error:
+	msg = WIFI_CMD_RSP_ERROR;
+	os_memcpy(pcWriteBuffer, msg, os_strlen(msg));
+	return;
+}
 #endif
 
 void cli_wifi_stop_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv)
@@ -661,6 +805,13 @@ error:
 	return;
 }
 
+static uint8_t cli_wifi_softap_display_channel(const wifi_ap_config_t *ap_info)
+{
+	uint8_t ch = bk_wlan_ap_get_channel_config();
+
+	return ch ? ch : (ap_info ? ap_info->channel : 0);
+}
+
 int cli_wifi_state_handle(void)
 {
 #if CONFIG_LWIP
@@ -693,9 +844,8 @@ int cli_wifi_state_handle(void)
 			os_memset(&ap_info, 0x0, sizeof(ap_info));
 			if (bk_wifi_ap_get_config(&ap_info) == BK_OK) {
 				os_memcpy(ssid, ap_info.ssid, 32);
-				if (br_channel == 0) {
-					br_channel = ap_info.channel;
-				}
+				if (br_channel == 0)
+					br_channel = cli_wifi_softap_display_channel(&ap_info);
 				BK_LOGI(TAG, "[KW:]bridge: ssid=%s, channel=%d, cipher_type=%s\r\n",
 						ssid, br_channel,
 						cli_wifi_sec_type_string(ap_info.security));
@@ -725,13 +875,36 @@ int cli_wifi_state_handle(void)
 		BK_RETURN_ON_ERR(bk_wifi_ap_get_config(&ap_info));
 		os_memcpy(ssid, ap_info.ssid, 32);
 		BK_LOGI(TAG, "[KW:]softap: ssid=%s, channel=%d, cipher_type=%s\r\n",
-				   ssid, ap_info.channel, cli_wifi_sec_type_string(ap_info.security));
+				   ssid, cli_wifi_softap_display_channel(&ap_info),
+				   cli_wifi_sec_type_string(ap_info.security));
 
 		os_memset(&ip4_info, 0x0, sizeof(ip4_info));
 		BK_RETURN_ON_ERR(bk_netif_get_ip4_config(NETIF_IF_AP, &ip4_info));
 		BK_LOGD(TAG, "[KW:]ip=%s,gate=%s,mask=%s,dns=%s\r\n",
 				   ip4_info.ip, ip4_info.gateway, ip4_info.mask, ip4_info.dns);
 	}
+
+#if CONFIG_P2P
+	{
+		int p2p_role = 0;
+		const char *dev_name = bk_wifi_get_p2p_dev_name();
+		uint8_t p2p_mac[6] = {0};
+		uint8_t p2p_ch = 0;
+
+		bk_wifi_p2p_get_role(&p2p_role);
+		if (p2p_role == 1 || p2p_role == 2) {
+			p2p_ch = bk_wifi_p2p_get_operating_channel();
+			bk_wifi_p2p_get_mac(p2p_mac);
+			if (dev_name && dev_name[0]) {
+				BK_LOGI(TAG, "[KW:]p2p: role=%s, channel=%d, dev=%s, mac=%pm\r\n",
+					p2p_role == 1 ? "go" : "gc", p2p_ch, dev_name, p2p_mac);
+			} else {
+				BK_LOGI(TAG, "[KW:]p2p: role=%s, channel=%d, mac=%pm\r\n",
+					p2p_role == 1 ? "go" : "gc", p2p_ch, p2p_mac);
+			}
+		}
+	}
+#endif
 	return BK_OK;
 #else
 	return BK_OK;
@@ -773,12 +946,35 @@ int cli_netif_event_cb(void *arg, event_module_t event_module,
 					   int event_id, void *event_data)
 {
 	netif_event_got_ip4_t *got_ip;
+	const char *netif_name;
 
 	switch (event_id) {
 	case EVENT_NETIF_GOT_IP4:
 		got_ip = (netif_event_got_ip4_t *)event_data;
-		CLI_LOGW("%s got ip\n", got_ip->netif_if == NETIF_IF_STA ? "BK STA" : "unknown netif");
+		if (got_ip == NULL)
+			break;
+		switch (got_ip->netif_if) {
+		case NETIF_IF_STA:
+			netif_name = "BK STA";
+			break;
+		case NETIF_IF_AP:
+			netif_name = "BK AP";
+			break;
+		case NETIF_IF_P2P:
+			netif_name = "BK P2P";
+			break;
+		default:
+			netif_name = "unknown netif";
+			break;
+		}
+		CLI_LOGW("%s got ip %s\n", netif_name, got_ip->ip);
 		break;
+#if CONFIG_IPV6
+	case EVENT_NETIF_GOT_IP6:
+		CLI_LOGW("BK STA got ipv6, addr_count=%d\n",
+				 ((netif_event_got_ip6_t *)event_data)->addr_count);
+		break;
+#endif
 	default:
 		CLI_LOGW("rx event <%d %d>\n", event_module, event_id);
 		break;
@@ -815,7 +1011,27 @@ int cli_wifi_event_cb(void *arg, event_module_t event_module,
 	case EVENT_WIFI_AP_DISCONNECTED:
 		ap_disconnected = (wifi_event_ap_disconnected_t *)event_data;
 		CLI_LOGD(BK_MAC_FORMAT" disconnected from BK AP\n", BK_MAC_STR(ap_disconnected->mac));
-            	break;
+		break;
+
+#if CONFIG_P2P
+	case EVENT_WIFI_GO_CONNECTED:
+		CLI_LOGW("BK P2P GO: client connected\n");
+		bk_wifi_p2p_stop_find();
+		break;
+
+	case EVENT_WIFI_GO_DISCONNECTED:
+		CLI_LOGW("BK P2P GO: client disconnected, GO kept up\n");
+		break;
+
+	case EVENT_WIFI_GC_CONNECTED:
+		CLI_LOGW("BK P2P GC: connected to remote GO\n");
+		break;
+
+	case EVENT_WIFI_GC_DISCONNECTED:
+		CLI_LOGW("BK P2P GC: disconnected\n");
+		bk_wifi_p2p_find();
+		break;
+#endif
 
 	default:
 		CLI_LOGW("rx event <%d %d>\n", event_module, event_id);
@@ -966,7 +1182,6 @@ error:
 #endif
 
 #if CONFIG_P2P
-extern bk_err_t demo_p2p_event_cb(void *arg, event_module_t event_module, int event_id, void *event_data);
 void cli_wifi_p2p_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv)
 {
 	int ret = BK_OK;
@@ -1008,7 +1223,6 @@ void cli_wifi_p2p_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char *
 				goto error;
 			}
 		}
-		bk_event_register_cb(EVENT_MOD_WIFI, EVENT_ID_ALL, demo_p2p_event_cb, NULL);
 	} else if (!os_strcmp(argv[1], "find")) {
 		ret = bk_wifi_p2p_find();
 		if (ret != BK_OK) {
@@ -1028,7 +1242,7 @@ void cli_wifi_p2p_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char *
 			goto error;
 		}
 	} else if (!os_strcmp(argv[1], "connect")) {
-		uint8_t *peer = NULL;
+		uint8_t peer_mac[6] = {0};
 		int method = 0;
 		int intent = 0;
 
@@ -1038,10 +1252,14 @@ void cli_wifi_p2p_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char *
 			goto error;
 		}
 
-		peer = (uint8_t *)argv[2];
+		if (cli_mac_str_to_bin(argv[2], peer_mac) != 0) {
+			CLI_LOGE("invalid peer mac (12 hex digits, ':' optional): %s\n",
+				 argv[2]);
+			goto error;
+		}
 		method = os_strtoul(argv[3], NULL, 10);
 		intent = os_strtoul(argv[4], NULL, 10);
-		ret = bk_wifi_p2p_connect(peer, method, intent);
+		ret = bk_wifi_p2p_connect(peer_mac, method, intent);
 		if (ret != BK_OK) {
 			CLI_LOGE("p2p connect failed, err=%d\n", ret);
 			goto error;
@@ -1058,7 +1276,6 @@ void cli_wifi_p2p_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char *
 			CLI_LOGE("p2p disable failed, err=%d\n", ret);
 			goto error;
 		}
-		bk_event_unregister_cb(EVENT_MOD_WIFI, EVENT_ID_ALL, demo_p2p_event_cb);
 	} else {
 		CLI_LOGW("invalid p2p command\n");
 		cli_wifi_p2p_help();
@@ -1079,9 +1296,32 @@ error:
 }
 #endif
 
+/*
+ * regulatory domain command (forwarded to CP).
+ *     regd get
+ *     regd set <alpha2>
+ */
+void cli_wifi_regd_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv)
+{
+	if (argc > 1 && !os_strcmp(argv[1], "get")) {
+		bk_wifi_print_regdomain();
+		return;
+	} else if (argc > 2 && !os_strcmp(argv[1], "set")) {
+		char alpha2[3] = {0};
+		os_strlcpy(alpha2, argv[2], sizeof(alpha2));
+		bk_wifi_set_country_code(alpha2);
+		return;
+	}
+
+	CLI_LOGE("Usage:\n");
+	CLI_LOGE("\t%s get\n", argv[0]);
+	CLI_LOGE("\t%s set <alpha2>\n", argv[0]);
+}
+
 #define WIFI_CMD_CNT (sizeof(s_wifi_commands) / sizeof(struct cli_command))
 static const struct cli_command s_wifi_commands[] = {
 	{"scan", "scan [ssid]", cli_wifi_scan_cmd},
+	{"regd", "regd {get|set <alpha2>}", cli_wifi_regd_cmd},
 #ifdef CONFIG_WIFI_SOFTAP
 	{"ap", "ap {ssid} [password] [channel] [hidden]", cli_wifi_ap_cmd},
 #endif
@@ -1097,6 +1337,9 @@ static const struct cli_command s_wifi_commands[] = {
 #if CONFIG_P2P
 	{"p2p", "p2p {enable|find|listen|stop_find|connect|cancel|disable}", cli_wifi_p2p_cmd},
 #endif
+#if CONFIG_SOFTAP_WPA3
+	{"ap_wpa3", "ap_wpa3 {ssid} [password] [channel]", cli_wifi_wpa3_ap_cmd},
+#endif
 };
 
 int cli_wifi_init(void)
@@ -1107,7 +1350,8 @@ int cli_wifi_init(void)
 	#endif
 	BK_LOG_ON_ERR(bk_event_register_cb(EVENT_MOD_WIFI, EVENT_ID_ALL, cli_wifi_event_cb, NULL));
 	BK_LOG_ON_ERR(bk_event_register_cb(EVENT_MOD_NETIF, EVENT_ID_ALL, cli_netif_event_cb, NULL));
-	return cli_register_commands(s_wifi_commands, WIFI_CMD_CNT);
+	int _reg_ret = cli_register_commands(s_wifi_commands, WIFI_CMD_CNT);
+	return _reg_ret;
 }
 
 #endif //#if (CLI_CFG_WIFI == 1)

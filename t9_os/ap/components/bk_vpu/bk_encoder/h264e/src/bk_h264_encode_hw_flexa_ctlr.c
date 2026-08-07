@@ -7,31 +7,39 @@
 #include "modules/vcenc/vcenc_types.h"
 #include "modules/vcenc/vcenc_h264_api.h"
 #include "private_h264_encode_ctlr.h"
+#include "h264_encode_vcenc_rate_ctrl_priv.h"
+#include "h264_encode_osd_priv.h"
 #include "hw_encoder_ctlr.h"
+#if CONFIG_L2_CACHE_ENABLE || CONFIG_DCACHE
+#include "cache.h"
+#endif
 #include <components/bk_frame_buffer.h>
 #include "avdk_monitor.h"
 
 #define TAG "bk_h264_encode_ctlr"
+#define H264_HW_FLEXA_ENC_DONE_WAIT_MS 5000U
+
+static uint32_t h264_hw_flexa_pending_in_lines(const bk_h264_encode_hw_flexa_config_t *config)
+{
+    uint32_t bytes_per_row;
+
+    if (config == NULL || config->width == 0U) {
+        return 0U;
+    }
+
+    bytes_per_row = config->width * 3U / 2U;
+    if (bytes_per_row == 0U || config->input_size == 0U) {
+        return 0U;
+    }
+
+    return config->input_size / bytes_per_row;
+}
 
 #define LOGI(...) BK_LOGI(TAG, ##__VA_ARGS__)
 #define LOGW(...) BK_LOGW(TAG, ##__VA_ARGS__)
 #define LOGE(...) BK_LOGE(TAG, ##__VA_ARGS__)
 #define LOGD(...) BK_LOGD(TAG, ##__VA_ARGS__)
 #define LOGV(...) BK_LOGV(TAG, ##__VA_ARGS__)
-
-// Modified by TUYA Start
-/* Drain any buffered posts so a stale semaphore can't trigger a spurious encode
- * after stop/restart. Does not unblock a current waiter; used together with the
- * `stopping` flag during teardown. */
-static void h264_encode_clear_semaphore(beken_semaphore_t *sem)
-{
-    if (sem == NULL || *sem == NULL) {
-        return;
-    }
-    while (rtos_get_semaphore(sem, 0) == BK_OK) {
-    }
-}
-// Modified by TUYA End
 
 // Handle encoding failure
 static void handle_encode_error(private_h264_encode_hw_flexa_ctlr_t *ctrl, void *buffer, uint32_t size)
@@ -45,6 +53,11 @@ static void handle_encode_error(private_h264_encode_hw_flexa_ctlr_t *ctrl, void 
             .sequence = 0,
             .args = ctrl->config.outbuf_complete_args,
         };
+#if CONFIG_L2_CACHE_ENABLE || CONFIG_DCACHE
+        if (size > 0U) {
+            flush_dcache(buffer, (long)size);
+        }
+#endif
         ctrl->config.outbuf_complete(&info);
         ctrl->pending_out_buf = 0;
     }
@@ -72,6 +85,11 @@ static void handle_video_frame(private_h264_encode_hw_flexa_ctlr_t *ctrl, void *
             .sequence = ctrl->debug_info.all_frame_count,
             .args = ctrl->config.outbuf_complete_args,
         };
+#if CONFIG_L2_CACHE_ENABLE || CONFIG_DCACHE
+        if (size > 0U) {
+            flush_dcache(buffer, (long)size);
+        }
+#endif
         ctrl->config.outbuf_complete(&info);
         ctrl->pending_out_buf = (uint32_t)next_buffer;
         ctrl->pending_out_size = CONFIG_BK_ENCODER_H264_MAX_OUTPUT_BUFFER;
@@ -98,21 +116,26 @@ static void h264e_end_cb(void *buffer, uint32_t size, uint32_t type, uint32_t re
 
     private_h264_encode_hw_flexa_ctlr_t *ctrl = (private_h264_encode_hw_flexa_ctlr_t *)param;
 
-    if (result == BK_OK) {
-        if (type == VCENC_OUT_IFRAME) {
-            if (ctrl->debug_info.max_i_frame_size < size) {
-                ctrl->debug_info.max_i_frame_size = size;
+    if (ctrl->debug_time_ms != 0) {
+        if (result == BK_OK) {
+            ctrl->debug_info.enc_frame_ok_cnt++;
+            if (type == VCENC_OUT_IFRAME) {
+                if (ctrl->debug_info.max_i_frame_size < size) {
+                    ctrl->debug_info.max_i_frame_size = size;
+                }
+                ctrl->debug_info.last_i_frame_size = size;
+            } else if (type == VCENC_OUT_PFRAME) {
+                if (ctrl->debug_info.max_p_frame_size < size) {
+                    ctrl->debug_info.max_p_frame_size = size;
+                }
+                ctrl->debug_info.last_p_frame_size = size;
             }
-            ctrl->debug_info.last_i_frame_size = size;
-        } else if (type == VCENC_OUT_PFRAME) {
-            if (ctrl->debug_info.max_p_frame_size < size) {
-                ctrl->debug_info.max_p_frame_size = size;
-            }
-            ctrl->debug_info.last_p_frame_size = size;
+            ctrl->debug_info.all_frame_size += size;
+            h264_encode_debug_update_qp(&ctrl->debug_info, type,
+                                        vcenc_h264_get_current_qp(&ctrl->enc_param));
+        } else {
+            ctrl->debug_info.enc_frame_err_cnt++;
         }
-        ctrl->debug_info.all_frame_size += size;
-    } else {
-        ctrl->debug_info.enc_frame_err_cnt++;
     }
 
     if (result != BK_OK) {
@@ -135,14 +158,6 @@ static avdk_err_t h264_encode_msg_callback(void *param)
         LOGW("No encoder parameters available\r\n");
         return AVDK_ERR_INVAL;
     }
-    // Modified by TUYA Start
-    /* Do not engage the HW encoder while stopping/torn down; report success so
-     * the bond handshake completes without a mid-frame abort. */
-    if (ctrl->stopping || ctrl->enc_status == 0 || ctrl->bond == NULL) {
-        ctrl->encode_result = BK_OK;
-        return AVDK_ERR_OK;
-    }
-    // Modified by TUYA End
     ENCODE_FRAME_START;
     ctrl->enc_param.in_buffer = ctrl->pending_in_buf;
     ctrl->enc_param.in_lines = ctrl->pending_in_lines;
@@ -151,7 +166,26 @@ static avdk_err_t h264_encode_msg_callback(void *param)
     ctrl->enc_param.force_idr_flag = ctrl->force_idr ? 1U : 0U;
     ctrl->force_idr = false;
     ctrl->debug_info.all_frame_count++;
+#if CONFIG_L2_CACHE_ENABLE || CONFIG_DCACHE
+    if (ctrl->enc_param.in_buffer != 0U) {
+        uint32_t line_bytes = ctrl->config.width * 3U / 2U;
+        uint32_t flush_sz = ctrl->config.width * ctrl->config.height * 3U / 2U;
+
+        if (ctrl->enc_param.in_lines != 0U) {
+            if (ctrl->enc_param.in_lines <= ctrl->config.height) {
+                flush_sz = ctrl->enc_param.in_lines * line_bytes;
+            } else {
+                flush_sz = ctrl->enc_param.in_lines;
+            }
+        } else if (ctrl->config.input_size != 0U) {
+            flush_sz = ctrl->config.input_size;
+        }
+        flush_dcache((void *)(uintptr_t)ctrl->enc_param.in_buffer, (long)flush_sz);
+    }
+#endif
+    h264_encode_osd_sync_to_vcenc(&ctrl->enc_param, ctrl->osd_slots);
     vcenc_ret_e venc_ret = vcenc_h264_encode_frame(&ctrl->enc_param);
+    h264_encode_osd_finish_frame(ctrl->osd_slots);
     ctrl->enc_param.update_flag = 0;
     if (venc_ret != VCENC_FRAME_READY && venc_ret != VCENC_OK) {
         LOGE("vcenc_h264_encode_frame failed: %d\r\n", venc_ret);
@@ -191,12 +225,6 @@ static void h264_encoder_entry(void *arg)
         if (!ctrl->enc_status) {
             break;
         }
-        // Modified by TUYA Start
-        /* Stopping or bond detached: drop frame-ready kicks without touching HW. */
-        if (ctrl->stopping || ctrl->bond == NULL) {
-            continue;
-        }
-        // Modified by TUYA End
         if (ctrl->pending_out_buf == 0 && ctrl->config.outbuf_malloc != NULL) {
             void *temp_buffer = ctrl->config.outbuf_malloc(CONFIG_BK_ENCODER_H264_MAX_OUTPUT_BUFFER, ctrl->config.outbuf_malloc_args);
             if (temp_buffer != NULL) {
@@ -216,7 +244,7 @@ static void h264_encoder_entry(void *arg)
             continue;
         }
         ctrl->pending_in_buf = ctrl->config.input_buf;
-        ctrl->pending_in_lines = ctrl->config.input_size;
+        ctrl->pending_in_lines = h264_hw_flexa_pending_in_lines(&ctrl->config);
 
         hw_encoder_msg_t msg = {
             .type = HW_ENCODER_MSG_ENCODE,
@@ -225,28 +253,14 @@ static void h264_encoder_entry(void *arg)
             .param = ctrl,
             .sem = &ctrl->enc_done_sem
         };
-        // Modified by TUYA Start
-        /* Drop any stale completion post so this dispatch waits on its own frame. */
-        h264_encode_clear_semaphore(&ctrl->enc_done_sem);
-        // Modified by TUYA End
         avdk_err_t ret = hw_encoder_send_msg(&msg, BEKEN_WAIT_FOREVER);
         if (ret != AVDK_ERR_OK) {
-            // Modified by TUYA Start
-            if (ctrl->stopping || ctrl->enc_status == 0) {
-                continue;
-            }
-            // Modified by TUYA End
             LOGE("hw_encoder_send_msg failed: %d\r\n", ret);
             handle_encode_error(ctrl, (void *)ctrl->pending_out_buf, 0);
             continue;
         }
-        ret = rtos_get_semaphore(&ctrl->enc_done_sem, 1000);
+        ret = rtos_get_semaphore(&ctrl->enc_done_sem, H264_HW_FLEXA_ENC_DONE_WAIT_MS);
         if (ret != BK_OK) {
-            // Modified by TUYA Start
-            if (ctrl->stopping || ctrl->enc_status == 0) {
-                continue;
-            }
-            // Modified by TUYA End
             LOGE("get semaphore failed: %d\r\n", ret);
             handle_encode_error(ctrl, (void *)ctrl->pending_out_buf, 0);
             if (ctrl->bond != NULL && ctrl->bond->frame_done != NULL) {
@@ -336,6 +350,7 @@ static avdk_err_t h264_encode_ctlr_open(bk_h264_encode_ctlr_handle_t handle)
         return AVDK_ERR_GENERIC;
     }
     control->encoder_inited = true;
+    h264_encode_osd_module_init();
 
     /* Apply legacy open-time fixed-QP defaults. */
     vcenc_rate_ctrl_t rc;
@@ -353,13 +368,8 @@ static avdk_err_t h264_encode_ctlr_open(bk_h264_encode_ctlr_handle_t handle)
     control->enc_line_cnt = 0;
     control->enc_status = 1;
     control->enc_start_first = 1;
-    // Modified by TUYA Start
-    control->stopping = 0;
-    h264_encode_clear_semaphore(&control->enc_start_sem);
-    h264_encode_clear_semaphore(&control->enc_done_sem);
-    // Modified by TUYA End
     bk_err_t ret = rtos_create_hsram_thread(&control->thread,
-                           2,
+                           CONFIG_BK_ENCODER_H264_HW_FLEXA_TASK_PRIORITY,
                            "h264e_encoder",
                            (beken_thread_function_t)h264_encoder_entry,
                            CONFIG_BK_ENCODER_H264_TASK_SIZE,
@@ -391,12 +401,6 @@ static avdk_err_t h264_encode_ctlr_close(bk_h264_encode_ctlr_handle_t handle)
     private_h264_encode_hw_flexa_ctlr_t *control =  __containerof(handle, private_h264_encode_hw_flexa_ctlr_t, ops);
     AVDK_RETURN_ON_FALSE(control, AVDK_ERR_INVAL, TAG, "control is NULL");
 
-    // Modified by TUYA Start
-    /* Block new frames from reaching the HW before joining the encoder thread,
-     * so the in-flight frame (if any) is the last one and teardown stays clean. */
-    control->stopping = 1;
-    h264_encode_clear_semaphore(&control->enc_done_sem);
-    // Modified by TUYA End
     control->enc_status = 0;
     rtos_set_semaphore(&control->enc_start_sem);
     rtos_get_semaphore(&control->sem, BEKEN_WAIT_FOREVER);
@@ -417,6 +421,7 @@ static avdk_err_t h264_encode_ctlr_close(bk_h264_encode_ctlr_handle_t handle)
     }
 
     if (control->encoder_inited) {
+        h264_encode_osd_release_all(&control->enc_param, control->osd_slots);
         (void)vcenc_h264_close(&control->enc_param);
         (void)vcenc_h264_deinit(&control->enc_param);
         control->encoder_inited = false;
@@ -588,6 +593,7 @@ static avdk_err_t h264_encode_ctlr_get_rate_ctrl(private_h264_encode_hw_flexa_ct
     return AVDK_ERR_OK;
 }
 
+
 // Debug timer callback
 static void h264e_debug_callback(void *arg)
 {
@@ -603,10 +609,17 @@ static void h264e_debug_callback(void *arg)
     uint32_t frame_count = (debug->all_frame_count - ctrl->last_debug_info.all_frame_count) * 1000 / ctrl->debug_time_ms;
     uint32_t bytes_per_second = (debug->all_frame_size - ctrl->last_debug_info.all_frame_size) * 1000 / ctrl->debug_time_ms;
     uint32_t bit_rate_kbps = bytes_per_second * 8 / 1024;
-    LOGI("%s %d(fps:%d\t%dBytes/s\tbit_rate:%dkbps\tmax_i:%d\tmax_p:%d)\n", __func__, __LINE__,
+    uint32_t enc_err_cnt = debug->enc_frame_err_cnt - ctrl->last_debug_info.enc_frame_err_cnt;
+    uint32_t enc_ok_cnt = debug->enc_frame_ok_cnt - ctrl->last_debug_info.enc_frame_ok_cnt;
+    LOGI("%s %d(fps:%d\t%dBytes/s\tbit_rate:%dkbps\tmax_i:%d\tmax_p:%d\t"
+         "i_qp[%u-%u]\tp_qp[%u-%u]\tlast_qp:%u\tenc_ok:%u\tenc_err:%u)\n", __func__, __LINE__,
          frame_count, bytes_per_second, bit_rate_kbps,
-         debug->max_i_frame_size, debug->max_p_frame_size);
+         debug->max_i_frame_size, debug->max_p_frame_size,
+         debug->min_i_qp <= 51U ? debug->min_i_qp : 0U, debug->max_i_qp,
+         debug->min_p_qp <= 51U ? debug->min_p_qp : 0U, debug->max_p_qp,
+         debug->last_frame_qp, enc_ok_cnt, enc_err_cnt);
     os_memcpy(&ctrl->last_debug_info, debug, sizeof(*debug));
+    h264_encode_debug_info_reset_qp(debug);
 }
 
 static avdk_err_t h264_encode_ctlr_ioctl(bk_h264_encode_ctlr_handle_t handle, uint32_t cmd, void *arg)
@@ -669,6 +682,13 @@ static avdk_err_t h264_encode_ctlr_ioctl(bk_h264_encode_ctlr_handle_t handle, ui
             return h264_encode_ctlr_set_rate_ctrl(control, (bk_h264_encode_rate_ctrl_t *)arg);
         case BK_H264_ENCODE_IOCTL_GET_RATE_CTRL:
             return h264_encode_ctlr_get_rate_ctrl(control, (bk_h264_encode_rate_ctrl_t *)arg);
+        case BK_H264_ENCODE_IOCTL_SET_OSD:
+            return h264_encode_set_osd_common(&control->enc_param, control->encoder_inited,
+                                              control->osd_slots, (bk_h264_encode_osd_t *)arg);
+        case H264_ENCODE_IOCTL_SET_VCENC_RATE_CTRL_PRIV:
+            return h264_encode_set_vcenc_rate_ctrl_common(&control->enc_param, control->encoder_inited, (bk_h264_encode_vcenc_rate_ctrl_t *)arg);
+        case H264_ENCODE_IOCTL_GET_VCENC_RATE_CTRL_PRIV:
+            return h264_encode_get_vcenc_rate_ctrl_common(&control->enc_param, control->encoder_inited, (bk_h264_encode_vcenc_rate_ctrl_t *)arg);
         case BK_H264_ENCODE_IOCTL_SET_FLEXA_LINES_READY: {
             if (control->encoder_inited) {
                 (void)vcenc_h264_update_slice_wr_cnt(&control->enc_param, (uint32_t)arg);
@@ -691,8 +711,6 @@ static avdk_err_t h264_encode_ctlr_ioctl(bk_h264_encode_ctlr_handle_t handle, ui
             }
             else {
                 control->bond = bond;
-                // Modified by TUYA: bond (re)attached -> allow frames again.
-                control->stopping = 0;
             }
             break;
         }
@@ -703,13 +721,6 @@ static avdk_err_t h264_encode_ctlr_ioctl(bk_h264_encode_ctlr_handle_t handle, ui
                 return AVDK_ERR_INVAL;
             }
             if (control->bond == bond) {
-                // Modified by TUYA: stop feeding HW before aborting/detaching.
-                control->stopping = 1;
-                h264_encode_clear_semaphore(&control->enc_start_sem);
-                h264_encode_clear_semaphore(&control->enc_done_sem);
-                if (control->encoder_inited) {
-                    (void)vcenc_h264_abort(&control->enc_param);
-                }
                 control->bond = NULL;
             } else {
                 LOGW("%s %d bond is not registered\r\n", __func__, __LINE__);
@@ -717,19 +728,8 @@ static avdk_err_t h264_encode_ctlr_ioctl(bk_h264_encode_ctlr_handle_t handle, ui
             }
             break;
         }
-        // Modified by TUYA Start
-        case BK_H264_ENCODE_IOCTL_STOP_ENCODE: {
-            /* Pre-stop signal (called by the adapter before bond stop): block new
-             * frames from reaching the HW so the bond's SBI-disable handshake runs
-             * against an idle encoder and no in-flight frame gets aborted. */
-            control->stopping = 1;
-            h264_encode_clear_semaphore(&control->enc_start_sem);
-            h264_encode_clear_semaphore(&control->enc_done_sem);
-            break;
-        }
-        // Modified by TUYA End
         default:
-            LOGE("Unknown ioctl command: %d\r\n", cmd);
+            LOGW("Unknown ioctl command: %d\r\n", cmd);
             return AVDK_ERR_INVAL;
     }
     return AVDK_ERR_OK;
@@ -747,6 +747,7 @@ avdk_err_t bk_h264_encode_hw_flexa_ctlr_new(bk_h264_encode_ctlr_handle_t *handle
     private_h264_encode_hw_flexa_ctlr_t *controller = (private_h264_encode_hw_flexa_ctlr_t *)os_malloc(sizeof(private_h264_encode_hw_flexa_ctlr_t));
     AVDK_RETURN_ON_FALSE(controller, AVDK_ERR_NOMEM, TAG, AVDK_ERR_NOMEM_TEXT);
     os_memset(controller, 0, sizeof(private_h264_encode_hw_flexa_ctlr_t));
+    h264_encode_debug_info_reset_qp(&controller->debug_info);
     os_memcpy(&controller->config, config, sizeof(bk_h264_encode_hw_flexa_config_t));
     controller->ops.init = h264_encode_ctlr_init;
     controller->ops.open = h264_encode_ctlr_open;

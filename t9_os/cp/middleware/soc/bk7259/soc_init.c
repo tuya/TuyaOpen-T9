@@ -26,7 +26,11 @@
 #include <driver/psram.h>
 #include "sys_hal.h"
 #include "driver/aon_rtc.h"
-
+#include "timer_hal.h"
+#include "sys_pm_hal_debug.h"
+#if CONFIG_DEEP_LV_DEBUG_GPIO
+#include "pm_debug.h"
+#endif
 #if CONFIG_AP_EMUBOOT
 #include "cmsis_gcc.h"
 #include "sys_sw_regs.h"
@@ -117,12 +121,14 @@ void _soc_start(void)
     mpu_enable();
 #endif
 
-#if CONFIG_DCACHE
-    /* Discard any stale L1/L2 lines left by a warm reset, then enable through the
-     * L1+L2 cache abstraction (arch_dcache_* branch on CONFIG_L2_CACHE_ENABLE).
+#if CONFIG_CACHE_MAINTENANCE
+    /* Discard any stale cache lines left by a warm reset before enabling L1.
      * Invalidate-only: a clean here could write stale L2 lines back over the
      * freshly relocated .data/.iram and corrupt them. Matches the AP boot path. */
     arch_dcache_invd_all();
+#endif
+
+#if CONFIG_DCACHE
     arch_dcache_enable();
 #endif
 
@@ -271,29 +277,31 @@ extern void bk_wdt_force_feed(void);
 void dlv_hook(void)
 {
 #if CONFIG_DEEP_LV
-    asm volatile ("nop");
-    asm volatile ("nop");
-    asm volatile ("nop");
-    asm volatile ("nop");
-    asm volatile ("nop");
-    if (dlv_is_startup())
-    {
-#if CONFIG_DEEP_LV_DEBUG
-        GPIO_UP(37);//1
-        GPIO_DOWN(37);
-		early_jtag_gpio_map();
-#endif
+	// if(sys_hal_set_alo2core_power_switch(1) == BK_OK)
+	// {
+	// 	timer_hal_early_delay_us(10);
+	// }
+	if (dlv_is_startup())
+	{
+        #if CONFIG_PM_CP_DEEP_LV_SRAM_CHECK
+		sys_pm_hal_sram_crc_check();
+        #endif
+		#if CONFIG_DEEP_LV_DEBUG_GPIO
+		PM_GPIO_UP(37);//1
+		PM_GPIO_DOWN(37);
+		//early_jtag_gpio_map();
+		#endif
 		bk_wdt_force_feed();
 		bk_rtc_update_base_time();
 		uint64_t current = bk_aon_rtc_get_us();
 		sys_hal_set_low_voltage_wakeup_time_us(current);
 
-        extern uint32_t __STACK_LIMIT;
-        __set_MSPLIM((uint32_t)(&__STACK_LIMIT));
+		extern uint32_t __STACK_LIMIT;
+		__set_MSPLIM((uint32_t)(&__STACK_LIMIT));
 
-        dlv_system_init();
-        dlv_startup();
-    }
+		dlv_system_init();
+		dlv_startup();
+	}
 #endif
 }
 

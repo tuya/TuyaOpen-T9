@@ -67,21 +67,48 @@ typedef enum
 {
     VIDEO_PLAY_ENGINE_H264_DECODER_FLEXA_GPU = 0,
     VIDEO_PLAY_ENGINE_H264_DECODER_FRAME,
+    VIDEO_PLAY_ENGINE_H264_DECODER_FRAME_ZEROCOPY,
 } video_play_engine_h264_decoder_mode_t;
 
 static video_play_engine_h264_decoder_mode_t s_h264_decoder_mode = VIDEO_PLAY_ENGINE_H264_DECODER_FLEXA_GPU;
 
 static const char *video_play_engine_h264_decoder_mode_name(video_play_engine_h264_decoder_mode_t mode)
 {
-    return (mode == VIDEO_PLAY_ENGINE_H264_DECODER_FRAME) ? "frame" : "flexa_gpu";
+    switch (mode)
+    {
+    case VIDEO_PLAY_ENGINE_H264_DECODER_FRAME:
+        return "frame";
+    case VIDEO_PLAY_ENGINE_H264_DECODER_FRAME_ZEROCOPY:
+        return "frame_zc";
+    default:
+        return "flexa_gpu";
+    }
 }
 
 static video_play_lcd_video_fmt_t video_play_engine_lcd_format_for_h264_decoder(
     video_play_engine_h264_decoder_mode_t mode)
 {
-    return (mode == VIDEO_PLAY_ENGINE_H264_DECODER_FRAME)
-        ? VIDEO_PLAY_LCD_VIDEO_FMT_NV12_RAW
-        : VIDEO_PLAY_LCD_VIDEO_FMT_ARGB8888_COMPRESSED;
+    if (mode == VIDEO_PLAY_ENGINE_H264_DECODER_FRAME)
+    {
+#if VIDEO_PLAY_H264_FRAME_RGB888_ENABLE
+        return VIDEO_PLAY_LCD_VIDEO_FMT_RGB888_RAW;
+#else
+        return VIDEO_PLAY_LCD_VIDEO_FMT_NV12_RAW;
+#endif
+    }
+
+    /* The zero-copy/B-frame decoder emits raw NV12 frames; only the Flexa+GPU
+     * path can switch between compressed and raw ARGB8888 experiments. */
+    if (mode == VIDEO_PLAY_ENGINE_H264_DECODER_FRAME_ZEROCOPY)
+    {
+        return VIDEO_PLAY_LCD_VIDEO_FMT_NV12_RAW;
+    }
+
+#if VIDEO_PLAY_H264_FLEXA_RAW_ARGB8888_ENABLE
+    return VIDEO_PLAY_LCD_VIDEO_FMT_ARGB8888_RAW;
+#else
+    return VIDEO_PLAY_LCD_VIDEO_FMT_ARGB8888_COMPRESSED;
+#endif
 }
 
 static bool video_play_engine_is_rotate_option(const char *arg)
@@ -123,13 +150,26 @@ static bool video_play_engine_parse_h264_decoder_mode(int argc,
 #endif
     }
 
+    if (os_strcmp(argv[3], "frame_zc") == 0 ||
+        os_strcmp(argv[3], "zerocopy") == 0 ||
+        os_strcmp(argv[3], "frame_zerocopy") == 0)
+    {
+#if CONFIG_BK_VIDEO_PLAYER_ENABLE_HW_H264_VIDEO_DECODER
+        *mode = VIDEO_PLAY_ENGINE_H264_DECODER_FRAME_ZEROCOPY;
+        return true;
+#else
+        LOGE("%s: 'frame_zc' requires CONFIG_BK_VIDEO_PLAYER_ENABLE_HW_H264_VIDEO_DECODER\n", __func__);
+        return false;
+#endif
+    }
+
     if (os_strcmp(argv[3], "gpu") == 0 || os_strcmp(argv[3], "flexa") == 0)
     {
         *mode = VIDEO_PLAY_ENGINE_H264_DECODER_FLEXA_GPU;
         return true;
     }
 
-    LOGE("%s: unsupported decoder mode '%s', usage: start <file_path> [frame|gpu|flexa] [norotate|rotate90|rotate270]\n",
+    LOGE("%s: unsupported decoder mode '%s', usage: start <file_path> [frame|frame_zc|gpu|flexa] [norotate|rotate90|rotate270]\n",
          __func__, argv[3]);
     return false;
 }
@@ -295,6 +335,27 @@ void bk_video_player_engine_register_hw_h264_frame_video_decoder(void *handle)
     if (ret != AVDK_ERR_OK)
     {
         LOGE("%s: register_hw_h264_frame_video_decoder failed, ret=%d\n", __func__, ret);
+    }
+}
+
+void bk_video_player_engine_register_hw_h264_frame_zerocopy_video_decoder(void *handle)
+{
+    if (handle == NULL)
+    {
+        return;
+    }
+
+    video_player_video_decoder_ops_t *ops = bk_video_player_get_hw_h264_decoder_frame_zerocopy_ops();
+    if (ops == NULL)
+    {
+        LOGE("%s: get_hw_h264_decoder_frame_zerocopy_ops failed\n", __func__);
+        return;
+    }
+
+    avdk_err_t ret = bk_video_player_engine_register_video_decoder((bk_video_player_engine_handle_t)handle, ops);
+    if (ret != AVDK_ERR_OK)
+    {
+        LOGE("%s: register_hw_h264_frame_zerocopy_video_decoder failed, ret=%d\n", __func__, ret);
     }
 }
 
@@ -592,6 +653,11 @@ static void video_play_engine_destroy_runtime(bool close_lcd)
         s_video_player_core_started = false;
     }
 
+    // The engine (and thus the video decode thread) is now stopped, so no more
+    // decode-complete callbacks will enqueue frames. Tear down the display
+    // worker; it drains and frees any frames still queued.
+    video_play_display_worker_deinit();
+
     if (s_audio_player_handle != NULL)
     {
         audio_player_device_stop(s_audio_player_handle);
@@ -655,12 +721,12 @@ void cli_video_play_engine_cmd(char *pcWriteBuffer, int xWriteBufferLen, int arg
             goto exit;
         }
         video_play_rotate_mode_t previous_rotate_mode = video_play_video_get_rotate_mode();
-        video_play_video_set_rotate_mode(requested_rotate_mode);
+        bool need_recreate_runtime = (s_video_player_core_handle != NULL &&
+                                      s_video_player_core_opened &&
+                                      (requested_h264_decoder_mode != s_h264_decoder_mode ||
+                                       requested_rotate_mode != previous_rotate_mode));
 
-        if (s_video_player_core_handle != NULL &&
-            s_video_player_core_opened &&
-            (requested_h264_decoder_mode != s_h264_decoder_mode ||
-             requested_rotate_mode != previous_rotate_mode))
+        if (need_recreate_runtime)
         {
             LOGI("%s: switching H264 decoder mode/rotation, decoder=%s -> %s, rotate=%u -> %u, recreating engine\n",
                  __func__,
@@ -669,6 +735,11 @@ void cli_video_play_engine_cmd(char *pcWriteBuffer, int xWriteBufferLen, int arg
                  (unsigned)previous_rotate_mode,
                  (unsigned)requested_rotate_mode);
             video_play_engine_destroy_runtime(true);
+        }
+
+        if (requested_rotate_mode != previous_rotate_mode)
+        {
+            video_play_video_set_rotate_mode(requested_rotate_mode);
         }
 
         /*
@@ -716,6 +787,16 @@ void cli_video_play_engine_cmd(char *pcWriteBuffer, int xWriteBufferLen, int arg
             LOGI("%s: LCD display opened successfully\n", __func__);
         }
 
+        // Start the display worker before playback so decode-complete callbacks
+        // offload GPU rotate / format sync / flush instead of blocking the
+        // decode thread. Idempotent: safe to call again on replay.
+        ret = video_play_display_worker_init();
+        if (ret != AVDK_ERR_OK)
+        {
+            LOGE("%s: video_play_display_worker_init failed, ret=%d\n", __func__, ret);
+            goto exit;
+        }
+
         // Initialize video player engine configuration
         bk_video_player_config_t cfg;
         os_memset(&cfg, 0, sizeof(cfg));
@@ -730,17 +811,42 @@ void cli_video_play_engine_cmd(char *pcWriteBuffer, int xWriteBufferLen, int arg
         cfg.video.buffer_alloc_cb = video_play_video_buffer_alloc_yuv_cb;
         cfg.video.buffer_free_cb = video_play_video_buffer_free_yuv_cb;
 
+#if CONFIG_BK_VIDEO_PLAYER_ENABLE_HW_H264_VIDEO_DECODER
+        /* Frame-zerocopy: the zero-copy decode pool already consumes most of
+         * PSRAM0 (UNCODED) at high resolution, so place the displayable NV12
+         * output frames in PSRAM1 (CODED) to avoid exhausting PSRAM0. */
+        if (requested_h264_decoder_mode == VIDEO_PLAY_ENGINE_H264_DECODER_FRAME_ZEROCOPY)
+        {
+            cfg.video.buffer_alloc_cb = video_play_video_buffer_alloc_yuv_coded_cb;
+            cfg.video.buffer_free_cb = video_play_video_buffer_free_yuv_coded_cb;
+        }
+#endif
+
         cfg.video.packet_buffer_alloc_cb = video_play_video_buffer_alloc_cb;
         cfg.video.packet_buffer_free_cb = video_play_video_buffer_free_cb;
 
         cfg.audio.decode_complete_cb = video_play_audio_decode_complete_cb;
         cfg.video.decode_complete_cb = video_play_video_decode_complete_cb;
 
-        /* H264 frame mode uses NV12 output and switches the DPU to NV12.
-         * Flexa GPU mode ignores this requested format and emits compressed
-         * ARGB8888 for the board-default DPU DEC400 path. */
+        /* Frame defaults to NV12. Flexa follows H264_FLEXA_RAW_ARGB8888_ENABLE
+         * so GPU output and DPU decompress setting stay in lockstep. */
         cfg.video.output_format = PIXEL_FMT_NV12;
+#if VIDEO_PLAY_H264_FRAME_RGB888_ENABLE
+        if (requested_h264_decoder_mode == VIDEO_PLAY_ENGINE_H264_DECODER_FRAME)
+        {
+            cfg.video.output_format = PIXEL_FMT_RGB888;
+        }
+#endif
         cfg.video.rotate_degree = video_play_video_get_rotate_degree();
+        uint16_t display_w = 0U;
+        uint16_t display_h = 0U;
+        if (video_play_lcd_get_size(&display_w, &display_h))
+        {
+            cfg.video.display_width = display_w;
+            cfg.video.display_height = display_h;
+            LOGI("%s: video display target %ux%u\n",
+                 __func__, (unsigned)display_w, (unsigned)display_h);
+        }
         s_play_user_ctx.lcd_handle = s_lcd_display_handle;
         // Audio output may be opened later after probing media info.
         s_play_user_ctx.audio_player_handle = NULL;
@@ -775,6 +881,10 @@ void cli_video_play_engine_cmd(char *pcWriteBuffer, int xWriteBufferLen, int arg
         if (requested_h264_decoder_mode == VIDEO_PLAY_ENGINE_H264_DECODER_FRAME)
         {
             bk_video_player_engine_register_hw_h264_frame_video_decoder(s_video_player_core_handle);
+        }
+        else if (requested_h264_decoder_mode == VIDEO_PLAY_ENGINE_H264_DECODER_FRAME_ZEROCOPY)
+        {
+            bk_video_player_engine_register_hw_h264_frame_zerocopy_video_decoder(s_video_player_core_handle);
         }
         else
         {

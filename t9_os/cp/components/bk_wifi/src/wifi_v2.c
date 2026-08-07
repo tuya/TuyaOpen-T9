@@ -48,6 +48,12 @@
 
 #include "bk_wifi.h"
 #include "main_none.h"
+#if CONFIG_P2P && CONFIG_P2P_SOFTAP_CHAN_ALIGN
+#include "../../wpa_supplicant-2.10/wpa_supplicant/ap.h"
+#include "../../wpa_supplicant-2.10/wpa_supplicant/wpa_supplicant_i.h"
+#include "../../wpa_supplicant-2.10/src/p2p/p2p_i.h"
+#include "eloop.h"
+#endif
 #if CONFIG_AP_STATYPE_LIMIT
 #include "bk_vsie_cus.h"
 #endif
@@ -74,6 +80,12 @@
 #endif /* CONFIG_WIFI_CSI_EN && CONFIG_WIFI_CSI_DEMO */
 #ifdef CONFIG_WIFI_VNET_CONTROLLER
 #include "controller_wifi_if.h"
+#endif
+#if CONFIG_OPENTHREAD
+#include <openthread/thread.h>
+/* bk_openthread.cpp */
+otInstance *bk_ot_get_single_instance(void);
+extern void bk_ieee802154_rf_init(bool enable);
 #endif
 __attribute__((section(".dtcm_sec_data "))) wifi_os_funcs_t *g_wifi_funcs = NULL;
 __attribute__((section(".dtcm_sec_data "))) wifi_os_variable_t *g_wifi_vars = NULL;
@@ -103,6 +115,40 @@ int wifi_filter_set_config(const wifi_filter_config_t *filter_config);
 int wifi_filter_get_config(wifi_filter_config_t *filter_config);
 int wifi_filter_register_cb(const wifi_filter_cb_t filter_cb);
 uint16_t chan_get_vif_frequency(void *vif);
+#if CONFIG_P2P
+static void *bk_wifi_match_vif(uint8_t vif_type, bool p2p, bool need_active)
+{
+	void *vif;
+
+	for (vif = mac_vif_mgmt_first_vif(); vif; vif = mac_vif_mgmt_next_vif(vif)) {
+		if (mac_vif_mgmt_get_type(vif) != vif_type)
+			continue;
+		if (mac_vif_mgmt_interface_is_configured_for_p2p(vif) != p2p)
+			continue;
+		if (need_active && !mac_vif_mgmt_get_active(vif))
+			continue;
+		return vif;
+	}
+
+	return NULL;
+}
+
+static uint8_t bk_wifi_match_vif_channel(uint8_t vif_type, bool p2p)
+{
+	void *vif = bk_wifi_match_vif(vif_type, p2p, true);
+	uint16_t freq;
+
+	if (!vif)
+		return 0;
+
+	freq = chan_get_vif_frequency(vif);
+	return freq ? rw_ieee80211_get_chan_id(freq) : 0;
+}
+
+uint8_t bk_wifi_p2p_go_get_channel(void);
+uint8_t bk_wifi_p2p_gc_get_channel(void);
+uint8_t bk_wifi_p2p_get_group_channel(void);
+#endif
 
 extern void bmsg_ps_sender(uint8_t ioctl);
 extern uint8_t phy_open_cca(void);
@@ -209,7 +255,31 @@ uint32_t bk_sta_cipher_is_open(void)
 
 uint8_t bk_wlan_ap_get_channel_config(void)
 {
-	return g_ap_param_ptr->chann;
+#if CONFIG_P2P
+	uint8_t ch = bk_wifi_match_vif_channel(VIF_AP, false);
+
+	if (ch)
+		return ch;
+#else
+	void *vif;
+	uint16_t freq;
+
+	for (vif = mac_vif_mgmt_first_vif(); vif != NULL;
+	     vif = mac_vif_mgmt_next_vif(vif)) {
+		if (mac_vif_mgmt_get_type(vif) != VIF_AP)
+			continue;
+		if (!mac_vif_mgmt_get_active(vif))
+			continue;
+		freq = chan_get_vif_frequency(vif);
+		if (freq)
+			return rw_ieee80211_get_chan_id(freq);
+	}
+#endif
+
+	if (g_ap_param_ptr && g_ap_param_ptr->chann)
+		return g_ap_param_ptr->chann;
+
+	return 0;
 }
 
 void bk_wlan_ap_set_channel_config(uint8_t channel)
@@ -649,6 +719,10 @@ bk_err_t bk_wlan_start_sta(network_InitTypeDef_st *inNetworkInitPara)
 	u8 *psk = 0;
 	wifi_linkstate_reason_t info;
 	int chan = 0;
+
+#if CONFIG_P2P
+	bk_wifi_p2p_set_init_role(0);
+#endif
 
 	/* diconnect previous connection if may */
 #if CONFIG_LWIP
@@ -1456,6 +1530,30 @@ char *wlan_p2p_get_saved_ssid(void)
 	return g_p2p_saved_ssid;
 }
 
+#if CONFIG_P2P
+static int s_wpa_init_role;
+
+void bk_wifi_p2p_set_init_role(int p2p_device)
+{
+	s_wpa_init_role = p2p_device ? 1 : 0;
+}
+
+int bk_wifi_p2p_get_init_role(void)
+{
+	return s_wpa_init_role;
+}
+
+int bk_wifi_p2p_ensure_supplicant_vif(struct wpa_supplicant *wpa_s, int p2p_mac)
+{
+	extern int wpa_driver_p2p_ensure_supplicant_vif(struct wpa_supplicant *wpa_s,
+							int p2p_mac);
+
+	if (!wpa_s)
+		return -1;
+	return wpa_driver_p2p_ensure_supplicant_vif(wpa_s, p2p_mac);
+}
+#endif
+
 int wlan_p2p_set_ssid(char *param)
 {
 	return wpa_ctrl_request(WPA_CTRL_CMD_P2P_SET_SSID, param);
@@ -1495,8 +1593,19 @@ int wlan_p2p_enable(const char *ssid)
 	wNetConfig.dhcp_mode = DHCP_CLIENT;
 	wNetConfig.wifi_retry_interval = 100;
 
+#if CONFIG_P2P
+	bk_wifi_p2p_set_init_role(1);
+#endif
 	bk_wlan_sta_init(&wNetConfig);
 	ret = wlan_sta_enable();
+#if CONFIG_P2P
+	{
+		struct wpa_supplicant *wpa_s = wpa_suppliant_ctrl_get_wpas();
+
+		if (wpa_s)
+			bk_wifi_p2p_ensure_supplicant_vif(wpa_s, 1);
+	}
+#endif
 
 	return ret;
 }
@@ -1554,8 +1663,19 @@ int wlan_p2p_enable_with_intent(const char *ssid, int intent)
 	wNetConfig.dhcp_mode = DHCP_CLIENT;
 	wNetConfig.wifi_retry_interval = 100;
 
+#if CONFIG_P2P
+	bk_wifi_p2p_set_init_role(1);
+#endif
 	bk_wlan_sta_init(&wNetConfig);
 	ret = wlan_sta_enable();
+#if CONFIG_P2P
+	{
+		struct wpa_supplicant *wpa_s = wpa_suppliant_ctrl_get_wpas();
+
+		if (wpa_s)
+			bk_wifi_p2p_ensure_supplicant_vif(wpa_s, 1);
+	}
+#endif
 
 	// Set intent in wpa_supplicant configuration for passive negotiation
 	// Try after wlan_sta_enable() since wpa_s may not be available before
@@ -1622,6 +1742,57 @@ void wlan_hw_reinit(void) {
 int wlan_p2p_disable(void)
 {
 	return wpa_ctrl_request(WPA_CTRL_CMD_P2P_DISABLE, NULL);
+}
+
+ap_param_t *bk_wifi_p2p_go_ap_param_ensure(void)
+{
+	if (!g_p2p_go_ap_param_ptr) {
+		g_p2p_go_ap_param_ptr = (ap_param_t *)os_zalloc(sizeof(ap_param_t));
+		BK_ASSERT(g_p2p_go_ap_param_ptr);
+	}
+
+	if (is_zero_ether_addr((u8 *)&g_p2p_go_ap_param_ptr->bssid))
+		bk_get_mac((uint8_t *)&g_p2p_go_ap_param_ptr->bssid, MAC_TYPE_P2P);
+
+	return g_p2p_go_ap_param_ptr;
+}
+
+uint8_t bk_wifi_p2p_go_get_channel_config(void)
+{
+	if (!g_p2p_go_ap_param_ptr)
+		return 0;
+
+	return g_p2p_go_ap_param_ptr->chann;
+}
+
+void bk_wifi_p2p_go_set_channel_config(uint8_t channel)
+{
+	ap_param_t *p = bk_wifi_p2p_go_ap_param_ensure();
+
+	p->chann = channel;
+}
+
+void bk_wifi_p2p_get_device_mac(uint8_t *mac)
+{
+	if (!mac)
+		return;
+
+	bk_get_mac(mac, MAC_TYPE_P2P);
+}
+
+void bk_wifi_p2p_shutdown_before_sleep(void)
+{
+	int role = 0;
+
+	if (bk_wifi_p2p_get_role(&role) != BK_OK || role == 0)
+		return;
+
+	if (role == 1)
+		p2p_go_ip_down();
+	else if (role == 2)
+		p2p_gc_ip_down();
+
+	wlan_p2p_cancel();
 }
 #endif
 
@@ -1713,11 +1884,14 @@ bool g_is_deepsleep;
 static int wifi_deepsleep_enter_cb(uint64_t expected_time_ms, void *args)
 {
 	g_is_deepsleep = true;
+#if CONFIG_P2P
+	bk_wifi_p2p_shutdown_before_sleep();
+#endif
 	bk_wifi_ap_stop();
 	bk_wifi_prepare_deepsleep();
 	bk_wifi_sta_stop();
 
-	rf_module_vote_ctrl(RF_CLOSE,RF_BY_WIFI_BIT);
+	rf_pll_ctrl(MODULE_TYPE_WIFI, RF_OPERATION_FREE, RF_PATH_WIFI_IQ, RF_PLL_LOW, RF_PRIORITY_WIFI_NORMAL, RF_TASK_TYPE_WIFI_FREE_ALL, false, 0, false);
 	bk_pm_module_vote_power_ctrl(PM_POWER_SUB_DOMAIN_PHY, PM_POWER_MODULE_STATE_OFF);
 	bk_pm_module_vote_power_ctrl(PM_POWER_SUB_DOMAIN_MAC, PM_POWER_MODULE_STATE_OFF);
 
@@ -1820,7 +1994,9 @@ static inline void wifi_sta_init_callback(void)
 
 static inline int wifi_supplicant_start(void)
 {
-	//TODO
+#if CONFIG_P2P
+	bk_wifi_p2p_set_init_role(0);
+#endif
 	return wlan_sta_enable();
 }
 
@@ -1839,6 +2015,17 @@ void _wifi_sta_exit(void)
 	//bk_wifi_sta_disconnect();
 #if CONFIG_LWIP
 	sta_ip_down();
+#endif
+
+#if CONFIG_P2P_SOFTAP_CHAN_ALIGN
+	/* Keep supplicant alive for P2P GC on a separate VIF. */
+	if (bk_wifi_p2p_gc_get_channel()) {
+		if (wifi_sta_is_connected())
+			wlan_sta_disconnect();
+		if (bk_wlan_has_role(VIF_AP))
+			g_wlan_general_param->role = CONFIG_ROLE_AP;
+		return;
+	}
 #endif
 
 	wlan_sta_disable();
@@ -2254,6 +2441,12 @@ bk_err_t bk_wifi_sta_start(void)
 	}
 
 	if (wifi_sta_is_started()) {
+#if CONFIG_P2P
+		struct wpa_supplicant *wpa_s = wpa_suppliant_ctrl_get_wpas();
+
+		if (wpa_s)
+			bk_wifi_p2p_ensure_supplicant_vif(wpa_s, 0);
+#endif
 		WIFI_LOGD("sta already started, ignored!\n");
 		return BK_OK;
 	}
@@ -2352,21 +2545,34 @@ bk_err_t bk_wifi_sta_start(void)
 	return BK_OK;
 }
 
+static void wifi_sta_reset_link_status(void)
+{
+	wifi_linkstate_reason_t info = {
+		.state = WIFI_LINKSTATE_STA_IDLE,
+		.reason_code = WIFI_REASON_MAX,
+	};
+
+	mhdr_set_station_status(info);
+#if CONFIG_LWIP
+	sta_ip_down();
+#endif
+}
+
 bk_err_t bk_wifi_sta_stop(void)
 {
 	WIFI_LOGD("sta stopping\n");
 
 	if (!wifi_sta_is_started()) {
 		WIFI_LOGV("sta stop, already stopped\n");
+		wifi_sta_reset_link_status();
 		return BK_OK;
 	}
 	_wifi_sta_exit();
 
 	wifi_clear_state_bit(WIFI_STA_STARTED_BIT);
+	/* Re-assert idle after STARTED cleared to win race with late DHCP callback. */
+	wifi_sta_reset_link_status();
 	WIFI_LOGI("sta stopped(%x)\n", s_wifi_state_bits);
-#if CONFIG_WIFI_VNET_CONTROLLER
-	//cif_handle_bk_cmd_disconnect_ind(true, WIFI_REASON_RESERVED);
-#endif
 	return BK_OK;
 }
 
@@ -3242,12 +3448,31 @@ void bk_wifi_scan_free_result(wifi_scan_result_t *scan_result)
  */
 static volatile bk_bridge_state_t bridge_state = BRIDGE_STATE_DISABLED;
 #endif
+#if CONFIG_OPENTHREAD
+bool bk_wifi_is_ap_stop_thread = false;
+#endif
 bk_err_t bk_wifi_ap_start(void)
 {
 	rtos_lock_recursive_mutex(&s_ap_op_mutex);
 
 	WIFI_LOGV("ap starting\n");
 
+#if CONFIG_OPENTHREAD
+	// lg thread not support with ap together
+	if (rf_cntrl_has_thread_rf_request()) {
+		otInstance *ot_inst = bk_ot_get_single_instance();
+		if (ot_inst) {
+			WIFI_LOGW("ap start: disable thread\n");
+			bk_ieee802154_rf_init(false);
+			(void)otThreadSetEnabled(ot_inst, false);
+		}
+		bk_wifi_is_ap_stop_thread = true;
+	}
+	else{
+		bk_wifi_is_ap_stop_thread = false;
+	}
+#endif
+	
 	if (!wifi_ap_is_configured()) {
 		WIFI_LOGV("start ap failed, ap not configured\n");
 		rtos_unlock_recursive_mutex(&s_ap_op_mutex);
@@ -3298,9 +3523,294 @@ bk_err_t bk_wifi_ap_start(void)
 
 	WIFI_LOGD("ap started\n");
 	wifi_set_state_bit(WIFI_AP_STARTED_BIT);
+#if CONFIG_P2P_SOFTAP_CHAN_ALIGN
+	bk_wifi_p2p_softap_csa_to_group_deferred();
+#endif
 	rtos_unlock_recursive_mutex(&s_ap_op_mutex);
 	return BK_OK;
 }
+
+bk_err_t bk_wifi_p2p_get_mac(uint8_t *mac)
+{
+	if (mac == NULL)
+		return BK_ERR_NULL_PARAM;
+
+#if CONFIG_P2P
+	void *vif;
+	void *vif_mac;
+
+	vif = bk_wifi_match_vif(VIF_AP, true, false);
+	if (!vif) {
+		bk_get_mac(mac, MAC_TYPE_P2P);
+		return BK_OK;
+	}
+
+	vif_mac = mac_vif_mgmt_get_mac_addr(vif);
+	if (vif_mac == NULL) {
+		bk_get_mac(mac, MAC_TYPE_P2P);
+		return BK_OK;
+	}
+
+	os_memcpy(mac, vif_mac, 6);
+#else
+	bk_get_mac(mac, MAC_TYPE_P2P);
+#endif
+	return BK_OK;
+}
+
+#if CONFIG_P2P
+bk_err_t bk_wifi_p2p_get_role(int *role)
+{
+	if (role == NULL)
+		return BK_ERR_NULL_PARAM;
+
+	*role = 0;
+
+	/* LMAC VIF role; wpa_s->p2p_group_interface is unreliable on Beken GO. */
+	if (bk_wifi_match_vif(VIF_AP, true, false)) {
+		*role = 1;
+		return BK_OK;
+	}
+	if (bk_wifi_match_vif(VIF_STA, true, false)) {
+		*role = 2;
+		return BK_OK;
+	}
+
+	return BK_OK;
+}
+
+uint8_t bk_wifi_p2p_go_get_channel(void)
+{
+	return bk_wifi_match_vif_channel(VIF_AP, true);
+}
+
+uint8_t bk_wifi_p2p_gc_get_channel(void)
+{
+	return bk_wifi_match_vif_channel(VIF_STA, true);
+}
+
+uint8_t bk_wifi_p2p_get_group_channel(void)
+{
+	uint8_t ch = bk_wifi_p2p_go_get_channel();
+
+	return ch ? ch : bk_wifi_p2p_gc_get_channel();
+}
+
+bool bk_wifi_infra_ap_vif_active(void)
+{
+	return bk_wifi_match_vif(VIF_AP, false, true) != NULL;
+}
+
+bool bk_wifi_infra_sta_vif_active(void)
+{
+	return bk_wifi_match_vif(VIF_STA, false, true) != NULL;
+}
+
+#if CONFIG_P2P_SOFTAP_CHAN_ALIGN
+static uint8_t bk_wifi_p2p_go_channel_from_wpa(struct wpa_supplicant *wpa_s)
+{
+	int freq = 0;
+	uint8_t ch;
+
+	if (!wpa_s)
+		return 0;
+
+	if (wpa_s->go_params && wpa_s->go_params->freq > 0)
+		freq = wpa_s->go_params->freq;
+	else if (wpa_s->current_ssid && wpa_s->current_ssid->p2p_group &&
+		 wpa_s->current_ssid->frequency > 0)
+		freq = wpa_s->current_ssid->frequency;
+	else if (wpa_s->global && wpa_s->global->p2p &&
+		 wpa_s->global->p2p->op_channel > 0)
+		return wpa_s->global->p2p->op_channel;
+
+	if (freq > 0) {
+		ch = rw_ieee80211_get_chan_id(freq);
+		if (ch)
+			return ch;
+	}
+
+	return 0;
+}
+
+static uint8_t bk_wifi_p2p_go_planned_channel_idle(void)
+{
+	struct wpa_supplicant *wpa_s;
+	uint8_t ch;
+
+	ch = bk_wifi_p2p_go_get_channel_config();
+	if (ch)
+		return ch;
+
+	wpa_s = wpa_suppliant_ctrl_get_wpas();
+	return bk_wifi_p2p_go_channel_from_wpa(wpa_s);
+}
+
+uint8_t bk_wifi_p2p_go_get_planned_channel(void)
+{
+	uint8_t ch;
+
+	ch = bk_wifi_p2p_go_get_channel();
+	if (ch)
+		return ch;
+
+	return bk_wifi_p2p_go_planned_channel_idle();
+}
+
+uint8_t bk_wifi_p2p_get_coexist_anchor_channel(void)
+{
+	uint8_t ch;
+
+	if (bk_wifi_infra_ap_vif_active()) {
+		ch = bk_wlan_ap_get_channel_config();
+		if (ch)
+			return ch;
+	}
+
+	if (bk_wifi_infra_sta_vif_active()) {
+		ch = bk_wlan_sta_get_channel();
+		if (ch)
+			return ch;
+	}
+
+	return 0;
+}
+
+int bk_wifi_p2p_get_coexist_anchor_freq(void)
+{
+	uint8_t ch = bk_wifi_p2p_get_coexist_anchor_channel();
+
+	if (!ch)
+		return 0;
+
+	return rw_ieee80211_get_centre_frequency(ch);
+}
+
+int bk_wifi_p2p_coexist_force_op_channel(struct p2p_data *p2p,
+					 struct p2p_channels *intersection)
+{
+	uint8_t ch;
+	unsigned int freq;
+	u8 op_reg_class, op_channel;
+
+	if (!p2p || !intersection)
+		return 0;
+
+	ch = bk_wifi_p2p_get_coexist_anchor_channel();
+	if (!ch)
+		return 0;
+
+	freq = rw_ieee80211_get_centre_frequency(ch);
+	if (!freq)
+		return 0;
+
+	if (p2p_freq_to_channel(freq, &op_reg_class, &op_channel) < 0)
+		return 0;
+
+	if (!p2p_channels_includes(intersection, op_reg_class, op_channel))
+		return 0;
+
+	p2p->op_reg_class = op_reg_class;
+	p2p->op_channel = op_channel;
+	p2p->own_freq_preference = freq;
+	WIFI_LOGD("P2P coexist: force GO op channel %u (freq %u MHz)\n",
+		  op_channel, freq);
+	return 1;
+}
+
+uint8_t bk_wifi_p2p_pick_go_startup_channel(struct wpa_supplicant *wpa_s)
+{
+	uint8_t ch;
+
+	ch = bk_wifi_p2p_get_coexist_anchor_channel();
+	if (ch)
+		return ch;
+
+	ch = bk_wifi_p2p_go_channel_from_wpa(wpa_s);
+	if (ch)
+		return ch;
+
+	ch = bk_wifi_p2p_go_get_channel();
+	if (ch)
+		return ch;
+
+	return bk_wlan_ap_get_default_channel();
+}
+
+static void bk_wifi_p2p_softap_csa_to_group_timeout(void *eloop_data, void *user_ctx)
+{
+	(void)eloop_data;
+	(void)user_ctx;
+
+	bk_wifi_p2p_softap_csa_to_group();
+}
+
+void bk_wifi_p2p_softap_csa_to_group_deferred(void)
+{
+	eloop_cancel_timeout(bk_wifi_p2p_softap_csa_to_group_timeout, NULL, NULL);
+	eloop_register_timeout(0, 300000, bk_wifi_p2p_softap_csa_to_group_timeout,
+			       NULL, NULL);
+}
+
+static uint8_t bk_wifi_p2p_softap_align_channel(void)
+{
+	uint8_t ch;
+
+	ch = bk_wifi_p2p_get_group_channel();
+	if (ch)
+		return ch;
+
+	return bk_wifi_p2p_go_planned_channel_idle();
+}
+
+void bk_wifi_p2p_softap_csa_to_group(void)
+{
+	uint8_t group_ch, infra_ch;
+	int ret;
+	uint16_t frequency;
+
+	if (bk_feature_close_coexist_csa() || close_coexist_csa)
+		return;
+
+	group_ch = bk_wifi_p2p_softap_align_channel();
+	if (!group_ch)
+		return;
+
+	if (!bk_wifi_infra_ap_vif_active())
+		return;
+
+	infra_ch = bk_wlan_ap_get_channel_config();
+	if (!infra_ch || infra_ch == group_ch)
+		return;
+
+	frequency = rw_ieee80211_get_centre_frequency(group_ch);
+	if (!frequency)
+		return;
+
+	ret = ap_infra_channel_switch(frequency);
+	if (ret)
+		WIFI_LOGW("SoftAP CSA to P2P group channel failed ret=%d\n", ret);
+	else
+		bk_wlan_ap_set_channel_config(group_ch);
+}
+
+static uint8_t bk_wifi_p2p_softap_resolve_channel(uint8_t req_ch)
+{
+	uint8_t group_ch;
+
+	group_ch = bk_wifi_p2p_softap_align_channel();
+	if (group_ch) {
+		if (req_ch && req_ch != group_ch) {
+			WIFI_LOGD("SoftAP: P2P group on ch %u, ignore req ch %u\n",
+				  group_ch, req_ch);
+		}
+		return group_ch;
+	}
+
+	return req_ch ? req_ch : bk_wlan_ap_get_default_channel();
+}
+#endif
+#endif
 
 bk_err_t wifi_ap_validate_config(const wifi_ap_config_t *ap_config)
 {
@@ -3309,6 +3819,10 @@ bk_err_t wifi_ap_validate_config(const wifi_ap_config_t *ap_config)
 #if (CONFIG_SOC_BK7239XX || CONFIG_SOC_BK7286XX) && CONFIG_WIFI_BAND_5G
 	if (ap_config->channel >= 36 && ap_config->channel <=165) {
 
+#if CONFIG_WIFI_REGDOMAIN
+		if (check_non_radar_channel_available(ap_config->channel))
+			return BK_OK;
+#else
 		//check if configured channel is avaliable channel and no need for radat detection
 		int selected_channels_size = 0;
 		extern int* rw_select_5g_non_radar_avaliable_channels(int *selected_channels_size);
@@ -3318,6 +3832,7 @@ bk_err_t wifi_ap_validate_config(const wifi_ap_config_t *ap_config)
 			if (non_radar_avaliable_channels[i] == ap_config->channel)
 				return BK_OK;
 		}
+#endif
 
 		//TODO more parameter checking
 		WIFI_LOGE("[%s]configured unavaliable or dfs channel\r\n",__FUNCTION__);
@@ -3341,9 +3856,18 @@ static bk_err_t wifi_ap_set_config(const wifi_ap_config_t *ap_config)
 		|| (ap_config->channel >= 36 && ap_config->channel <=165)
 #endif
 		) {
-		bk_wlan_ap_set_channel_config(ap_config->channel);
+		uint8_t channel = ap_config->channel;
+#if CONFIG_P2P_SOFTAP_CHAN_ALIGN
+		channel = bk_wifi_p2p_softap_resolve_channel(channel);
+#endif
+		bk_wlan_ap_set_channel_config(channel);
 	} else if (ap_config->channel == 0){
-		bk_wlan_ap_set_channel_config(bk_wlan_ap_get_default_channel());
+		uint8_t def_ch = bk_wlan_ap_get_default_channel();
+#if CONFIG_P2P_SOFTAP_CHAN_ALIGN
+		def_ch = bk_wifi_p2p_softap_resolve_channel(0);
+#endif
+
+		bk_wlan_ap_set_channel_config(def_ch);
 	} else {
 		WIFI_LOGE("error:invalid channel\r\n");
 		return BK_FAIL;
@@ -3369,13 +3893,40 @@ static bk_err_t wifi_ap_set_config(const wifi_ap_config_t *ap_config)
 	g_ap_param_ptr->key_len = os_strlen(ap_config->password);
 	g_ap_param_ptr->hidden_ssid = ap_config->hidden;
 	if (g_ap_param_ptr->key_len < 8) {
-		g_ap_param_ptr->cipher_suite = BK_SECURITY_TYPE_NONE;
+		g_ap_param_ptr->cipher_suite = WIFI_SECURITY_NONE;
 	} else {
+		switch(ap_config->security) {
+			case WIFI_SECURITY_WPA_TKIP:
+				g_ap_param_ptr->cipher_suite = WIFI_SECURITY_WPA_TKIP;
+				break;
+			case WIFI_SECURITY_WPA_AES:
+				g_ap_param_ptr->cipher_suite = WIFI_SECURITY_WPA_AES;
+				break;
+			case WIFI_SECURITY_WPA_MIXED:
+				g_ap_param_ptr->cipher_suite = WIFI_SECURITY_WPA_MIXED;
+				break;
+			case WIFI_SECURITY_WPA2_TKIP:
+				g_ap_param_ptr->cipher_suite = WIFI_SECURITY_WPA2_TKIP;
+				break;
+			case WIFI_SECURITY_WPA2_AES:
+				g_ap_param_ptr->cipher_suite = WIFI_SECURITY_WPA2_AES;
+				break;
+			case WIFI_SECURITY_WPA2_MIXED:
+				g_ap_param_ptr->cipher_suite = WIFI_SECURITY_WPA2_MIXED;
+				break;
 #if CONFIG_SOFTAP_WPA3
-		g_ap_param_ptr->cipher_suite = BK_SECURITY_TYPE_WPA3_WPA2_MIXED;
-#else
-		g_ap_param_ptr->cipher_suite = BK_SECURITY_TYPE_WPA2_AES;
+			case WIFI_SECURITY_WPA3_SAE:
+				g_ap_param_ptr->cipher_suite = WIFI_SECURITY_WPA3_SAE;
+				break;
+			case WIFI_SECURITY_WPA3_WPA2_MIXED:
+				g_ap_param_ptr->cipher_suite = WIFI_SECURITY_WPA3_WPA2_MIXED;
+				break;
 #endif
+			default:
+				g_ap_param_ptr->cipher_suite = WIFI_SECURITY_WPA2_AES;
+				break;
+
+		}
 		os_memset(g_ap_param_ptr->key, 0, sizeof(g_ap_param_ptr->key));
 		os_memcpy(g_ap_param_ptr->key, ap_config->password, g_ap_param_ptr->key_len);
 	}
@@ -3473,10 +4024,24 @@ bk_err_t bk_wifi_ap_stop(void)
 
 	if (!wifi_ap_is_started()) {
 		WIFI_LOGV("ap stop: already stopped\n");
+#if CONFIG_LWIP
+		uap_ip_down();
+#endif
 		rtos_unlock_recursive_mutex(&s_ap_op_mutex);
 		return BK_OK;
 	}
 
+#if CONFIG_OPENTHREAD
+	if (bk_wifi_is_ap_stop_thread) {
+		otInstance *ot_inst = bk_ot_get_single_instance();
+		if (ot_inst) {
+			WIFI_LOGW("ap stop: enable thread\n");
+			bk_ieee802154_rf_init(true);
+			(void)otThreadSetEnabled(ot_inst, true);
+		}
+		bk_wifi_is_ap_stop_thread = false;
+	}
+#endif
 	//TODO why this??
 #if CONFIG_AP_IDLE
 	if (bk_wlan_has_role(VIF_AP) && ap_ps_enable_get())
@@ -3489,6 +4054,10 @@ bk_err_t bk_wifi_ap_stop(void)
 		return BK_FAIL;
 	}
 
+#if CONFIG_LWIP
+	uap_ip_down();
+#endif
+
 #if CONFIG_AP_STATYPE_LIMIT
 	if (bk_feature_ap_statype_limit_enable())
 		bk_vsie_cus_deinit();
@@ -3497,6 +4066,10 @@ bk_err_t bk_wifi_ap_stop(void)
 	//TODO optimize it
 	if (bk_wlan_has_role(VIF_STA))
 		g_wlan_general_param->role = CONFIG_ROLE_STA;
+#if CONFIG_P2P
+	else if (bk_wifi_p2p_go_get_channel())
+		g_wlan_general_param->role = CONFIG_ROLE_AP;
+#endif
 
 	WIFI_LOGD("ap stopped\n");
 	wifi_clear_state_bit(WIFI_AP_STARTED_BIT);
@@ -3699,8 +4272,6 @@ bk_err_t bk_wifi_monitor_set_channel(const wifi_channel_t *chan)
 	ret = wifi_monitor_validate_channel(chan);
 	if (ret != BK_OK)
 		return ret;
-
-	rwnxl_reset_evt(0);
 
 	//always set to HT20
 	rw_msg_set_channel(chan->primary, PHY_CHNL_BW_20, NULL);
@@ -3992,8 +4563,8 @@ bk_err_t bk_wifi_get_wifi_status(void *out)
 	wifi_status_t* status = (wifi_status_t*)out;
 	if (!status)
 		return BK_ERR_NULL_PARAM;
-	status->is_sta_up = wifi_netif_sta_is_got_ip();
-	status->is_ap_up = uap_ip_is_start();
+	status->is_sta_up = wifi_sta_is_started() && wifi_netif_sta_is_got_ip();
+	status->is_ap_up = wifi_ap_is_started() && uap_ip_is_start();
 	if(status->is_sta_up)
 	{
 		os_memset(&status->link_status, 0x0, sizeof(wifi_link_status_t));
@@ -4966,3 +5537,19 @@ bk_err_t bk_wifi_sync_bridge_state(bk_bridge_state_t state)
     return BK_OK;
 }
 #endif
+
+uint8_t g_wifi_coex_mode = 2;
+bk_err_t bk_wifi_set_coex_mode(uint8_t mode)
+{
+	if(mode > 2)
+	{
+		return BK_ERR_PARAM;
+	}
+	g_wifi_coex_mode = mode;
+	return BK_OK;
+}
+
+uint8_t bk_wifi_get_coex_mode(void)
+{
+	return g_wifi_coex_mode;
+}

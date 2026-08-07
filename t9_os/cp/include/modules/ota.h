@@ -74,14 +74,6 @@ void bk_ota_register_temp_partition_callback(callback_func cb);
 void bk_ota_confirm_update_partition(ota_confirm_flag ota_confirm_val);
 
 /** 
-* @brief  Accept the OTA image
-*         This API is for MCUBOOT SWAP strategy only, if the image is accepted, then
-*         the MCUBOOT will make the image permanently, otherwise it will revert the
-*         OTA process.
-*/
-void bk_ota_accept_image(void);
-
-/** 
 * @brief  when do ota update,customer can call this interface .
 * 
 * @param  Enables to execute a single HTTP request on a given URL
@@ -99,10 +91,6 @@ int bk_http_ota_download(const char *uri);
 */
 void bk_ota_double_check_for_execution(void);
 #endif
-
-void ota_write_flash(bk_partition_t ota_partition_flag, u8 flag, u8 offset);
-uint8 ota_temp_execute_partition(int state_val);
-//uint8 custmer_state_cb(uint8 temp_exec_part);
 
 #define INS_NO_CRC_CHUNK  (32)
 #define INS_CRC_CHUNK     (34)

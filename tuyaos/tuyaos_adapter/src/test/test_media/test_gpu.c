@@ -17,11 +17,18 @@
 #include "tkl_mipi_dsi.h"
 #include "tkl_gpu.h"
 #include "tkl_output.h"
+#include "tkl_system.h"
+#include "tkl_thread.h"
 #include "tkl_vcodec_types.h"
+#include "blend.h"
 
-#define GPU_TEST_DEFAULT_ROTATE    90U
-#define GPU_TEST_DEFAULT_COMPRESS  0U
-#define GPU_TEST_FLEXA_LINES       16U
+#define GPU_TEST_DEFAULT_ROTATE      90U
+#define GPU_TEST_DEFAULT_COMPRESS    0U
+#define GPU_TEST_FLEXA_LINES         16U
+#define GPU_TEST_OSD_TIME_REFRESH_MS 1000U
+#define GPU_TEST_OSD_TIME_STACK      (3U * 1024U)
+#define GPU_TEST_OSD_TIME_TEXT_LEN   16U
+#define GPU_TEST_OSD_TEXT_NAME       "clock"
 
 typedef enum {
     GPU_TEST_SOURCE_CAMERA = 0,
@@ -54,6 +61,20 @@ static test_gpu_ctx_t s_gpu_ctx = {
     .src_format = BK_PIXEL_FORMAT_INVALID,
 };
 
+typedef struct {
+    volatile bool running;
+    volatile bool stop_req;
+    TKL_THREAD_HANDLE task;
+    char last_text[GPU_TEST_OSD_TIME_TEXT_LEN];
+} test_gpu_osd_time_ctx_t;
+
+static test_gpu_osd_time_ctx_t s_gpu_osd_time = {
+    .running = false,
+    .stop_req = false,
+    .task = NULL,
+    .last_text = {0},
+};
+
 #if (CONFIG_PSRAM_WRITE_THROUGH)
 static uint32_t s_gpu_psram_cover_area;
 static bool s_gpu_psram_wt_ready = false;
@@ -84,6 +105,8 @@ static void test_gpu_runtime_reset(void)
     s_gpu_ctx.src_height = 0U;
     s_gpu_ctx.src_format = BK_PIXEL_FORMAT_INVALID;
 }
+
+static void test_gpu_osd_time_stop(void);
 
 static void test_gpu_dst_geometry_get(uint16_t rotate_degree, uint16_t *dst_width, uint16_t *dst_height)
 {
@@ -458,6 +481,135 @@ static OPERATE_RET test_gpu_init(test_gpu_source_t source_type,
     return OPRT_OK;
 }
 
+static void test_gpu_osd_format_time(char *text, size_t text_len)
+{
+    SYS_TIME_T now_ms;
+    uint32_t total_sec;
+    uint32_t hour;
+    uint32_t min;
+    uint32_t sec;
+
+    if (text == NULL || text_len < 9U) {
+        return;
+    }
+
+    now_ms = tkl_system_get_millisecond();
+    total_sec = (uint32_t)(now_ms / 1000U);
+    hour = (total_sec / 3600U) % 100U;
+    min = (total_sec / 60U) % 60U;
+    sec = total_sec % 60U;
+
+    text[0] = (char)('0' + (hour / 10U));
+    text[1] = (char)('0' + (hour % 10U));
+    text[2] = ':';
+    text[3] = (char)('0' + (min / 10U));
+    text[4] = (char)('0' + (min % 10U));
+    text[5] = ':';
+    text[6] = (char)('0' + (sec / 10U));
+    text[7] = (char)('0' + (sec % 10U));
+    text[8] = '\0';
+}
+
+static OPERATE_RET test_gpu_osd_open(BOOL_T by_flexa)
+{
+    TUYA_GPU_OSD_OPEN_T cfg;
+
+    if (s_gpu_ctx.initialized != true || s_gpu_ctx.started != true) {
+        tkl_log_output("gpu is not started, use: xgpu init && xgpu start\r\n");
+        return OPRT_RESOURCE_NOT_READY;
+    }
+
+    os_memset(&cfg, 0, sizeof(cfg));
+    cfg.blend_assets = blend_assets;
+    cfg.blend_info = NULL; /* open does not draw; first paint via UPDATE */
+    cfg.src_format = 0U;
+    cfg.by_flexa = by_flexa;
+    return tkl_gpu_osd_open(&cfg);
+}
+
+static void test_gpu_osd_time_task(void *arg)
+{
+    TKL_THREAD_HANDLE self = NULL;
+    char text[GPU_TEST_OSD_TIME_TEXT_LEN];
+
+    (void)arg;
+    (void)tkl_thread_get_id(&self);
+
+    while (s_gpu_osd_time.stop_req != true) {
+        test_gpu_osd_format_time(text, sizeof(text));
+        if (os_strcmp(text, s_gpu_osd_time.last_text) != 0) {
+            if (tkl_gpu_osd_ctrl(TUYA_GPU_OSD_OP_UPDATE, GPU_TEST_OSD_TEXT_NAME, text) == OPRT_OK) {
+                os_strncpy(s_gpu_osd_time.last_text, text, sizeof(s_gpu_osd_time.last_text) - 1U);
+                s_gpu_osd_time.last_text[sizeof(s_gpu_osd_time.last_text) - 1U] = '\0';
+            }
+        }
+        tkl_system_sleep(GPU_TEST_OSD_TIME_REFRESH_MS);
+    }
+
+    s_gpu_osd_time.running = false;
+    s_gpu_osd_time.task = NULL;
+    tkl_thread_release(self);
+}
+
+static void test_gpu_osd_time_stop(void)
+{
+    uint32_t waited_ms = 0U;
+
+    if (s_gpu_osd_time.running != true && s_gpu_osd_time.task == NULL) {
+        return;
+    }
+
+    s_gpu_osd_time.stop_req = true;
+    while (s_gpu_osd_time.running == true && waited_ms < 3000U) {
+        tkl_system_sleep(20U);
+        waited_ms += 20U;
+    }
+
+    s_gpu_osd_time.running = false;
+    s_gpu_osd_time.task = NULL;
+    s_gpu_osd_time.stop_req = false;
+    s_gpu_osd_time.last_text[0] = '\0';
+}
+
+static OPERATE_RET test_gpu_osd_time_start(void)
+{
+    OPERATE_RET ret;
+    char text[GPU_TEST_OSD_TIME_TEXT_LEN];
+
+    if (s_gpu_ctx.initialized != true || s_gpu_ctx.started != true) {
+        tkl_log_output("gpu is not started, use: xgpu init && xgpu start\r\n");
+        return OPRT_RESOURCE_NOT_READY;
+    }
+
+    test_gpu_osd_time_stop();
+    test_gpu_osd_format_time(text, sizeof(text));
+    ret = tkl_gpu_osd_ctrl(TUYA_GPU_OSD_OP_UPDATE, GPU_TEST_OSD_TEXT_NAME, text);
+    if (ret != OPRT_OK) {
+        tkl_log_output("gpu osd time update failed (%d), try: xgpu osd open first\r\n", ret);
+        return ret;
+    }
+
+    os_strncpy(s_gpu_osd_time.last_text, text, sizeof(s_gpu_osd_time.last_text) - 1U);
+    s_gpu_osd_time.last_text[sizeof(s_gpu_osd_time.last_text) - 1U] = '\0';
+    s_gpu_osd_time.stop_req = false;
+    s_gpu_osd_time.running = true;
+
+    ret = tkl_thread_create(&s_gpu_osd_time.task,
+                            "gpu_osd_time",
+                            GPU_TEST_OSD_TIME_STACK,
+                            TKL_THREAD_PRI_NORMAL,
+                            test_gpu_osd_time_task,
+                            NULL);
+    if (ret != OPRT_OK) {
+        s_gpu_osd_time.running = false;
+        s_gpu_osd_time.task = NULL;
+        return ret;
+    }
+
+    tkl_log_output("gpu osd time start: %s\r\n", text);
+    return OPRT_OK;
+}
+
 static OPERATE_RET test_gpu_start(void)
 {
     OPERATE_RET ret;
@@ -516,6 +668,8 @@ static OPERATE_RET test_gpu_stop(void)
 {
     OPERATE_RET ret;
 
+    test_gpu_osd_time_stop();
+
     if (s_gpu_ctx.initialized != true) {
         return OPRT_OK;
     }
@@ -532,6 +686,8 @@ static OPERATE_RET test_gpu_stop(void)
 static OPERATE_RET test_gpu_deinit(void)
 {
     OPERATE_RET ret;
+
+    test_gpu_osd_time_stop();
 
     if (s_gpu_ctx.initialized != true) {
         test_gpu_runtime_reset();
@@ -565,7 +721,7 @@ void cli_tuya_gpu_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char *
 
     if (argc < 2) {
         snprintf(pcWriteBuffer, xWriteBufferLen,
-                 "Usage: xgpu <init [camera|vdec] [rotate] [compress] [dst_w dst_h]|start|stop|deinit|close|status>");
+                 "Usage: xgpu <init [camera|vdec] [rotate] [compress] [dst_w dst_h]|start|stop|deinit|close|osd|status>");
         return;
     }
 
@@ -635,8 +791,99 @@ void cli_tuya_gpu_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char *
                  s_gpu_ctx.target_height,
                  s_gpu_ctx.rotate_degree,
                  (unsigned int)s_gpu_ctx.compress);
+    } else if (os_strcmp(cmd, "osd") == 0) {
+        const char *osd_sub = NULL;
+        const char *name = NULL;
+        const char *content = NULL;
+        BOOL_T by_flexa = FALSE;
+
+        if (argc < 3) {
+            snprintf(pcWriteBuffer, xWriteBufferLen,
+                     "Usage: xgpu osd <open [flexa]|update <name> <content>|remove <name>|time|clear|close|frame|flexa>\r\n"
+                     "  update examples: update clock 12:00:00 | update wifi wifi_rssi_none\r\n");
+            return;
+        }
+
+        osd_sub = argv[2];
+        if (os_strcmp(osd_sub, "open") == 0) {
+            if (argc >= 4 && os_strcmp(argv[3], "flexa") == 0) {
+                by_flexa = TRUE;
+            }
+            ret = test_gpu_osd_open(by_flexa);
+            snprintf(pcWriteBuffer, xWriteBufferLen,
+                     "xgpu osd open %s (%d), by_flexa=%u (no draw until update)\r\n",
+                     (ret == OPRT_OK) ? "ok" : "failed",
+                     ret,
+                     (unsigned int)by_flexa);
+        } else if (os_strcmp(osd_sub, "update") == 0) {
+            if (argc < 5) {
+                snprintf(pcWriteBuffer, xWriteBufferLen,
+                         "Usage: xgpu osd update <name> <content>\r\n"
+                         "  name=clock|date|ver|wifi; wifi content=wifi_rssi_none|wifi_rssi_1|wifi_rssi_2|wifi_rssi_3|wifi_rssi_full\r\n");
+                return;
+            }
+            name = argv[3];
+            content = argv[4];
+            ret = tkl_gpu_osd_ctrl(TUYA_GPU_OSD_OP_UPDATE, name, content);
+            snprintf(pcWriteBuffer, xWriteBufferLen,
+                     "xgpu osd update %s (%d), name=%s content=%s\r\n",
+                     (ret == OPRT_OK) ? "ok" : "failed",
+                     ret,
+                     name,
+                     content);
+        } else if (os_strcmp(osd_sub, "remove") == 0) {
+            if (argc < 4) {
+                snprintf(pcWriteBuffer, xWriteBufferLen,
+                         "Usage: xgpu osd remove <name>\r\n");
+                return;
+            }
+            name = argv[3];
+            ret = tkl_gpu_osd_ctrl(TUYA_GPU_OSD_OP_REMOVE, name, NULL);
+            snprintf(pcWriteBuffer, xWriteBufferLen,
+                     "xgpu osd remove %s (%d), name=%s\r\n",
+                     (ret == OPRT_OK) ? "ok" : "failed",
+                     ret,
+                     name);
+        } else if (os_strcmp(osd_sub, "time") == 0) {
+            ret = test_gpu_osd_time_start();
+            snprintf(pcWriteBuffer, xWriteBufferLen,
+                     "xgpu osd time %s (%d), text=%s\r\n",
+                     (ret == OPRT_OK) ? "ok" : "failed",
+                     ret,
+                     s_gpu_osd_time.last_text);
+        } else if (os_strcmp(osd_sub, "clear") == 0) {
+            test_gpu_osd_time_stop();
+            ret = tkl_gpu_osd_ctrl(TUYA_GPU_OSD_OP_CLEAR, NULL, NULL);
+            snprintf(pcWriteBuffer, xWriteBufferLen,
+                     "xgpu osd clear %s (%d)\r\n",
+                     (ret == OPRT_OK) ? "ok" : "failed",
+                     ret);
+        } else if (os_strcmp(osd_sub, "close") == 0) {
+            test_gpu_osd_time_stop();
+            ret = tkl_gpu_osd_close();
+            snprintf(pcWriteBuffer, xWriteBufferLen,
+                     "xgpu osd close %s (%d)\r\n",
+                     (ret == OPRT_OK) ? "ok" : "failed",
+                     ret);
+        } else if (os_strcmp(osd_sub, "frame") == 0) {
+            ret = tkl_gpu_osd_set_mode(FALSE);
+            snprintf(pcWriteBuffer, xWriteBufferLen,
+                     "xgpu osd frame %s (%d)\r\n",
+                     (ret == OPRT_OK) ? "ok" : "failed",
+                     ret);
+        } else if (os_strcmp(osd_sub, "flexa") == 0) {
+            ret = tkl_gpu_osd_set_mode(TRUE);
+            snprintf(pcWriteBuffer, xWriteBufferLen,
+                     "xgpu osd flexa %s (%d)\r\n",
+                     (ret == OPRT_OK) ? "ok" : "failed",
+                     ret);
+        } else {
+            snprintf(pcWriteBuffer, xWriteBufferLen,
+                     "Usage: xgpu osd <open [flexa]|update <name> <content>|remove <name>|time|clear|close|frame|flexa>\r\n"
+                     "  update examples: update clock 12:00:00 | update wifi wifi_rssi_none\r\n");
+        }
     } else {
         snprintf(pcWriteBuffer, xWriteBufferLen,
-                 "Usage: xgpu <init [camera|vdec] [rotate] [compress] [dst_w dst_h]|start|stop|deinit|close|status>");
+                 "Usage: xgpu <init [camera|vdec] [rotate] [compress] [dst_w dst_h]|start|stop|deinit|close|osd|status>");
     }
 }

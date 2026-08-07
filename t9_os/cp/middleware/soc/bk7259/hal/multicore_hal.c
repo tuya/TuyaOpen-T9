@@ -62,6 +62,22 @@ static void multicore_hal_m55s_ram_ema_switch_to_high_speed(void)
 	sys_ahbp_ll_set_reg53_value(M55S_RAM_EMA_SET_KEY(M55S_RAM_EMA_LOCK_KEY) | stp_cfg);
 }
 
+static void multicore_hal_m55_sram_power_on(void)
+{
+	aon_pmu_ll_set_r2_m55_mem3_pwd(0); // mem3 power on
+	delay_ms(1);
+	aon_pmu_ll_set_r2_m55_mem4_pwd(0); // mem4 power on
+	delay_ms(1);
+	aon_pmu_ll_set_r2_m55_mem5_pwd(0); // mem5 power on
+	delay_ms(1);
+	aon_pmu_ll_set_r2_m55_mem6_pwd(0); // mem6 power on
+	delay_ms(1);
+	aon_pmu_ll_set_r2_m55_cpu2_cache_pwd(0); // cpu2 cache power on
+	delay_ms(1);
+	aon_pmu_ll_set_r2_m55_cpu3_cache_pwd(0); // cpu3 cache power on
+	delay_ms(1);
+}
+
 static void multicore_hal_m55_core_init_common(void)
 {
 	uint32_t reg_val = 0;
@@ -69,20 +85,8 @@ static void multicore_hal_m55_core_init_common(void)
 
 	if (aon_pmu_ll_get_r2_m55_auto_sel() == 1) {
 		aon_pmu_ll_set_r2_m55_mem_auto_set(0); // m55 power seq on
-	} else {
-		aon_pmu_ll_set_r2_m55_mem3_pwd(0); // mem3 power on
-		delay_ms(1);
-		aon_pmu_ll_set_r2_m55_mem4_pwd(0); // mem4 power on
-		delay_ms(1);
-		aon_pmu_ll_set_r2_m55_mem5_pwd(0); // mem5 power on
-		delay_ms(1);
-		aon_pmu_ll_set_r2_m55_mem6_pwd(0); // mem6 power on
-		delay_ms(1);
-		aon_pmu_ll_set_r2_m55_cpu2_cache_pwd(0); // cpu2 power on
-		delay_ms(1);
-		aon_pmu_ll_set_r2_m55_cpu3_cache_pwd(0); // cpu3 power on
-		delay_ms(1);
 	}
+	multicore_hal_m55_sram_power_on();
 
 	// reg_val = sys_ll_get_ana_reg10_value();
 	// reg_val |= BIT(19);
@@ -203,7 +207,7 @@ static bk_err_t multicore_hal_m55_core_copy_code_and_data(uint32_t boot_addr, bo
 		}
 	}
 
-#if CONFIG_DCACHE
+#if CONFIG_CACHE_MAINTENANCE
 	flush_all_dcache();
 #endif
 
@@ -299,6 +303,12 @@ bk_err_t multicore_hal_stop(uint32_t id)
 	switch (id) {
 	case CPU1_CORE_ID:
 		sys_drv_set_cpu1_reset(0);
+		break;
+	case CPU2_CORE_ID:
+		sys_drv_set_cpu2_reset(0);
+		break;
+	case CPU3_CORE_ID:
+		sys_drv_set_cpu3_reset(0);
 		break;
 	default:
 		return BK_ERR_NOT_SUPPORT;

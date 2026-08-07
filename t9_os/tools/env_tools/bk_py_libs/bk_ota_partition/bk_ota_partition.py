@@ -8,6 +8,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from bk_flash_partiton import adapt_partition_name
 from bk_misc import format_size
 
 logger = logging.getLogger(__package__)
@@ -59,13 +60,9 @@ class bk_ota_partition:
     def _part_adapter(self, part_sections: list[partition_info]):
         app_count = 0
         for item in part_sections:
-            if "bootloader" in item.Name and item.Execute:
-                item.Name = "bootloader"
-                continue
-            if item.Execute:
-                item.Name = "application" + (str(app_count) if app_count else "")
-                app_count += 1
-                continue
+            item.Name, app_count = adapt_partition_name(
+                item.Name, item.Execute, app_count
+            )
 
     def gen_ab_ota_json(self, ota_json: Path):
         def get_ota_part_name(part_name: str) -> str:
@@ -173,9 +170,13 @@ class bk_ota_partition:
 
         if self.crc_enable:
             bootloader_start = int(bootloader_start / 34 * 32)
-            bootloader_size = int(bootloader_size / 34 * 32 / 1024)
+            bootloader_size = bootloader_size / 34 * 32
             app_start = int(app_start / 34 * 32)
-            app_size = int(app_size / 34 * 32 / 1024)
+            app_size = app_size / 34 * 32
+
+        # size field uses "K" unit, so always convert bytes to KB.
+        bootloader_size = int(bootloader_size / 1024)
+        app_size = int(app_size / 1024)
 
         bootloader_sect = pack_partition(
             "bootloader.bin",

@@ -1,4 +1,4 @@
-set(incs include decode legacy/include modules/container_parser modules/video_decoder modules/audio_decoder)
+set(incs include decode legacy/include common modules/container_parser modules/video_decoder modules/audio_decoder)
 set(srcs "")
 
 if (CONFIG_AVI_PLAYER)
@@ -31,6 +31,7 @@ if (CONFIG_AVI_PLAYER)
         list(APPEND srcs
             modules/video_decoder/bk_video_player_h264_flexa_decoder.c
             modules/video_decoder/bk_video_player_h264_frame_decoder.c
+            modules/video_decoder/bk_video_player_h264_frame_zerocopy_decoder.c
         )
     endif()
     if (CONFIG_BK_VIDEO_PLAYER_ENABLE_AAC_AUDIO_DECODER)

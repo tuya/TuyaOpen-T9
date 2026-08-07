@@ -31,9 +31,6 @@
 #define OTA_LOGD(...) 
 #endif
 
-#ifdef CONFIG_HTTP_AB_PARTITION
-extern part_flag update_part_flag;
-#endif
 u8  ota_flag =0;
 
 /*Please use the interface of the int bk_ota_start_download(const char *url, ota_wr_destination_t ota_dest_id) function in ota.c.*/
@@ -91,6 +88,10 @@ int bk_http_ota_download(const char *uri)
 	httpclient.header = "Accept: text/xml,text/html,\r\n";
 	httpclient_data.response_buf = http_content;
 	httpclient_data.response_content_len = HTTP_RESP_CONTENT_LEN;
+
+	/* Disable STA power-save during download; PS sleep drops MAC timer IRQs and
+	 * stalls the transfer. Restored right after, before any branch. */
+	bk_wifi_sta_pm_disable();
 	ret = httpclient_common(&httpclient,
 							uri,
 							80,/*port*/
@@ -98,6 +99,7 @@ int bk_http_ota_download(const char *uri)
 							HTTPCLIENT_GET,
 							300000,
 							&httpclient_data);
+	bk_wifi_sta_pm_enable();
 
 
 	ota_flag = 0;
@@ -154,8 +156,7 @@ int bk_http_ota_download(const char *uri)
 		bk_reboot();
 #else
 		OTA_LOGI("ota_success.\r\n");
-		ota_do_deinit_operation();
-		bk_reboot();
+		bk_ota_finish_and_reboot();
 #endif /*CONFIG_HTTP_AB_PARTITION*/
 	}
 	return ret;

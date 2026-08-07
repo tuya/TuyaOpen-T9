@@ -111,6 +111,7 @@ typedef struct {
     VOID_T              (*queue_free)               (CONST TKL_QUEUE_HANDLE queue);
     OPERATE_RET         (*queue_post)               (CONST TKL_QUEUE_HANDLE queue, VOID_T *data, CONST UINT_T timeout);
     OPERATE_RET         (*queue_fetch)              (CONST TKL_QUEUE_HANDLE queue, VOID_T *msg, CONST UINT_T timeout);
+    OPERATE_RET         (*get_hw_unique_id)         (UINT8_T *id, UINT8_T *len);
 } TKL_OS_T;
 
 extern CONST TKL_OS_T TKL_OS;
