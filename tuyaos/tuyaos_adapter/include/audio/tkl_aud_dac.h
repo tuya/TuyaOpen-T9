@@ -29,6 +29,17 @@ extern "C" {
 /* Public typedefs -----------------------------------------------------------*/
 typedef VOID (*TKL_AUD_DAC_FRAME_CB)(TUYA_AUDIO_DAC_FRAME_EVT_E event, VOID_T *args);
 
+/**
+ * @brief DAC digital input source selection (maps to OEM aud_dac_source_t on V2).
+ * @note AUTO picks CALL for 8k/16k voice rates, A2DP for media rates (44.1k+ / 48k).
+ */
+typedef enum {
+    TKL_AUD_DAC_SRC_AUTO = 0,   /**< Infer from sample_rate (default, backward compatible) */
+    TKL_AUD_DAC_SRC_MEDIA,      /**< Music/media path -> AUD_DAC_SOURCE_A2DP */
+    TKL_AUD_DAC_SRC_VOICE,      /**< Voice/call path -> AUD_DAC_SOURCE_CALL */
+    TKL_AUD_DAC_SRC_HINT,       /**< Hint/prompt path -> AUD_DAC_SOURCE_HINT */
+} TKL_AUD_DAC_SRC_E;
+
 typedef struct {
     UINT8_T volume;
     UINT8_T  chan_num;      // now, only one speaker
@@ -37,6 +48,7 @@ typedef struct {
     UINT32_T frame_time_ms;
     TKL_AUD_DAC_FRAME_CB frame_cb;
     VOID_T              *args;
+    TKL_AUD_DAC_SRC_E src;  /**< Digital source; 0=AUTO, keep at end for ABI */
 }TKL_AUD_DAC_CFG_T;
 
 /* Public variables ----------------------------------------------------------*/
