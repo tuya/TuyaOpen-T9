@@ -368,7 +368,9 @@ static const uint16_t sensor_sc3336p_init_table[][2] = {
     {0x5aed,0x2c},
     {0x36e9,0x53},
     {0x37f9,0x27},
-    // {0x0100,0x01},
+    // Modified by TUYA Start
+    {0x0100,0x01},
+    // Modified by TUYA End
 };
 #elif (SC3336P_PCLK == SC3336P_PCLK_66M)
 // 2304x1296@20fps
@@ -531,7 +533,9 @@ static const uint16_t sensor_sc3336p_init_table[][2] = {
     {0x5aed,0x2c},
     {0x36e9,0x20},
     {0x37f9,0x20},
-    // {0x0100,0x01},
+    // Modified by TUYA Start
+    {0x0100,0x01},
+    // Modified by TUYA End
 };
 #elif (SC3336P_PCLK == SC3336P_PCLK_86M)
 // 2304x1296@20fps
@@ -694,7 +698,9 @@ static const uint16_t sensor_sc3336p_init_table[][2] = {
     {0x5aed,0x2c},
     {0x36e9,0x44},
     {0x37f9,0x34},
-    // {0x0100,0x01},
+    // Modified by TUYA Start
+    {0x0100,0x01},
+    // Modified by TUYA End
 };
 #endif
 
@@ -850,7 +856,9 @@ static const uint16_t sensor_sc3336p_1080P25_init_table[][2] = {
     {0x5aed,0x2c},
     {0x36e9,0x54},
     {0x37f9,0x47},
-    // {0x0100,0x01},
+    // Modified by TUYA Start
+    {0x0100,0x01},
+    // Modified by TUYA End
 };
 
 #define sc3336p_TABLE_SIZE(table) (sizeof(table) / sizeof(table[0]))

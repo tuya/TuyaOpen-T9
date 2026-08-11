@@ -179,11 +179,25 @@ OPERATE_RET tkl_mipi_dsi_deinit(VOID_T)
 
 OPERATE_RET tkl_mipi_dsi_tx_cmd(UINT8_T cmd, const VOID_T *param, UINT32_T size)
 {
+    OPERATE_RET ret;
+    BOOL_T was_video;
+
     if (s_dsi_runtime.inited != TRUE || s_dsi_runtime.dis_bus_handle == NULL) {
         return OPRT_INVALID_PARM;
     }
 
-    return bk_display_bus_tx_param(s_dsi_runtime.dis_bus_handle, cmd, param, size);
+    was_video = (mipi_dsi_video_mode_get() != false) ? TRUE : FALSE;
+    if (was_video == TRUE) {
+        mipi_dsi_video_mode_set(false);
+    }
+
+    ret = bk_display_bus_tx_param(s_dsi_runtime.dis_bus_handle, cmd, param, size);
+
+    if (was_video == TRUE) {
+        mipi_dsi_video_mode_set(true);
+    }
+
+    return ret;
 }
 
 static OPERATE_RET tkl_mipi_dpu_init(const TUYA_MIPI_BASE_CFG_T *base_cfg)

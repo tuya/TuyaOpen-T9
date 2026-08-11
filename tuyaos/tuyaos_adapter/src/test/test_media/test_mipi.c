@@ -45,7 +45,7 @@
 #define MIPI_TEST_MIRROR_SETTLE_FRAMES 2U
 #define MIPI_TEST_MIRROR_EDGE_COLS     8U
 #define MIPI_TEST_CAMERA_USAGE \
-    "Usage: xmipi camera <open [sw sh fps ow oh]|open_gpu [sw sh fps ow oh]|open_gpu_sp [sw sh fps ow oh spw sph]|start|switch <ow> <oh>|get_frame|mirror [hmirror vflip]|mirror_test|luminance|luminance_test [n ms]|stop|close>"
+    "Usage: xmipi camera <open [sw sh fps ow oh]|open_gpu [sw sh fps ow oh]|open_gpu_sp [sw sh fps ow oh spw sph]|start|switch <ow> <oh>|get_frame|mirror [hmirror vflip]|mirror_test|luminance|luminance_test [n ms]|skip [n]|stop|close>"
 #define MIPI_TEST_LUMINANCE_MAX         255000U
 #define MIPI_TEST_LUMINANCE_DEFAULT_CNT 5U
 #define MIPI_TEST_LUMINANCE_DEFAULT_MS  200U
@@ -71,6 +71,10 @@ static size_t s_mipi_frame_size = 0;
 static uint8_t s_mipi_frame_index = 0;
 static uint32_t s_mipi_color_state = 0x13579BDFU;
 static TUYA_CAMERA_MIPI_CFG_T s_mipi_camera_cfg;
+/* MP AE 预热跳帧数，由 "xmipi camera skip <n>" 设置。
+ * 每个 open 都会先跑 test_mipi_camera_runtime_reset() 清空 s_mipi_camera_cfg，
+ * 所以这个值单独存一份，reset 时再灌回去，否则设完就被抹掉。 */
+static uint8_t s_mipi_camera_skip_frames = 0;
 static bool s_mipi_camera_inited = false;
 static bool s_mipi_camera_started = false;
 static uint8_t *s_mipi_camera_frame = NULL;
@@ -138,6 +142,11 @@ static OPERATE_RET test_mipi_panel_reset(void)
     return OPRT_OK;
 }
 
+/**
+ * @brief 复位面板并下发其初始化命令序列
+ *
+ * 模式切换由 tkl_mipi_dsi_tx_cmd() 内部兜住，这里不必关心当前是视频模式还是命令模式。
+ */
 static OPERATE_RET test_mipi_panel_init_with_desc(const bk_display_dsi_panel_t *panel)
 {
     const lcd_mipi_init_cmd_t *init_cmds;
@@ -159,6 +168,15 @@ static OPERATE_RET test_mipi_panel_init_with_desc(const bk_display_dsi_panel_t *
     }
 
     for (i = 0; init_cmds[i].cmd != 0 || init_cmds[i].data != NULL; i++) {
+        /* BK 面板表用伪命令表示延时：cmd==0 && data_len==0xFF，data 指向 1 字节毫秒数。
+         * 不识别的话会被当成 255 字节参数的普通命令发出去（超过 gen_write_pkt 的 200
+         * 上限，直接被丢弃），面板序列里的延时就全部失效了。 */
+        if (init_cmds[i].cmd == 0 && init_cmds[i].data_len == 0xFF &&
+            init_cmds[i].data != NULL) {
+            tkl_system_sleep(((const uint8_t *)init_cmds[i].data)[0]);
+            continue;
+        }
+
         ret = tkl_mipi_dsi_tx_cmd(init_cmds[i].cmd,
                                   init_cmds[i].data,
                                   init_cmds[i].data_len);
@@ -220,6 +238,8 @@ static void test_mipi_camera_runtime_reset(void)
     s_mipi_camera_cfg.enable_flexa = FALSE;
     s_mipi_camera_cfg.work_mode = 0U;
     s_mipi_camera_cfg.read_timeout_ms = 1000U;
+    /* 跨 reset 保留，见 s_mipi_camera_skip_frames 的说明 */
+    s_mipi_camera_cfg.skip_frames = s_mipi_camera_skip_frames;
 
     s_mipi_camera_inited = false;
     s_mipi_camera_started = false;
@@ -1244,6 +1264,30 @@ static OPERATE_RET test_mipi_camera_set_mirror_flip(UINT8_T hmirror, UINT8_T vfl
 }
 
 /**
+ * @brief Set MP AE warmup skip frames, applied on the next camera open
+ *
+ * 该值在 tkl_camera_mipi_start() 的 port_init 与 MP channel_open 之间下发，
+ * 因此必须在 open 之前设置；已 open 的实例要重开才会生效。
+ *
+ * 只影响 MP 上“靠 ISP_FRAME_END_DONE 中断交付帧”的路径（flexa bond 到编码器）。
+ * SP 抓图走 DQBUF 拉取，其预热丢帧由 TKL 内部的
+ * TKL_CAM_MIPI_SP_WARMUP_DROP_CNT 处理，不受本命令影响。
+ *
+ * @param[in] count frames to drop, 0 = disabled
+ * @return OPRT_OK on success
+ */
+static OPERATE_RET test_mipi_camera_set_skip_frames(UINT8_T count)
+{
+    s_mipi_camera_skip_frames = count;
+    s_mipi_camera_cfg.skip_frames = count;
+
+    tkl_log_output("camera skip_frames set to %u (applies on next open, inited=%u)\r\n",
+                   (unsigned int)count,
+                   (unsigned int)s_mipi_camera_inited);
+    return OPRT_OK;
+}
+
+/**
  * @brief Get camera mirror/flip from TKL
  * @param[out] hmirror optional
  * @param[out] vflip optional
@@ -1888,6 +1932,20 @@ void cli_tuya_mipi_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char 
                      ret,
                      output_width,
                      output_height);
+        } else if (os_strcmp(cmd, "skip") == 0) {
+            if (argc < 4) {
+                snprintf(pcWriteBuffer, xWriteBufferLen,
+                         "xmipi camera skip_frames=%u (set before open); Usage: xmipi camera skip <n>\r\n",
+                         (unsigned int)s_mipi_camera_cfg.skip_frames);
+                return;
+            }
+
+            ret = test_mipi_camera_set_skip_frames((UINT8_T)os_strtoul(argv[3], NULL, 10));
+            snprintf(pcWriteBuffer, xWriteBufferLen,
+                     "xmipi camera skip %s (%d), skip_frames=%u, applies on next open\r\n",
+                     (ret == OPRT_OK) ? "ok" : "failed",
+                     ret,
+                     (unsigned int)s_mipi_camera_cfg.skip_frames);
         } else if (os_strcmp(cmd, "close") == 0) {
             ret = test_mipi_camera_mipi_close();
             snprintf(pcWriteBuffer, xWriteBufferLen,

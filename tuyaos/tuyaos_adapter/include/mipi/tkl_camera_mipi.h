@@ -42,6 +42,7 @@ typedef struct {
     BOOL_T enable_flexa;
     UINT8_T work_mode;              /* 0: frame mode, 1: flexa mode */
     UINT32_T read_timeout_ms;
+    UINT8_T skip_frames;    /* MP AE 预热：通道打开后丢弃前 N 帧，0=关闭 */
 
     BOOL_T sp_enable;
     UINT16_T sp_width;

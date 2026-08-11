@@ -454,9 +454,31 @@ static OPERATE_RET tkl_uvc_config_fill(TUYA_UVC_CTX_T *ctx, bk_cam_uvc_config_t 
     config->height = ctx->cfg.height;
     config->fps = ctx->cfg.fps;
     config->port = ctx->cfg.port;
-    config->drop_num = ctx->cfg.drop_num;
 
     return OPRT_OK;
+}
+
+/* BK 4.0.1.8：跳帧数（AE 预热）由 ioctl 配置，必须在 bk_uvc_init 之后、
+ * bk_uvc_open 之前调用；该值存在 stream handle 上，每次 open 复位到
+ * skip_frames_remaining，直到 bk_uvc_deinit 才失效，因此只需下发一次。 */
+static OPERATE_RET tkl_uvc_backend_set_skip_frames(TUYA_UVC_CTX_T *ctx)
+{
+    bk_uvc_skip_frames_config_t skip_cfg;
+    avdk_err_t ret;
+
+    if (ctx == NULL || ctx->backend_handle == NULL) {
+        return OPRT_INVALID_PARM;
+    }
+
+    if (ctx->cfg.drop_num == 0U) {
+        return OPRT_OK;     /* 后端默认即为 0，无需下发 */
+    }
+
+    skip_cfg.port = ctx->cfg.port;
+    skip_cfg.count = ctx->cfg.drop_num;
+
+    ret = bk_uvc_ioctl(ctx->backend_handle, BK_UVC_IOCTL_SET_SKIP_FRAMES, &skip_cfg);
+    return tkl_uvc_ret_convert(ret);
 }
 
 static OPERATE_RET tkl_uvc_backend_prepare(TUYA_UVC_CTX_T *ctx)
@@ -502,6 +524,17 @@ static OPERATE_RET tkl_uvc_backend_prepare(TUYA_UVC_CTX_T *ctx)
         return tkl_uvc_ret_convert(ret);
     }
     ctx->backend_inited = TRUE;
+
+    op_ret = tkl_uvc_backend_set_skip_frames(ctx);
+    if (op_ret != OPRT_OK) {
+        (void)bk_uvc_deinit(ctx->backend_handle);
+        ctx->backend_inited = FALSE;
+        (void)bk_uvc_delete(ctx->backend_handle);
+        ctx->backend_handle = NULL;
+        tkl_uvc_power_off(ctx);
+        return op_ret;
+    }
+
     ctx->cfg.fps = (UINT8_T)config.fps;
     return OPRT_OK;
 }

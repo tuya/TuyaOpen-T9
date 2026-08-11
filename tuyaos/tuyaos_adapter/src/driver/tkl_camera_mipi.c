@@ -357,6 +357,34 @@ static OPERATE_RET tkl_camera_mipi_sensor_detect_and_check(TUYA_CAMERA_MIPI_CFG_
     return OPRT_OK;
 }
 
+STATIC OPERATE_RET __tkl_camera_mipi_apply_skip_frames(VOID_T)
+{
+    bk_isp_camera_skip_frames_config_t skip_cfg;
+    OPERATE_RET ret;
+
+    if (s_cam_ctx.cfg.skip_frames == 0U) {
+        return OPRT_OK;
+    }
+
+    if (s_cam_ctx.camera_ctlr_handle == NULL) {
+        return OPRT_RESOURCE_NOT_READY;
+    }
+
+    skip_cfg.channel = ISP_MP_CHN_ID;
+    skip_cfg.count = s_cam_ctx.cfg.skip_frames;
+
+    ret = bk_isp_camera_ctlr_ioctl(s_cam_ctx.camera_ctlr_handle,
+                                   BK_CAM_IOCTL_SET_SKIP_FRAMES,
+                                   &skip_cfg);
+    if (ret != AVDK_ERR_OK) {
+        tkl_log_output("camera set MP skip_frames %u failed: %d\r\n",
+                       (unsigned int)s_cam_ctx.cfg.skip_frames, ret);
+        return OPRT_COM_ERROR;
+    }
+
+    return OPRT_OK;
+}
+
 static OPERATE_RET tkl_camera_mipi_build_isp_ctlr_cfg(bk_isp_camera_ctlr_config_t *isp_ctlr_cfg)
 {
     if (isp_ctlr_cfg == NULL || s_cam_ctx.sensor_handle == NULL) {
@@ -610,6 +638,11 @@ OPERATE_RET tkl_camera_mipi_start(void)
     ret = bk_isp_camera_port_init(s_cam_ctx.camera_ctlr_handle, &isp_ctlr_cfg);
     if (ret != OPRT_OK) {
         tkl_log_output( "bk_isp_camera_port_init failed: %d\r\n", ret);
+        goto err_start;
+    }
+
+    ret = __tkl_camera_mipi_apply_skip_frames();
+    if (ret != OPRT_OK) {
         goto err_start;
     }
 
