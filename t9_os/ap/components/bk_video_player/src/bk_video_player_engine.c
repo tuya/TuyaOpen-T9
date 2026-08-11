@@ -404,6 +404,38 @@ avdk_err_t bk_video_player_engine_set_av_sync_offset_ms(bk_video_player_engine_h
     return handle->ctlr->ioctl(handle->ctlr, BK_VIDEO_PLAYER_IOCTL_CMD_SET_AV_SYNC_OFFSET_MS, &param);
 }
 
+avdk_err_t bk_video_player_engine_select_audio_track(bk_video_player_engine_handle_t handle, uint8_t index)
+{
+    AVDK_RETURN_ON_FALSE(handle, AVDK_ERR_INVAL, TAG, "handle is NULL");
+    AVDK_RETURN_ON_FALSE(handle->ctlr, AVDK_ERR_INVAL, TAG, "controller is NULL");
+    AVDK_RETURN_ON_FALSE(handle->ctlr->ioctl, AVDK_ERR_UNSUPPORTED, TAG, "ioctl function is NULL");
+
+    bk_video_player_audio_track_param_t param;
+    os_memset(&param, 0, sizeof(param));
+    param.index = index;
+    param.seek_pts_ms = VIDEO_PLAYER_PTS_INVALID;
+
+    return handle->ctlr->ioctl(handle->ctlr, BK_VIDEO_PLAYER_IOCTL_CMD_SELECT_AUDIO_TRACK, &param);
+}
+
+avdk_err_t bk_video_player_engine_get_audio_track_count(bk_video_player_engine_handle_t handle, uint8_t *count)
+{
+    AVDK_RETURN_ON_FALSE(handle, AVDK_ERR_INVAL, TAG, "handle is NULL");
+    AVDK_RETURN_ON_FALSE(count, AVDK_ERR_INVAL, TAG, "count is NULL");
+    AVDK_RETURN_ON_FALSE(handle->ctlr, AVDK_ERR_INVAL, TAG, "controller is NULL");
+    AVDK_RETURN_ON_FALSE(handle->ctlr->ioctl, AVDK_ERR_UNSUPPORTED, TAG, "ioctl function is NULL");
+
+    bk_video_player_audio_track_count_param_t param;
+    os_memset(&param, 0, sizeof(param));
+
+    avdk_err_t ret = handle->ctlr->ioctl(handle->ctlr, BK_VIDEO_PLAYER_IOCTL_CMD_GET_AUDIO_TRACK_COUNT, &param);
+    if (ret == AVDK_ERR_OK)
+    {
+        *count = param.count;
+    }
+    return ret;
+}
+
 avdk_err_t bk_video_player_engine_register_audio_decoder(bk_video_player_engine_handle_t handle,
                                                          const video_player_audio_decoder_ops_t *decoder_ops)
 {
@@ -422,6 +454,32 @@ avdk_err_t bk_video_player_engine_register_video_decoder(bk_video_player_engine_
     AVDK_RETURN_ON_FALSE(handle->ctlr->register_video_decoder, AVDK_ERR_INVAL, TAG, "register_video_decoder function is NULL");
 
     return handle->ctlr->register_video_decoder(handle->ctlr, decoder_ops);
+}
+
+avdk_err_t bk_video_player_engine_prepare_video_decoder_switch(
+    bk_video_player_engine_handle_t handle)
+{
+    AVDK_RETURN_ON_FALSE(handle, AVDK_ERR_INVAL, TAG, "handle is NULL");
+    AVDK_RETURN_ON_FALSE(handle->ctlr, AVDK_ERR_INVAL, TAG, "controller is NULL");
+    AVDK_RETURN_ON_FALSE(handle->ctlr->prepare_video_decoder_switch,
+                         AVDK_ERR_UNSUPPORTED, TAG,
+                         "prepare video switch function is NULL");
+
+    return handle->ctlr->prepare_video_decoder_switch(handle->ctlr);
+}
+
+avdk_err_t bk_video_player_engine_complete_video_decoder_switch(
+    bk_video_player_engine_handle_t handle,
+    const bk_video_player_video_switch_profile_t *profile)
+{
+    AVDK_RETURN_ON_FALSE(handle, AVDK_ERR_INVAL, TAG, "handle is NULL");
+    AVDK_RETURN_ON_FALSE(profile, AVDK_ERR_INVAL, TAG, "profile is NULL");
+    AVDK_RETURN_ON_FALSE(handle->ctlr, AVDK_ERR_INVAL, TAG, "controller is NULL");
+    AVDK_RETURN_ON_FALSE(handle->ctlr->complete_video_decoder_switch,
+                         AVDK_ERR_UNSUPPORTED, TAG,
+                         "complete video switch function is NULL");
+
+    return handle->ctlr->complete_video_decoder_switch(handle->ctlr, profile);
 }
 
 avdk_err_t bk_video_player_engine_register_container_parser(bk_video_player_engine_handle_t handle,

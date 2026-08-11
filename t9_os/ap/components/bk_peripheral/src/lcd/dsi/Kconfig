@@ -52,6 +52,11 @@ menu "DSI LCD"
 		default n
 	# Modified by TUYA End
 
+	config LCD_CO5300_MIPI_320x360
+		depends on LCD_DSI
+		bool "Enable LCD_CO5300_MIPI_320x360 API"
+		default n
+
 	config LCD_ST7701SN_MIPI_360x640
 		depends on LCD_DSI
 		bool "Enable LCD_ST7701SN_MIPI_360x640 API"

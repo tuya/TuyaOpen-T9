@@ -1603,8 +1603,8 @@ int bk_cli_init(void)
 
 #if CONFIG_OTP_V1 && CONFIG_OTP_TEST
 	cli_otp_init();
+	cli_package_type_init();
 #endif
-
 
 #if CONFIG_PM_TEST
 	cli_pm_init();
@@ -1655,7 +1655,7 @@ int bk_cli_init(void)
 	cli_psa_crypto_init();
 #endif
 
-#if (CONFIG_TRUSTENGINE_TEST && CONFIG_PSA_MBEDTLS)
+#if (CONFIG_CLASSIC_MBEDTLS_TEST && CONFIG_PSA_MBEDTLS)
 	cli_mbedtls_init();
 #endif
 

@@ -19,8 +19,13 @@
 #include "pal_string.h"
 #include "pal_time.h"
 #include "pal_log.h"
+#include "reg_base.h"
 
 #define PROC_TIME_FOR_ONE_BLOCK  ( 50 )
+
+#define DBH_HASH_DMA_ADDR(p)                                                   \
+    ((uint32_t)SOC_SRAM_PERI_ADDR(                                            \
+        SOC_SRAM_PERI_ADDR_SECURE((uintptr_t)(p))))
 
 #define GET_HASH_LEN( ctx )                                                    \
     ( ( ctx->mode == ARM_HASH_MODE_SHA1 )                                      \
@@ -96,6 +101,7 @@ static void arm_ce_hash_process_mask_intr( uint32_t mask )
 void arm_ce_hash_driver_init( void )
 {
     volatile uint32_t value = 0;
+#if defined( DUBHE_SECURE )
     dubhe_clk_enable( DBH_MODULE_HASH );
     /* Reset HASH module */
     value = DBH_READ_REGISTER( TOP_CTRL, RESET_CTRL );
@@ -105,6 +111,7 @@ void arm_ce_hash_driver_init( void )
     value = DBH_READ_REGISTER( TOP_CTRL, RESET_CTRL );
     DBH_REG_FLD_SET( RESET_CTRL, HASH, value, 0x0 );
     DBH_WRITE_REGISTER( TOP_CTRL, RESET_CTRL, value );
+#endif
 
 #if defined( DUBHE_FOR_RUNTIME )
     /* Set command queue watermark, set to 0, there's no watermark interrupt
@@ -260,7 +267,7 @@ static int arm_ce_hash_execute_hash_init( arm_ce_hash_context_t *ctx,
         value &= 0xFFFFFFFE;
         if ( vect_is_addr == DBH_HASH_IV_IS_ADDR ) {
             value |= 0x8;
-            hash_iv_addr = (uint32_t) external_vector;
+            hash_iv_addr = DBH_HASH_DMA_ADDR( external_vector );
             /* Function part */
             DBH_WRITE_REGISTER( HASH, HASH_QUEUE, value );
             /* Parameter part */
@@ -317,7 +324,7 @@ static int arm_ce_hash_execute_hash_process( arm_ce_hash_context_t *ctx,
             /* HASH_process function part */
             DBH_WRITE_REGISTER( HASH, HASH_QUEUE, value );
             /* HASH process parameter part */
-            addr = ( uint32_t )( ctx->extra_data );
+            addr = DBH_HASH_DMA_ADDR( ctx->extra_data );
             DBH_WRITE_REGISTER( HASH, HASH_QUEUE, addr );
 
             DBH_WRITE_REGISTER( HASH, HASH_QUEUE, old_extra_len );
@@ -341,7 +348,7 @@ static int arm_ce_hash_execute_hash_process( arm_ce_hash_context_t *ctx,
         /* HASH_process function part */
         DBH_WRITE_REGISTER( HASH, HASH_QUEUE, value );
         /* HASH process parameter part */
-        addr = ( uint32_t )( input );
+        addr = DBH_HASH_DMA_ADDR( input );
         DBH_WRITE_REGISTER( HASH, HASH_QUEUE, addr );
         /* HASH process parameter part */
         DBH_WRITE_REGISTER( HASH, HASH_QUEUE, input_data_len );
@@ -380,9 +387,9 @@ static int arm_ce_hash_execute_hash_finish( arm_ce_hash_context_t *ctx,
                                             uint8_t padding,
                                             unsigned char *buf )
 {
-    uint32_t data          = (uint32_t) buf;
+    uint32_t data          = DBH_HASH_DMA_ADDR( buf );
     uint32_t process_value = 0, finish_value = 0;
-    uint32_t extra_data = ( uint32_t )( ctx->extra_data );
+    uint32_t extra_data = DBH_HASH_DMA_ADDR( ctx->extra_data );
     int ret             = 0;
 
     /* filter uninitialized finish request */

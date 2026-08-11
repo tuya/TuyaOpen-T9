@@ -19,7 +19,7 @@
  * Python packer's zlib.crc32.
  *
  * Links into the secure image, so the ops never call BK_LOG (the SDK log path is
- * unsafe from the SPE); flash errors surface via the record CRC/validity check. */
+ * unsafe from the SPE); callers propagate flash errors and verify each commit. */
 
 #include <soc/soc.h>		/* REG_READ/REG_WRITE, SOC_AON_PMU_REG_BASE */
 #include "boot_param.h"
@@ -46,19 +46,19 @@ uint32_t boot_param_crc32(const uint8_t *data, uint32_t len)
 	return crc ^ 0xFFFFFFFFu;
 }
 
-static void bp_flash_read(uint32_t off, void *buf, uint32_t len)
+static int bp_flash_read(uint32_t off, void *buf, uint32_t len)
 {
-	(void)bk_flash_read_bytes(off, (uint8_t *)buf, len);
+	return bk_flash_read_bytes(off, (uint8_t *)buf, len);
 }
 
-static void bp_flash_erase(uint32_t off)
+static int bp_flash_erase(uint32_t off)
 {
-	(void)bk_flash_erase_sector(off);
+	return bk_flash_erase_sector(off);
 }
 
-static void bp_flash_write(uint32_t off, const void *buf, uint32_t len)
+static int bp_flash_write(uint32_t off, const void *buf, uint32_t len)
 {
-	(void)bk_flash_write_bytes(off, (const uint8_t *)buf, len);
+	return bk_flash_write_bytes(off, (const uint8_t *)buf, len);
 }
 
 static uint32_t bp_crc32(const void *buf, uint32_t len)
@@ -83,7 +83,7 @@ uint32_t boot_param_partition_base(void)
 	return base;
 }
 
-/* AON_PMU trial-boot counter: keeps the runtime try_count out of flash. Held in
+/* AON_PMU trial-boot counter: keeps the runtime attempt count out of flash. Held in
  * R0 bit[14:12] (3-bit), latched via the R25 magic handshake, read from R7A;
  * survives warm reset, cleared by cold power-on. Ported from aboot driver_ab.c. */
 #define BOOT_PARAM_PMU_R0        (0x0u)

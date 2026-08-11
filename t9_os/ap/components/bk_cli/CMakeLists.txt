@@ -25,6 +25,12 @@ list(APPEND srcs
 	cli_exception.c
 	)
 
+if (CONFIG_DUMP_TEST_CLI)
+	list(APPEND srcs
+		cli_dump_test.c
+	)
+endif()
+
 if (CONFIG_SOC_SMP)
 	list(APPEND srcs
 		cli_ap_hotplug.c
@@ -129,7 +135,10 @@ endif()
 
 
 	if (CONFIG_OTP_V1 AND CONFIG_OTP_TEST)
-		list(APPEND srcs "cli_otp.c")
+		list(APPEND srcs
+			"cli_otp.c"
+			"cli_package_type.c"
+		)
 	endif()
 
 

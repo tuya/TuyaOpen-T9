@@ -73,13 +73,29 @@ static avdk_err_t app_isp_sensor_apply_mirror(bk_camera_sensor_handle_t handle, 
  */
 static bool s_isp_camera_read_used = false;
 
-/**
- * @brief Vote MIPI camera AuxLDOs (1.8V iovdd + 1.2V dvdd) on/off.
- *
- * Only MIPI sensors on this board need these two rails. DVP/UVC paths must NOT
- * call this helper. This is the single owner of PM_AUXLDO_USER_CAMERA; higher
- * layers MUST NOT vote PM_AUXLDO_USER_CAMERA themselves to avoid double voting.
- */
+static uint8_t app_camera_skip_frames_resolve(uint8_t param_skip)
+{
+    if (param_skip > 0)
+    {
+        return param_skip;
+    }
+    if (camera_board_config != NULL && camera_board_config->skip_frames > 0)
+    {
+        return camera_board_config->skip_frames;
+    }
+    return 0;
+}
+
+/* AE warmup: drop the first N frames on every ISP channel (shared sensor/AE).
+ * Must be issued after port_init (isp_handle ready) and before channel_open. */
+static void app_isp_apply_skip_frames(bk_isp_camera_ctlr_handle_t handle, uint8_t count)
+{
+    bk_isp_camera_skip_frames_config_t cfg = { .channel = ISP_MP_CHN_ID, .count = count };
+    (void)bk_isp_camera_ctlr_ioctl(handle, BK_CAM_IOCTL_SET_SKIP_FRAMES, &cfg);
+    cfg.channel = ISP_SP_CHN_ID;
+    (void)bk_isp_camera_ctlr_ioctl(handle, BK_CAM_IOCTL_SET_SKIP_FRAMES, &cfg);
+}
+
 avdk_err_t app_mipi_camera_power_enable(bool enable)
 {
     int ldo_en = enable ? PM_AUXLDO_ENABLE : PM_AUXLDO_DISABLE;
@@ -279,6 +295,7 @@ int app_isp_dvp_camera_turn_on(camera_parameters_ext_t *paramters)
 
     // step 3.1: init camera port mipi/dvp
     AVDK_GOTO_ON_ERROR(bk_isp_camera_port_init(isp_cam_handle.camera_ctlr_handle, &isp_ctlr_config), err, TAG, "bk_dvp_port_init failed");
+    app_isp_apply_skip_frames(isp_cam_handle.camera_ctlr_handle, app_camera_skip_frames_resolve(paramters->skip_frames));
 
     // step 4: enable isp mp channel
     uint16_t isp_output_width = (paramters->isp_output_width != 0) ? paramters->isp_output_width : paramters->camera_width;
@@ -320,7 +337,7 @@ err:
     return AVDK_ERR_GENERIC;
 }
 
-int app_isp_mipi_sensor_init(const camera_board_config_t *config, bk_isp_camera_ctlr_config_t *isp_ctlr_config)
+int app_isp_mipi_sensor_turn_on(const camera_board_config_t *config, bk_isp_camera_ctlr_config_t *isp_ctlr_config)
 {
     bk_err_t ret = BK_OK;
     bk_camera_bus_t *bus = NULL;
@@ -385,6 +402,46 @@ int app_isp_mipi_sensor_init(const camera_board_config_t *config, bk_isp_camera_
     AVDK_GOTO_ON_FALSE(sensor_object, AVDK_ERR_GENERIC, err, TAG, "sensor object is NULL");
     isp_ctlr_config->sensor_object = sensor_object;
 
+    // step 3: enable sensor stream
+    ret = bk_camera_sensor_init(isp_cam_handle.sensor_handle);
+    if (ret != AVDK_ERR_OK)
+    {
+        LOGE("%s, sensor init failed: %d\n", __func__, ret);
+        goto err;
+    }
+    bk_camera_sensor_format_t format = {
+        .width = config->mipi.sensor_max_width,
+        .height = config->mipi.sensor_max_height,
+        .fps = config->mipi.sensor_fps,
+    };
+
+    /* GC2053 mirror (reg 0x17) must be set before MIPI stream start in set_format. */
+    ret = app_isp_sensor_apply_mirror(isp_cam_handle.sensor_handle,
+                                      config->mipi.hmirror != 0,
+                                      config->mipi.vflip != 0);
+    if (ret != AVDK_ERR_OK)
+    {
+        LOGE("%s, apply mirror before set_format failed: %d\n", __func__, ret);
+        goto err;
+    }
+
+    ret = bk_camera_sensor_set_format(isp_cam_handle.sensor_handle, &format);
+    if (ret != AVDK_ERR_OK)
+    {
+        LOGE("%s, set_format failed: %d\n", __func__, ret);
+        goto err;
+    }
+
+    ret = app_isp_sensor_apply_mirror(isp_cam_handle.sensor_handle,
+                                      config->mipi.hmirror != 0,
+                                      config->mipi.vflip != 0);
+    if (ret != AVDK_ERR_OK)
+    {
+        LOGE("%s, apply mirror after set_format failed: %d\n", __func__, ret);
+        goto err;
+    }
+
+    LOGI("%s hmirror=%u vflip=%u\n", __func__, config->mipi.hmirror, config->mipi.vflip);
     return AVDK_ERR_OK;
 
 err:
@@ -402,46 +459,6 @@ err:
     return (ret != BK_OK) ? ret : AVDK_ERR_GENERIC;
 }
 
-int app_isp_mipi_sensor_start(const camera_board_config_t *config)
-{
-    avdk_err_t ret;
-    bk_camera_sensor_format_t format = {
-        .width = config->mipi.sensor_max_width,
-        .height = config->mipi.sensor_max_height,
-        .fps = config->mipi.sensor_fps,
-    };
-
-    bk_camera_sensor_init(isp_cam_handle.sensor_handle);
-
-    /* GC2053 mirror (reg 0x17) must be set before MIPI stream start in set_format. */
-    ret = app_isp_sensor_apply_mirror(isp_cam_handle.sensor_handle,
-                                      config->mipi.hmirror != 0,
-                                      config->mipi.vflip != 0);
-    if (ret != AVDK_ERR_OK)
-    {
-        LOGE("%s, apply mirror before set_format failed: %d\n", __func__, ret);
-        return ret;
-    }
-
-    ret = bk_camera_sensor_set_format(isp_cam_handle.sensor_handle, &format);
-    if (ret != AVDK_ERR_OK)
-    {
-        return ret;
-    }
-
-    ret = app_isp_sensor_apply_mirror(isp_cam_handle.sensor_handle,
-                                      config->mipi.hmirror != 0,
-                                      config->mipi.vflip != 0);
-    if (ret != AVDK_ERR_OK)
-    {
-        LOGE("%s, apply mirror after set_format failed: %d\n", __func__, ret);
-        return ret;
-    }
-
-    LOGI("%s hmirror=%u vflip=%u\n", __func__, config->mipi.hmirror, config->mipi.vflip);
-    return AVDK_ERR_OK;
-}
-
 int app_isp_mipi_camera_mp_turn_on(const camera_board_config_t *config, bk_isp_camera_ctlr_config_t *isp_ctlr_config)
 {
     bk_err_t ret = BK_OK;
@@ -457,6 +474,7 @@ int app_isp_mipi_camera_mp_turn_on(const camera_board_config_t *config, bk_isp_c
 
     // step 3.1: init camera port mipi/dvp
     AVDK_GOTO_ON_ERROR(bk_isp_camera_port_init(isp_cam_handle.camera_ctlr_handle, isp_ctlr_config), err, TAG, "bk_mipi_port_init failed");
+    app_isp_apply_skip_frames(isp_cam_handle.camera_ctlr_handle, config->skip_frames);
 
     // step 4: enable isp mp channel
     // Use ISP output width/height if provided, otherwise use camera input width/height
@@ -498,11 +516,11 @@ int app_isp_mipi_camera_turn_on(const camera_board_config_t *config)
 
     bk_isp_camera_ctlr_config_t isp_ctlr_config = CAM_CSI_DEFAULT_RAW10_CONFIG(config->mipi.sensor_max_width, config->mipi.sensor_max_height, config->mipi.sensor_fps);
 
-    ret = app_isp_mipi_sensor_init(config, &isp_ctlr_config);
+    ret = app_isp_mipi_sensor_turn_on(config, &isp_ctlr_config);
     AVDK_GOTO_ON_FALSE(ret == AVDK_ERR_OK, ret, err, TAG, "app_isp_mipi_sensor_turn_on failed");
     ret = app_isp_mipi_camera_mp_turn_on(config, &isp_ctlr_config);
     AVDK_GOTO_ON_FALSE(ret == AVDK_ERR_OK, ret, err, TAG, "app_isp_mipi_camera_mp_turn_on failed");
-    return app_isp_mipi_sensor_start(config);
+    return AVDK_ERR_OK;
 
 err:
     if (ldo_voted)
@@ -629,6 +647,7 @@ int app_isp_dual_camera_turn_on(camera_parameters_ext_t *paramters)
     // step 3.1: init camera port mipi/dvp
     AVDK_GOTO_ON_ERROR(bk_isp_camera_port_init(isp_cam_handle.camera_ctlr_handle, &isp_ctlr_dvp_config), err, TAG, "bk_dvp_port_init failed");
     AVDK_GOTO_ON_ERROR(bk_isp_camera_port_init(isp_cam_handle.camera_ctlr_handle, &isp_ctlr_mipi_config), err, TAG, "bk_mipi_port_init failed");
+    app_isp_apply_skip_frames(isp_cam_handle.camera_ctlr_handle, app_camera_skip_frames_resolve(paramters->skip_frames));
 
     // step 4: enable isp mp channel
     uint16_t isp_output_width = (paramters->isp_output_width != 0) ? paramters->isp_output_width : paramters->camera_width;
@@ -708,6 +727,7 @@ int app_isp_camera_sp_channel_turn_on(const camera_board_config_t *config)
     instance.width = config->isp.sp_width;
     instance.height = config->isp.sp_height;
     instance.format = config->isp.sp_format;
+
 
     ret = bk_isp_camera_channel_open(isp_cam_handle.camera_ctlr_handle, ISP_SP_CHN_ID, &instance);
 

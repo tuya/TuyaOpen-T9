@@ -1954,7 +1954,7 @@ void vApplicationStackOverflowHook( TaskHandle_t pxTask, char *pcTaskName )
 #endif
 
 /*-----------------------------------------------------------*/
-void vApplicationMallocFailedHook( void )
+__attribute__((weak)) void vApplicationMallocFailedHook( void )
 {
 }
 

@@ -196,13 +196,27 @@ print_partitions: $(auto_partition_out)
 	@echo ============================================================
 
 ram_partition_script := $(ARMINO_AVDK_DIR)/tools/build_tools/build_process/bk_build_ram_regions.py
-RAM_REGIONS_TABLE := $(PROJECT_DIR)/partitions/$(ARMINO_SOC_NAME)/ram_regions.csv
+RAM_REGIONS_DIR := $(PROJECT_DIR)/partitions/$(ARMINO_SOC_NAME)
+RAM_REGIONS_TABLE := $(RAM_REGIONS_DIR)/ram_regions.csv
+RAM_REGIONS_MPU_POLICY := $(wildcard $(RAM_REGIONS_DIR)/ram_regions_mpu.json)
 ram_regions_out := $(PARTITIONS_DIR)/ram_regions.h
-$(ram_regions_out): $(RAM_REGIONS_TABLE)
+ram_regions_setting := $(firstword \
+	$(wildcard $(ARMINO_AVDK_DIR)/tools/build_tools/build_process/bk_sdk/smp_ram_setting_$(ARMINO_SOC_NAME).json) \
+	$(ARMINO_AVDK_DIR)/tools/build_tools/build_process/bk_sdk/smp_ram_setting.json)
+$(ram_regions_out): $(RAM_REGIONS_DIR) $(RAM_REGIONS_TABLE) $(RAM_REGIONS_MPU_POLICY) $(ram_partition_script) $(ram_regions_setting)
 	@mkdir -p $(PARTITIONS_DIR)
 	@$(RUN_PYTHON3) $(ram_partition_script)
 
-build_prepare: $(auto_partition_out) print_partitions $(ram_regions_out)
+# Clean bootloader once before the AP/CP build to ensure a full rebuild.
+NORMAL_BOOTLOADER_DIR := $(ARMINO_CP_DIR)/properties/modules/bootloader/aboot/arm_bootloader
+.PHONY: bootloader_fullclean
+bootloader_fullclean:
+	@echo "[full-build] clean bootloader once for a reproducible full build"
+	@if [ -d "$(NORMAL_BOOTLOADER_DIR)" ]; then \
+		$(MAKE) -C $(NORMAL_BOOTLOADER_DIR) SOC_TYPE=$(ARMINO_SOC) clean; \
+	fi
+
+build_prepare: $(auto_partition_out) print_partitions $(ram_regions_out) bootloader_fullclean
 
 package_script := $(ARMINO_AVDK_DIR)/tools/build_tools/build_process/bk_build_package.py
 package_dir := $(PROJECT_BUILD_DIR)/package
@@ -284,11 +298,18 @@ clean:
 	@test ! -f build/bk7259/tuya_app/bk7259/config/sdkconfig.h || cp build/bk7259/tuya_app/bk7259/config/sdkconfig.h                                                    .tmp_build/bk7259/tuya_app/bk7259/config/
 	@test ! -f build/bk7259/tuya_app/bk7259_ap/armino_as_lib/bk7259_ap/config/sdkconfig.h || cp build/bk7259/tuya_app/bk7259_ap/armino_as_lib/bk7259_ap/config/sdkconfig.h .tmp_build/bk7259/tuya_app/bk7259_ap/armino_as_lib/bk7259_ap/config/
 	@test ! -f build/bk7259/tuya_app/bk7259_ap/config/sdkconfig.h || cp build/bk7259/tuya_app/bk7259_ap/config/sdkconfig.h                                              .tmp_build/bk7259/tuya_app/bk7259_ap/config/
-	@echo "rm -rf ./build"
+	@echo "clean docs"
 	@$(RUN_PYTHON3) ./tools/armino_doc.py --clean True
+	@ARMINO_DIR=$(ARMINO_AP_DIR) ARMINO_PATH=$(ARMINO_AP_DIR) $(RUN_PYTHON3) $(ARMINO_TOOLS_PATH)/build_tools/armino_doc.py clean
+	@ARMINO_DIR=$(ARMINO_CP_DIR) ARMINO_PATH=$(ARMINO_CP_DIR) $(RUN_PYTHON3) $(ARMINO_TOOLS_PATH)/build_tools/armino_doc.py clean
+	@echo "clean build"
 	@rm -rf ./build
 	@rm -rf $(ARMINO_AP_DIR)/build
 	@rm -rf $(ARMINO_CP_DIR)/build
+	@echo "clean bootloader output"
+	@if [ -d "$(NORMAL_BOOTLOADER_DIR)" ]; then \
+		$(MAKE) -C $(NORMAL_BOOTLOADER_DIR) SOC_TYPE=$(ARMINO_SOC) clean; \
+	fi
 	@mv .tmp_build build
 
 distclean: clean
