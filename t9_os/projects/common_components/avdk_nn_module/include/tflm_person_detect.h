@@ -14,6 +14,25 @@
 
 #pragma once
 
-#include "avdk_nn_module.h"
+#include <stdint.h>
 
-const avdk_nn_module_t *get_tfm_person_detection_module(void);
+#include "AvdkDetectionModel.h"
+
+extern "C" {
+extern const unsigned char person_detection_vela_tflite[];
+extern const unsigned int person_detection_vela_tflite_len;
+}
+
+class PersonDetectModel : public AvdkDetectionModel {
+public:
+    PersonDetectModel();
+
+    void resolverLoad(void) override;
+    void resourceLoad(void) override;
+    void resourceUnload(void) override;
+    int run(uint8_t *data, uint32_t size, bk_pixel_format_t format) override;
+
+private:
+    bool buildOutputTensors(void);
+    bool output_tensors_ready;
+};

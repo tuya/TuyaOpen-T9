@@ -22,6 +22,12 @@ list(APPEND srcs
 	cli_reg.c
 	)
 
+if (CONFIG_DUMP_TEST_CLI)
+	list(APPEND srcs
+		cli_dump_test.c
+	)
+endif()
+
 if (CONFIG_SOC_SMP)
 	list(APPEND srcs
 		cli_cp_hotplug.c
@@ -114,6 +120,10 @@ endif()
 
 if (CONFIG_CPU_PERF_TEST)
 	list(APPEND srcs "cli_cpu_perf.c")
+endif()
+
+if (CONFIG_OTP_V1 AND CONFIG_OTP_TEST)
+	list(APPEND srcs "cli_package_type.c")
 endif()
 
 elseif (CONFIG_SHELL_ASYNCLOG)

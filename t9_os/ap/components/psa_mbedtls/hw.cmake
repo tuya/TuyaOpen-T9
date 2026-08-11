@@ -76,16 +76,10 @@ if (CONFIG_TRUSTENGINE)
 		${TE_DIR}/dubhe_lib/rsa.c
 	)
 
-	list(APPEND srcs
-		mbedtls/library/psa_crypto.c
-		mbedtls/library/psa_crypto_client.c
-	)
-
 set(hw_defs
 	CRYPTO_HW_ACCELERATOR
 	CRYPTO_HW_ACCELERATOR_OTP_PROVISIONING
 	ARM_CE_DUBHE
-	DUBHE_SECURE
 	ARM_CE_DUBHE_SCA
 	ARM_CE_DUBHE_TRNG
 	ARM_CE_DUBHE_OTP
@@ -94,4 +88,8 @@ set(hw_defs
 	DUBHE_FOR_RUNTIME
 	MBEDTLS_LOG_LEVEL_ID=${MBEDTLS_LOG_LEVEL_ID}
 )
+	# SPE=1: Secure TE window + local PM. SPE=0: Normal TE window, SPE owns power.
+	if (CONFIG_SPE)
+		list(APPEND hw_defs DUBHE_SECURE)
+	endif()
 endif()
