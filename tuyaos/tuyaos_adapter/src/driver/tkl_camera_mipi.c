@@ -620,6 +620,29 @@ OPERATE_RET tkl_camera_mipi_start(void)
         return ret;
     }
 
+    os_memset(&sensor_format, 0, sizeof(sensor_format));
+    sensor_format.width = s_cam_ctx.cfg.sensor_width;
+    sensor_format.height = s_cam_ctx.cfg.sensor_height;
+    sensor_format.fps = s_cam_ctx.cfg.sensor_fps;
+
+    ret = bk_camera_sensor_init(s_cam_ctx.sensor_handle);
+    if (ret != OPRT_OK) {
+        tkl_log_output( "bk_camera_sensor_init failed: %d\r\n", ret);
+        goto err_start;
+    }
+
+    ret = bk_camera_sensor_set_format(s_cam_ctx.sensor_handle, &sensor_format);
+    if (ret != OPRT_OK) {
+        tkl_log_output( "bk_camera_sensor_set_format failed: %d\r\n", ret);
+        goto err_start;
+    }
+
+    /* Apply after set_format: init table may reset mirror regs. */
+    ret = tkl_camera_mipi_apply_mirror();
+    if (ret != OPRT_OK) {
+        goto err_start;
+    }
+
     ret = bk_camera_isp_ctlr_new(&s_cam_ctx.camera_ctlr_handle);
     if (ret != OPRT_OK) {
         tkl_log_output( "bk_camera_isp_ctlr_new failed: %d\r\n", ret);
@@ -661,29 +684,6 @@ OPERATE_RET tkl_camera_mipi_start(void)
     ret = bk_isp_camera_channel_open(s_cam_ctx.camera_ctlr_handle, ISP_MP_CHN_ID, &mp_cfg);
     if (ret != OPRT_OK) {
         tkl_log_output( "bk_isp_camera_channel_open failed: %d\r\n", ret);
-        goto err_start;
-    }
-
-    os_memset(&sensor_format, 0, sizeof(sensor_format));
-    sensor_format.width = s_cam_ctx.cfg.sensor_width;
-    sensor_format.height = s_cam_ctx.cfg.sensor_height;
-    sensor_format.fps = s_cam_ctx.cfg.sensor_fps;
-
-    ret = bk_camera_sensor_init(s_cam_ctx.sensor_handle);
-    if (ret != OPRT_OK) {
-        tkl_log_output( "bk_camera_sensor_init failed: %d\r\n", ret);
-        goto err_start;
-    }
-
-    ret = bk_camera_sensor_set_format(s_cam_ctx.sensor_handle, &sensor_format);
-    if (ret != OPRT_OK) {
-        tkl_log_output( "bk_camera_sensor_set_format failed: %d\r\n", ret);
-        goto err_start;
-    }
-
-    /* Apply after set_format: init table may reset mirror regs. */
-    ret = tkl_camera_mipi_apply_mirror();
-    if (ret != OPRT_OK) {
         goto err_start;
     }
 
