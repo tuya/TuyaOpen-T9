@@ -88,6 +88,8 @@ typedef struct {
     CONST blend_info_t *blend_info;   /* optional preload list (not drawn at open); NULL or {.addr=NULL} ok */
     UINT32_T src_format;              /* 0=auto (ABGR if compress else ARGB) */
     BOOL_T by_flexa;                  /* false=frame-end, true=per-flexa block */
+    /* OSD 内容旋转角度，仅支持 0 / 90 / 270（GPU 引擎不支持 180），默认为 0。*/
+    UINT16_T rotate_degree;
 } TUYA_GPU_OSD_OPEN_T;
 
 OPERATE_RET tkl_gpu_init(TUYA_GPU_CFG_T *config);
@@ -100,8 +102,8 @@ OPERATE_RET tkl_gpu_get_handle(VOID **handle);
 
 /**
  * @brief Create bk_draw_osd instance on started tkl_gpu (does not draw)
- * @param[in] cfg assets + optional preload list + blend mode
- * @return OPRT_OK on success
+ * @param[in] cfg assets + optional preload list + blend mode + OSD 旋转角度
+ * @return OPRT_OK on success; OPRT_INVALID_PARM if rotate_degree is not 0/90/270
  * @note Requires tkl_gpu_start(). No blit until tkl_gpu_osd_ctrl(UPDATE, ...).
  *       blend_assets/blend_info pointers are not deep-copied.
  */

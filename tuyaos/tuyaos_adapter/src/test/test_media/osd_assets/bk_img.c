@@ -11,16 +11,14 @@
 **********************************************************************
 */
 #include "components/bk_draw_osd.h"
+#include "blend.h"   /* OSD_VIEW_W / OSD_VIEW_H：元素坐标空间，随 OSD_LAYOUT_ROTATED 切换 */
 
-/* Panel matches jd9165t_mipi_1024x600 + xgpu init rotate=0 dst=1024x600 */
-#define PANEL_W                1024
-#define PANEL_H                600
 #define WIFI_MARGIN            16
 #define WIFI_ICON_W            60
 #define WIFI_ICON_H            60
 /* Top-right corner */
-#define WIFI_X                 (PANEL_W - WIFI_ICON_W - WIFI_MARGIN) /* 948 */
-#define WIFI_Y                 WIFI_MARGIN                          /* 16 */
+#define WIFI_X                 (OSD_VIEW_W - WIFI_ICON_W - WIFI_MARGIN) /* 竖屏 524 / 横屏 948 */
+#define WIFI_Y                 WIFI_MARGIN                              /* 16 */
 
 /* ================= wifi: RSSI icons (none/1/2/3/full) ================= */
 #define wifi_rssi_full_X   WIFI_X

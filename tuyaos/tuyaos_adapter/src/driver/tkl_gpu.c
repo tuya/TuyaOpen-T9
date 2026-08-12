@@ -662,6 +662,22 @@ OPERATE_RET tkl_gpu_osd_open(CONST TUYA_GPU_OSD_OPEN_T *cfg)
         return OPRT_RESOURCE_NOT_READY;
     }
 
+    /* 引擎只实现了 0/90/270 三档；管线虽然接受 180，但 OSD 没有对应实现 */
+    if (cfg->rotate_degree != 0U &&
+        cfg->rotate_degree != 90U &&
+        cfg->rotate_degree != 270U) {
+        tkl_log_output("tkl_gpu: osd rotate_degree %u invalid (0/90/270)\r\n",
+                       (unsigned int)cfg->rotate_degree);
+        return OPRT_INVALID_PARM;
+    }
+
+    /* 角度由应用决定，不跟随管线；不一致只提示，不改写应用的选择 */
+    if (cfg->rotate_degree != s_gpu_ctx.cfg.rotate_degree) {
+        tkl_log_output("tkl_gpu: osd rotate %u differs from pipeline rotate %u\r\n",
+                       (unsigned int)cfg->rotate_degree,
+                       (unsigned int)s_gpu_ctx.cfg.rotate_degree);
+    }
+
     (void)tkl_gpu_osd_close();
 
     by_flexa = (cfg->by_flexa == TRUE);
@@ -671,6 +687,7 @@ OPERATE_RET tkl_gpu_osd_open(CONST TUYA_GPU_OSD_OPEN_T *cfg)
     osd_cfg.gpu = s_gpu_ctx.gpu_handle;
     osd_cfg.panel_w = s_gpu_ctx.cfg.dst_width;
     osd_cfg.panel_h = s_gpu_ctx.cfg.dst_height;
+    osd_cfg.osd_rotate_degree = cfg->rotate_degree;
     osd_cfg.src_format = tkl_gpu_osd_src_format_resolve(cfg->src_format);
     osd_cfg.blend_assets = cfg->blend_assets;
     osd_cfg.blend_info = cfg->blend_info;

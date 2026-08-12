@@ -510,7 +510,7 @@ static void test_gpu_osd_format_time(char *text, size_t text_len)
     text[8] = '\0';
 }
 
-static OPERATE_RET test_gpu_osd_open(BOOL_T by_flexa)
+static OPERATE_RET test_gpu_osd_open(BOOL_T by_flexa, UINT16_T rotate_degree)
 {
     TUYA_GPU_OSD_OPEN_T cfg;
 
@@ -524,6 +524,7 @@ static OPERATE_RET test_gpu_osd_open(BOOL_T by_flexa)
     cfg.blend_info = NULL; /* open does not draw; first paint via UPDATE */
     cfg.src_format = 0U;
     cfg.by_flexa = by_flexa;
+    cfg.rotate_degree = rotate_degree;
     return tkl_gpu_osd_open(&cfg);
 }
 
@@ -796,25 +797,36 @@ void cli_tuya_gpu_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char *
         const char *name = NULL;
         const char *content = NULL;
         BOOL_T by_flexa = FALSE;
+        UINT16_T osd_rotate = 0U;
 
         if (argc < 3) {
             snprintf(pcWriteBuffer, xWriteBufferLen,
-                     "Usage: xgpu osd <open [flexa]|update <name> <content>|remove <name>|time|clear|close|frame|flexa>\r\n"
+                     "Usage: xgpu osd <open [flexa] [rotate]|update <name> <content>|remove <name>|time|clear|close|frame|flexa>\r\n"
+                     "  rotate=0|90|270 (OSD content rotation, chosen by app; 180 unsupported)\r\n"
                      "  update examples: update clock 12:00:00 | update wifi wifi_rssi_none\r\n");
             return;
         }
 
         osd_sub = argv[2];
         if (os_strcmp(osd_sub, "open") == 0) {
-            if (argc >= 4 && os_strcmp(argv[3], "flexa") == 0) {
-                by_flexa = TRUE;
+            int i;
+
+            /* 位置无关："flexa" 关键字设 by_flexa，其余数字当旋转角度 */
+            for (i = 3; i < argc; i++) {
+                if (os_strcmp(argv[i], "flexa") == 0) {
+                    by_flexa = TRUE;
+                } else {
+                    osd_rotate = (UINT16_T)os_strtoul(argv[i], NULL, 10);
+                }
             }
-            ret = test_gpu_osd_open(by_flexa);
+
+            ret = test_gpu_osd_open(by_flexa, osd_rotate);
             snprintf(pcWriteBuffer, xWriteBufferLen,
-                     "xgpu osd open %s (%d), by_flexa=%u (no draw until update)\r\n",
+                     "xgpu osd open %s (%d), by_flexa=%u rotate=%u (no draw until update)\r\n",
                      (ret == OPRT_OK) ? "ok" : "failed",
                      ret,
-                     (unsigned int)by_flexa);
+                     (unsigned int)by_flexa,
+                     (unsigned int)osd_rotate);
         } else if (os_strcmp(osd_sub, "update") == 0) {
             if (argc < 5) {
                 snprintf(pcWriteBuffer, xWriteBufferLen,
