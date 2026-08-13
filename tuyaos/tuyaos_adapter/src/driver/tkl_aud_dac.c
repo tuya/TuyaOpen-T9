@@ -575,32 +575,50 @@ __dac_init_exit:
  * The DAC *digital* path (DMA, FIFO, tx callbacks) runs fine without these, but
  * there is NO audible output until:
  *   1. the 3.3V AUX-LDO that powers the audio analog/output stage is voted on, and
- *   2. the speaker power-amplifier enable pin (GPIO60, active-high) is driven.
- * This mirrors ex_audio_onboard_spk_start() in test_aud_utils.c, which is the
- * known-good on-board mic->speaker path. Missing these two steps is exactly why
- * playback produced no sound. GPIO60 is the board's PA enable (NOT GPIO28).
+ *   2. the speaker PA enable pin (cfg.pa_pin, active-high) is driven when valid.
+ * PA GPIO comes from tkl_aud_dac_init() config; use TKL_AUD_DAC_PA_PIN_NONE to skip.
  */
-#define TKL_AUD_DAC_SPK_PA_GPIO   60
-
 static void __tkl_aud_dac_spk_power_on(void)
 {
+    UINT32_T pa_pin;
     pm_auxldo_ctrl_cfg_t auxldo_cfg = {0};
+
     auxldo_cfg.ldo   = AUXLDOS_SEL_3V;
     auxldo_cfg.out   = PM_AUXLDO_3V_OUT_3P3V;
     auxldo_cfg.user  = PM_AUXLDO_USER_CAMERA;
     auxldo_cfg.state = 1;
     (void)bk_pm_auxldo_ctrl_vote(&auxldo_cfg);
 
-    gpio_dev_unmap(TKL_AUD_DAC_SPK_PA_GPIO);
-    (void)bk_gpio_enable_output(TKL_AUD_DAC_SPK_PA_GPIO);
-    (void)bk_gpio_set_output_high(TKL_AUD_DAC_SPK_PA_GPIO);
+    if (gl_dac_ctx == NULL) {
+        return;
+    }
+
+    pa_pin = gl_dac_ctx->cfg.pa_pin;
+    if (pa_pin >= TUYA_GPIO_NUM_MAX) {
+        return;
+    }
+
+    gpio_dev_unmap((gpio_id_t)pa_pin);
+    (void)bk_gpio_enable_output((gpio_id_t)pa_pin);
+    (void)bk_gpio_set_output_high((gpio_id_t)pa_pin);
 }
 
 static void __tkl_aud_dac_spk_power_off(void)
 {
+    UINT32_T pa_pin;
+
     /* Disable the PA (mute the amplifier). Leave the AUX-LDO vote as-is so other
      * users of the 3.3V rail are not disturbed. */
-    (void)bk_gpio_set_output_low(TKL_AUD_DAC_SPK_PA_GPIO);
+    if (gl_dac_ctx == NULL) {
+        return;
+    }
+
+    pa_pin = gl_dac_ctx->cfg.pa_pin;
+    if (pa_pin >= TUYA_GPIO_NUM_MAX) {
+        return;
+    }
+
+    (void)bk_gpio_set_output_low((gpio_id_t)pa_pin);
 }
 
 /**
