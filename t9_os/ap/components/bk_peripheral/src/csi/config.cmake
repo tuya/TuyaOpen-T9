@@ -37,12 +37,10 @@ if (CONFIG_CSI_CAMERA)
 		list(APPEND GLOBAL_FUNCTION_SYMBOLS "sc3336_detect")
 	endif()
 
-# Modified by TUYA Start
 	if (CONFIG_CSI_SC3336P)
 		list(APPEND CSI_CAMERA_DEVICE_FILES ${CSI_CAMERA_PATH}/csi_sc3336p.c)
 		list(APPEND GLOBAL_FUNCTION_SYMBOLS "sc3336p_detect")
 	endif()
-# Modified by TUYA End
 endif()
 
 

@@ -56,6 +56,7 @@ enum {
 #define ISP_FLEXA_STREAM_ID_CR 0x16
 
 static isp_isr_handler_t isp_isr_handler[ISP_ISR_MAX][ISP_ISR_MODULE_MAX] = {0};
+static uint8_t s_isp_clk_vote_cnt = 0;
 #if CONFIG_SOC_SMP
 static SPINLOCK_SECTION volatile spinlock_t s_isp_isr_spin_lock = SPIN_LOCK_INIT;
 #endif
@@ -203,9 +204,57 @@ static void isp_isr_callback_ext(vsi_u32_t state, void *args)
     isp_isr_callback(state_temp, args);
 }
 
+static bool isp_peer_channel_warmup_done(isp_control_t *control, uint8_t chnl_id)
+{
+    uint8_t peer_id = (chnl_id == ISP_MP_CHN_ID) ? ISP_SP_CHN_ID : ISP_MP_CHN_ID;
+
+    /* Only a peer that actually finished a warmup skip (warmup_done latched)
+     * proves the shared sensor/AE is stable. A peer that merely has
+     * skip_frames==0 (opted out, e.g. SP by default) is NOT an authority and
+     * must not short-circuit the warming channel. */
+    return control->chn[peer_id].enable
+        && control->chn[peer_id].warmup_done;
+}
+
+static bool isp_channel_skip_warmup_needed(isp_control_t *control, uint8_t chnl_id)
+{
+    if (control->chn[chnl_id].skip_frames_remaining == 0)
+    {
+        return false;
+    }
+
+    /* MP/SP share sensor/AE: late open after peer warmup must not skip again. */
+    if (isp_peer_channel_warmup_done(control, chnl_id))
+    {
+        return false;
+    }
+
+    return true;
+}
+
 static void isp_mi_isr_callback_handle(isp_control_t *control, uint8_t isr_type, uint8_t chnl_id, uint8_t ok)
 {
     uint8_t i = 0;
+
+    if (control->chn[chnl_id].skip_active)
+    {
+        if (isr_type == ISP_FRAME_END_DONE && ok)
+        {
+            if (control->chn[chnl_id].skip_frames_remaining > 0)
+            {
+                control->chn[chnl_id].skip_frames_remaining--;
+            }
+            if (control->chn[chnl_id].skip_frames_remaining == 0)
+            {
+                /* Finished a real warmup countdown: this channel is now a
+                 * warmup authority for its peer (shared sensor/AE is stable). */
+                control->chn[chnl_id].warmup_done = 1;
+            }
+            control->chn[chnl_id].skip_active = 0;
+        }
+        return;
+    }
+
     if (isr_type == ISP_MB_LINE_DONE)
     {
         for (i = 0; i < ISP_ISR_MODULE_MAX; i++)
@@ -263,6 +312,8 @@ static void isp_mi_isr_callback(uint32_t state, void *args)
             if (control->chn[ISP_MP_CHN_ID].line == 0)
             {
                 ISP_MP_FRAME_START();
+                control->chn[ISP_MP_CHN_ID].skip_active =
+                    isp_channel_skip_warmup_needed(control, ISP_MP_CHN_ID) ? 1 : 0;
             }
 
             ISP_MP_LINE_START();
@@ -279,6 +330,8 @@ static void isp_mi_isr_callback(uint32_t state, void *args)
             if (control->chn[ISP_SP_CHN_ID].line == 0)
             {
                 ISP_SP_FRAME_START();
+                control->chn[ISP_SP_CHN_ID].skip_active =
+                    isp_channel_skip_warmup_needed(control, ISP_SP_CHN_ID) ? 1 : 0;
             }
 
             ISP_SP_LINE_START();
@@ -363,23 +416,55 @@ static void isp_mi_isr_callback_ext(vsi_u32_t state, void *args)
     isp_mi_isr_callback(state_temp, args);
 }
 
-bk_err_t bk_isp_clock_enable(uint32_t clk, uint8_t enable)
+bk_err_t bk_isp_clock_enable(uint8_t enable)
 {
+    bool do_pwr_up = false;
+    bool do_pwr_down = false;
+    uint8_t vote;
+    GLOBAL_INT_DECLARATION();
+
+    /* Ref-counted CISP clock vote shared by ISP driver and camera bus.
+     * First enable powers the clock up; last disable powers it down. */
+    GLOBAL_INT_DISABLE();
     if (enable)
     {
-        // isp clock configuration 60MHz
-        // isp clock sel 1, div 4, 60MHz
-        sys_drv_cisp_cksel_clkdiv_set(CKSEL_CISP_240M, 1);
-
-        // enable isp clock
-        bk_pm_clock_ctrl(PM_CLK_ID_CISP, PM_CLK_CTRL_PWR_UP);
+        if (s_isp_clk_vote_cnt == 0)
+        {
+            do_pwr_up = true;
+        }
+        if (s_isp_clk_vote_cnt < 0xFF)
+        {
+            s_isp_clk_vote_cnt++;
+        }
+        vote = s_isp_clk_vote_cnt;
     }
     else
     {
-        // disable isp clock
+        if (s_isp_clk_vote_cnt == 0)
+        {
+            GLOBAL_INT_RESTORE();
+            LOGW("%s: unbalanced disable, vote already 0\n", __func__);
+            return BK_OK;
+        }
+        s_isp_clk_vote_cnt--;
+        if (s_isp_clk_vote_cnt == 0)
+        {
+            do_pwr_down = true;
+        }
+        vote = s_isp_clk_vote_cnt;
+    }
+    GLOBAL_INT_RESTORE();
+
+    if (do_pwr_up)
+    {
+        bk_pm_clock_ctrl(PM_CLK_ID_CISP, PM_CLK_CTRL_PWR_UP);
+    }
+    else if (do_pwr_down)
+    {
         bk_pm_clock_ctrl(PM_CLK_ID_CISP, PM_CLK_CTRL_PWR_DOWN);
     }
 
+    LOGD("%s: %s, vote=%u\n", __func__, enable ? "enable" : "disable", vote);
     return BK_OK;
 }
 
@@ -445,16 +530,13 @@ bk_err_t bk_cis_mclk_clock_enable(uint32_t clk, uint8_t gpio, uint8_t enable)
 
 static void isp_clock_enable(uint32_t clk)
 {
-    uint32_t reg_value = 0;
     // isp pwd enable
     bk_pm_module_vote_power_ctrl(PM_POWER_SUB_DOMAIN_ISP, PM_POWER_MODULE_STATE_ON);
 
-    // isp clock configuration
-    // isp clock div default div 4, 60MHz
+    /* isp clock configuration 60MHz: sel 1, div 4 */
     sys_drv_cisp_cksel_clkdiv_set(CKSEL_CISP_240M, 1);
-
-    // enable isp clock
-    bk_pm_clock_ctrl(PM_CLK_ID_CISP, PM_CLK_CTRL_PWR_UP);
+    // shared CISP clock vote (paired with bk_isp_clock_enable(0) in deinit)
+    bk_isp_clock_enable(true);
 }
 
 static bk_err_t bk_isp_complete_buffer_config(isp_control_t *control, uint8_t chnl, uint8_t buf_cnt)
@@ -832,8 +914,8 @@ bk_err_t bk_isp_deinit(isp_handle_t *handle)
 
     VSI_MPI_ISP_Exit(control->dev);
 
-    // disable isp clock
-    bk_pm_clock_ctrl(PM_CLK_ID_CISP, PM_CLK_CTRL_PWR_DOWN);
+    // release shared CISP clock vote
+    bk_isp_clock_enable(false);
 
     // disable isp pwd
     bk_pm_module_vote_power_ctrl(PM_POWER_SUB_DOMAIN_ISP, PM_POWER_MODULE_STATE_OFF);
@@ -883,6 +965,22 @@ bk_err_t bk_isp_open(isp_handle_t *handle, isp_config_ext_t *config)
     }
     control->chn[config->chnl_id].channel.chnId = config->chnl_id;
     control->chn[config->chnl_id].buf_cnt = config->buf_cnt;
+    control->chn[config->chnl_id].skip_frames_remaining = config->skip_frames;
+    control->chn[config->chnl_id].skip_active = 0;
+    /* Inherit a peer that already finished warmup: AE is stable, skip nothing
+     * and become an authority immediately. Otherwise only channels that run a
+     * real (>0) skip countdown may later latch warmup_done in the ISR; a plain
+     * skip==0 channel never becomes an authority so it can't cut a peer's
+     * warmup short. */
+    if (isp_peer_channel_warmup_done(control, config->chnl_id))
+    {
+        control->chn[config->chnl_id].skip_frames_remaining = 0;
+        control->chn[config->chnl_id].warmup_done = 1;
+    }
+    else
+    {
+        control->chn[config->chnl_id].warmup_done = 0;
+    }
 
     // step 3: config isp channel
     ret = VSI_MPI_ISP_SetChnAttr(control->chn[config->chnl_id].channel, &control->chn[config->chnl_id].chn_attr);

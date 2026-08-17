@@ -502,12 +502,9 @@ static gpio_id_t uart_cfg_rx_pin(uart_id_t id)
 
 static void uart_init_gpio(uart_id_t id)
 {
-	// Modified by TUYA
-	/* Pin ownership stays in GPIO_DEFAULT_DEV_CONFIG (usr_gpio_cfg.h).
-	 * OEM 4.0.1.7 re-applies TX/RX via uart_map_func on each init so a
-	 * UART re-init after disable_tx/disable_rx (pad driven high-Z) is
-	 * restored. Adopt that remap instead of the old #if 0 mute of all
-	 * driver-side muxing. */
+	/* UART pin assignment lives in GPIO_DEFAULT_DEV_CONFIG (usr_gpio_cfg.h).
+	 * Re-apply the TX/RX mapping here so a UART re-init after a
+	 * disable_tx/disable_rx (which drives the pad to high-Z) is restored. */
 	uart_map_func(uart_txd_dev(id));
 	uart_map_func(uart_rxd_dev(id));
 

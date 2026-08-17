@@ -7,6 +7,10 @@
 #include <os/mem.h>
 #include <os/str.h>
 
+/* bk_draw_osd 的 emWin 字形栅格化，4.0.1.8 起被移出 CONFIG_VG_LITE_GPU 守卫，
+ * 不依赖 GPU / frame buffer，专供 H264 叠加这类纯 CPU 路径复用。 */
+#include "bk_osd_emwin_font.h"
+
 #include "cli_tuya_test.h"
 #include "tkl_camera_mipi.h"
 #include "tkl_fs.h"
@@ -44,10 +48,10 @@
 #define VENC_TEST_OSD_TIME_INDEX          0U
 #define VENC_TEST_OSD_TIME_X              2U
 #define VENC_TEST_OSD_TIME_Y              2U
-#define VENC_TEST_OSD_TIME_W              112U
-#define VENC_TEST_OSD_TIME_H              16U
-#define VENC_TEST_OSD_TIME_SCALE          2U
+/* 尺寸由 osd_emwin_font_text_extent() 按字库实测得出，不再写死 */
 #define VENC_TEST_OSD_TIME_ARGB           0xFFFFFF00U /* opaque yellow */
+/* H264 硬件 OSD 要求 x/y 2 像素对齐；宽高一并取偶，便于后续改用 NV12 格式 */
+#define VENC_TEST_OSD_XY_ALIGN            2U
 #define VENC_TEST_OSD_TIME_REFRESH_MS     1000U
 #define VENC_TEST_OSD_TIME_STACK          (3U * 1024U)
 #define VENC_TEST_OSD_TIME_TEXT_LEN       16U
@@ -188,19 +192,9 @@ static test_venc_osd_time_ctx_t s_venc_osd_time = {
     .last_text = {0},
 };
 
-static const uint8_t s_venc_osd_digit_font[11][7] = {
-    {0x0E, 0x11, 0x13, 0x15, 0x19, 0x11, 0x0E}, /* 0 */
-    {0x04, 0x0C, 0x04, 0x04, 0x04, 0x04, 0x0E}, /* 1 */
-    {0x0E, 0x11, 0x01, 0x06, 0x08, 0x10, 0x1F}, /* 2 */
-    {0x1F, 0x02, 0x04, 0x06, 0x02, 0x11, 0x0E}, /* 3 */
-    {0x02, 0x06, 0x0A, 0x12, 0x1F, 0x02, 0x02}, /* 4 */
-    {0x1F, 0x10, 0x1E, 0x01, 0x01, 0x11, 0x0E}, /* 5 */
-    {0x06, 0x08, 0x10, 0x1E, 0x11, 0x11, 0x0E}, /* 6 */
-    {0x1F, 0x01, 0x02, 0x04, 0x08, 0x08, 0x08}, /* 7 */
-    {0x0E, 0x11, 0x11, 0x0E, 0x11, 0x11, 0x0E}, /* 8 */
-    {0x0E, 0x11, 0x11, 0x0F, 0x01, 0x02, 0x0C}, /* 9 */
-    {0x00, 0x00, 0x04, 0x00, 0x04, 0x00, 0x00}, /* : */
-};
+/* osd_assets/bk_font.c 导出的 emWin 字库，53px，含 0-9 / ':' / 空格，
+ * 正是时间 OSD 需要的字符集。bk_font.c 没有配套头文件，这里直接 extern。 */
+extern const gui_font_digit_struct *const font_digit_Roboto53;
 
 extern OPERATE_RET test_vdec_get_flexa_source(TUYA_VCODEC_FLEXA_BUFFER_T *flexa);
 extern BOOL_T test_mipi_camera_is_inited(void);
@@ -1278,121 +1272,33 @@ static void test_venc_osd_buffer_free(void *buffer, void *free_arg)
     }
 }
 
-static void test_venc_osd_put_pixel(uint32_t *pixels,
-                                    uint32_t width,
-                                    uint32_t height,
-                                    uint32_t x,
-                                    uint32_t y,
-                                    uint32_t argb)
-{
-    if (pixels == NULL || x >= width || y >= height) {
-        return;
-    }
-    pixels[y * width + x] = argb;
-}
-
-static void test_venc_osd_fill_rect(uint32_t *pixels,
-                                    uint32_t width,
-                                    uint32_t height,
-                                    uint32_t x,
-                                    uint32_t y,
-                                    uint32_t w,
-                                    uint32_t h,
-                                    uint32_t argb)
-{
-    uint32_t row;
-    uint32_t col;
-
-    for (row = 0U; row < h; row++) {
-        if ((y + row) >= height) {
-            break;
-        }
-        for (col = 0U; col < w; col++) {
-            if ((x + col) >= width) {
-                break;
-            }
-            test_venc_osd_put_pixel(pixels, width, height, x + col, y + row, argb);
-        }
-    }
-}
-
-static const uint8_t *test_venc_osd_font_rows(char ch)
-{
-    if (ch >= '0' && ch <= '9') {
-        return s_venc_osd_digit_font[ch - '0'];
-    }
-    if (ch == ':') {
-        return s_venc_osd_digit_font[10];
-    }
-    return NULL;
-}
-
-static void test_venc_osd_draw_char(uint32_t *pixels,
-                                    uint32_t width,
-                                    uint32_t height,
-                                    uint32_t x,
-                                    uint32_t y,
-                                    char ch,
-                                    uint32_t scale,
-                                    uint32_t argb)
-{
-    const uint8_t *rows = test_venc_osd_font_rows(ch);
-    uint32_t row;
-    uint32_t col;
-
-    if (rows == NULL || scale == 0U) {
-        return;
-    }
-
-    for (row = 0U; row < 7U; row++) {
-        uint8_t bits = rows[row];
-        for (col = 0U; col < 5U; col++) {
-            if ((bits & (1U << (4U - col))) == 0U) {
-                continue;
-            }
-            test_venc_osd_fill_rect(pixels, width, height,
-                                    x + col * scale, y + row * scale,
-                                    scale, scale, argb);
-        }
-    }
-}
-
 /**
- * @brief Draw left-aligned HH:MM:SS text into an ARGB8888 OSD buffer
- * @param[out] pixels destination buffer
- * @param[in] width buffer width
- * @param[in] height buffer height
- * @param[in] text null-terminated digit/colon string
- * @return none
+ * @brief 用 emWin 字库量出 text 的 OSD 区域尺寸（已按硬件对齐要求取偶）
+ * @param[in] text 待渲染字符串
+ * @param[out] out_w OSD 宽
+ * @param[out] out_h OSD 高
+ * @return OPRT_OK 表示尺寸有效
  */
-static void test_venc_osd_draw_time_text(uint32_t *pixels,
-                                         uint32_t width,
-                                         uint32_t height,
-                                         const char *text)
+static OPERATE_RET test_venc_osd_time_extent(const char *text,
+                                             uint16_t *out_w,
+                                             uint16_t *out_h)
 {
-    const uint32_t scale = VENC_TEST_OSD_TIME_SCALE;
-    const uint32_t glyph_w = 5U * scale;
-    const uint32_t glyph_h = 7U * scale;
-    const uint32_t char_w = glyph_w + 4U;
-    const uint32_t argb = VENC_TEST_OSD_TIME_ARGB;
-    uint32_t x = 0U;
-    uint32_t y;
-    size_t i;
+    uint16_t w = 0U;
+    uint16_t h = 0U;
 
-    if (pixels == NULL || width == 0U || height == 0U) {
-        return;
+    if (text == NULL || out_w == NULL || out_h == NULL) {
+        return OPRT_INVALID_PARM;
     }
 
-    os_memset(pixels, 0, (size_t)width * (size_t)height * sizeof(uint32_t));
-    if (text == NULL || text[0] == '\0') {
-        return;
+    osd_emwin_font_text_extent(font_digit_Roboto53, text, &w, &h);
+    if (w == 0U || h == 0U) {
+        tkl_log_output("osd time: font has no glyph for \"%s\"\r\n", text);
+        return OPRT_COM_ERROR;
     }
 
-    y = (height > glyph_h) ? ((height - glyph_h) / 2U) : 0U;
-    for (i = 0U; text[i] != '\0' && (x + glyph_w) <= width; i++) {
-        test_venc_osd_draw_char(pixels, width, height, x, y, text[i], scale, argb);
-        x += char_w;
-    }
+    *out_w = (uint16_t)((w + VENC_TEST_OSD_XY_ALIGN - 1U) & ~(VENC_TEST_OSD_XY_ALIGN - 1U));
+    *out_h = (uint16_t)((h + VENC_TEST_OSD_XY_ALIGN - 1U) & ~(VENC_TEST_OSD_XY_ALIGN - 1U));
+    return OPRT_OK;
 }
 
 /**
@@ -1440,6 +1346,8 @@ static OPERATE_RET test_venc_osd_submit_time(const char *text)
     TUYA_VENC_OSD_T osd;
     uint32_t *pixels = NULL;
     uint32_t buf_bytes;
+    uint16_t osd_w = 0U;
+    uint16_t osd_h = 0U;
     OPERATE_RET ret;
 
     if (s_venc_ctx.initialized != true || s_venc_ctx.handle == NULL) {
@@ -1450,24 +1358,37 @@ static OPERATE_RET test_venc_osd_submit_time(const char *text)
         return OPRT_NOT_SUPPORTED;
     }
 
+    ret = test_venc_osd_time_extent(text, &osd_w, &osd_h);
+    if (ret != OPRT_OK) {
+        return ret;
+    }
+
     if (s_venc_ctx.width > 0U && s_venc_ctx.height > 0U) {
-        if ((VENC_TEST_OSD_TIME_X + VENC_TEST_OSD_TIME_W) > s_venc_ctx.width ||
-            (VENC_TEST_OSD_TIME_Y + VENC_TEST_OSD_TIME_H) > s_venc_ctx.height) {
-            tkl_log_output("osd time region exceeds frame %ux%u\r\n",
+        if (((uint32_t)VENC_TEST_OSD_TIME_X + osd_w) > s_venc_ctx.width ||
+            ((uint32_t)VENC_TEST_OSD_TIME_Y + osd_h) > s_venc_ctx.height) {
+            tkl_log_output("osd time region %ux%u exceeds frame %ux%u\r\n",
+                           (unsigned int)osd_w,
+                           (unsigned int)osd_h,
                            (unsigned int)s_venc_ctx.width,
                            (unsigned int)s_venc_ctx.height);
             return OPRT_INVALID_PARM;
         }
     }
 
-    buf_bytes = VENC_TEST_OSD_TIME_W * VENC_TEST_OSD_TIME_H * sizeof(uint32_t);
+    buf_bytes = (uint32_t)osd_w * osd_h * sizeof(uint32_t);
+    /* 必须用 UNCODED slab：这块非缓存内存让 CPU 写入对 VPU 立即可见。
+     * 换成普通 malloc 会因 D-Cache 未回写而出现间歇性花屏。 */
     pixels = (uint32_t *)bk_frame_buffer_malloc(MEM_SLAB_HEAP_UNCODED, buf_bytes);
     if (pixels == NULL) {
         tkl_log_output("osd time malloc %u bytes failed\r\n", (unsigned int)buf_bytes);
         return OPRT_MALLOC_FAILED;
     }
 
-    test_venc_osd_draw_time_text(pixels, VENC_TEST_OSD_TIME_W, VENC_TEST_OSD_TIME_H, text);
+    /* 底色清成全 0（alpha=0 全透明），字形覆盖度由 blit 写成 per-pixel alpha */
+    os_memset(pixels, 0, buf_bytes);
+    (void)osd_emwin_font_blit(pixels, osd_w, osd_h,
+                              font_digit_Roboto53, text,
+                              0U, 0U, VENC_TEST_OSD_TIME_ARGB, NULL);
 
     os_memset(&osd, 0, sizeof(osd));
     osd.index = VENC_TEST_OSD_TIME_INDEX;
@@ -1475,8 +1396,8 @@ static OPERATE_RET test_venc_osd_submit_time(const char *text)
     osd.format = TUYA_VENC_OSD_FMT_ARGB8888;
     osd.x = VENC_TEST_OSD_TIME_X;
     osd.y = VENC_TEST_OSD_TIME_Y;
-    osd.width = VENC_TEST_OSD_TIME_W;
-    osd.height = VENC_TEST_OSD_TIME_H;
+    osd.width = osd_w;
+    osd.height = osd_h;
     osd.buffer_free = test_venc_osd_buffer_free;
     osd.free_arg = NULL;
 
@@ -1574,6 +1495,8 @@ static OPERATE_RET test_venc_osd_time_start(void)
 {
     OPERATE_RET ret;
     char text[VENC_TEST_OSD_TIME_TEXT_LEN];
+    uint16_t osd_w = 0U;
+    uint16_t osd_h = 0U;
 
     if (s_venc_ctx.initialized != true || s_venc_ctx.handle == NULL) {
         tkl_log_output("venc is not initialized\r\n");
@@ -1611,12 +1534,13 @@ static OPERATE_RET test_venc_osd_time_start(void)
         return ret;
     }
 
-    tkl_log_output("osd time start: %s @(%u,%u) %ux%u slot=%u\r\n",
+    (void)test_venc_osd_time_extent(text, &osd_w, &osd_h);
+    tkl_log_output("osd time start: %s @(%u,%u) %ux%u slot=%u font=Roboto53\r\n",
                    text,
                    (unsigned int)VENC_TEST_OSD_TIME_X,
                    (unsigned int)VENC_TEST_OSD_TIME_Y,
-                   (unsigned int)VENC_TEST_OSD_TIME_W,
-                   (unsigned int)VENC_TEST_OSD_TIME_H,
+                   (unsigned int)osd_w,
+                   (unsigned int)osd_h,
                    (unsigned int)VENC_TEST_OSD_TIME_INDEX);
     return OPRT_OK;
 }

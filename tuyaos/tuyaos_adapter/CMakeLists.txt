@@ -117,7 +117,7 @@ else()
         # src/driver/tkl_wired.c
         src/driver/tkl_i2s.c
         # src/driver/tkl_dma2d.c
-        # src/driver/tkl_dvp.c
+        src/driver/tkl_dvp.c
         # src/driver/tkl_jpeg_codec.c
         # src/driver/tkl_sdio.c
 
