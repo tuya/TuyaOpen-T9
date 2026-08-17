@@ -574,20 +574,12 @@ __dac_init_exit:
  *
  * The DAC *digital* path (DMA, FIFO, tx callbacks) runs fine without these, but
  * there is NO audible output until:
- *   1. the 3.3V AUX-LDO that powers the audio analog/output stage is voted on, and
- *   2. the speaker PA enable pin (cfg.pa_pin, active-high) is driven when valid.
+ *   the speaker PA enable pin (cfg.pa_pin, active-high) is driven when valid.
  * PA GPIO comes from tkl_aud_dac_init() config; use TKL_AUD_DAC_PA_PIN_NONE to skip.
  */
 static void __tkl_aud_dac_spk_power_on(void)
 {
     UINT32_T pa_pin;
-    pm_auxldo_ctrl_cfg_t auxldo_cfg = {0};
-
-    auxldo_cfg.ldo   = AUXLDOS_SEL_3V;
-    auxldo_cfg.out   = PM_AUXLDO_3V_OUT_3P3V;
-    auxldo_cfg.user  = PM_AUXLDO_USER_CAMERA;
-    auxldo_cfg.state = 1;
-    (void)bk_pm_auxldo_ctrl_vote(&auxldo_cfg);
 
     if (gl_dac_ctx == NULL) {
         return;
@@ -607,8 +599,6 @@ static void __tkl_aud_dac_spk_power_off(void)
 {
     UINT32_T pa_pin;
 
-    /* Disable the PA (mute the amplifier). Leave the AUX-LDO vote as-is so other
-     * users of the 3.3V rail are not disturbed. */
     if (gl_dac_ctx == NULL) {
         return;
     }
