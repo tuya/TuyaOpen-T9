@@ -297,8 +297,10 @@ OPERATE_RET tkl_system_get_cpu_info(TUYA_CPU_INFO_T **cpu_ary, INT_T *cpu_cnt)
 
     bk_err_t ret = bk_otp_ahb_read(OTP_DEVICE_ID, cpu->chipid, EFUSE_DEVICE_ID_BYTE_NUM);
     if (ret != BK_OK) {
-        tkl_system_free(cpu);
-        return OPRT_COM_ERROR;
+        // tkl_system_free(cpu);
+        // return OPRT_COM_ERROR;
+        /*[WAR] MCU chip id is not used for now, so return OPRT_OK */
+        bk_printf("bk_otp_ahb_read failed, ret: %d\r\n", ret);
     }
     cpu->chipidlen = EFUSE_DEVICE_ID_BYTE_NUM;
 
