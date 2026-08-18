@@ -22,12 +22,11 @@
 #include "tkl_aud_adc.h"
 #include "tkl_aud_dac.h"
 #include "tuya_error_code.h"
-#include "tal_memory.h"
+#include "tkl_memory.h"
 #include <common/bk_err.h>
 #include <driver/gpio.h>
 #include "gpio_driver.h"
 #include <stdlib.h>
-#include "tal_system.h"
 #include <string.h>
 
 /* ---------------------------------------------------------------------------
@@ -373,11 +372,14 @@ static test_adc_ctx_t s_adc_ctx = {
 /*                    Hardware loop test static resources                     */
 /* -------------------------------------------------------------------------- */
 #define HWLOOP_REF_SAMPLES  (2400U)        /* 50 ms tail window @ 48 kHz */
+#define HWLOOP_CAP_SAMPLES  (HWLOOP_REF_SAMPLES * 4U)
+#define HWLOOP_REF_BYTES    (HWLOOP_REF_SAMPLES * sizeof(int16_t))
+#define HWLOOP_CAP_BYTES    (HWLOOP_CAP_SAMPLES * sizeof(int16_t))
 #define HWLOOP_DAC_WRITE_RETRY_MAX       (8U)
-static int16_t s_hwloop_ref[HWLOOP_REF_SAMPLES];
-static int16_t s_hwloop_ref_R[HWLOOP_REF_SAMPLES];
-static int16_t s_hwloop_cap_L[HWLOOP_REF_SAMPLES * 4];
-static int16_t s_hwloop_cap_R[HWLOOP_REF_SAMPLES * 4];
+static int16_t *s_hwloop_ref = NULL;
+static int16_t *s_hwloop_ref_R = NULL;
+static int16_t *s_hwloop_cap_L = NULL;
+static int16_t *s_hwloop_cap_R = NULL;
 static volatile uint32_t s_hwloop_cap_idx_L = 0;
 static volatile uint32_t s_hwloop_cap_idx_R = 0;
 static volatile uint32_t s_hwloop_ref_play_idx_L = 0;
@@ -402,6 +404,54 @@ static OPERATE_RET hwloop_dac_init_start(uint32_t dac_port, uint32_t sample_rate
 static OPERATE_RET test_adc_init(uint32_t port, uint32_t chan, uint32_t sample_rate,
                                  uint32_t frame_time_ms, uint32_t gain);
 static OPERATE_RET test_adc_start(void);
+
+/**
+ * @brief Free hardware loopback PCM buffers
+ * @return none
+ */
+static void hwloop_buf_free(void)
+{
+    if (s_hwloop_ref != NULL) {
+        tkl_system_free(s_hwloop_ref);
+        s_hwloop_ref = NULL;
+    }
+    if (s_hwloop_ref_R != NULL) {
+        tkl_system_free(s_hwloop_ref_R);
+        s_hwloop_ref_R = NULL;
+    }
+    if (s_hwloop_cap_L != NULL) {
+        tkl_system_free(s_hwloop_cap_L);
+        s_hwloop_cap_L = NULL;
+    }
+    if (s_hwloop_cap_R != NULL) {
+        tkl_system_free(s_hwloop_cap_R);
+        s_hwloop_cap_R = NULL;
+    }
+}
+
+/**
+ * @brief Allocate hardware loopback PCM buffers
+ * @return OPRT_OK on success, OPRT_MALLOC_FAILED on failure
+ * @note Call before capture/playback. Pair with hwloop_buf_free() after eval.
+ */
+static OPERATE_RET hwloop_buf_alloc(void)
+{
+    hwloop_buf_free();
+    s_hwloop_ref = (int16_t *)tkl_system_malloc(HWLOOP_REF_BYTES);
+    s_hwloop_ref_R = (int16_t *)tkl_system_malloc(HWLOOP_REF_BYTES);
+    s_hwloop_cap_L = (int16_t *)tkl_system_malloc(HWLOOP_CAP_BYTES);
+    s_hwloop_cap_R = (int16_t *)tkl_system_malloc(HWLOOP_CAP_BYTES);
+    if ((s_hwloop_ref == NULL) || (s_hwloop_ref_R == NULL) ||
+        (s_hwloop_cap_L == NULL) || (s_hwloop_cap_R == NULL)) {
+        hwloop_buf_free();
+        return OPRT_MALLOC_FAILED;
+    }
+    memset(s_hwloop_ref, 0, HWLOOP_REF_BYTES);
+    memset(s_hwloop_ref_R, 0, HWLOOP_REF_BYTES);
+    memset(s_hwloop_cap_L, 0, HWLOOP_CAP_BYTES);
+    memset(s_hwloop_cap_R, 0, HWLOOP_CAP_BYTES);
+    return OPRT_OK;
+}
 
 /* -------------------------------------------------------------------------- */
 /*                    Energy / RMS helpers                                    */
@@ -555,7 +605,7 @@ static OPERATE_RET hwloop_dac_write_retry(TUYA_AUDIO_DAC_PORT_E port, uint8_t *b
         if (ret != OPRT_OS_ADAPTER_DAC_BUSY) {
             return ret;
         }
-        tal_system_sleep(1U);
+        tkl_system_sleep(1U);
     }
     return OPRT_OS_ADAPTER_DAC_BUSY;
 }
@@ -627,7 +677,7 @@ static void test_adc_dac_deinit(void)
         (void)tkl_aud_dac_deinit(s_adc_ctx.dac_port);
     }
     if (s_adc_ctx.loop_mix_buf != NULL) {
-        tal_free(s_adc_ctx.loop_mix_buf);
+        tkl_system_free(s_adc_ctx.loop_mix_buf);
         s_adc_ctx.loop_mix_buf = NULL;
     }
     s_adc_ctx.loop_mix_buf_size = 0U;
@@ -644,7 +694,7 @@ static void adc_upper_cb(TUYA_AUDIO_FRAME_EVT_E event, void *p_buf,
 {
     (void)event;
     (void)args;
-    if (!s_hwloop_testing) {
+    if (!s_hwloop_testing || (s_hwloop_cap_L == NULL)) {
         return;
     }
 
@@ -656,16 +706,16 @@ static void adc_upper_cb(TUYA_AUDIO_FRAME_EVT_E event, void *p_buf,
         uint32_t pairs = sample_cnt / 2U;
 
         for (uint32_t i = 0; i < pairs; i++) {
-            if (s_hwloop_cap_idx_L < HWLOOP_REF_SAMPLES * 4) {
+            if (s_hwloop_cap_idx_L < HWLOOP_CAP_SAMPLES) {
                 s_hwloop_cap_L[s_hwloop_cap_idx_L++] = samples[i * 2U];
             }
-            if (s_hwloop_cap_idx_R < HWLOOP_REF_SAMPLES * 4) {
+            if ((s_hwloop_cap_R != NULL) && (s_hwloop_cap_idx_R < HWLOOP_CAP_SAMPLES)) {
                 s_hwloop_cap_R[s_hwloop_cap_idx_R++] = samples[i * 2U + 1U];
             }
         }
     } else {
         for (uint32_t i = 0; i < sample_cnt; i++) {
-            if (s_hwloop_cap_idx_L < HWLOOP_REF_SAMPLES * 4) {
+            if (s_hwloop_cap_idx_L < HWLOOP_CAP_SAMPLES) {
                 s_hwloop_cap_L[s_hwloop_cap_idx_L++] = samples[i];
             }
         }
@@ -697,7 +747,7 @@ static OPERATE_RET test_adc_dac_init_start(uint32_t dac_port, uint32_t sample_ra
     test_adc_dac_deinit();
 
     if (s_adc_ctx.chan == TUYA_AUDIO_ADC_CHANNEL_LR) {
-        s_adc_ctx.loop_mix_buf = (uint8_t *)tal_malloc(mono_frame_size);
+        s_adc_ctx.loop_mix_buf = (uint8_t *)tkl_system_malloc(mono_frame_size);
         if (s_adc_ctx.loop_mix_buf == NULL) {
             return OPRT_MALLOC_FAILED;
         }
@@ -712,7 +762,7 @@ static OPERATE_RET test_adc_dac_init_start(uint32_t dac_port, uint32_t sample_ra
     cfg.frame_time_ms = frame_time_ms;
     cfg.frame_cb = hwloop_dac_frame_cb;
     cfg.args = NULL;
-    cfg.pa_pin = 60;
+    cfg.pa_pin = 28;
 
     ret = tkl_aud_dac_init((TUYA_AUDIO_DAC_PORT_E)dac_port, &cfg);
     if (ret != OPRT_OK) {
@@ -747,7 +797,7 @@ static OPERATE_RET hwloop_dac_init_start(uint32_t dac_port, uint32_t sample_rate
     cfg.frame_time_ms = frame_time_ms;
     cfg.frame_cb = NULL;
     cfg.args = NULL;
-    cfg.pa_pin = 60;
+    cfg.pa_pin = 28;
 
     OPERATE_RET ret = tkl_aud_dac_init((TUYA_AUDIO_DAC_PORT_E)dac_port, &cfg);
     if (ret != OPRT_OK) return ret;
@@ -915,6 +965,10 @@ static inline bool dac_is_stereo_for_mode(uint8_t mode)
 /* -------------------------------------------------------------------------- */
 static OPERATE_RET hwloop_compare_test(uint8_t mode)
 {
+    OPERATE_RET buf_ret = hwloop_buf_alloc();
+    if (buf_ret != OPRT_OK) {
+        return buf_ret;
+    }
     hwloop_gen_ref_for_mode(mode);
     s_hwloop_mode = mode;
 
@@ -976,7 +1030,7 @@ static OPERATE_RET hwloop_compare_test(uint8_t mode)
     const uint32_t dac_frame_samples = (ADC_TEST_DEFAULT_SAMPLE_RATE * ADC_TEST_DEFAULT_FRAME_TIME_MS) / 1000; // 960
     const uint32_t dac_channels = stereo ? 2 : 1;
     const uint32_t dac_frame_bytes = dac_frame_samples * dac_channels * 2;
-    uint8_t *dac_buf = (uint8_t *)tal_malloc(dac_frame_bytes);
+    uint8_t *dac_buf = (uint8_t *)tkl_system_malloc(dac_frame_bytes);
     if (dac_buf != NULL) {
         uint32_t ref_idx = 0;
         for (int f = 0; f < 100; f++) {   // 100 帧 × 20ms = 2000ms = 2s
@@ -990,12 +1044,12 @@ static OPERATE_RET hwloop_compare_test(uint8_t mode)
                 hwloop_fill_stereo_frame((int16_t *)dac_buf, dac_frame_samples, &ref_idx);
             }
             (void)hwloop_dac_write_retry(s_adc_ctx.dac_port, dac_buf, dac_frame_bytes);
-            tal_system_sleep(ADC_TEST_DEFAULT_FRAME_TIME_MS);
+            tkl_system_sleep(ADC_TEST_DEFAULT_FRAME_TIME_MS);
         }
-        tal_free(dac_buf);
+        tkl_system_free(dac_buf);
     } else {
         /* 内存分配失败，简单延时，但无信号输出 */
-        tal_system_sleep(2000);
+        tkl_system_sleep(2000);
     }
     /* ---------------------------------------------- */
 
@@ -1065,6 +1119,7 @@ static OPERATE_RET hwloop_compare_test(uint8_t mode)
         tkl_log_output("STEREO result L=%s R=%s\r\n", pass_L ? "PASS" : "FAIL", pass_R ? "PASS" : "FAIL");
     }
 
+    hwloop_buf_free();
     return pass ? OPRT_OK : OPRT_COM_ERROR;
 
 fail_dac:
@@ -1073,6 +1128,7 @@ fail_adc_start:
     test_adc_deinit();
 fail_init:
     s_hwloop_testing = false;
+    hwloop_buf_free();
     return ret;
 }
 
@@ -1085,6 +1141,10 @@ static OPERATE_RET do_stereo_diff_loopback(bool *pass_mic1, bool *pass_mic2)
     *pass_mic1 = false;
     *pass_mic2 = false;
 
+    OPERATE_RET ret = hwloop_buf_alloc();
+    if (ret != OPRT_OK) {
+        return ret;
+    }
     hwloop_gen_ref_pair();
     s_hwloop_mode = HWLOOP_MODE_STEREO_DIFF;
 
@@ -1094,15 +1154,21 @@ static OPERATE_RET do_stereo_diff_loopback(bool *pass_mic1, bool *pass_mic2)
     s_hwloop_ref_play_idx_R = 0;
     s_hwloop_testing = true;
 
-    OPERATE_RET ret = test_adc_init(ADC_TEST_DEFAULT_PORT,
-                                    TUYA_AUDIO_ADC_CHANNEL_LR,
-                                    ADC_TEST_DEFAULT_SAMPLE_RATE,
-                                    ADC_TEST_DEFAULT_FRAME_TIME_MS,
-                                    ADC_TEST_DEFAULT_GAIN);
-    if (ret != OPRT_OK) return ret;
+    ret = test_adc_init(ADC_TEST_DEFAULT_PORT,
+                        TUYA_AUDIO_ADC_CHANNEL_LR,
+                        ADC_TEST_DEFAULT_SAMPLE_RATE,
+                        ADC_TEST_DEFAULT_FRAME_TIME_MS,
+                        ADC_TEST_DEFAULT_GAIN);
+    if (ret != OPRT_OK) {
+        s_hwloop_testing = false;
+        hwloop_buf_free();
+        return ret;
+    }
     ret = test_adc_start();
     if (ret != OPRT_OK) {
+        s_hwloop_testing = false;
         test_adc_deinit();
+        hwloop_buf_free();
         return ret;
     }
 
@@ -1112,8 +1178,10 @@ static OPERATE_RET do_stereo_diff_loopback(bool *pass_mic1, bool *pass_mic2)
                                 ADC_TEST_DEFAULT_FRAME_TIME_MS,
                                 ADC_TEST_DEFAULT_DAC_VOLUME);
     if (ret != OPRT_OK) {
+        s_hwloop_testing = false;
         test_adc_stop();
         test_adc_deinit();
+        hwloop_buf_free();
         return ret;
     }
     s_adc_ctx.dac_started = true;
@@ -1121,17 +1189,17 @@ static OPERATE_RET do_stereo_diff_loopback(bool *pass_mic1, bool *pass_mic2)
         /* ---------- 主动写入 2s 立体声参考数据 ---------- */
     const uint32_t dac_frame_samples = (ADC_TEST_DEFAULT_SAMPLE_RATE * ADC_TEST_DEFAULT_FRAME_TIME_MS) / 1000;
     const uint32_t dac_frame_bytes = dac_frame_samples * 2 * 2;  // 立体声 2 通道 × 2 字节
-    uint8_t *dac_buf = (uint8_t *)tal_malloc(dac_frame_bytes);
+    uint8_t *dac_buf = (uint8_t *)tkl_system_malloc(dac_frame_bytes);
     if (dac_buf != NULL) {
         uint32_t ref_idx = 0;
         for (int f = 0; f < 100; f++) {   // 100 帧 = 2 秒
             hwloop_fill_stereo_frame((int16_t *)dac_buf, dac_frame_samples, &ref_idx);
             (void)hwloop_dac_write_retry(s_adc_ctx.dac_port, dac_buf, dac_frame_bytes);
-            tal_system_sleep(ADC_TEST_DEFAULT_FRAME_TIME_MS);
+            tkl_system_sleep(ADC_TEST_DEFAULT_FRAME_TIME_MS);
         }
-        tal_free(dac_buf);
+        tkl_system_free(dac_buf);
     } else {
-        tal_system_sleep(2000);
+        tkl_system_sleep(2000);
     }
     /* -------------------------------------------------- */
 
@@ -1166,6 +1234,7 @@ static OPERATE_RET do_stereo_diff_loopback(bool *pass_mic1, bool *pass_mic2)
     tkl_log_output("DIFF MIC1 peak=%d corr=%d%% MIC2 peak=%d corr=%d%%\r\n",
                    peak_L, corr_L_pct, peak_R, corr_R_pct);
 
+    hwloop_buf_free();
     return (*pass_mic1 && *pass_mic2) ? OPRT_OK : OPRT_COM_ERROR;
 }
 
@@ -1177,6 +1246,10 @@ static OPERATE_RET do_mic3_stereo_dac_loopback(bool *pass_mic3)
     if (pass_mic3 == NULL) return OPRT_INVALID_PARM;
     *pass_mic3 = false;
 
+    OPERATE_RET ret = hwloop_buf_alloc();
+    if (ret != OPRT_OK) {
+        return ret;
+    }
     hwloop_gen_ref();
 
     s_hwloop_mode = HWLOOP_MODE_MIC3_STEREO;
@@ -1185,15 +1258,21 @@ static OPERATE_RET do_mic3_stereo_dac_loopback(bool *pass_mic3)
     s_hwloop_ref_play_idx_L = 0;
     s_hwloop_testing = true;
 
-    OPERATE_RET ret = test_adc_init(ADC_TEST_DEFAULT_PORT,
-                                    TUYA_AUDIO_ADC_CHANNEL_MIC3,
-                                    ADC_TEST_DEFAULT_SAMPLE_RATE,
-                                    ADC_TEST_DEFAULT_FRAME_TIME_MS,
-                                    ADC_TEST_DEFAULT_GAIN);
-    if (ret != OPRT_OK) return ret;
+    ret = test_adc_init(ADC_TEST_DEFAULT_PORT,
+                        TUYA_AUDIO_ADC_CHANNEL_MIC3,
+                        ADC_TEST_DEFAULT_SAMPLE_RATE,
+                        ADC_TEST_DEFAULT_FRAME_TIME_MS,
+                        ADC_TEST_DEFAULT_GAIN);
+    if (ret != OPRT_OK) {
+        s_hwloop_testing = false;
+        hwloop_buf_free();
+        return ret;
+    }
     ret = test_adc_start();
     if (ret != OPRT_OK) {
+        s_hwloop_testing = false;
         test_adc_deinit();
+        hwloop_buf_free();
         return ret;
     }
 
@@ -1204,8 +1283,10 @@ static OPERATE_RET do_mic3_stereo_dac_loopback(bool *pass_mic3)
                                   ADC_TEST_DEFAULT_DAC_VOLUME,
                                   s_adc_ctx.frame_size);
     if (ret != OPRT_OK) {
+        s_hwloop_testing = false;
         test_adc_stop();
         test_adc_deinit();
+        hwloop_buf_free();
         return ret;
     }
     s_adc_ctx.dac_started = true;
@@ -1213,7 +1294,7 @@ static OPERATE_RET do_mic3_stereo_dac_loopback(bool *pass_mic3)
     /* ---------- Play 2s mono reference on SPK1 ---------- */
     const uint32_t dac_frame_samples = (ADC_TEST_DEFAULT_SAMPLE_RATE * ADC_TEST_DEFAULT_FRAME_TIME_MS) / 1000;
     const uint32_t dac_frame_bytes = dac_frame_samples * 2;
-    uint8_t *dac_buf = (uint8_t *)tal_malloc(dac_frame_bytes);
+    uint8_t *dac_buf = (uint8_t *)tkl_system_malloc(dac_frame_bytes);
     if (dac_buf != NULL) {
         uint32_t ref_idx = 0;
         for (int f = 0; f < 100; f++) {
@@ -1223,11 +1304,11 @@ static OPERATE_RET do_mic3_stereo_dac_loopback(bool *pass_mic3)
                 ref_idx++;
             }
             (void)hwloop_dac_write_retry(s_adc_ctx.dac_port, dac_buf, dac_frame_bytes);
-            tal_system_sleep(ADC_TEST_DEFAULT_FRAME_TIME_MS);
+            tkl_system_sleep(ADC_TEST_DEFAULT_FRAME_TIME_MS);
         }
-        tal_free(dac_buf);
+        tkl_system_free(dac_buf);
     } else {
-        tal_system_sleep(2000);
+        tkl_system_sleep(2000);
     }
     /* ----------------------------------------------------------- */
 
@@ -1252,6 +1333,7 @@ static OPERATE_RET do_mic3_stereo_dac_loopback(bool *pass_mic3)
                                      &peak, &corr_pct);
     tkl_log_output("MIC3(AEC) peak=%d corr=%d%%\r\n", peak, corr_pct);
 
+    hwloop_buf_free();
     return (*pass_mic3) ? OPRT_OK : OPRT_COM_ERROR;
 }
 
@@ -1287,7 +1369,7 @@ static OPERATE_RET do_all_mic_loopback(char **json_out)
         return OPRT_MALLOC_FAILED;
     }
 
-    UCHAR_T *p = (UCHAR_T *)tal_malloc(len);
+    UCHAR_T *p = (UCHAR_T *)tkl_system_malloc(len);
     if (p == NULL) {
         return OPRT_MALLOC_FAILED;
     }
@@ -1313,7 +1395,7 @@ STATIC OPERATE_RET __pt_reply_bool(bool pass, UCHAR_T **ret_data, USHORT_T *ret_
         return OPRT_INVALID_PARM;
     }
 
-    p = (UCHAR_T *)tal_malloc(json_len + 1U);
+    p = (UCHAR_T *)tkl_system_malloc(json_len + 1U);
     if (p == NULL) {
         return OPRT_MALLOC_FAILED;
     }
@@ -1553,7 +1635,7 @@ OPERATE_RET tkl_mftest_ctrl(USHORT_T cmd, UCHAR_T *in, UINT_T inlen,
                 return ret;
             }
             pass = (ret == OPRT_OK);
-            tal_free(json_str);
+            tkl_system_free(json_str);
             return __pt_reply_bool(pass, out, outlen);
         }
 
@@ -1576,6 +1658,7 @@ OPERATE_RET tkl_mftest_ctrl(USHORT_T cmd, UCHAR_T *in, UINT_T inlen,
             test_adc_stop();
             test_adc_deinit();
         }
+        hwloop_buf_free();
         return OPRT_OK;
 
     case TKL_USB_INFO_TEST_CMD:
