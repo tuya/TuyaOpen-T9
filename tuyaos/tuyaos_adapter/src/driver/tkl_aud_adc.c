@@ -279,45 +279,35 @@ static void __tkl_aud_adc_flash_op_notify_handler(uint32_t param, void *args)
 /* ---------------------- DMA ISR -------------------------------------------- */
 
 /**
- * DMA finish ISR: one dma_frame_size chunk has been written into the ring buffer.
+ * Turn one chunk already sitting in read_buf into the PCM the caller asked for
+ * and hand it to upper_cb.
  *
- * ring_buffer_read does three things atomically:
- *   1. Gets DMA write position from hardware register (wp)
- *   2. Copies data from ring buffer to read_buf
- *   3. Updates dma_set_dst_pause_addr so DMA can continue writing
+ * For single channel: extract one lane out of the raw interleaved frame into
+ * output_buf. For dual/triple channel: read_buf is already the final PCM.
  *
- * For single channel: extract L from L+R interleaved read_buf into output_buf
- * For dual   channel: read_buf already contains the final PCM data
- *
- * Then call upper_aud_adc_cb(pcm_data_ptr) to push data to TAL layer.
+ * read_size is by value: the compact step below rewrites it.
  */
-static void __tkl_aud_adc_dma_finish_isr(void)
+static void __tkl_aud_adc_push_frame(uint32_t read_size)
 {
-    if (gl_adc_ctx == NULL || !gl_adc_ctx->is_open)
+#if CONFIG_AUD_DRIVER_V2
+    /*
+     * Every 32-bit slot carries one 16-bit sample in its low half. Compact in
+     * place to dense 16-bit so the channel extraction below sees the layout it
+     * expects. Ascending i reads index 2*i >= i, so this never clobbers a slot it
+     * still needs. Mirrors ex_audio_mic_unpack_adc16_from_dma32() in
+     * test_media/test_aud_utils.c.
+     */
     {
-        return;
-    }
+        int16_t *raw = (int16_t *)gl_adc_ctx->read_buf;
+        uint32_t slots = read_size / 4U;
+        uint32_t i;
 
-    if (gl_adc_ctx->cfg.upper_cb == NULL)
-    {
-        return;
+        for (i = 0U; i < slots; i++) {
+            raw[i] = raw[2U * i];
+        }
+        read_size = slots * (uint32_t)sizeof(int16_t);
     }
-
-    uint32_t dma_frame_size = gl_adc_ctx->dma_frame_size;
-
-    uint32_t fill_size = ring_buffer_get_fill_size(&gl_adc_ctx->mic_rb);
-    if (fill_size < dma_frame_size)
-    {
-        return;
-    }
-
-    uint32_t read_size = ring_buffer_read(&gl_adc_ctx->mic_rb,
-                                          gl_adc_ctx->read_buf,
-                                          dma_frame_size);
-    if (read_size != dma_frame_size)
-    {
-        return;
-    }
+#endif
 
     if (gl_adc_ctx->chl_num == 1)
     {
@@ -464,6 +454,48 @@ static void __tkl_aud_adc_dma_finish_isr(void)
     }
 }
 
+/*
+ * DMA finish ISR: at least one dma_frame_size chunk has landed in the ring buffer.
+ *
+ * ring_buffer_read does three things atomically:
+ *   1. Gets the DMA write position from the hardware register (wp)
+ *   2. Copies data from the ring buffer into read_buf
+ *   3. Updates dma_set_dst_pause_addr so the DMA can keep writing
+ */
+static void __tkl_aud_adc_dma_finish_isr(void)
+{
+    uint32_t dma_frame_size;
+
+    if (gl_adc_ctx == NULL || !gl_adc_ctx->is_open)
+    {
+        return;
+    }
+
+    if (gl_adc_ctx->cfg.upper_cb == NULL)
+    {
+        return;
+    }
+
+    dma_frame_size = gl_adc_ctx->dma_frame_size;
+    if (dma_frame_size == 0U)
+    {
+        return;
+    }
+
+    while (ring_buffer_get_fill_size(&gl_adc_ctx->mic_rb) >= dma_frame_size)
+    {
+        uint32_t read_size = ring_buffer_read(&gl_adc_ctx->mic_rb,
+                                              gl_adc_ctx->read_buf,
+                                              dma_frame_size);
+        if (read_size != dma_frame_size)
+        {
+            break;
+        }
+
+        __tkl_aud_adc_push_frame(read_size);
+    }
+}
+
 /* ---------------------- DMA config / deconfig ------------------------------ */
 
 static bk_err_t __tkl_aud_adc_dma_deconfig(void)
@@ -520,18 +552,8 @@ static bk_err_t __tkl_aud_adc_dma_config(void)
     dma_config.src.dev = DMA_DEV_AUDIO_RX;
 #endif
     dma_config.dst.dev = DMA_DEV_DTCM;
-#if CONFIG_AUD_DRIVER_V2
-    /*
-     * Keep V2 ADC DMA width aligned with onboard_mic_stream_v2:
-     * source fifo read in 16-bit units, destination ring buffer in 32-bit units.
-     * This avoids malformed sample packing on single analog mic capture.
-     */
-    dma_config.src.width = DMA_DATA_WIDTH_16BITS;
-    dma_config.dst.width = DMA_DATA_WIDTH_32BITS;
-#else
     dma_config.src.width = DMA_DATA_WIDTH_32BITS;
     dma_config.dst.width = DMA_DATA_WIDTH_32BITS;
-#endif
 
 #if CONFIG_AUD_DRIVER_V2
     if (bk_aud_adc_get_fifo_addr(AUD_ADC_MIC_DATA_BUS_0, &adc_port_addr) != BK_OK)
@@ -711,7 +733,9 @@ OPERATE_RET tkl_aud_adc_init(TUYA_AUDIO_ADC_PORT_E port, TKL_AUD_ADC_CFG_T *conf
 #if CONFIG_AUD_DRIVER_V2
     gl_adc_ctx->adc_ch_bitmap = adc_ch_bitmap;
     gl_adc_ctx->adc_mode = adc_mode;
-    gl_adc_ctx->dma_frame_size = AUD_ADC_FRAME_SIZE(config->sample_rate, config->sample_bits, config->frame_time_ms, raw_ch_num);
+    /* Raw ring bytes per frame: one sample per 32-bit slot, so twice the dense
+     * payload. Compacted back down in __tkl_aud_adc_push_frame(). */
+    gl_adc_ctx->dma_frame_size = AUD_ADC_FRAME_SIZE(config->sample_rate, config->sample_bits, config->frame_time_ms, raw_ch_num) * 2U;
 #else
     /* V1 keeps LR interleaved capture and extracts one channel in ISR. */
     gl_adc_ctx->dma_frame_size = AUD_ADC_FRAME_SIZE(config->sample_rate, config->sample_bits, config->frame_time_ms, 2);
