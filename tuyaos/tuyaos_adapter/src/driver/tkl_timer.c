@@ -15,8 +15,13 @@
 
 #define TKL_TIMER_BK_BASE_ID      TIMER_ID12
 #define TKL_TIMER_BK_MAX_ID       TIMER_ID17
-/* bk_timer_start() uses ms and converts to 26M ticks internally. */
-#define TKL_TIMER_MAX_PERIOD_MS   ((UINT32_T)(0xFFFFFFFFu / 26000u))
+/*
+ * AP TIMER4/5 count at bus clock. At 480M CPU the bus is 240MHz, so the
+ * 32-bit end_count caps period to ~17.895s. Use this as a safe upper bound.
+ */
+#define TKL_TIMER_MAX_BUS_FREQ_KHZ  240000u
+#define TKL_TIMER_MAX_PERIOD_US \
+    ((UINT32_T)((0xFFFFFFFFull * 1000ull) / (UINT64_T)TKL_TIMER_MAX_BUS_FREQ_KHZ))
 
 typedef struct {
     UINT8_T inited;
@@ -170,8 +175,6 @@ OPERATE_RET tkl_timer_start(TUYA_TIMER_NUM_E timer_id, UINT_T us)
     OPERATE_RET op_ret;
     timer_id_t bk_timer_id;
     tkl_timer_ctx_t *ctx;
-    uint64_t period_ms_u64;
-    uint32_t period_ms;
     timer_isr_t bk_cb = NULL;
     bk_err_t bk_ret;
 
@@ -179,7 +182,7 @@ OPERATE_RET tkl_timer_start(TUYA_TIMER_NUM_E timer_id, UINT_T us)
     if (op_ret != OPRT_OK) {
         return op_ret;
     }
-    if (us == 0u) {
+    if ((us == 0u) || (us > TKL_TIMER_MAX_PERIOD_US)) {
         return OPRT_INVALID_PARM;
     }
 
@@ -187,13 +190,6 @@ OPERATE_RET tkl_timer_start(TUYA_TIMER_NUM_E timer_id, UINT_T us)
     if ((ctx->inited == 0) || (s_timer_driver_inited == 0)) {
         return OPRT_COM_ERROR;
     }
-
-    /* Vendor API is ms based: round up to avoid shorter-than-requested timeout. */
-    period_ms_u64 = ((uint64_t)us + 999ull) / 1000ull;
-    if ((period_ms_u64 == 0ull) || (period_ms_u64 > (uint64_t)TKL_TIMER_MAX_PERIOD_MS)) {
-        return OPRT_INVALID_PARM;
-    }
-    period_ms = (uint32_t)period_ms_u64;
 
     bk_timer_id = __tkl_timer_to_bk_id(timer_id);
     if (__tkl_timer_bk_id_valid(bk_timer_id) == FALSE) {
@@ -204,13 +200,13 @@ OPERATE_RET tkl_timer_start(TUYA_TIMER_NUM_E timer_id, UINT_T us)
         bk_cb = __tkl_timer_isr;
     }
 
-    bk_ret = bk_timer_start(bk_timer_id, period_ms, bk_cb);
+    bk_ret = bk_timer_start_us(bk_timer_id, (uint64_t)us, bk_cb);
     if (bk_ret != BK_OK) {
         return __tkl_timer_map_bk_err(bk_ret);
     }
 
     ctx->running = 1;
-    ctx->period_us = (UINT_T)((uint64_t)period_ms * 1000ull);
+    ctx->period_us = us;
     return OPRT_OK;
 }
 
