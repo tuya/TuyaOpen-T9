@@ -356,7 +356,6 @@ static bk_err_t __tkl_aud_dac_dma_config(TUYA_AUDIO_DAC_PORT_E port)
         goto exit;
     }
 
-    bk_dma_stop(gl_dac_ctx->spk_dma_id);
     bk_dma_set_transfer_len(gl_dac_ctx->spk_dma_id, frame_size);
 
 #if (CONFIG_SPE)
@@ -375,6 +374,69 @@ static bk_err_t __tkl_aud_dac_dma_config(TUYA_AUDIO_DAC_PORT_E port)
 exit:
     __tkl_aud_dac_dma_deconfig(port);
     return BK_FAIL;
+}
+
+/**
+ * @brief Rebuild the DAC GDMA channel without bk_dma_stop()
+ * @param[in] port DAC output port
+ * @return BK_OK on success
+ * @note REPEAT-mode GDMA dest-stalls after analog DAC is stopped while the
+ *       channel stays enabled. bk_dma_deinit() (inside deconfig) resets the
+ *       channel; that is not the unsupported repeat-mode stop.
+ */
+static bk_err_t __tkl_aud_dac_dma_reset(TUYA_AUDIO_DAC_PORT_E port)
+{
+    (void)__tkl_aud_dac_dma_deconfig(port);
+    return __tkl_aud_dac_dma_config(port);
+}
+
+/**
+ * @brief Pause GDMA by parking src_pause_addr at the ring start
+ * @return none
+ * @note BK GDMA in REPEAT mode does not support bk_dma_stop(). Clearing the
+ *       ring sets dma_set_src_pause_addr to the buffer base so the channel
+ *       stalls without being disabled.
+ */
+static VOID_T __tkl_aud_dac_pause_dma(VOID_T)
+{
+    if ((gl_dac_ctx == NULL) || (gl_dac_ctx->spk_dma_buf == NULL)) {
+        return;
+    }
+    ring_buffer_clear(&gl_dac_ctx->spk_rb);
+}
+
+/**
+ * @brief Prefill the DMA ring with silence and unpause GDMA
+ * @return none
+ */
+static VOID_T __tkl_aud_dac_fill_silence(VOID_T)
+{
+    uint32_t free_size;
+    uint32_t fill_cap;
+    uint32_t fill_len;
+    uint8_t *silence;
+
+    if (gl_dac_ctx == NULL) {
+        return;
+    }
+
+    free_size = ring_buffer_get_free_size(&gl_dac_ctx->spk_rb);
+    if (free_size <= DMA_BUF_SAFE_INTERVAL) {
+        return;
+    }
+
+    fill_cap = free_size - DMA_BUF_SAFE_INTERVAL;
+    fill_len = gl_dac_ctx->frame_size;
+    if ((fill_len == 0U) || (fill_len > fill_cap)) {
+        fill_len = fill_cap;
+    }
+    silence = (uint8_t *)tkl_system_malloc(fill_len);
+    if (silence == NULL) {
+        return;
+    }
+    os_memset(silence, 0, fill_len);
+    ring_buffer_write(&gl_dac_ctx->spk_rb, silence, fill_len);
+    tkl_system_free(silence);
 }
 
 /* ---------------------- Public API ----------------------------------------- */
@@ -615,13 +677,15 @@ static void __tkl_aud_dac_spk_power_off(void)
  * @brief Start DAC playback.
  * @param[in] port DAC output port. This parameter is ignored on T5.
  * @return OPRT_OK on success, other error codes on failure.
- * @note The driver pre-fills the DMA ring buffer with silence before enabling
- *       DMA and DAC output to reduce pop noise on startup.
+ * @note Prefills the DMA ring with silence before enabling DMA and DAC.
+ *       After stop, the GDMA channel is rebuilt (deinit+init, not dma_stop)
+ *       so dest-stall is cleared, then the same first-start sequence is used.
  * @note Calling this function after playback has already started returns
  *       success without reinitializing the hardware.
  */
 OPERATE_RET tkl_aud_dac_start(TUYA_AUDIO_DAC_PORT_E port)
 {
+    bk_err_t ret = BK_OK;
     (void)port;
 
     if (gl_dac_ctx == NULL) {
@@ -635,62 +699,22 @@ OPERATE_RET tkl_aud_dac_start(TUYA_AUDIO_DAC_PORT_E port)
         return OPRT_COM_ERROR;
     }
 
-    bk_err_t ret = BK_OK;
-
     bk_printf("port: %d \n", gl_dac_ctx->port);
+
     if (gl_dac_ctx->stat == TKL_AUD_DAC_STAT_STOP) {
-        /*
-         * Reinit DMA (reset read pointer) and DAC hardware (was fully
-         * deinitialized in stop). Going through deinit+init avoids the V2
-         * HAL bug where bk_aud_dac_stop→bk_aud_dac_start alone kills ADC.
-         */
-        __tkl_aud_dac_dma_deconfig(gl_dac_ctx->port);
-        ret = __tkl_aud_dac_dma_config(gl_dac_ctx->port);
+        ret = __tkl_aud_dac_dma_reset(gl_dac_ctx->port);
         if (ret != BK_OK) {
-            TKL_DAC_LOG("dma reconfig fail on restart\n");
+            TKL_DAC_LOG("dma reset fail on restart\n");
             return OPRT_COM_ERROR;
-        }
-
-        bk_aud_hardware_reset();
-        ret = bk_aud_dac_init(&aud_dac_cfg);
-        if (ret != BK_OK) {
-            TKL_DAC_LOG("bk_aud_dac_init fail on restart\n");
-            return OPRT_COM_ERROR;
-        }
-
-#if CONFIG_AUD_DRIVER_V2
-        ret = bk_aud_dac_set_sample_rate(gl_dac_ctx->dac_source,
-                                         gl_dac_ctx->cfg.sample_rate);
-        if (ret != BK_OK) {
-            TKL_DAC_LOG("set sample rate fail on restart\n");
-        }
-#endif
-
-        if (gl_dac_ctx->cfg.volume == 0) {
-            bk_aud_dac_mute();
         }
     }
 
     /*
-     * Pre-fill ring buffer with silence before starting DMA+DAC.
-     * This prevents initial pop noise and ensures DMA has data to read.
+     * DMA is not running yet (first start, or just reset). Queue silence
+     * before bk_dma_start() so the first FIFO fill does not underrun.
      */
-    ring_buffer_clear(&gl_dac_ctx->spk_rb);
-
-    uint32_t free_size = ring_buffer_get_free_size(&gl_dac_ctx->spk_rb);
-    if (free_size > DMA_BUF_SAFE_INTERVAL) {
-        uint32_t fill_cap = free_size - DMA_BUF_SAFE_INTERVAL;
-        uint32_t fill_len = gl_dac_ctx->frame_size;
-        if (fill_len == 0 || fill_len > fill_cap) {
-            fill_len = fill_cap;
-        }
-        uint8_t *silence = (uint8_t *)tkl_system_malloc(fill_len);
-        if (silence) {
-            os_memset(silence, 0, fill_len);
-            ring_buffer_write(&gl_dac_ctx->spk_rb, silence, fill_len);
-            tkl_system_free(silence);
-        }
-    }
+    __tkl_aud_dac_pause_dma();
+    __tkl_aud_dac_fill_silence();
 
 #if CONFIG_AUD_DRIVER_V2
     ret = bk_aud_dac_source_enable(gl_dac_ctx->port, gl_dac_ctx->dac_source, 1);
@@ -717,7 +741,7 @@ OPERATE_RET tkl_aud_dac_start(TUYA_AUDIO_DAC_PORT_E port)
 #endif
     if (ret != BK_OK) {
         TKL_DAC_LOG("dac start fail\n");
-        bk_dma_stop(gl_dac_ctx->spk_dma_id);
+        __tkl_aud_dac_pause_dma();
 #if CONFIG_AUD_DRIVER_V2
         (void)bk_aud_dac_source_enable(gl_dac_ctx->port, gl_dac_ctx->dac_source, 0);
 #endif
@@ -742,8 +766,11 @@ OPERATE_RET tkl_aud_dac_start(TUYA_AUDIO_DAC_PORT_E port)
  * @brief Stop DAC playback.
  * @param[in] port DAC output port. This parameter is ignored on T5.
  * @return OPRT_OK on success, other error codes on failure.
- * @note This function stops DMA transfer first, mutes the DAC output, and
- *       then stops the DAC hardware.
+ * @note Mutes output, disables the digital source and analog DAC channels.
+ *       Does not deinit DAC, so volume/gain registers remain writable.
+ * @note GDMA stays allocated: REPEAT mode cannot bk_dma_stop(); the ring is
+ *       cleared to park src_pause_addr instead. The channel is rebuilt on the
+ *       next start via dma_deinit+init.
  * @note Calling this function after playback has already stopped returns
  *       success without additional hardware operations.
  */
@@ -765,12 +792,6 @@ OPERATE_RET tkl_aud_dac_stop(TUYA_AUDIO_DAC_PORT_E port)
     /* Disable the speaker PA before tearing down the data path. */
     __tkl_aud_dac_spk_power_off();
 
-    bk_err_t ret = bk_dma_stop(gl_dac_ctx->spk_dma_id);
-    if (ret != BK_OK) {
-        TKL_DAC_LOG("dma stop fail\n");
-        return OPRT_COM_ERROR;
-    }
-
     bk_aud_dac_mute();
 
 #if CONFIG_AUD_DRIVER_V2
@@ -779,7 +800,9 @@ OPERATE_RET tkl_aud_dac_stop(TUYA_AUDIO_DAC_PORT_E port)
 #elif CONFIG_AUD_DRIVER_V1
     (void)bk_aud_dac_stop();
 #endif
-    bk_aud_dac_deinit();
+
+    /* Pause GDMA without bk_dma_stop() (unsupported in REPEAT mode). */
+    __tkl_aud_dac_pause_dma();
 
     gl_dac_ctx->stat = TKL_AUD_DAC_STAT_STOP;
 
