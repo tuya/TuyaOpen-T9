@@ -52,6 +52,7 @@ extern void bk_printf(const char *fmt, ...);
 typedef struct {
     TKL_AUD_DMIC_CFG_T   cfg;
     bool                    is_open;
+    bool                    dma_started;    /* GDMA was started; REPEAT cannot dma_stop */
 #if CONFIG_AUD_DRIVER_V2
     aud_dmic_mode_t          dmic_mode;
     uint32_t                 adc_ch_bitmap;
@@ -277,6 +278,34 @@ exit:
 }
 
 /**
+ * @brief Rebuild the DMIC GDMA channel without bk_dma_stop()
+ * @return BK_OK on success
+ * @note REPEAT-mode GDMA src-stalls after analog is stopped while the channel
+ *       stays enabled. bk_dma_deinit() (inside deconfig) resets the channel;
+ *       that is not the unsupported repeat-mode stop.
+ */
+STATIC bk_err_t __tkl_aud_dmic_dma_reset(void)
+{
+    (void)__tkl_aud_dmic_dma_deconfig();
+    return __tkl_aud_dmic_dma_config();
+}
+
+/**
+ * @brief Pause GDMA by parking dst_pause_addr at the ring end
+ * @return none
+ * @note BK GDMA in REPEAT mode does not support bk_dma_stop(). Clearing the
+ *       WRITE ring sets dma_set_dst_pause_addr so the channel stalls without
+ *       being disabled.
+ */
+STATIC VOID_T __tkl_aud_dmic_pause_dma(VOID_T)
+{
+    if ((gl_dmic_ctx == NULL) || (gl_dmic_ctx->dmic_dma_buf == NULL)) {
+        return;
+    }
+    ring_buffer_clear(&gl_dmic_ctx->dmic_rb);
+}
+
+/**
  * @brief Initialize audio digital (DMIC) input
  * @param[in] port Digital audio port number
  * @param[in] config DMIC configuration
@@ -424,9 +453,13 @@ __dmic_init_exit:
  * @brief Start audio digital (DMIC) capture
  * @param[in] port Digital audio port number
  * @return OPRT_OK on success, error code on failure
+ * @note After stop, the GDMA channel is rebuilt (deinit+init, not dma_stop)
+ *       so src-stall is cleared.
  */
 OPERATE_RET tkl_aud_dmic_start(TUYA_AUDIO_DMIC_PORT_E port)
 {
+    bk_err_t ret = BK_OK;
+
     (void) port;
 
     if (gl_dmic_ctx == NULL) {
@@ -438,18 +471,30 @@ OPERATE_RET tkl_aud_dmic_start(TUYA_AUDIO_DMIC_PORT_E port)
         return OPRT_OK;
     }
 
-    bk_err_t ret = bk_dma_start(gl_dmic_ctx->dmic_dma_id);
+    if (gl_dmic_ctx->dma_started) {
+        ret = __tkl_aud_dmic_dma_reset();
+        if (ret != BK_OK) {
+            TKL_AUD_DMIC_LOG("dmic: dma reset fail on restart\n");
+            return OPRT_COM_ERROR;
+        }
+        gl_dmic_ctx->dma_started = false;
+    }
+
+    __tkl_aud_dmic_pause_dma();
+
+    ret = bk_dma_start(gl_dmic_ctx->dmic_dma_id);
     TKL_AUD_DMIC_LOG("dmic: bk_dma_start ret=%d\n", ret);
     if (ret != BK_OK) {
         TKL_AUD_DMIC_LOG("dmic: dma start fail\n");
         return OPRT_COM_ERROR;
     }
+    gl_dmic_ctx->dma_started = true;
 
 #if CONFIG_AUD_DRIVER_V2
     ret = bk_aud_adc_start(AUD_ADC_CHL_0);
     if (ret != BK_OK) {
         TKL_AUD_DMIC_LOG("dmic: bk_aud_adc_start(ch0) fail\n");
-        bk_dma_stop(gl_dmic_ctx->dmic_dma_id);
+        __tkl_aud_dmic_pause_dma();
         return OPRT_COM_ERROR;
     }
 
@@ -458,7 +503,7 @@ OPERATE_RET tkl_aud_dmic_start(TUYA_AUDIO_DMIC_PORT_E port)
         if (ret != BK_OK) {
             TKL_AUD_DMIC_LOG("dmic: bk_aud_adc_start(ch1) fail\n");
             bk_aud_adc_stop(AUD_ADC_CHL_0);
-            bk_dma_stop(gl_dmic_ctx->dmic_dma_id);
+            __tkl_aud_dmic_pause_dma();
             return OPRT_COM_ERROR;
         }
 
@@ -467,7 +512,7 @@ OPERATE_RET tkl_aud_dmic_start(TUYA_AUDIO_DMIC_PORT_E port)
             TKL_AUD_DMIC_LOG("dmic: bk_aud_adc_start(ch2) fail\n");
             bk_aud_adc_stop(AUD_ADC_CHL_1);
             bk_aud_adc_stop(AUD_ADC_CHL_0);
-            bk_dma_stop(gl_dmic_ctx->dmic_dma_id);
+            __tkl_aud_dmic_pause_dma();
             return OPRT_COM_ERROR;
         }
     }
@@ -478,7 +523,7 @@ OPERATE_RET tkl_aud_dmic_start(TUYA_AUDIO_DMIC_PORT_E port)
     TKL_AUD_DMIC_LOG("dmic: bk_aud_dmic_start ret=%d\n", ret);
     if (ret != BK_OK) {
         TKL_AUD_DMIC_LOG("dmic: start fail\n");
-        bk_dma_stop(gl_dmic_ctx->dmic_dma_id);
+        __tkl_aud_dmic_pause_dma();
         return OPRT_COM_ERROR;
     }
 #endif
@@ -506,9 +551,14 @@ OPERATE_RET tkl_aud_dmic_set_vol(TUYA_AUDIO_DMIC_PORT_E port, UINT32_T gain)
  * @brief Stop audio digital (DMIC) capture
  * @param[in] port Digital audio port number
  * @return OPRT_OK on success, error code on failure
+ * @note REPEAT mode cannot bk_dma_stop(); the WRITE ring is cleared to park
+ *       dst_pause_addr. The channel is rebuilt on the next start via
+ *       dma_deinit+init.
  */
 OPERATE_RET tkl_aud_dmic_stop(TUYA_AUDIO_DMIC_PORT_E port)
 {
+    bk_err_t ret = BK_OK;
+
     (void) port;
 
     if (gl_dmic_ctx == NULL) {
@@ -519,13 +569,6 @@ OPERATE_RET tkl_aud_dmic_stop(TUYA_AUDIO_DMIC_PORT_E port)
         return OPRT_OK;
     }
 
-    bk_err_t ret = bk_dma_stop(gl_dmic_ctx->dmic_dma_id);
-    TKL_AUD_DMIC_LOG("dmic: bk_dma_stop ret=%d\n", ret);
-    if (ret != BK_OK) {
-        TKL_AUD_DMIC_LOG("dmic: dma stop fail\n");
-        return OPRT_COM_ERROR;
-    }
-
 #if CONFIG_AUD_DRIVER_V2
     if (gl_dmic_ctx->dmic_mode == AUD_DMIC_MODE_1) {
         (void)bk_aud_adc_stop(AUD_ADC_CHL_2);
@@ -533,20 +576,20 @@ OPERATE_RET tkl_aud_dmic_stop(TUYA_AUDIO_DMIC_PORT_E port)
     }
     ret = bk_aud_adc_stop(AUD_ADC_CHL_0);
     TKL_AUD_DMIC_LOG("dmic: bk_aud_adc_stop(ch0) ret=%d\n", ret);
-    if (ret != BK_OK) {
-        TKL_AUD_DMIC_LOG("dmic: adc stop fail\n");
-        return OPRT_COM_ERROR;
-    }
 #else
     ret = bk_aud_dmic_stop();
     TKL_AUD_DMIC_LOG("dmic: bk_aud_dmic_stop ret=%d\n", ret);
+#endif
+
+    /* Pause GDMA without bk_dma_stop() (unsupported in REPEAT mode). */
+    __tkl_aud_dmic_pause_dma();
+
+    gl_dmic_ctx->is_open = false;
+
     if (ret != BK_OK) {
         TKL_AUD_DMIC_LOG("dmic: stop fail\n");
         return OPRT_COM_ERROR;
     }
-#endif
-
-    gl_dmic_ctx->is_open = false;
 
     return OPRT_OK;
 }

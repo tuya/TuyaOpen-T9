@@ -51,6 +51,7 @@ extern void bk_printf(const char *fmt, ...);
 typedef struct {
     TKL_AUD_ADC_CFG_T   cfg;
     bool                is_open;
+    bool                dma_started;       /* GDMA was started; REPEAT cannot dma_stop */
     uint32_t            dma_frame_size;
     uint8_t             chl_num;
     uint8_t             raw_ch_num;
@@ -254,7 +255,7 @@ static void __tkl_aud_adc_flash_op_notify_handler(uint32_t param, void *args)
 
     if (param)
     {
-        bk_dma_stop(gl_adc_ctx->mic_dma_id);
+        /* REPEAT mode cannot bk_dma_stop(); park dst_pause_addr instead. */
 #if CONFIG_AUD_DRIVER_V2
         __tkl_aud_adc_stop_channels(gl_adc_ctx->adc_ch_bitmap);
 #else
@@ -610,6 +611,34 @@ exit:
     return BK_FAIL;
 }
 
+/**
+ * @brief Rebuild the ADC GDMA channel without bk_dma_stop()
+ * @return BK_OK on success
+ * @note REPEAT-mode GDMA src-stalls after analog ADC is stopped while the
+ *       channel stays enabled. bk_dma_deinit() (inside deconfig) resets the
+ *       channel; that is not the unsupported repeat-mode stop.
+ */
+static bk_err_t __tkl_aud_adc_dma_reset(void)
+{
+    (void)__tkl_aud_adc_dma_deconfig();
+    return __tkl_aud_adc_dma_config();
+}
+
+/**
+ * @brief Pause GDMA by parking dst_pause_addr at the ring end
+ * @return none
+ * @note BK GDMA in REPEAT mode does not support bk_dma_stop(). Clearing the
+ *       WRITE ring sets dma_set_dst_pause_addr so the channel stalls without
+ *       being disabled.
+ */
+static VOID_T __tkl_aud_adc_pause_dma(VOID_T)
+{
+    if ((gl_adc_ctx == NULL) || (gl_adc_ctx->mic_dma_buf == NULL)) {
+        return;
+    }
+    ring_buffer_clear(&gl_adc_ctx->mic_rb);
+}
+
 /* ---------------------- Public API ----------------------------------------- */
 
 /**
@@ -867,14 +896,16 @@ __adc_init_exit:
 /**
 * @brief Start audio ADC capture
 *
-* @note Starts DMA transfer and ADC hardware. After starting, DMA finish ISR
-*       will be triggered periodically, calling upper_aud_adc_cb with PCM data.
+* @note Starts DMA transfer and ADC hardware. After stop, the GDMA channel is
+*       rebuilt (deinit+init, not dma_stop) so src-stall is cleared.
 *       Safe to call multiple times (idempotent).
 *
 * @return OPRT_OK on success. Others on error, please refer to tuya_error_code.h
 */
 OPERATE_RET tkl_aud_adc_start(TUYA_AUDIO_ADC_PORT_E port)
 {
+    bk_err_t ret = BK_OK;
+
     (void) port;
     if (gl_adc_ctx == NULL) {
         return OPRT_COM_ERROR;
@@ -886,7 +917,16 @@ OPERATE_RET tkl_aud_adc_start(TUYA_AUDIO_ADC_PORT_E port)
         return OPRT_OK;
     }
 
-    ring_buffer_clear(&gl_adc_ctx->mic_rb);
+    if (gl_adc_ctx->dma_started) {
+        ret = __tkl_aud_adc_dma_reset();
+        if (ret != BK_OK) {
+            TKL_AUD_ADC_LOG("dma reset fail on restart\n");
+            return OPRT_COM_ERROR;
+        }
+        gl_adc_ctx->dma_started = false;
+    }
+
+    __tkl_aud_adc_pause_dma();
 
 #if CONFIG_AUD_DRIVER_V2
     /* DAC (or other clients) may have called bk_aud_hardware_reset() after
@@ -896,12 +936,13 @@ OPERATE_RET tkl_aud_adc_start(TUYA_AUDIO_ADC_PORT_E port)
     }
 #endif
 
-    bk_err_t ret = bk_dma_start(gl_adc_ctx->mic_dma_id);
+    ret = bk_dma_start(gl_adc_ctx->mic_dma_id);
     if (ret != BK_OK)
     {
         TKL_AUD_ADC_LOG("dma start fail\n");
         return OPRT_COM_ERROR;
     }
+    gl_adc_ctx->dma_started = true;
 
 #if CONFIG_AUD_DRIVER_V2
     ret = __tkl_aud_adc_start_channels(gl_adc_ctx->adc_ch_bitmap, NULL);
@@ -914,7 +955,7 @@ OPERATE_RET tkl_aud_adc_start(TUYA_AUDIO_ADC_PORT_E port)
     if (ret != BK_OK)
     {
         TKL_AUD_ADC_LOG("adc start fail\n");
-        bk_dma_stop(gl_adc_ctx->mic_dma_id);
+        __tkl_aud_adc_pause_dma();
         return OPRT_COM_ERROR;
     }
 
@@ -962,13 +1003,16 @@ OPERATE_RET tkl_aud_adc_set_vol(TUYA_AUDIO_ADC_PORT_E port, UINT32_T gain)
 /**
 * @brief Stop audio ADC capture
 *
-* @note Stops DMA transfer and ADC hardware. After stopping, DMA finish ISR
-*       will no longer fire. Safe to call multiple times (idempotent).
+* @note Stops ADC hardware. REPEAT mode cannot bk_dma_stop(); the WRITE ring
+*       is cleared to park dst_pause_addr. The channel is rebuilt on the next
+*       start via dma_deinit+init. Safe to call multiple times (idempotent).
 *
 * @return OPRT_OK on success. Others on error, please refer to tuya_error_code.h
 */
 OPERATE_RET tkl_aud_adc_stop(TUYA_AUDIO_ADC_PORT_E port)
 {
+    bk_err_t ret = BK_OK;
+
     (void) port;
     if (gl_adc_ctx == NULL) {
         return OPRT_COM_ERROR;
@@ -979,26 +1023,23 @@ OPERATE_RET tkl_aud_adc_stop(TUYA_AUDIO_ADC_PORT_E port)
         return OPRT_OK;
     }
 
-    bk_err_t ret = bk_dma_stop(gl_adc_ctx->mic_dma_id);
-    if (ret != BK_OK)
-    {
-        TKL_AUD_ADC_LOG("dma stop fail\n");
-        return OPRT_COM_ERROR;
-    }
-
 #if CONFIG_AUD_DRIVER_V2
     __tkl_aud_adc_stop_channels(gl_adc_ctx->adc_ch_bitmap);
     ret = BK_OK;
 #else
     ret = bk_aud_adc_stop();
 #endif
+
+    /* Pause GDMA without bk_dma_stop() (unsupported in REPEAT mode). */
+    __tkl_aud_adc_pause_dma();
+
+    gl_adc_ctx->is_open = false;
+
     if (ret != BK_OK)
     {
         TKL_AUD_ADC_LOG("adc stop fail\n");
         return OPRT_COM_ERROR;
     }
-
-    gl_adc_ctx->is_open = false;
 
     return OPRT_OK;
 }
