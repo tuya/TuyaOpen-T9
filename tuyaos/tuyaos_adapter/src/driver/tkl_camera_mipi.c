@@ -1373,6 +1373,104 @@ OPERATE_RET tkl_camera_mipi_get_exposure_luminance(UINT32_T *luminance)
     return OPRT_OK;
 }
 
+/**
+ * @brief Copy BK CPROC attr to TKL public snapshot
+ * @param[in] src BK CPROC attributes
+ * @param[out] dst TKL CPROC snapshot
+ * @return none
+ */
+STATIC VOID_T __tkl_camera_mipi_cproc_export(CONST bk_isp_cproc_attr_t *src, TKL_CAMERA_MIPI_CPROC_T *dst)
+{
+    os_memset(dst, 0, sizeof(*dst));
+    dst->enable = src->enable ? 1U : 0U;
+    dst->op_type = (src->op_type != 0U) ? 1U : 0U;
+    dst->brightness = src->manual.brightness;
+    dst->contrast = src->manual.contrast;
+    dst->saturation = src->manual.saturation;
+    dst->hue = src->manual.hue;
+}
+
+/**
+ * @brief Switch ISP output between gray and color via CPROC saturation
+ * @param[in] enable TRUE=gray (saturation 0, manual), FALSE=restore sensor default CPROC
+ * @return OPRT_OK on success
+ * @note Requires camera started. Gray keeps brightness/contrast/hue of the current CPROC.
+ */
+OPERATE_RET tkl_camera_mipi_set_color_to_gray(BOOL_T enable)
+{
+    avdk_err_t ret;
+    bk_isp_cproc_attr_t cproc = {0};
+
+    if (s_cam_ctx.started != TRUE || s_cam_ctx.camera_ctlr_handle == NULL) {
+        return OPRT_RESOURCE_NOT_READY;
+    }
+
+    if (enable != FALSE) {
+        ret = bk_isp_camera_ctlr_ioctl(s_cam_ctx.camera_ctlr_handle,
+                                       BK_CAM_IOCTL_GET_CPROC,
+                                       &cproc);
+        if (ret != AVDK_ERR_OK) {
+            tkl_log_output("get cproc failed: %d\r\n", ret);
+            return OPRT_COM_ERROR;
+        }
+        cproc.enable = 1U;
+        cproc.op_type = 1U; /* OP_TYPE_MANUAL */
+        cproc.manual.saturation = 0U;
+    } else {
+        if (s_cam_ctx.sensor_handle == NULL) {
+            return OPRT_RESOURCE_NOT_READY;
+        }
+        ret = bk_camera_sensor_ioctl(s_cam_ctx.sensor_handle,
+                                     BK_CAMERA_SENSOR_IOCTL_GET_DEFAULT_CPROC,
+                                     &cproc);
+        if (ret != AVDK_ERR_OK) {
+            tkl_log_output("get default cproc failed: %d\r\n", ret);
+            return OPRT_COM_ERROR;
+        }
+    }
+
+    ret = bk_isp_camera_ctlr_ioctl(s_cam_ctx.camera_ctlr_handle,
+                                   BK_CAM_IOCTL_SET_CPROC,
+                                   &cproc);
+    if (ret != AVDK_ERR_OK) {
+        tkl_log_output("set cproc failed: %d\r\n", ret);
+        return OPRT_COM_ERROR;
+    }
+
+    return OPRT_OK;
+}
+
+/**
+ * @brief Get current ISP CPROC attributes
+ * @param[out] cproc CPROC snapshot (manual fields only)
+ * @return OPRT_OK on success
+ * @note Requires camera started. Wraps BK_CAM_IOCTL_GET_CPROC.
+ */
+OPERATE_RET tkl_camera_mipi_get_cproc(TKL_CAMERA_MIPI_CPROC_T *cproc)
+{
+    avdk_err_t ret;
+    bk_isp_cproc_attr_t attr = {0};
+
+    if (cproc == NULL) {
+        return OPRT_INVALID_PARM;
+    }
+
+    if (s_cam_ctx.started != TRUE || s_cam_ctx.camera_ctlr_handle == NULL) {
+        return OPRT_RESOURCE_NOT_READY;
+    }
+
+    ret = bk_isp_camera_ctlr_ioctl(s_cam_ctx.camera_ctlr_handle,
+                                   BK_CAM_IOCTL_GET_CPROC,
+                                   &attr);
+    if (ret != AVDK_ERR_OK) {
+        tkl_log_output("get cproc failed: %d\r\n", ret);
+        return OPRT_COM_ERROR;
+    }
+
+    __tkl_camera_mipi_cproc_export(&attr, cproc);
+    return OPRT_OK;
+}
+
 OPERATE_RET tkl_camera_mipi_get_isp_handle(VOID **isp_handle)
 {
     if (isp_handle == NULL) {

@@ -78,6 +78,18 @@ typedef struct {
     UINT32_T v_addr;
 } TUYA_CAMERA_MIPI_FLEXA_SOURCE_T;
 
+/**
+ * @brief ISP CPROC manual attributes (color processing)
+ */
+typedef struct {
+    UINT8_T enable;       /* 0=disable, 1=enable */
+    UINT8_T op_type;      /* 0=auto, 1=manual */
+    INT8_T brightness;    /* [-127, 127] */
+    UINT8_T contrast;     /* [0, 255] */
+    UINT8_T saturation;   /* [0, 255] */
+    INT8_T hue;           /* [-90, 90] */
+} TKL_CAMERA_MIPI_CPROC_T;
+
 OPERATE_RET tkl_camera_mipi_init(TUYA_CAMERA_MIPI_CFG_T *config);
 OPERATE_RET tkl_camera_mipi_deinit(void);
 OPERATE_RET tkl_camera_mipi_start(void);
@@ -106,6 +118,20 @@ OPERATE_RET tkl_camera_mipi_get_mirror_flip(UINT8_T *hmirror, UINT8_T *vflip);
  * @note Requires camera started. Wraps BK_CAM_IOCTL_GET_EXPOSURE_LUMINANCE.
  */
 OPERATE_RET tkl_camera_mipi_get_exposure_luminance(UINT32_T *luminance);
+/**
+ * @brief Switch ISP output between gray and color via CPROC saturation
+ * @param[in] enable TRUE=gray (saturation 0, manual), FALSE=restore sensor default CPROC
+ * @return OPRT_OK on success
+ * @note Requires camera started. Gray keeps brightness/contrast/hue of the current CPROC.
+ */
+OPERATE_RET tkl_camera_mipi_set_color_to_gray(BOOL_T enable);
+/**
+ * @brief Get current ISP CPROC attributes
+ * @param[out] cproc CPROC snapshot (manual fields only)
+ * @return OPRT_OK on success
+ * @note Requires camera started. Wraps BK_CAM_IOCTL_GET_CPROC.
+ */
+OPERATE_RET tkl_camera_mipi_get_cproc(TKL_CAMERA_MIPI_CPROC_T *cproc);
 OPERATE_RET tkl_camera_mipi_get_frame(TUYA_CAMERA_MIPI_FRAME_T *frame);
 OPERATE_RET tkl_camera_mipi_get_isp_handle(VOID **isp_handle);
 OPERATE_RET tkl_camera_mipi_get_flexa_source(TUYA_CAMERA_MIPI_FLEXA_SOURCE_T *source);
