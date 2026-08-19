@@ -123,6 +123,16 @@ void *app_isp_handle_get(void)
     return isp_cam_handle.isp_handle;
 }
 
+bk_isp_camera_ctlr_handle_t app_isp_camera_ctlr_handle_get(void)
+{
+    return isp_cam_handle.camera_ctlr_handle;
+}
+
+bk_camera_sensor_handle_t app_isp_camera_sensor_handle_get(void)
+{
+    return isp_cam_handle.sensor_handle;
+}
+
 int app_isp_camera_turn_off(void)
 {
     LOGI("%s\n", __func__);

@@ -22,6 +22,8 @@ extern "C" {
 
 #include <stdbool.h>
 #include "app_camera_types.h"
+#include <components/bk_isp_camera_types.h>
+#include <components/bk_camera_sensor.h>
 #include <common/avdk_pixel_types.h>
 #include "avdk_error.h"
 
@@ -32,6 +34,8 @@ int app_isp_camera_turn_off(void);
 bool app_isp_camera_state_get(void);
 int app_isp_camera_soft_reset(void);
 void *app_isp_handle_get(void);
+bk_isp_camera_ctlr_handle_t app_isp_camera_ctlr_handle_get(void);
+bk_camera_sensor_handle_t app_isp_camera_sensor_handle_get(void);
 int app_isp_mipi_camera_turn_on(const camera_board_config_t *config);
 int app_isp_dvp_camera_turn_on(camera_parameters_ext_t *paramters);
 int app_isp_camera_sp_channel_turn_on(const camera_board_config_t *config);
