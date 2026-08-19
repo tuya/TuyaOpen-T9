@@ -840,12 +840,26 @@ typedef enum {
 } TUYA_GPIO_IRQ_E;
 
 /**
+ * @brief gpio drive capability
+ */
+
+ typedef enum {
+    TUYA_GPIO_DRIVE_CAP_0 = 0,
+    TUYA_GPIO_DRIVE_CAP_1,
+    TUYA_GPIO_DRIVE_CAP_2,
+    TUYA_GPIO_DRIVE_CAP_3,
+    TUYA_GPIO_DRIVE_CAP_4,
+    TUYA_GPIO_DRIVE_CAP_MAX,
+} TUYA_GPIO_DRIVE_CAP_E;
+
+/**
  * @brief gpio config
  */
 typedef struct {
     TUYA_GPIO_MODE_E  mode;
     TUYA_GPIO_DRCT_E  direct;
     TUYA_GPIO_LEVEL_E level;
+    TUYA_GPIO_DRIVE_CAP_E drive_cap;
 } TUYA_GPIO_BASE_CFG_T;
 
 typedef VOID_T (*TUYA_GPIO_IRQ_CB)(VOID_T *args);

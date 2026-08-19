@@ -8,12 +8,20 @@
 
 
 typedef struct {
-    gpio_id_t           gpio;
-    TUYA_GPIO_IRQ_CB    cb;
-    void                *args;
+    gpio_id_t              gpio;
+    TUYA_GPIO_IRQ_CB       cb;
+    void                   *args;
+    TUYA_GPIO_DRIVE_CAP_E  drive_cap; /* last value set via tkl_gpio_set_drive_capability */
 } pin_dev_map_t;
 
-#define PINMAP_ENTRY(id) {GPIO_##id, NULL, NULL}
+/*
+ * Drive-capability pinmap (BK7259):
+ *   TUYA_GPIO_DRIVE_CAP_0..3 map 1:1 to GPIO_DRIVER_CAPACITY_0..3
+ *   (hardware field is 2-bit; actual mA per level is pad-specific / undocumented
+ *   in public SDK headers).
+ *   TUYA_GPIO_DRIVE_CAP_4 is beyond HW support -> OPRT_NOT_SUPPORTED.
+ */
+#define PINMAP_ENTRY(id) {GPIO_##id, NULL, NULL, TUYA_GPIO_DRIVE_CAP_0}
 
 static pin_dev_map_t pinmap[] = {
     PINMAP_ENTRY(0),  PINMAP_ENTRY(1),  PINMAP_ENTRY(2),  PINMAP_ENTRY(3),
@@ -152,6 +160,21 @@ OPERATE_RET tkl_gpio_init(TUYA_GPIO_NUM_E pin_id, CONST TUYA_GPIO_BASE_CFG_T *cf
             break;
         default:
             return OPRT_NOT_SUPPORTED;
+    }
+
+    /* Legacy callers may leave drive_cap uninitialized or out of range.
+     * Fall back to CAP_0 instead of failing init. Dedicated set/get APIs
+     * still reject unsupported levels. */
+    {
+        TUYA_GPIO_DRIVE_CAP_E drive_cap = cfg->drive_cap;
+
+        if ((drive_cap >= TUYA_GPIO_DRIVE_CAP_MAX) ||
+            (drive_cap > TUYA_GPIO_DRIVE_CAP_3)) {
+            bk_printf("WARNING: Init gpio%d drive_cap out of range, set to CAP_0\r\n", pin_id);
+            drive_cap = TUYA_GPIO_DRIVE_CAP_0;
+        }
+        (void)bk_gpio_set_capacity(pinmap[pin_id].gpio, (uint32_t)drive_cap);
+        pinmap[pin_id].drive_cap = drive_cap;
     }
 
     return ret;
@@ -312,5 +335,55 @@ OPERATE_RET tkl_gpio_irq_disable(TUYA_GPIO_NUM_E pin_id)
 {
     PIN_DEV_CHECK_ERROR_RETURN(pin_id, OPRT_INVALID_PARM);
     bk_gpio_disable_interrupt(pinmap[pin_id].gpio);
+    return OPRT_OK;
+}
+
+/**
+ * @brief Set GPIO drive capability (drive strength)
+ * @param[in] pin_id GPIO pin id, id index starts at 0
+ * @param[in] strength Desired drive capability level
+ *                     (TUYA_GPIO_DRIVE_CAP_0 .. TUYA_GPIO_DRIVE_CAP_4)
+ * @return OPRT_OK on success, OPRT_INVALID_PARM if pin_id is invalid or strength
+ *         is out of range,
+ *         OPRT_NOT_SUPPORTED if the requested level exceeds what the pin supports
+ * @note BK7259 supports GPIO_DRIVER_CAPACITY_0..3 only. CAP_4 is rejected.
+ */
+OPERATE_RET tkl_gpio_set_drive_capability(TUYA_GPIO_NUM_E pin_id, CONST TUYA_GPIO_DRIVE_CAP_E strength)
+{
+    PIN_DEV_CHECK_ERROR_RETURN(pin_id, OPRT_INVALID_PARM);
+
+    if (strength >= TUYA_GPIO_DRIVE_CAP_MAX) {
+        return OPRT_INVALID_PARM;
+    }
+
+    /* HW capacity register is 2-bit: only CAP_0..CAP_3 are valid. */
+    if (strength > TUYA_GPIO_DRIVE_CAP_3) {
+        return OPRT_NOT_SUPPORTED;
+    }
+
+    (void)bk_gpio_set_capacity(pinmap[pin_id].gpio, (uint32_t)strength);
+    pinmap[pin_id].drive_cap = strength;
+    return OPRT_OK;
+}
+
+/**
+ * @brief Get GPIO drive capability (drive strength)
+ * @param[in] pin_id GPIO pin id, id index starts at 0
+ * @param[out] strength Pointer to receive the current drive capability level;
+ *                      must not be NULL
+ * @return OPRT_OK on success, OPRT_INVALID_PARM if pin_id or strength is invalid
+ * @note Returns the last level set via tkl_gpio_set_drive_capability(). If never
+ *       set through this API, returns the pinmap default (CAP_0). BK SDK has no
+ *       public capacity readback API.
+ */
+OPERATE_RET tkl_gpio_get_drive_capability(TUYA_GPIO_NUM_E pin_id, TUYA_GPIO_DRIVE_CAP_E *strength)
+{
+    if (strength == NULL) {
+        return OPRT_INVALID_PARM;
+    }
+
+    PIN_DEV_CHECK_ERROR_RETURN(pin_id, OPRT_INVALID_PARM);
+
+    *strength = pinmap[pin_id].drive_cap;
     return OPRT_OK;
 }
