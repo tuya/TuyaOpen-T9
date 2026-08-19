@@ -449,11 +449,38 @@ static void __cli_sdcard_speed_test(void)
 }
 
 extern OPERATE_RET tkl_io_pinmux_config(TUYA_PIN_NAME_E pin, TUYA_PIN_FUNC_E pin_func);
+extern void user_sdio_set_drive_capability(TUYA_GPIO_DRIVE_CAP_E strength);
+
 static void __cli_sdcard_port_test(void)
 {
     tkl_io_pinmux_config(TUYA_IO_PIN_14, TUYA_SDIO_CLK);
     tkl_io_pinmux_config(TUYA_IO_PIN_15, TUYA_SDIO_CMD);
     tkl_io_pinmux_config(TUYA_IO_PIN_16, TUYA_SDIO_DATA0);
+}
+
+/**
+ * @brief Set SDIO pad drive capability from CLI.
+ * @param[in] cap_str drive level string, "0".."3"
+ * @return none
+ * @note Call before mount, or after GPIO has been mapped to apply immediately.
+ */
+static void __cli_sdcard_set_drive(const char *cap_str)
+{
+    unsigned long cap = 0;
+
+    if (cap_str == NULL) {
+        bk_printf("usage: xsd drive <0..3>\r\n");
+        return;
+    }
+
+    cap = os_strtoul(cap_str, NULL, 10);
+    if (cap > (unsigned long)TUYA_GPIO_DRIVE_CAP_3) {
+        bk_printf("invalid drive_cap=%s, valid 0..3\r\n", cap_str);
+        return;
+    }
+
+    user_sdio_set_drive_capability((TUYA_GPIO_DRIVE_CAP_E)cap);
+    bk_printf("[xsd drive] set drive_cap=%lu\r\n", cap);
 }
 
 void cli_sdcard_test_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv)
@@ -469,6 +496,8 @@ void cli_sdcard_test_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, cha
         __cli_sdcard_umount();
     } else if (!os_strcmp(argv[1], "port")) {
         __cli_sdcard_port_test();
+    } else if (!os_strcmp(argv[1], "drive") || !os_strcmp(argv[1], "drv_cap")) {
+        __cli_sdcard_set_drive(argv[2]);
     } else if (!os_strcmp(argv[1], "ls")) {
         __cli_sdcard_list_file(TEST_SDCARD_MOUNT_POINT);
     } else if (!os_strcmp(argv[1], "read")) {
