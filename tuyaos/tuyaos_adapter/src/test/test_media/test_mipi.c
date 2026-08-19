@@ -45,7 +45,7 @@
 #define MIPI_TEST_MIRROR_SETTLE_FRAMES 2U
 #define MIPI_TEST_MIRROR_EDGE_COLS     8U
 #define MIPI_TEST_CAMERA_USAGE \
-    "Usage: xmipi camera <open [sw sh fps ow oh]|open_gpu [sw sh fps ow oh]|open_gpu_sp [sw sh fps ow oh spw sph]|start|switch <ow> <oh>|get_frame|mirror [hmirror vflip]|mirror_test|luminance|luminance_test [n ms]|skip [n]|stop|close>"
+    "Usage: xmipi camera <open [sw sh fps ow oh]|open_gpu [sw sh fps ow oh]|open_gpu_sp [sw sh fps ow oh spw sph]|start|switch <ow> <oh>|get_frame|mirror [hmirror vflip]|mirror_test|luminance|luminance_test [n ms]|cproc|gray [0|1]|skip [n]|stop|close>"
 #define MIPI_TEST_LUMINANCE_MAX         255000U
 #define MIPI_TEST_LUMINANCE_DEFAULT_CNT 5U
 #define MIPI_TEST_LUMINANCE_DEFAULT_MS  200U
@@ -1705,6 +1705,75 @@ static OPERATE_RET test_mipi_camera_luminance_test(UINT32_T count, UINT32_T inte
     return OPRT_OK;
 }
 
+/**
+ * @brief Read current CPROC and print it
+ * @param[out] cproc optional snapshot
+ * @return OPRT_OK on success
+ */
+static OPERATE_RET test_mipi_camera_get_cproc(TKL_CAMERA_MIPI_CPROC_T *cproc)
+{
+    OPERATE_RET ret;
+    TKL_CAMERA_MIPI_CPROC_T attr = {0};
+
+    if (s_mipi_camera_started != true) {
+        tkl_log_output("cproc needs started camera\r\n");
+        return OPRT_RESOURCE_NOT_READY;
+    }
+
+    ret = tkl_camera_mipi_get_cproc(&attr);
+    if (ret != OPRT_OK) {
+        tkl_log_output("camera get_cproc failed: %d\r\n", ret);
+        return ret;
+    }
+
+    tkl_log_output("camera cproc enable=%u op=%u bri=%d con=%u sat=%u hue=%d\r\n",
+                   (unsigned int)attr.enable,
+                   (unsigned int)attr.op_type,
+                   (int)attr.brightness,
+                   (unsigned int)attr.contrast,
+                   (unsigned int)attr.saturation,
+                   (int)attr.hue);
+    if (cproc != NULL) {
+        *cproc = attr;
+    }
+    return OPRT_OK;
+}
+
+/**
+ * @brief Set gray/color via CPROC and verify saturation
+ * @param[in] gray TRUE=gray, FALSE=restore default CPROC
+ * @return OPRT_OK on success
+ */
+static OPERATE_RET test_mipi_camera_set_color_to_gray(BOOL_T gray)
+{
+    OPERATE_RET ret;
+    TKL_CAMERA_MIPI_CPROC_T attr = {0};
+
+    if (s_mipi_camera_started != true) {
+        tkl_log_output("gray needs started camera\r\n");
+        return OPRT_RESOURCE_NOT_READY;
+    }
+
+    ret = tkl_camera_mipi_set_color_to_gray(gray);
+    if (ret != OPRT_OK) {
+        tkl_log_output("camera set_color_to_gray(%u) failed: %d\r\n",
+                       (unsigned int)gray, ret);
+        return ret;
+    }
+
+    ret = test_mipi_camera_get_cproc(&attr);
+    if (ret != OPRT_OK) {
+        return ret;
+    }
+
+    if (gray != FALSE && attr.saturation != 0U) {
+        tkl_log_output("gray FAIL: saturation=%u, expect 0\r\n",
+                       (unsigned int)attr.saturation);
+        return OPRT_COM_ERROR;
+    }
+    return OPRT_OK;
+}
+
 void cli_tuya_mipi_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv)
 {
     OPERATE_RET ret;
@@ -1912,6 +1981,36 @@ void cli_tuya_mipi_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char 
                      "xmipi camera luminance_test %s (%d)\r\n",
                      (ret == OPRT_OK) ? "ok" : "failed",
                      ret);
+        } else if (os_strcmp(cmd, "cproc") == 0) {
+            TKL_CAMERA_MIPI_CPROC_T attr = {0};
+
+            ret = test_mipi_camera_get_cproc(&attr);
+            if (ret == OPRT_OK) {
+                snprintf(pcWriteBuffer, xWriteBufferLen,
+                         "xmipi camera cproc ok (%d), enable=%u op=%u bri=%d con=%u sat=%u hue=%d\r\n",
+                         ret,
+                         (unsigned int)attr.enable,
+                         (unsigned int)attr.op_type,
+                         (int)attr.brightness,
+                         (unsigned int)attr.contrast,
+                         (unsigned int)attr.saturation,
+                         (int)attr.hue);
+            } else {
+                snprintf(pcWriteBuffer, xWriteBufferLen,
+                         "xmipi camera cproc failed (%d)\r\n", ret);
+            }
+        } else if (os_strcmp(cmd, "gray") == 0) {
+            BOOL_T gray = TRUE;
+
+            if (argc >= 4) {
+                gray = (os_strtoul(argv[3], NULL, 10) != 0U) ? TRUE : FALSE;
+            }
+            ret = test_mipi_camera_set_color_to_gray(gray);
+            snprintf(pcWriteBuffer, xWriteBufferLen,
+                     "xmipi camera gray %s (%d), enable=%u\r\n",
+                     (ret == OPRT_OK) ? "ok" : "failed",
+                     ret,
+                     (unsigned int)gray);
         } else if (os_strcmp(cmd, "stop") == 0) {
             ret = test_mipi_camera_mipi_stop();
             snprintf(pcWriteBuffer, xWriteBufferLen,
