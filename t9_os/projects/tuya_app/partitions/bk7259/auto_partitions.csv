@@ -3,11 +3,10 @@
 FLASH_CAPACITY=8M
 #Name,Offset,Size,Type,Read,Write
 primary_bootloader,         ,   64k,    code,TRUE,FALSE
-primary_cp_app,             ,   1228k,  code,TRUE,FALSE
-primary_ap_app,             ,   3740k,  code,TRUE,FALSE
-ota,                        ,   2940K,  data,TRUE,TRUE
-ota_mgr,                    ,   8K,     data,TRUE,TRUE
+primary_cp_app,             ,   1184k,  code,TRUE,FALSE
+primary_ap_app,             ,   3680k,  code,TRUE,FALSE
+ota,                        ,   3144K,  data,TRUE,TRUE
 usr_config,                 ,   8K,     data,TRUE,TRUE
-tuya_data,          0x7CD000,   196K,   data,TRUE,TRUE
+tuya_data,          0x7E4000,   104K,   data,TRUE,TRUE
 sys_rf,             0x7FE000,   4k,     data,TRUE,TRUE
 sys_net,            0x7FF000,   4k,     data,TRUE,TRUE

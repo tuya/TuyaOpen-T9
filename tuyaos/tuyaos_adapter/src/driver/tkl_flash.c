@@ -21,51 +21,40 @@ typedef struct
 // total: 800000
 // Name     Begin       End         Length
 // boot     0x0         0x10000     64k
-// cp       0x10000     0x143000    1228k
-// ap       0x143000    0x4EA000    3740k
-// ota      0x4EA000    0x7C9000    2940k
-// otam     0x7C9000    0x7CB000    8k
-// usr      0x7CB000    0x7CD000    8k
-// kvp      0x7CD000    0x7CE000    4k
-// res      0x7CE000    0x7DD000    60k
-// kv       0x7DD000    0x7ED000    64k
-// uf       0x7ED000    0x7FD000    64k
-// key      0x7FD000    0x7FE000    4k
+// cp       0x10000     0x138000    1184k
+// ap       0x138000    0x4D0000    3680k
+// ota      0x4D0000    0x7E2000    3144k
+// usr      0x7E2000    0x7E4000    8k
+// kvp      0x7E4000    0x7E5000    4k
+// res      0x7E5000    0x7ED000    32k
+// sleep    0x7ED000    0x7EE000    4k
+// kv       0x7EE000    0x7F6000    32k
+// uf       0x7F6000    0x7FE000    32k
 // rf       0x7FE000    0x7FF000    4k
 // net      0x7FF000    0x800000    4k
 
 #define PARTITION_SIZE         (1 << 12) /* 4KB */
 #define FLH_BLOCK_SZ            PARTITION_SIZE
 
-
-#define APPLICATION_START               0x10000
-#define APPLICATION_SIZE                ((1228 + 3740 + 2940)* 1024)
-
-#define OTA_START                       0x7C9000
-#define OTA_SIZE                        (8 * 1024)
-
 #if defined(KV_PROTECTED_ENABLE) && (KV_PROTECTED_ENABLE==1)
-    #define TUYA_KV_PROTECTED           0x7cd000
-    #define TUYA_KV_PROTECTED_SIZE      4096
+    #define TUYA_KV_PROTECTED           0x7E4000
+    #define TUYA_KV_PROTECTED_SIZE      (4 * 1024)
 #endif
 
-#define TUYA_USER1                      0x7ce000
-#define TUYA_USER1_SIZE                 (60 * 1024)
+#define TUYA_USER0                      0x7E5000
+#define TUYA_USER0_SIZE                 (32 * 1024)
 
-#define TUYA_KV                         0x7dd000
-#define TUYA_KV_SIZE                    (64 * 1024)
+#define TUYA_KV                         0x7EE000
+#define TUYA_KV_SIZE                    (32 * 1024)
 
-#define TUYA_UF                         0x7ed000
-#define TUYA_UF_SIZE                    (64 * 1024)
+#define TUYA_UF                         0x7F6000
+#define TUYA_UF_SIZE                    (32 * 1024)
 
-#define TUYA_KV_KEY                     0x7fd000
-#define TUYA_KV_KEY_SIZE                4096
+#define FACTORY_RF_DATA_START           0x7FE000
+#define FACTORY_RF_DATA_SIZE            (4 * 1024)
 
-#define FACTORY_RF_DATA_START           0x7fe000
-#define FACTORY_RF_DATA_SIZE            4096
-
-#define FACTORY_FAST_CONNECT_DATA_START 0x7ff000
-#define FACTORY_FAST_CONNECT_DATA_SIZE  4096
+#define FACTORY_FAST_CONNECT_DATA_START 0x7FF000
+#define FACTORY_FAST_CONNECT_DATA_SIZE  (4 * 1024)
 
 static TKL_MUTEX_HANDLE __tkl_flash_mutex = NULL;
 static OPERATE_RET __tkl_flash_opt_lock(void)
@@ -268,12 +257,6 @@ OPERATE_RET tkl_flash_get_one_type_info(TUYA_FLASH_TYPE_E type, TUYA_FLASH_BASE_
             info->partition[0].start_addr = TUYA_KV;
             info->partition[0].size = TUYA_KV_SIZE;
             break;
-       case TUYA_FLASH_TYPE_KV_KEY:
-            info->partition_num = 1;
-            info->partition[0].block_size = FLH_BLOCK_SZ;
-            info->partition[0].start_addr = TUYA_KV_KEY;
-            info->partition[0].size = TUYA_KV_KEY_SIZE;
-            break;
 #if defined(KV_PROTECTED_ENABLE) && (KV_PROTECTED_ENABLE==1)
         case TUYA_FLASH_TYPE_KV_PROTECT:
             info->partition_num = 1;
@@ -282,29 +265,11 @@ OPERATE_RET tkl_flash_get_one_type_info(TUYA_FLASH_TYPE_E type, TUYA_FLASH_BASE_
             info->partition[0].size = TUYA_KV_PROTECTED_SIZE;
             break;
 #endif
-        case TUYA_FLASH_TYPE_APP:
-            info->partition_num = 1;
-            info->partition[0].block_size =  PARTITION_SIZE;
-            info->partition[0].start_addr = APPLICATION_START;
-            info->partition[0].size = APPLICATION_SIZE;
-            break;
-        case TUYA_FLASH_TYPE_APP_BIN:
-            info->partition_num = 1;
-            info->partition[0].block_size =  PARTITION_SIZE;
-            info->partition[0].start_addr = APPLICATION_START;
-            info->partition[0].size = APPLICATION_SIZE;
-            break;
-        case TUYA_FLASH_TYPE_OTA:
-            info->partition_num = 1;
-            info->partition[0].block_size =  PARTITION_SIZE;
-            info->partition[0].start_addr = OTA_START;
-            info->partition[0].size = OTA_SIZE;
-            break;
         case TUYA_FLASH_TYPE_USER0:
             info->partition_num = 1;
             info->partition[0].block_size =  PARTITION_SIZE;
-            info->partition[0].start_addr = TUYA_USER1;
-            info->partition[0].size = TUYA_USER1_SIZE;
+            info->partition[0].start_addr = TUYA_USER0;
+            info->partition[0].size = TUYA_USER0_SIZE;
             break;
             break;
 
