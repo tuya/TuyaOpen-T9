@@ -28,8 +28,8 @@ typedef struct
 // kvp      0x7E4000    0x7E5000    4k
 // res      0x7E5000    0x7ED000    32k
 // sleep    0x7ED000    0x7EE000    4k
-// kv       0x7EE000    0x7F6000    32k
-// uf       0x7F6000    0x7FE000    32k
+// uf       0x7EE000    0x7F6000    32k
+// kv       0x7F6000    0x7FE000    32k
 // rf       0x7FE000    0x7FF000    4k
 // net      0x7FF000    0x800000    4k
 
@@ -44,11 +44,11 @@ typedef struct
 #define TUYA_USER0                      0x7E5000
 #define TUYA_USER0_SIZE                 (32 * 1024)
 
-#define TUYA_KV                         0x7EE000
-#define TUYA_KV_SIZE                    (32 * 1024)
-
-#define TUYA_UF                         0x7F6000
+#define TUYA_UF                         0x7EE000
 #define TUYA_UF_SIZE                    (32 * 1024)
+
+#define TUYA_KV                         0x7F6000
+#define TUYA_KV_SIZE                    (32 * 1024)
 
 #define FACTORY_RF_DATA_START           0x7FE000
 #define FACTORY_RF_DATA_SIZE            (4 * 1024)
