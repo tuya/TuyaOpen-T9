@@ -81,6 +81,12 @@ typedef struct
     volatile bool flexa_stop;
     bool flexa_frame_active;
     bool flexa_abort_notified;
+    /* Deferred FLEXA restart request across cores. BK_GPU_IOCTL_SET_NOTIFY arrives on the
+     * bond ISR (ap1), but the FLEXA read state (flexa_index / read_lines / line_err_flag) is
+     * owned by the GPU worker (ap0), which may be inside vg_lite_blit/finish under gpu_mutex.
+     * The ISR only sets this flag and wakes the worker; the worker runs gpu_flex_restart()
+     * from its own context, keeping all read-state mutation on a single thread. */
+    volatile bool flexa_notify_pending;
     uint8_t *gpu_contiguous_buffer;
 
     /* Per-instance OSD blend timing (BK_GPU_IOCTL_SET_OSD_BY_FLEXA):

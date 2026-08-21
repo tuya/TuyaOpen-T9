@@ -1643,6 +1643,14 @@ static void gpu_flex_main_entry(void *arg)
             break;
         }
 
+        /* Consume a deferred SET_NOTIFY restart here on the worker thread (never on the bond
+         * ISR), so the FLEXA read state is only mutated when no vg_lite op is in flight. */
+        if (gpu_vn_ctlr->flexa_notify_pending)
+        {
+            gpu_vn_ctlr->flexa_notify_pending = false;
+            gpu_flex_restart(gpu_vn_ctlr);
+        }
+
         if (proc_ret != BK_OK)
         {
             continue;
@@ -1769,9 +1777,9 @@ static void gpu_flex_main_entry(void *arg)
 thread_exit:
     LOGW("%s,%d exit\n", __func__, __LINE__);
 
-    /* Self-delete only. gpu_ctlr_close() joins this thread via rtos_thread_join()
-     * and is the sole owner of control->flexa_thd, so the worker must NOT clear
-     * it here (doing so previously created a re-open race). */
+    /* Self-delete only. gpu_ctlr_close() joins this thread via rtos_thread_join() and is the
+     * sole owner of control->flexa_thd; the worker must NOT clear it here so ownership of the
+     * handle stays entirely with close(). */
     rtos_delete_thread(NULL);
 }
 
@@ -2048,10 +2056,9 @@ static avdk_err_t gpu_ctlr_close(bk_gpu_ctlr_handle_t handle)
             }
         }
 
-        /* Block until the worker has fully terminated, then take ownership of
-         * the handle here. This removes the previous race where the worker
-         * cleared flexa_thd after close() had already returned, which could make
-         * a fast re-open mis-detect the controller as still open. */
+        /* Block until the worker has fully terminated, then take ownership of the handle
+         * here. close() is the sole clearer of flexa_thd, so a fast re-open always observes
+         * a fully torn-down controller instead of a stale handle. */
         rtos_thread_join(&control->flexa_thd);
         control->flexa_thd = NULL;
 
@@ -2089,7 +2096,11 @@ static avdk_err_t gpu_ctlr_ioctl(bk_gpu_ctlr_handle_t handle, uint32_t cmd, void
         break;
 
         case BK_GPU_IOCTL_SET_NOTIFY:
-            gpu_flex_restart(control);
+            /* This runs in the bond ISR, cross-core with the worker's vg_lite ops, so the
+             * restart is not done here. Set the flag and wake the worker, which runs
+             * gpu_flex_restart() from its own context with no vg_lite op in flight. */
+            control->flexa_notify_pending = true;
+            rtos_set_semaphore(&control->gpu_process_sem);
             break;
 
         case BK_GPU_IOCTL_REGISTER_BOND:

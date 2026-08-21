@@ -53,6 +53,11 @@ enum {
 } isp_fsm_t;
 
 #define FLEXA_LINES 16
+/* Number of live MP flexa frames to force-drop when a non-MP (SP) path is armed or disarmed:
+ * that MI_CFG_UPD latch pulse reloads the MP shadow regs mid-frame and corrupts the frames
+ * straddling the transition (SP-arm flicker / SP-disarm pink-filter). Two covers both the
+ * in-flight frame and the next one. */
+#define ISP_MP_FLICKER_FORCE_DROP_FRAMES 2
 #define ISP_FLEXA_STREAM_ID_Y 0x14
 #define ISP_FLEXA_STREAM_ID_CB 0x15
 #define ISP_FLEXA_STREAM_ID_CR 0x16
@@ -353,7 +358,16 @@ static void isp_mi_isr_callback(uint32_t state, void *args)
 
             if (control->chn[ISP_MP_CHN_ID].enable_flexa)
             {
-                if (control->chn[ISP_MP_CHN_ID].line == control->chn[ISP_MP_CHN_ID].total_line)
+                /* Flicker fix: force-drop the MP frames straddling a peer (SP) stream-on.
+                 * Reporting ok=0 reuses the existing GPU-bond incomplete-frame drop path so
+                 * the corrupted lines (from the SP-arm MI_CFG_UPD latch) never reach the LCD. */
+                uint8_t mp_force_drop = (control->chn[ISP_MP_CHN_ID].force_drop_pending > 0);
+                if (mp_force_drop)
+                {
+                    control->chn[ISP_MP_CHN_ID].force_drop_pending--;
+                }
+
+                if (!mp_force_drop && control->chn[ISP_MP_CHN_ID].line == control->chn[ISP_MP_CHN_ID].total_line)
                 {
                     isp_mi_isr_callback_handle(control, ISP_MB_LINE_DONE, ISP_MP_CHN_ID, true);
                     isp_mi_isr_callback_handle(control, ISP_FRAME_END_DONE, ISP_MP_CHN_ID, true);
@@ -1049,6 +1063,15 @@ bk_err_t bk_isp_open(isp_handle_t *handle, isp_config_ext_t *config)
     else
     {
         AVDK_MONITOR_SP_ENABLE();
+
+        /* Flicker fix: arming a non-MP path (SP) pulses the global MI_CFG_UPD latch, which
+         * reloads the live MP flexa shadow regs mid-frame -> a few corrupted MP pixel lines
+         * with no line-count anomaly. Proactively force-drop the 2 MP frames straddling this
+         * arm so the GPU bond discards them instead of displaying the flicker. */
+        if (control->chn[ISP_MP_CHN_ID].enable && control->chn[ISP_MP_CHN_ID].enable_flexa)
+        {
+            control->chn[ISP_MP_CHN_ID].force_drop_pending = ISP_MP_FLICKER_FORCE_DROP_FRAMES;
+        }
     }
 
     ret = VSI_MPI_ISP_EnableChn(control->chn[config->chnl_id].channel);
@@ -1095,12 +1118,43 @@ bk_err_t bk_isp_close(isp_handle_t *handle, uint8_t chnl)
         return ret;
     }
 
+    /* Pink-filter fix (symmetric to the SP-arm flicker fix): disarming a non-MP path (SP)
+     * ALSO pulses the global MI_CFG_UPD latch and reloads the live MP flexa chroma shadow
+     * regs mid-frame -> the lower half of one MP frame gets a UV-only "pink filter" (Y intact,
+     * no line-count anomaly, so the overrun/integrity checks miss it). Force-drop the 2 MP
+     * frames straddling this disarm so the GPU bond discards them. */
+    if (chnl != ISP_MP_CHN_ID
+        && control->chn[ISP_MP_CHN_ID].enable && control->chn[ISP_MP_CHN_ID].enable_flexa)
+    {
+        control->chn[ISP_MP_CHN_ID].force_drop_pending = ISP_MP_FLICKER_FORCE_DROP_FRAMES;
+    }
+
     ret = VSI_MPI_ISP_DisableChn(control->chn[chnl].channel);
     chnl_config->enable = false;
     if (ret != BK_OK)
     {
         LOGE("%s, %d, disable chnl fail\n", __func__, __LINE__);
         chnl_config->enable = true;
+    }
+
+    /* Release this channel's frame buffers so the next open reallocates for its own geometry.
+     * They are sized for the closing resolution; keeping them (as bk_isp_complete_buffer_config
+     * only allocates when the pointer is NULL) would let a reopen at a larger resolution reuse an
+     * undersized buffer and overrun the shared frame heap. DisableChn has stopped the MI DMA and
+     * the reader is already stopped, so the buffers are no longer in flight. Only touch the
+     * channel being closed; the peer (e.g. MP flexa) keeps its own buffers. */
+    if (chnl_config->enable == false)
+    {
+        for (uint8_t j = 0; j < ISP_FRAME_CNT_MAX; j++)
+        {
+            if (chnl_config->frame_buffer[j])
+            {
+#ifdef CONFIG_FRAME_BUFFER
+                bk_frame_buffer_free(chnl_config->frame_buffer[j]);
+#endif
+                chnl_config->frame_buffer[j] = NULL;
+            }
+        }
     }
 
     for (uint8_t i = 0; i < ISP_FRAME_CNT_MAX; i++)

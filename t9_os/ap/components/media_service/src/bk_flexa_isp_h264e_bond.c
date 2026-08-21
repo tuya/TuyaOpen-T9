@@ -75,6 +75,7 @@ static void isp_h264e_handle_frame_end_cb(uint32_t seq, uint32_t line, uint8_t c
 	(void)seq;
 	(void)line;
 	(void)chnl;
+	(void)ok;
 
 	if (in_stream == NULL || in_stream->bond_config == NULL) {
 		return;
@@ -101,9 +102,11 @@ static void isp_h264e_handle_frame_end_cb(uint32_t seq, uint32_t line, uint8_t c
 			return;
 		}
 	}
-	if (ok == 0) {
-		bk_h264_encode_force_idr(enc);
-	}
+	/* Always issue SET_FRAME_READY, including on ok==0: this HW flexa encoder is driven one
+	 * SET_FRAME_READY per frame, so it must stay in lock-step with the ISP<->encoder SBI
+	 * handshake. Frame content is not gated here; corrupted MP frames straddling an SP
+	 * arm/disarm are dropped downstream at the uplink layer (doorbell_devices_uplink_resync:
+	 * drop N encoded frames + force IDR). */
 	(void)bk_h264_encode_ioctl(enc, BK_H264_ENCODE_IOCTL_SET_FRAME_READY, (void *)0);
 }
 
