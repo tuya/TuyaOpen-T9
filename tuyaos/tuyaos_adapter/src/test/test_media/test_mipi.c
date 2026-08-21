@@ -45,7 +45,7 @@
 #define MIPI_TEST_MIRROR_SETTLE_FRAMES 2U
 #define MIPI_TEST_MIRROR_EDGE_COLS     8U
 #define MIPI_TEST_CAMERA_USAGE \
-    "Usage: xmipi camera <open [sw sh fps ow oh]|open_gpu [sw sh fps ow oh]|open_gpu_sp [sw sh fps ow oh spw sph]|start|switch <ow> <oh>|get_frame|mirror [hmirror vflip]|mirror_test|luminance|luminance_test [n ms]|cproc|gray [0|1]|skip [n]|stop|close>"
+    "Usage: xmipi camera <open [sw sh fps ow oh]|open_gpu [sw sh fps ow oh]|open_gpu_sp [sw sh fps ow oh spw sph]|start|switch <ow> <oh>|switch_sp <spw> <sph>|get_frame [mp|sp]|mirror [hmirror vflip]|mirror_test|luminance|luminance_test [n ms]|cproc|gray [0|1]|skip [n]|stop|close>"
 #define MIPI_TEST_LUMINANCE_MAX         255000U
 #define MIPI_TEST_LUMINANCE_DEFAULT_CNT 5U
 #define MIPI_TEST_LUMINANCE_DEFAULT_MS  200U
@@ -396,16 +396,28 @@ static void test_mipi_camera_frame_release(void)
     s_mipi_camera_last_frame_format = BK_PIXEL_FORMAT_INVALID;
 }
 
-static uint32_t test_mipi_camera_frame_size_get(void)
+static uint32_t test_mipi_camera_frame_size_get(uint8_t channel_id)
 {
+    if (channel_id == TUYA_CAMERA_MIPI_CHANNEL_SP) {
+        /* ISP emits RGB888/BGR888 as RGBX (4 bytes/pixel); must match
+         * tkl_camera_mipi_sp_frame_size_get() in the driver. */
+        if (s_mipi_camera_cfg.sp_format == BK_PIXEL_FORMAT_RGB888 ||
+            s_mipi_camera_cfg.sp_format == BK_PIXEL_FORMAT_BGR888) {
+            return (uint32_t)s_mipi_camera_cfg.sp_width * s_mipi_camera_cfg.sp_height * 4U;
+        }
+        return bk_image_size_get(s_mipi_camera_cfg.sp_width,
+                                 s_mipi_camera_cfg.sp_height,
+                                 (bk_pixel_format_t)s_mipi_camera_cfg.sp_format);
+    }
+
     return bk_image_size_get(s_mipi_camera_cfg.output_width,
                              s_mipi_camera_cfg.output_height,
                              (bk_pixel_format_t)s_mipi_camera_cfg.output_format);
 }
 
-static OPERATE_RET test_mipi_camera_frame_prepare(void)
+static OPERATE_RET test_mipi_camera_frame_prepare(uint8_t channel_id)
 {
-    uint32_t frame_size = test_mipi_camera_frame_size_get();
+    uint32_t frame_size = test_mipi_camera_frame_size_get(channel_id);
 
     if (frame_size == 0U) {
         return OPRT_INVALID_PARM;
@@ -1101,10 +1113,6 @@ static OPERATE_RET test_mipi_camera_mipi_switch_output(uint16_t output_width, ui
 {
     OPERATE_RET ret;
     uint64_t t_total;
-    uint64_t t_phase;
-    uint64_t t_stop_ms = 0U;
-    uint64_t t_set_ms = 0U;
-    uint64_t t_start_ms = 0U;
 
     if (s_mipi_camera_inited != true) {
         tkl_log_output("camera switch failed: camera is not open\r\n");
@@ -1113,48 +1121,55 @@ static OPERATE_RET test_mipi_camera_mipi_switch_output(uint16_t output_width, ui
 
     t_total = (uint64_t)tkl_system_get_millisecond();
 
-    if (s_mipi_camera_started == true) {
-        t_phase = (uint64_t)tkl_system_get_millisecond();
-        ret = tkl_camera_mipi_stop();
-        if (ret != OPRT_OK) {
-            tkl_log_output("camera switch stop failed: %d\r\n", ret);
-            return ret;
-        }
-        s_mipi_camera_started = false;
-        t_stop_ms = (uint64_t)tkl_system_get_millisecond() - t_phase;
-    }
-
-    t_phase = (uint64_t)tkl_system_get_millisecond();
-    ret = tkl_camera_mipi_set_output(output_width, output_height);
+    /* live switch: closes+reopens MP only; SP (if armed) keeps streaming */
+    ret = tkl_camera_mipi_set_output(TUYA_CAMERA_MIPI_CHANNEL_MP, output_width, output_height);
     if (ret != OPRT_OK) {
         tkl_log_output("camera switch set_output failed: %d\r\n", ret);
         return ret;
     }
+
     s_mipi_camera_cfg.output_width = output_width;
     s_mipi_camera_cfg.output_height = output_height;
-    t_set_ms = (uint64_t)tkl_system_get_millisecond() - t_phase;
 
-    t_phase = (uint64_t)tkl_system_get_millisecond();
-    ret = tkl_camera_mipi_start();
-    if (ret != OPRT_OK) {
-        tkl_log_output("camera switch start failed: %d\r\n", ret);
-        return ret;
-    }
-    s_mipi_camera_started = true;
-    t_start_ms = (uint64_t)tkl_system_get_millisecond() - t_phase;
-
-    tkl_log_output(
-            "camera switch ok, output=%ux%u, stop=%llums set=%llums start=%llums total=%llums\r\n",
+    tkl_log_output("camera switch ok (live), output=%ux%u, switch=%llums\r\n",
             output_width,
             output_height,
-            (unsigned long long)t_stop_ms,
-            (unsigned long long)t_set_ms,
-            (unsigned long long)t_start_ms,
             (unsigned long long)((uint64_t)tkl_system_get_millisecond() - t_total));
     return OPRT_OK;
 }
 
-OPERATE_RET test_mipi_camera_capture_frame(TUYA_CAMERA_MIPI_FRAME_T *frame)
+static OPERATE_RET test_mipi_camera_mipi_switch_sp(uint16_t sp_width, uint16_t sp_height)
+{
+    OPERATE_RET ret;
+    uint64_t t_total;
+
+    if (s_mipi_camera_started != true) {
+        tkl_log_output("camera switch_sp failed: camera is not started\r\n");
+        return OPRT_RESOURCE_NOT_READY;
+    }
+
+    t_total = (uint64_t)tkl_system_get_millisecond();
+
+    /* live switch: closes+reopens SP only; MP keeps streaming (driver force-drops
+     * a couple of MP frames around the MI_CFG_UPD latch pulse) */
+    ret = tkl_camera_mipi_set_output(TUYA_CAMERA_MIPI_CHANNEL_SP, sp_width, sp_height);
+    if (ret != OPRT_OK) {
+        tkl_log_output("camera switch_sp failed: %d\r\n", ret);
+        return ret;
+    }
+
+    s_mipi_camera_cfg.sp_width = sp_width;
+    s_mipi_camera_cfg.sp_height = sp_height;
+
+    tkl_log_output("camera switch_sp ok (live), sp=%ux%u, switch=%llums\r\n",
+            sp_width,
+            sp_height,
+            (unsigned long long)((uint64_t)tkl_system_get_millisecond() - t_total));
+    return OPRT_OK;
+}
+
+static OPERATE_RET test_mipi_camera_capture_frame_ch(TUYA_CAMERA_MIPI_FRAME_T *frame,
+                                                    uint8_t channel_id)
 {
     OPERATE_RET ret;
 
@@ -1167,6 +1182,22 @@ OPERATE_RET test_mipi_camera_capture_frame(TUYA_CAMERA_MIPI_FRAME_T *frame)
         return OPRT_RESOURCE_NOT_READY;
     }
 
+    if (channel_id == TUYA_CAMERA_MIPI_CHANNEL_SP) {
+        if (s_mipi_camera_cfg.sp_enable == FALSE) {
+            tkl_log_output( "sp get_frame requires sp_enable\r\n");
+            return OPRT_NOT_SUPPORTED;
+        }
+
+        if (s_mipi_camera_cfg.sp_enable_flexa != FALSE || s_mipi_camera_cfg.sp_work_mode != 0U) {
+            tkl_log_output( "sp get_frame requires frame mode, flexa=%u work_mode=%u\r\n",
+                            (unsigned int)s_mipi_camera_cfg.sp_enable_flexa,
+                            (unsigned int)s_mipi_camera_cfg.sp_work_mode);
+            return OPRT_NOT_SUPPORTED;
+        }
+
+        goto do_capture;
+    }
+
     if (s_mipi_camera_cfg.enable_flexa != FALSE || s_mipi_camera_cfg.work_mode != 0U) {
         tkl_log_output( "mp get_frame requires frame mode, flexa=%u work_mode=%u\r\n",
                         (unsigned int)s_mipi_camera_cfg.enable_flexa,
@@ -1174,7 +1205,8 @@ OPERATE_RET test_mipi_camera_capture_frame(TUYA_CAMERA_MIPI_FRAME_T *frame)
         return OPRT_NOT_SUPPORTED;
     }
 
-    ret = test_mipi_camera_frame_prepare();
+do_capture:
+    ret = test_mipi_camera_frame_prepare(channel_id);
     if (ret != OPRT_OK) {
         return ret;
     }
@@ -1183,7 +1215,7 @@ OPERATE_RET test_mipi_camera_capture_frame(TUYA_CAMERA_MIPI_FRAME_T *frame)
     frame->buffer = s_mipi_camera_frame;
     frame->size = s_mipi_camera_frame_size;
     frame->timeout_ms = s_mipi_camera_cfg.read_timeout_ms;
-    frame->channel_id = TUYA_CAMERA_MIPI_CHANNEL_MP;
+    frame->channel_id = channel_id;
 
     ret = tkl_camera_mipi_get_frame(frame);
     if (ret != OPRT_OK) {
@@ -1199,14 +1231,19 @@ OPERATE_RET test_mipi_camera_capture_frame(TUYA_CAMERA_MIPI_FRAME_T *frame)
     return OPRT_OK;
 }
 
-OPERATE_RET test_mipi_camera_mipi_get_frame(void)
+OPERATE_RET test_mipi_camera_capture_frame(TUYA_CAMERA_MIPI_FRAME_T *frame)
+{
+    return test_mipi_camera_capture_frame_ch(frame, TUYA_CAMERA_MIPI_CHANNEL_MP);
+}
+
+static OPERATE_RET test_mipi_camera_mipi_get_frame_ch(uint8_t channel_id)
 {
     OPERATE_RET ret;
     TUYA_CAMERA_MIPI_FRAME_T frame;
     uint8_t head[MIPI_TEST_CAMERA_HEAD_BYTES] = {0};
     uint32_t head_len;
 
-    ret = test_mipi_camera_capture_frame(&frame);
+    ret = test_mipi_camera_capture_frame_ch(&frame, channel_id);
     if (ret != OPRT_OK) {
         return ret;
     }
@@ -1217,7 +1254,8 @@ OPERATE_RET test_mipi_camera_mipi_get_frame(void)
     }
 
     tkl_log_output(
-            "camera frame ok, %ux%u fmt=%u len=%u head=%02x %02x %02x %02x %02x %02x %02x %02x\r\n",
+            "camera %s frame ok, %ux%u fmt=%u len=%u head=%02x %02x %02x %02x %02x %02x %02x %02x\r\n",
+            (channel_id == TUYA_CAMERA_MIPI_CHANNEL_SP) ? "sp" : "mp",
             frame.width,
             frame.height,
             (unsigned int)frame.format,
@@ -1909,7 +1947,12 @@ void cli_tuya_mipi_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char 
             snprintf(pcWriteBuffer, xWriteBufferLen,
                      "xmipi camera start %s (%d)\r\n", (ret == OPRT_OK) ? "ok" : "failed", ret);
         } else if (os_strcmp(cmd, "get_frame") == 0 || os_strcmp(cmd, "frame") == 0) {
-            ret = test_mipi_camera_mipi_get_frame();
+            uint8_t gf_chn = TUYA_CAMERA_MIPI_CHANNEL_MP;
+
+            if (argc >= 4 && os_strcmp(argv[3], "sp") == 0) {
+                gf_chn = TUYA_CAMERA_MIPI_CHANNEL_SP;
+            }
+            ret = test_mipi_camera_mipi_get_frame_ch(gf_chn);
             if (ret == OPRT_OK) {
                 snprintf(pcWriteBuffer, xWriteBufferLen,
                          "xmipi camera get_frame ok (%d), %ux%u fmt=%u len=%u\r\n",
@@ -2045,6 +2088,22 @@ void cli_tuya_mipi_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char 
                      (ret == OPRT_OK) ? "ok" : "failed",
                      ret,
                      (unsigned int)s_mipi_camera_cfg.skip_frames);
+        } else if (os_strcmp(cmd, "switch_sp") == 0) {
+            if (argc < 5) {
+                snprintf(pcWriteBuffer, xWriteBufferLen,
+                         "Usage: xmipi camera switch_sp <spw> <sph>\r\n");
+                return;
+            }
+
+            sp_width = (uint16_t)os_strtoul(argv[3], NULL, 10);
+            sp_height = (uint16_t)os_strtoul(argv[4], NULL, 10);
+            ret = test_mipi_camera_mipi_switch_sp(sp_width, sp_height);
+            snprintf(pcWriteBuffer, xWriteBufferLen,
+                     "xmipi camera switch_sp %s (%d), sp=%ux%u\r\n",
+                     (ret == OPRT_OK) ? "ok" : "failed",
+                     ret,
+                     sp_width,
+                     sp_height);
         } else if (os_strcmp(cmd, "close") == 0) {
             ret = test_mipi_camera_mipi_close();
             snprintf(pcWriteBuffer, xWriteBufferLen,

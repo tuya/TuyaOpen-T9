@@ -24,14 +24,11 @@
 #define TKL_CAM_MIPI_POWER_SETTLE_MS    20U
 #define TKL_CAM_MIPI_SYS_ANA_REG_BASE   (0x44010000U)
 #define TKL_CAM_MIPI_LDO_ANA_REG        (0x69U)
-#define TKL_CAM_MIPI_SP_WARMUP_DROP_CNT 1U
-#define TKL_CAM_MIPI_MP_FRAME_WAIT_MS   200U
 
 typedef struct {
     BOOL_T initialized;
     BOOL_T started;
     BOOL_T sensor_power_on;
-    BOOL_T sp_warmup_pending;
     TUYA_CAMERA_MIPI_CFG_T cfg;
     UINT16_T active_output_width;
     UINT16_T active_output_height;
@@ -41,15 +38,7 @@ typedef struct {
     bk_isp_camera_ctlr_handle_t camera_ctlr_handle;
 } tkl_camera_mipi_ctx_t;
 
-typedef struct {
-    beken_semaphore_t sem;
-    BOOL_T sem_inited;
-    BOOL_T waiting;
-    BOOL_T frame_complete_hit;
-} tkl_camera_mipi_mp_sync_t;
-
 static tkl_camera_mipi_ctx_t s_cam_ctx;
-static tkl_camera_mipi_mp_sync_t s_mp_frame_sync;
 
 static VOID_T tkl_camera_mipi_gpio_bank_ldo_enable(VOID_T)
 {
@@ -291,6 +280,39 @@ static OPERATE_RET tkl_camera_mipi_open_sp_channel(void)
             (unsigned int)s_cam_ctx.cfg.sp_buf_cnt,
             (unsigned int)s_cam_ctx.cfg.sp_enable_flexa,
             (unsigned int)s_cam_ctx.cfg.sp_work_mode);
+    return OPRT_OK;
+}
+
+static OPERATE_RET tkl_camera_mipi_open_mp_channel(void)
+{
+    OPERATE_RET ret;
+    bk_isp_camera_channel_config_t mp_cfg;
+
+    mp_cfg = (bk_isp_camera_channel_config_t)CAM_MP_NV12_RB_INSTANCE_CONFIG(
+        s_cam_ctx.cfg.output_width,
+        s_cam_ctx.cfg.output_height
+    );
+    mp_cfg.port_id = ISP_MP_CHN_ID;
+    mp_cfg.buf_cnt = s_cam_ctx.cfg.output_buf_cnt;
+    mp_cfg.enable_flexa = s_cam_ctx.cfg.enable_flexa ? 1U : 0U;
+    mp_cfg.work_mode = s_cam_ctx.cfg.work_mode;
+    mp_cfg.format = (uint16_t)s_cam_ctx.cfg.output_format;
+    mp_cfg.width = s_cam_ctx.cfg.output_width;
+    mp_cfg.height = s_cam_ctx.cfg.output_height;
+
+    ret = bk_isp_camera_channel_open(s_cam_ctx.camera_ctlr_handle, ISP_MP_CHN_ID, &mp_cfg);
+    if (ret != OPRT_OK) {
+        tkl_log_output("bk_isp_camera_channel_open MP failed: %d\r\n", ret);
+        return ret;
+    }
+
+    tkl_log_output("camera MP open ok, output=%ux%u fmt=%u buf_cnt=%u flexa=%u work_mode=%u\r\n",
+            s_cam_ctx.cfg.output_width,
+            s_cam_ctx.cfg.output_height,
+            (unsigned int)s_cam_ctx.cfg.output_format,
+            (unsigned int)s_cam_ctx.cfg.output_buf_cnt,
+            (unsigned int)s_cam_ctx.cfg.enable_flexa,
+            (unsigned int)s_cam_ctx.cfg.work_mode);
     return OPRT_OK;
 }
 
@@ -547,18 +569,26 @@ static OPERATE_RET tkl_camera_mipi_output_validate(UINT16_T width, UINT16_T heig
 }
 
 /**
- * @brief Set ISP output resolution (main path)
- * @param[in] width ISP output width in pixels
- * @param[in] height ISP output height in pixels
- * @return OPRT_OK on success
+ * @brief Set ISP output resolution of the given channel (live switch when streaming)
+ * @param[in] channel_id TUYA_CAMERA_MIPI_CHANNEL_MP or TUYA_CAMERA_MIPI_CHANNEL_SP
+ * @param[in] width new output width in pixels
+ * @param[in] height new output height in pixels
+ * @return OPRT_OK on success; on reopen failure the channel is left closed while
+ *         the other channel keeps streaming
  */
-OPERATE_RET tkl_camera_mipi_set_output(UINT16_T width, UINT16_T height)
+OPERATE_RET tkl_camera_mipi_set_output(UINT8_T channel_id, UINT16_T width, UINT16_T height)
 {
     OPERATE_RET ret;
+    uint8_t isp_chn_id;
 
-    if (s_cam_ctx.started == TRUE) {
-        tkl_log_output("set_output rejected: camera is started, stop first\r\n");
-        return OPRT_RESOURCE_NOT_READY;
+    if (channel_id != TUYA_CAMERA_MIPI_CHANNEL_MP &&
+        channel_id != TUYA_CAMERA_MIPI_CHANNEL_SP) {
+        return OPRT_INVALID_PARM;
+    }
+
+    if (channel_id == TUYA_CAMERA_MIPI_CHANNEL_SP && s_cam_ctx.cfg.sp_enable != TRUE) {
+        tkl_log_output("set_output SP rejected: SP not enabled\r\n");
+        return OPRT_NOT_SUPPORTED;
     }
 
     ret = tkl_camera_mipi_output_validate(width, height);
@@ -566,8 +596,50 @@ OPERATE_RET tkl_camera_mipi_set_output(UINT16_T width, UINT16_T height)
         return ret;
     }
 
-    s_cam_ctx.cfg.output_width = width;
-    s_cam_ctx.cfg.output_height = height;
+    /* record target geometry */
+    if (channel_id == TUYA_CAMERA_MIPI_CHANNEL_MP) {
+        s_cam_ctx.cfg.output_width = width;
+        s_cam_ctx.cfg.output_height = height;
+    } else {
+        s_cam_ctx.cfg.sp_width = width;
+        s_cam_ctx.cfg.sp_height = height;
+    }
+
+    /* not streaming yet: defer to next start() */
+    if (s_cam_ctx.started != TRUE || s_cam_ctx.camera_ctlr_handle == NULL) {
+        return OPRT_OK;
+    }
+
+    isp_chn_id = (channel_id == TUYA_CAMERA_MIPI_CHANNEL_MP) ? ISP_MP_CHN_ID : ISP_SP_CHN_ID;
+
+    if (bk_isp_camera_channel_state_get(s_cam_ctx.camera_ctlr_handle, isp_chn_id)
+        == ISP_CHANNEL_STATE_TURN_ON) {
+        ret = bk_isp_camera_channel_close(s_cam_ctx.camera_ctlr_handle, isp_chn_id);
+        if (ret != OPRT_OK) {
+            tkl_log_output("set_output close ch%u failed: %d\r\n",
+                           (unsigned int)channel_id, ret);
+            return ret;
+        }
+    }
+
+    if (channel_id == TUYA_CAMERA_MIPI_CHANNEL_MP) {
+        ret = tkl_camera_mipi_open_mp_channel();
+    } else {
+        ret = tkl_camera_mipi_open_sp_channel();
+    }
+    if (ret != OPRT_OK) {
+        tkl_log_output("set_output reopen ch%u failed: %d (channel left closed)\r\n",
+                       (unsigned int)channel_id, ret);
+        return ret;
+    }
+
+    if (channel_id == TUYA_CAMERA_MIPI_CHANNEL_MP) {
+        s_cam_ctx.active_output_width = width;
+        s_cam_ctx.active_output_height = height;
+    }
+
+    tkl_log_output("set_output ch%u live switch ok, %ux%u\r\n",
+                   (unsigned int)channel_id, width, height);
     return OPRT_OK;
 }
 
@@ -588,7 +660,6 @@ OPERATE_RET tkl_camera_mipi_deinit(void)
 OPERATE_RET tkl_camera_mipi_start(void)
 {
     OPERATE_RET ret = OPRT_OK;
-    bk_isp_camera_channel_config_t mp_cfg;
     bk_isp_camera_ctlr_config_t isp_ctlr_cfg;
     bk_camera_sensor_format_t sensor_format;
     bk_camera_isp_ctlr_t *control = NULL;
@@ -669,21 +740,8 @@ OPERATE_RET tkl_camera_mipi_start(void)
         goto err_start;
     }
 
-    mp_cfg = (bk_isp_camera_channel_config_t)CAM_MP_NV12_RB_INSTANCE_CONFIG(
-        s_cam_ctx.cfg.output_width,
-        s_cam_ctx.cfg.output_height
-    );
-    mp_cfg.port_id = ISP_MP_CHN_ID;
-    mp_cfg.buf_cnt = s_cam_ctx.cfg.output_buf_cnt;
-    mp_cfg.enable_flexa = s_cam_ctx.cfg.enable_flexa ? 1U : 0U;
-    mp_cfg.work_mode = s_cam_ctx.cfg.work_mode;
-    mp_cfg.format = (uint16_t)s_cam_ctx.cfg.output_format;
-    mp_cfg.width = s_cam_ctx.cfg.output_width;
-    mp_cfg.height = s_cam_ctx.cfg.output_height;
-
-    ret = bk_isp_camera_channel_open(s_cam_ctx.camera_ctlr_handle, ISP_MP_CHN_ID, &mp_cfg);
+    ret = tkl_camera_mipi_open_mp_channel();
     if (ret != OPRT_OK) {
-        tkl_log_output( "bk_isp_camera_channel_open failed: %d\r\n", ret);
         goto err_start;
     }
 
@@ -695,8 +753,6 @@ OPERATE_RET tkl_camera_mipi_start(void)
     s_cam_ctx.active_output_width = s_cam_ctx.cfg.output_width;
     s_cam_ctx.active_output_height = s_cam_ctx.cfg.output_height;
     s_cam_ctx.started = TRUE;
-    s_cam_ctx.sp_warmup_pending =
-        (s_cam_ctx.cfg.sp_enable != FALSE) ? TRUE : FALSE;
     tkl_log_output("camera start ok, sensor=%ux%u@%u, isp_output=%ux%u fmt=%u hmirror=%u vflip=%u\r\n",
             s_cam_ctx.cfg.sensor_width,
             s_cam_ctx.cfg.sensor_height,
@@ -750,86 +806,6 @@ STATIC VOID_T __tkl_camera_mipi_plane_cache_sync(VOID_T *addr, UINT32_T size)
 }
 
 /**
- * @brief MP frame-complete ISR used to sync SP pop with flexa MP
- * @param[in] seqence frame sequence
- * @param[in] line line index
- * @param[in] chnl channel id
- * @param[in] ok non-zero means frame complete success (vendor callback polarity)
- * @param[in] param unused
- * @return none
- */
-STATIC VOID_T __tkl_camera_mipi_mp_frame_complete_cb(UINT32_T seqence,
-                                                     UINT32_T line,
-                                                     UINT8_T chnl,
-                                                     UINT8_T ok,
-                                                     VOID_T *param)
-{
-    (void)seqence;
-    (void)line;
-    (void)param;
-
-    if (chnl != ISP_MP_CHN_ID || ok == 0U) {
-        return;
-    }
-
-    if (s_mp_frame_sync.waiting != FALSE && s_mp_frame_sync.frame_complete_hit == FALSE) {
-        s_mp_frame_sync.frame_complete_hit = TRUE;
-        (void)rtos_set_semaphore(&s_mp_frame_sync.sem);
-    }
-}
-
-/**
- * @brief Wait one MP frame-complete when MP is running flexa
- * @return OPRT_OK on success; non-fatal timeout returns OPRT_OK with log
- */
-STATIC OPERATE_RET __tkl_camera_mipi_wait_mp_frame_complete(VOID_T)
-{
-    OPERATE_RET ret = OPRT_OK;
-
-    if (s_cam_ctx.camera_ctlr_handle == NULL) {
-        return OPRT_RESOURCE_NOT_READY;
-    }
-
-    if (s_cam_ctx.cfg.enable_flexa == FALSE || s_cam_ctx.cfg.work_mode == 0U) {
-        return OPRT_OK;
-    }
-
-    if (s_mp_frame_sync.sem_inited == FALSE) {
-        if (rtos_init_semaphore(&s_mp_frame_sync.sem, 1) != BK_OK) {
-            return OPRT_COM_ERROR;
-        }
-        s_mp_frame_sync.sem_inited = TRUE;
-    }
-
-    while (rtos_get_semaphore(&s_mp_frame_sync.sem, 0) == BK_OK) {
-    }
-
-    s_mp_frame_sync.waiting = TRUE;
-    s_mp_frame_sync.frame_complete_hit = FALSE;
-
-    ret = bk_isp_camera_register_isr_callback(s_cam_ctx.camera_ctlr_handle,
-                                              ISR_TYPE_FRAME_COMPLETE,
-                                              __tkl_camera_mipi_mp_frame_complete_cb,
-                                              &s_mp_frame_sync);
-    if (ret != OPRT_OK) {
-        s_mp_frame_sync.waiting = FALSE;
-        tkl_log_output("camera wait MP frame-complete register failed: %d\r\n", ret);
-        return ret;
-    }
-
-    if (rtos_get_semaphore(&s_mp_frame_sync.sem, TKL_CAM_MIPI_MP_FRAME_WAIT_MS) != BK_OK) {
-        tkl_log_output("camera wait MP frame-complete timeout %ums\r\n",
-                       TKL_CAM_MIPI_MP_FRAME_WAIT_MS);
-    }
-
-    (void)bk_isp_camera_deregister_isr_callback(s_cam_ctx.camera_ctlr_handle,
-                                                ISR_TYPE_FRAME_COMPLETE,
-                                                &s_mp_frame_sync);
-    s_mp_frame_sync.waiting = FALSE;
-    return OPRT_OK;
-}
-
-/**
  * @brief Resolve ISP control and channel config
  * @param[in] chn_id ISP_MP_CHN_ID or ISP_SP_CHN_ID
  * @param[out] isp_control ISP control pointer
@@ -858,37 +834,6 @@ STATIC OPERATE_RET __tkl_camera_mipi_chn_get_control(UINT8_T chn_id,
         return OPRT_RESOURCE_NOT_READY;
     }
 
-    return OPRT_OK;
-}
-
-/**
- * @brief Drop one frame for warmup
- * @param[in] chn_id ISP channel id
- * @param[in] timeout_ms pop timeout
- * @return OPRT_OK on success
- */
-STATIC OPERATE_RET __tkl_camera_mipi_chn_drop_frame(UINT8_T chn_id, UINT32_T timeout_ms)
-{
-    isp_control_t *isp_control = NULL;
-    isp_channel_config_t *chn_cfg = NULL;
-    VIDEO_BUF_S buf;
-    OPERATE_RET op_ret;
-    INT_T pop_ret;
-
-    op_ret = __tkl_camera_mipi_chn_get_control(chn_id, &isp_control, &chn_cfg);
-    if (op_ret != OPRT_OK) {
-        return op_ret;
-    }
-
-    os_memset(&buf, 0, sizeof(buf));
-    pop_ret = isp_control->pop_buf(chn_cfg->channel, &buf, timeout_ms);
-    if (pop_ret != BK_OK) {
-        tkl_log_output("camera chn%u warmup pop_buf failed: %d\r\n",
-                       (unsigned int)chn_id, pop_ret);
-        return OPRT_COM_ERROR;
-    }
-
-    (void)isp_control->free_buf(chn_cfg->channel, &buf);
     return OPRT_OK;
 }
 
@@ -1216,7 +1161,6 @@ OPERATE_RET tkl_camera_mipi_get_frame(TUYA_CAMERA_MIPI_FRAME_T *frame)
     UINT32_T out_len = 0U;
     UINT32_T y_stride = 0U;
     UINT32_T uv_stride = 0U;
-    UINT32_T i;
 
     if (frame == NULL || frame->buffer == NULL) {
         return OPRT_INVALID_PARM;
@@ -1270,28 +1214,6 @@ OPERATE_RET tkl_camera_mipi_get_frame(TUYA_CAMERA_MIPI_FRAME_T *frame)
     wait_ms = (frame->timeout_ms != 0U) ? frame->timeout_ms : s_cam_ctx.cfg.read_timeout_ms;
     if (wait_ms == 0U) {
         wait_ms = 3000U;
-    }
-
-    if (channel_id == TUYA_CAMERA_MIPI_CHANNEL_SP) {
-        op_ret = __tkl_camera_mipi_wait_mp_frame_complete();
-        if (op_ret != OPRT_OK) {
-            return op_ret;
-        }
-
-        if (s_cam_ctx.sp_warmup_pending != FALSE) {
-            for (i = 0U; i < TKL_CAM_MIPI_SP_WARMUP_DROP_CNT; i++) {
-                op_ret = __tkl_camera_mipi_chn_drop_frame(ISP_SP_CHN_ID, wait_ms);
-                if (op_ret != OPRT_OK) {
-                    return op_ret;
-                }
-            }
-            s_cam_ctx.sp_warmup_pending = FALSE;
-
-            op_ret = __tkl_camera_mipi_wait_mp_frame_complete();
-            if (op_ret != OPRT_OK) {
-                return op_ret;
-            }
-        }
     }
 
     op_ret = __tkl_camera_mipi_pop_copy_frame(isp_channel_id, format, width, height,

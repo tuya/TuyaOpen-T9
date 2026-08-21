@@ -94,7 +94,7 @@ OPERATE_RET tkl_camera_mipi_init(TUYA_CAMERA_MIPI_CFG_T *config);
 OPERATE_RET tkl_camera_mipi_deinit(void);
 OPERATE_RET tkl_camera_mipi_start(void);
 OPERATE_RET tkl_camera_mipi_stop(void);
-OPERATE_RET tkl_camera_mipi_set_output(UINT16_T width, UINT16_T height);
+OPERATE_RET tkl_camera_mipi_set_output(UINT8_T channel_id, UINT16_T width, UINT16_T height);
 /**
  * @brief Set sensor horizontal mirror and vertical flip
  * @param[in] hmirror 0=off, non-zero=on
