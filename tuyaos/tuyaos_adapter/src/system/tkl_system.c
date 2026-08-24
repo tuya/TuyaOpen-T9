@@ -19,8 +19,6 @@
 #include <components/bk_uid.h>
 #include "tkl_semaphore.h"
 #include "sdkconfig.h"
-#include "driver/hal/hal_efuse_types.h"
-#include "driver/otp_types.h"
 
 extern void bk_printf(const char *fmt, ...);
 static TKL_SEM_HANDLE get_cpu_info_sem = NULL;
@@ -276,6 +274,9 @@ INT_T tkl_system_get_random(CONST UINT_T range)
     return (bk_rand() % trange);
 }
 
+#define EFUSE_DEVICE_ID_BYTE_NUM 5
+#define OTP_DEVICE_ID 23
+
 OPERATE_RET tkl_system_get_cpu_info(TUYA_CPU_INFO_T **cpu_ary, INT_T *cpu_cnt)
 {
     if (cpu_ary == NULL) {
@@ -296,7 +297,6 @@ OPERATE_RET tkl_system_get_cpu_info(TUYA_CPU_INFO_T **cpu_ary, INT_T *cpu_cnt)
 
     bk_err_t ret = bk_otp_ahb_read(OTP_DEVICE_ID, cpu->chipid, EFUSE_DEVICE_ID_BYTE_NUM);
     if (ret != BK_OK) {
-        bk_printf("bk_otp_ahb_read failed, ret: %d\r\n", ret);
         tkl_system_free(cpu);
         return OPRT_COM_ERROR;
     }
@@ -344,24 +344,15 @@ OPERATE_RET tkl_system_get_hw_unique_id(UINT8_T *id, UINT8_T *len)
     os_memcpy(id, cpu->chipid, clen);
     tkl_system_free(cpu);
 
-    /* Contract forbids all-0x00 / all-0xFF.
-     * OTP chipid is not programmed on current boards yet, so fall back to a
-     * fixed placeholder instead of failing. Remove once OTP is written. */
+    /* Contract forbids all-0x00 / all-0xFF */
     BOOL_T all_zero = TRUE, all_ff = TRUE;
     for (UINT8_T i = 0; i < clen; i++) {
         if (id[i] != 0x00) { all_zero = FALSE; }
         if (id[i] != 0xFF) { all_ff  = FALSE; }
     }
     if (all_zero || all_ff) {
-        STATIC CONST UINT8_T s_hw_unique_id_stub[EFUSE_DEVICE_ID_BYTE_NUM] = {
-            0x54, 0x39, 0x00, 0x00, 0x01 /* "T9" + stub serial */
-        };
-        UINT8_T stub_len = (clen < EFUSE_DEVICE_ID_BYTE_NUM) ? clen : EFUSE_DEVICE_ID_BYTE_NUM;
-
-        os_memcpy(id, s_hw_unique_id_stub, stub_len);
-        *len = stub_len;
-        bk_printf("WARNING: chipid invalid (all 0x00/0xFF), use stub hw unique id\r\n");
-        return OPRT_OK;
+        *len = 0;
+        return OPRT_NOT_SUPPORTED;
     }
 
     *len = clen;
