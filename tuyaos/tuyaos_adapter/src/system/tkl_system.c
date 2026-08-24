@@ -274,9 +274,6 @@ INT_T tkl_system_get_random(CONST UINT_T range)
     return (bk_rand() % trange);
 }
 
-#define EFUSE_DEVICE_ID_BYTE_NUM 5
-#define OTP_DEVICE_ID 23
-
 OPERATE_RET tkl_system_get_cpu_info(TUYA_CPU_INFO_T **cpu_ary, INT_T *cpu_cnt)
 {
     if (cpu_ary == NULL) {
@@ -295,12 +292,19 @@ OPERATE_RET tkl_system_get_cpu_info(TUYA_CPU_INFO_T **cpu_ary, INT_T *cpu_cnt)
 
     memset(cpu, 0, sizeof(TUYA_CPU_INFO_T));
 
-    bk_err_t ret = bk_otp_ahb_read(OTP_DEVICE_ID, cpu->chipid, EFUSE_DEVICE_ID_BYTE_NUM);
-    if (ret != BK_OK) {
+    uint8_t uid[32] = {0};
+    if (bk_uid_get_data(uid) != BK_OK) {
         tkl_system_free(cpu);
         return OPRT_COM_ERROR;
     }
-    cpu->chipidlen = EFUSE_DEVICE_ID_BYTE_NUM;
+
+    UINT_T copy_len = (UINT_T)sizeof(cpu->chipid);
+    if (copy_len > (UINT_T)sizeof(uid)) {
+        copy_len = (UINT_T)sizeof(uid);
+    }
+
+    memcpy(cpu->chipid, uid, copy_len);
+    cpu->chipidlen = copy_len;
 
     if (cpu_cnt) {
         *cpu_cnt = 1;
@@ -308,10 +312,10 @@ OPERATE_RET tkl_system_get_cpu_info(TUYA_CPU_INFO_T **cpu_ary, INT_T *cpu_cnt)
 
     *cpu_ary = cpu;
 
-    bk_printf_raw(BK_LOG_INFO, NULL,
-                  "get cpu info, %p, 0x%02x%02x%02x%02x%02x\r\n",
-                  cpu, cpu->chipid[0], cpu->chipid[1], cpu->chipid[2], cpu->chipid[3],
-                  cpu->chipid[4]);
+    // bk_printf_raw(BK_LOG_INFO, NULL,
+    //               "get cpu info, %p, 0x%02x%02x%02x%02x%02x\r\n",
+    //               cpu, cpu->chipid[0], cpu->chipid[1], cpu->chipid[2], cpu->chipid[3],
+    //               cpu->chipid[4]);
 
     return OPRT_OK;
 }
