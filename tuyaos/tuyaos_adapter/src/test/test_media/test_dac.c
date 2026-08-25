@@ -16,7 +16,8 @@
 #define DAC_TEST_DEFAULT_SAMPLE_BITS     TUYA_AUDIO_SAMPLE_BITS_16
 #define DAC_TEST_DEFAULT_CHAN_NUM        1U
 #define DAC_TEST_DEFAULT_FRAME_TIME_MS   20U
-#define DAC_TEST_DEFAULT_VOLUME          70U
+#define DAC_TEST_DEFAULT_DIG_DB          (-7)    /* OEM DEFAULT dig_gain */
+#define DAC_TEST_DEFAULT_ANA_DB          (4)     /* OEM DEFAULT ana_gain */
 #define DAC_TEST_DEFAULT_PLAY_MS         2000U
 #define DAC_TEST_DEFAULT_FREQ            1000U
 #define DAC_TEST_BUSY_SLEEP_MS           2U
@@ -25,6 +26,7 @@
 #define DAC_TEST_INIT_RETRY_SLEEP_MS     20U
 #define DAC_TEST_DEINIT_RETRY_CNT        8U
 #define DAC_TEST_SQUARE_AMP              12000
+#define DAC_TEST_GAIN_NUM                2U
 
 typedef struct {
     bool initialized;
@@ -34,7 +36,8 @@ typedef struct {
     uint8_t sample_bits;
     uint8_t chan_num;
     uint32_t frame_time_ms;
-    uint8_t volume;
+    INT32_T dig_db;
+    INT32_T ana_db;
     uint32_t frame_size;
     uint32_t tx_complete_cnt;
     uint32_t wave_sample_pos;
@@ -48,7 +51,8 @@ static test_dac_ctx_t s_dac_ctx = {
     .sample_bits = DAC_TEST_DEFAULT_SAMPLE_BITS,
     .chan_num = DAC_TEST_DEFAULT_CHAN_NUM,
     .frame_time_ms = DAC_TEST_DEFAULT_FRAME_TIME_MS,
-    .volume = DAC_TEST_DEFAULT_VOLUME,
+    .dig_db = DAC_TEST_DEFAULT_DIG_DB,
+    .ana_db = DAC_TEST_DEFAULT_ANA_DB,
     .frame_size = 0U,
     .tx_complete_cnt = 0U,
     .wave_sample_pos = 0U,
@@ -72,7 +76,8 @@ static void test_dac_runtime_reset(void)
     s_dac_ctx.sample_bits = DAC_TEST_DEFAULT_SAMPLE_BITS;
     s_dac_ctx.chan_num = DAC_TEST_DEFAULT_CHAN_NUM;
     s_dac_ctx.frame_time_ms = DAC_TEST_DEFAULT_FRAME_TIME_MS;
-    s_dac_ctx.volume = DAC_TEST_DEFAULT_VOLUME;
+    s_dac_ctx.dig_db = DAC_TEST_DEFAULT_DIG_DB;
+    s_dac_ctx.ana_db = DAC_TEST_DEFAULT_ANA_DB;
     s_dac_ctx.frame_size = 0U;
     s_dac_ctx.tx_complete_cnt = 0U;
     s_dac_ctx.wave_sample_pos = 0U;
@@ -87,23 +92,55 @@ static void test_dac_frame_cb(TUYA_AUDIO_DAC_FRAME_EVT_E event, void *args)
     }
 }
 
-static OPERATE_RET test_dac_set_volume(uint8_t volume)
+/**
+ * @brief Parse a signed decimal integer from CLI argv
+ * @param[in] s input string, may start with '-'
+ * @return parsed INT32_T value
+ */
+static INT32_T test_dac_parse_int(CONST CHAR_T *s)
+{
+    BOOL_T neg = FALSE;
+    UINT32_T v;
+
+    if ((s == NULL) || (s[0] == '\0')) {
+        return 0;
+    }
+    if (s[0] == '-') {
+        neg = TRUE;
+        s++;
+    }
+    v = os_strtoul(s, NULL, 10);
+    return neg ? -(INT32_T)v : (INT32_T)v;
+}
+
+/**
+ * @brief Apply dig/ana gain via tkl_aud_dac_set_gain
+ * @param[in] dig_db digital gain in dB
+ * @param[in] ana_db analog gain in dB
+ * @return OPRT_OK on success
+ */
+static OPERATE_RET test_dac_set_gain(INT32_T dig_db, INT32_T ana_db)
 {
     OPERATE_RET ret;
+    INT32_T gain[2];
 
     if (s_dac_ctx.initialized != true) {
         return OPRT_COM_ERROR;
     }
 
-    ret = tkl_aud_dac_set_volume(s_dac_ctx.port, volume);
+    gain[0] = dig_db;
+    gain[1] = ana_db;
+    ret = tkl_aud_dac_set_gain(s_dac_ctx.port, gain, DAC_TEST_GAIN_NUM);
     if (ret == OPRT_OK) {
-        s_dac_ctx.volume = (volume > 100U) ? 100U : volume;
+        s_dac_ctx.dig_db = dig_db;
+        s_dac_ctx.ana_db = ana_db;
     }
 
     return ret;
 }
 
-static OPERATE_RET test_dac_init(uint32_t sample_rate, uint32_t frame_time_ms, uint8_t volume, uint8_t chan_num)
+static OPERATE_RET test_dac_init(uint32_t sample_rate, uint32_t frame_time_ms,
+                                 INT32_T dig_db, INT32_T ana_db, uint8_t chan_num)
 {
     OPERATE_RET ret;
     TKL_AUD_DAC_CFG_T cfg;
@@ -131,7 +168,9 @@ static OPERATE_RET test_dac_init(uint32_t sample_rate, uint32_t frame_time_ms, u
     }
 
     os_memset(&cfg, 0, sizeof(cfg));
-    cfg.volume = volume;
+    cfg.gain[0] = dig_db;
+    cfg.gain[1] = ana_db;
+    cfg.gain_num = DAC_TEST_GAIN_NUM;
     cfg.chan_num = chan_num;
     cfg.sample_bits = DAC_TEST_DEFAULT_SAMPLE_BITS;
     cfg.sample_rate = sample_rate;
@@ -171,7 +210,8 @@ static OPERATE_RET test_dac_init(uint32_t sample_rate, uint32_t frame_time_ms, u
     s_dac_ctx.sample_bits = DAC_TEST_DEFAULT_SAMPLE_BITS;
     s_dac_ctx.chan_num = chan_num;
     s_dac_ctx.frame_time_ms = frame_time_ms;
-    s_dac_ctx.volume = (volume > 100U) ? 100U : volume;
+    s_dac_ctx.dig_db = dig_db;
+    s_dac_ctx.ana_db = ana_db;
     s_dac_ctx.tx_complete_cnt = 0U;
     s_dac_ctx.wave_sample_pos = 0U;
     s_dac_ctx.frame_size = tkl_aud_dac_get_frame_size(s_dac_ctx.port);
@@ -191,7 +231,7 @@ static OPERATE_RET test_dac_start(void)
     OPERATE_RET ret;
 
     if (s_dac_ctx.initialized != true) {
-        tkl_log_output("dac test is not initialized, use: xdac init [rate] [frame_ms] [volume]\r\n");
+        tkl_log_output("dac test is not initialized, use: xdac init [rate] [frame_ms] [dig_db] [ana_db] [chan]\r\n");
         return OPRT_RESOURCE_NOT_READY;
     }
 
@@ -319,7 +359,8 @@ static OPERATE_RET test_dac_play_square(uint32_t play_ms, uint32_t freq_hz)
     if (s_dac_ctx.initialized != true) {
         ret = test_dac_init(DAC_TEST_DEFAULT_SAMPLE_RATE,
                             DAC_TEST_DEFAULT_FRAME_TIME_MS,
-                            DAC_TEST_DEFAULT_VOLUME,
+                            DAC_TEST_DEFAULT_DIG_DB,
+                            DAC_TEST_DEFAULT_ANA_DB,
                             DAC_TEST_DEFAULT_CHAN_NUM);
         if (ret != OPRT_OK) {
             return ret;
@@ -489,7 +530,7 @@ static OPERATE_RET test_dac_play_stereo(uint32_t play_ms, uint32_t freq_hz)
             (void)test_dac_stop();
         }
         ret = test_dac_init(DAC_TEST_DEFAULT_SAMPLE_RATE, DAC_TEST_DEFAULT_FRAME_TIME_MS,
-                            DAC_TEST_DEFAULT_VOLUME, 2U);
+                            DAC_TEST_DEFAULT_DIG_DB, DAC_TEST_DEFAULT_ANA_DB, 2U);
         if (ret != OPRT_OK) {
             return ret;
         }
@@ -524,16 +565,20 @@ void cli_tuya_dac_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char *
     uint32_t frame_time_ms = DAC_TEST_DEFAULT_FRAME_TIME_MS;
     uint32_t play_ms = DAC_TEST_DEFAULT_PLAY_MS;
     uint32_t freq_hz = DAC_TEST_DEFAULT_FREQ;
-    uint32_t volume = DAC_TEST_DEFAULT_VOLUME;
+    INT32_T dig_db = DAC_TEST_DEFAULT_DIG_DB;
+    INT32_T ana_db = DAC_TEST_DEFAULT_ANA_DB;
     uint32_t chan_num = DAC_TEST_DEFAULT_CHAN_NUM;
+    CONST CHAR_T *usage =
+        "Usage: xdac <init [rate] [frame_ms] [dig_db] [ana_db] [chan 1|2]|"
+        "start|play [ms] [freq]|stereo [ms] [freq]|gain <dig_db> [ana_db]|"
+        "stop|deinit|close|status>";
 
     if (pcWriteBuffer == NULL || xWriteBufferLen <= 0) {
         return;
     }
 
     if (argc < 2) {
-        snprintf(pcWriteBuffer, xWriteBufferLen,
-                 "Usage: xdac <init [rate] [frame_ms] [volume] [chan 1|2]|start|play [ms] [freq]|stereo [ms] [freq]|vol [0-100]|stop|deinit|close|status>");
+        snprintf(pcWriteBuffer, xWriteBufferLen, "%s", usage);
         return;
     }
 
@@ -547,23 +592,24 @@ void cli_tuya_dac_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char *
             frame_time_ms = os_strtoul(argv[3], NULL, 10);
         }
         if (argc >= 5) {
-            volume = os_strtoul(argv[4], NULL, 10);
-        }
-        if (volume > 100U) {
-            volume = 100U;
+            dig_db = test_dac_parse_int(argv[4]);
         }
         if (argc >= 6) {
-            chan_num = os_strtoul(argv[5], NULL, 10);
+            ana_db = test_dac_parse_int(argv[5]);
+        }
+        if (argc >= 7) {
+            chan_num = os_strtoul(argv[6], NULL, 10);
         }
 
-        ret = test_dac_init(sample_rate, frame_time_ms, (uint8_t)volume, (uint8_t)chan_num);
+        ret = test_dac_init(sample_rate, frame_time_ms, dig_db, ana_db, (uint8_t)chan_num);
         snprintf(pcWriteBuffer, xWriteBufferLen,
-                 "xdac init %s (%d), rate=%u frame_ms=%u volume=%u chan=%u frame_size=%u\r\n",
+                 "xdac init %s (%d), rate=%u frame_ms=%u dig=%d ana=%d chan=%u frame_size=%u\r\n",
                  (ret == OPRT_OK) ? "ok" : "failed",
                  ret,
                  (unsigned int)sample_rate,
                  (unsigned int)frame_time_ms,
-                 (unsigned int)volume,
+                 (int)dig_db,
+                 (int)ana_db,
                  (unsigned int)s_dac_ctx.chan_num,
                  (unsigned int)s_dac_ctx.frame_size);
     } else if (os_strcmp(cmd, "start") == 0) {
@@ -606,20 +652,26 @@ void cli_tuya_dac_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char *
                  (unsigned int)freq_hz,
                  (unsigned int)s_dac_ctx.chan_num,
                  (unsigned int)s_dac_ctx.tx_complete_cnt);
-    } else if (os_strcmp(cmd, "vol") == 0 || os_strcmp(cmd, "volume") == 0) {
-        if (argc >= 3) {
-            volume = os_strtoul(argv[2], NULL, 10);
+    } else if (os_strcmp(cmd, "gain") == 0) {
+        if (argc < 3) {
+            snprintf(pcWriteBuffer, xWriteBufferLen,
+                     "Usage: xdac gain <dig_db> [ana_db]\r\n");
+            return;
         }
-        if (volume > 100U) {
-            volume = 100U;
+        dig_db = test_dac_parse_int(argv[2]);
+        if (argc >= 4) {
+            ana_db = test_dac_parse_int(argv[3]);
+        } else {
+            ana_db = s_dac_ctx.ana_db;
         }
 
-        ret = test_dac_set_volume((uint8_t)volume);
+        ret = test_dac_set_gain(dig_db, ana_db);
         snprintf(pcWriteBuffer, xWriteBufferLen,
-                 "xdac vol %s (%d), volume=%u\r\n",
+                 "xdac gain %s (%d), dig=%d ana=%d\r\n",
                  (ret == OPRT_OK) ? "ok" : "failed",
                  ret,
-                 (unsigned int)volume);
+                 (int)dig_db,
+                 (int)ana_db);
     } else if (os_strcmp(cmd, "stop") == 0) {
         ret = test_dac_stop();
         snprintf(pcWriteBuffer, xWriteBufferLen,
@@ -635,7 +687,7 @@ void cli_tuya_dac_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char *
                  ret);
     } else if (os_strcmp(cmd, "status") == 0) {
         snprintf(pcWriteBuffer, xWriteBufferLen,
-                 "xdac status init=%u start=%u port=%u rate=%u bits=%u chan=%u frame_ms=%u frame_size=%u volume=%u tx_cb=%u\r\n",
+                 "xdac status init=%u start=%u port=%u rate=%u bits=%u chan=%u frame_ms=%u frame_size=%u dig=%d ana=%d tx_cb=%u\r\n",
                  (unsigned int)s_dac_ctx.initialized,
                  (unsigned int)s_dac_ctx.started,
                  (unsigned int)s_dac_ctx.port,
@@ -644,10 +696,10 @@ void cli_tuya_dac_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char *
                  (unsigned int)s_dac_ctx.chan_num,
                  (unsigned int)s_dac_ctx.frame_time_ms,
                  (unsigned int)s_dac_ctx.frame_size,
-                 (unsigned int)s_dac_ctx.volume,
+                 (int)s_dac_ctx.dig_db,
+                 (int)s_dac_ctx.ana_db,
                  (unsigned int)s_dac_ctx.tx_complete_cnt);
     } else {
-        snprintf(pcWriteBuffer, xWriteBufferLen,
-                 "Usage: xdac <init [rate] [frame_ms] [volume] [chan 1|2]|start|play [ms] [freq]|stereo [ms] [freq]|vol [0-100]|stop|deinit|close|status>");
+        snprintf(pcWriteBuffer, xWriteBufferLen, "%s", usage);
     }
 }

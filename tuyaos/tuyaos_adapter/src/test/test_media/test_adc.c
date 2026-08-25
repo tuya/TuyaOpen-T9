@@ -19,7 +19,8 @@
 #define ADC_TEST_DEFAULT_GAIN          0x2DU
 #define ADC_TEST_DEFAULT_REC_MS        2000U
 #define ADC_TEST_DEFAULT_DAC_PORT      TUYA_AUDIO_DAC_PORT_0
-#define ADC_TEST_DEFAULT_DAC_VOLUME    70U
+#define ADC_TEST_DEFAULT_DAC_DIG_DB    (-7)
+#define ADC_TEST_DEFAULT_DAC_ANA_DB    (4)
 #define ADC_TEST_DUMP_MAX_SAMPLES      32U
 #define ADC_TEST_DUMP_DEFAULT_SAMPLES  12U
 
@@ -42,7 +43,8 @@ typedef struct {
     bool dac_inited;
     bool dac_started;
     TUYA_AUDIO_DAC_PORT_E dac_port;
-    uint8_t dac_volume;
+    INT32_T dac_dig_db;
+    INT32_T dac_ana_db;
     uint8_t *loop_mix_buf;
     uint32_t loop_mix_buf_size;
     volatile uint32_t loop_push_bytes;
@@ -74,7 +76,8 @@ static test_adc_ctx_t s_adc_ctx = {
     .dac_inited = false,
     .dac_started = false,
     .dac_port = ADC_TEST_DEFAULT_DAC_PORT,
-    .dac_volume = ADC_TEST_DEFAULT_DAC_VOLUME,
+    .dac_dig_db = ADC_TEST_DEFAULT_DAC_DIG_DB,
+    .dac_ana_db = ADC_TEST_DEFAULT_DAC_ANA_DB,
     .loop_mix_buf = NULL,
     .loop_mix_buf_size = 0U,
     .loop_push_bytes = 0U,
@@ -131,7 +134,8 @@ static void test_adc_runtime_reset(void)
     s_adc_ctx.dac_inited = false;
     s_adc_ctx.dac_started = false;
     s_adc_ctx.dac_port = ADC_TEST_DEFAULT_DAC_PORT;
-    s_adc_ctx.dac_volume = ADC_TEST_DEFAULT_DAC_VOLUME;
+    s_adc_ctx.dac_dig_db = ADC_TEST_DEFAULT_DAC_DIG_DB;
+    s_adc_ctx.dac_ana_db = ADC_TEST_DEFAULT_DAC_ANA_DB;
     s_adc_ctx.loop_mix_buf = NULL;
     s_adc_ctx.loop_mix_buf_size = 0U;
     s_adc_ctx.loop_push_bytes = 0U;
@@ -291,7 +295,7 @@ static void test_adc_dac_deinit(void)
 }
 
 static OPERATE_RET test_adc_dac_init_start(uint32_t dac_port, uint32_t sample_rate,
-                                           uint32_t frame_time_ms, uint32_t volume,
+                                           uint32_t frame_time_ms, INT32_T dig_db, INT32_T ana_db,
                                            uint32_t mono_frame_size)
 {
     OPERATE_RET ret;
@@ -316,7 +320,9 @@ static OPERATE_RET test_adc_dac_init_start(uint32_t dac_port, uint32_t sample_ra
     }
 
     (void)os_memset(&cfg, 0, sizeof(cfg));
-    cfg.volume = (uint8_t)((volume > 100U) ? 100U : volume);
+    cfg.gain[0] = dig_db;
+    cfg.gain[1] = ana_db;
+    cfg.gain_num = 2U;
     cfg.chan_num = 1U;
     cfg.sample_bits = TUYA_AUDIO_SAMPLE_BITS_16;
     cfg.sample_rate = sample_rate;
@@ -332,7 +338,8 @@ static OPERATE_RET test_adc_dac_init_start(uint32_t dac_port, uint32_t sample_ra
     }
     s_adc_ctx.dac_inited = true;
     s_adc_ctx.dac_port = (TUYA_AUDIO_DAC_PORT_E)dac_port;
-    s_adc_ctx.dac_volume = cfg.volume;
+    s_adc_ctx.dac_dig_db = dig_db;
+    s_adc_ctx.dac_ana_db = ana_db;
 
     ret = tkl_aud_dac_start(s_adc_ctx.dac_port);
     if (ret != OPRT_OK) {
@@ -345,7 +352,7 @@ static OPERATE_RET test_adc_dac_init_start(uint32_t dac_port, uint32_t sample_ra
 
 static OPERATE_RET test_adc_loop_start(uint32_t adc_port, uint32_t chan, uint32_t dac_port,
                                        uint32_t sample_rate, uint32_t frame_time_ms,
-                                       uint32_t dac_volume, uint32_t adc_gain)
+                                       INT32_T dig_db, INT32_T ana_db, uint32_t adc_gain)
 {
     OPERATE_RET ret;
     uint32_t mono_frame_size;
@@ -364,7 +371,7 @@ static OPERATE_RET test_adc_loop_start(uint32_t adc_port, uint32_t chan, uint32_
     if (s_adc_ctx.chan == TUYA_AUDIO_ADC_CHANNEL_LR) {
         mono_frame_size = mono_frame_size / 2U;
     }
-    ret = test_adc_dac_init_start(dac_port, sample_rate, frame_time_ms, dac_volume, mono_frame_size);
+    ret = test_adc_dac_init_start(dac_port, sample_rate, frame_time_ms, dig_db, ana_db, mono_frame_size);
     if (ret != OPRT_OK) {
         (void)test_adc_deinit();
         return ret;
@@ -569,6 +576,27 @@ static void test_adc_dump_last_pcm(char *pcWriteBuffer, int xWriteBufferLen, uin
     (void)snprintf(pcWriteBuffer + used, xWriteBufferLen - used, "]\r\n");
 }
 
+/**
+ * @brief Parse signed decimal from CLI argv
+ * @param[in] s input string
+ * @return INT32_T value
+ */
+static INT32_T test_parse_s32(const char *s)
+{
+    int neg = 0;
+    UINT32_T v;
+
+    if ((s == NULL) || (s[0] == '\0')) {
+        return 0;
+    }
+    if (s[0] == '-') {
+        neg = 1;
+        s++;
+    }
+    v = os_strtoul(s, NULL, 10);
+    return neg ? -(INT32_T)v : (INT32_T)v;
+}
+
 void cli_adc_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv)
 {
     OPERATE_RET ret = OPRT_OK;
@@ -580,7 +608,8 @@ void cli_adc_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv
     uint32_t gain = ADC_TEST_DEFAULT_GAIN;
     uint32_t rec_ms = ADC_TEST_DEFAULT_REC_MS;
     uint32_t dac_port = ADC_TEST_DEFAULT_DAC_PORT;
-    uint32_t dac_volume = ADC_TEST_DEFAULT_DAC_VOLUME;
+    INT32_T dig_db = ADC_TEST_DEFAULT_DAC_DIG_DB;
+    INT32_T ana_db = ADC_TEST_DEFAULT_DAC_ANA_DB;
     uint32_t dump_cnt = ADC_TEST_DUMP_DEFAULT_SAMPLES;
 
     if (pcWriteBuffer == NULL || xWriteBufferLen <= 0) {
@@ -589,7 +618,7 @@ void cli_adc_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv
 
     if (argc < 2) {
         snprintf(pcWriteBuffer, xWriteBufferLen,
-                 "Usage: xadc <init [port] [chan] [rate] [frame_ms] [gain]|start|rec [ms]|vol [gain]|loop_start [adc_port] [chan] [dac_port] [rate] [frame_ms] [dac_vol] [adc_gain]|loop_stop|stop|deinit|close|status|stat|dump [n]>");
+                 "Usage: xadc <init [port] [chan] [rate] [frame_ms] [gain]|start|rec [ms]|vol [gain]|loop_start [adc_port] [chan] [dac_port] [rate] [frame_ms] [dig_db] [ana_db] [adc_gain]|loop_stop|stop|deinit|close|status|stat|dump [n]>");
         return;
     }
 
@@ -671,15 +700,18 @@ void cli_adc_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv
             frame_time_ms = os_strtoul(argv[6], NULL, 10);
         }
         if (argc >= 8) {
-            dac_volume = os_strtoul(argv[7], NULL, 10);
+            dig_db = test_parse_s32(argv[7]);
         }
         if (argc >= 9) {
-            gain = os_strtoul(argv[8], NULL, 10);
+            ana_db = test_parse_s32(argv[8]);
+        }
+        if (argc >= 10) {
+            gain = os_strtoul(argv[9], NULL, 10);
         }
 
-        ret = test_adc_loop_start(port, chan, dac_port, sample_rate, frame_time_ms, dac_volume, gain);
+        ret = test_adc_loop_start(port, chan, dac_port, sample_rate, frame_time_ms, dig_db, ana_db, gain);
         snprintf(pcWriteBuffer, xWriteBufferLen,
-                 "xadc loop_start %s (%d), adc_port=%u chan=%u dac_port=%u rate=%u frame_ms=%u dac_vol=%u adc_gain=%u\r\n",
+                 "xadc loop_start %s (%d), adc_port=%u chan=%u dac_port=%u rate=%u frame_ms=%u dig=%d ana=%d adc_gain=%u\r\n",
                  (ret == OPRT_OK) ? "ok" : "failed",
                  ret,
                  (unsigned int)port,
@@ -687,7 +719,8 @@ void cli_adc_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv
                  (unsigned int)dac_port,
                  (unsigned int)sample_rate,
                  (unsigned int)frame_time_ms,
-                 (unsigned int)dac_volume,
+                 (int)dig_db,
+                 (int)ana_db,
                  (unsigned int)gain);
     } else if (os_strcmp(cmd, "loop_stop") == 0) {
         ret = test_adc_loop_stop();
@@ -710,7 +743,7 @@ void cli_adc_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv
                  ret);
     } else if (os_strcmp(cmd, "status") == 0) {
         snprintf(pcWriteBuffer, xWriteBufferLen,
-                 "xadc status init=%u start=%u port=%u chan=%u rate=%u bits=%u frame_ms=%u gain=%u frame_size=%u frame_cnt=%u total_bytes=%u last_frame=%u loop_on=%u dac_inited=%u dac_started=%u dac_port=%u dac_vol=%u loop_push=%u loop_drop=%u loop_busy=%u loop_err=%u\r\n",
+                 "xadc status init=%u start=%u port=%u chan=%u rate=%u bits=%u frame_ms=%u gain=%u frame_size=%u frame_cnt=%u total_bytes=%u last_frame=%u loop_on=%u dac_inited=%u dac_started=%u dac_port=%u dig=%d ana=%d loop_push=%u loop_drop=%u loop_busy=%u loop_err=%u\r\n",
                  (unsigned int)s_adc_ctx.initialized,
                  (unsigned int)s_adc_ctx.started,
                  (unsigned int)s_adc_ctx.port,
@@ -727,7 +760,8 @@ void cli_adc_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv
                  (unsigned int)s_adc_ctx.dac_inited,
                  (unsigned int)s_adc_ctx.dac_started,
                  (unsigned int)s_adc_ctx.dac_port,
-                 (unsigned int)s_adc_ctx.dac_volume,
+                 (int)s_adc_ctx.dac_dig_db,
+                 (int)s_adc_ctx.dac_ana_db,
                  (unsigned int)s_adc_ctx.loop_push_bytes,
                  (unsigned int)s_adc_ctx.loop_drop_bytes,
                  (unsigned int)s_adc_ctx.loop_busy_cnt,
@@ -754,6 +788,6 @@ void cli_adc_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv
         test_adc_dump_last_pcm(pcWriteBuffer, xWriteBufferLen, dump_cnt);
     } else {
         snprintf(pcWriteBuffer, xWriteBufferLen,
-                 "Usage: xadc <init [port] [chan] [rate] [frame_ms] [gain]|start|rec [ms]|vol [gain]|loop_start [adc_port] [chan] [dac_port] [rate] [frame_ms] [dac_vol] [adc_gain]|loop_stop|stop|deinit|close|status|stat|dump [n]>");
+                 "Usage: xadc <init [port] [chan] [rate] [frame_ms] [gain]|start|rec [ms]|vol [gain]|loop_start [adc_port] [chan] [dac_port] [rate] [frame_ms] [dig_db] [ana_db] [adc_gain]|loop_stop|stop|deinit|close|status|stat|dump [n]>");
     }
 }

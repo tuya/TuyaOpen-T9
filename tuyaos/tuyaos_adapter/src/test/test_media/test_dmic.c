@@ -19,7 +19,8 @@
 #define DMIC_TEST_DEFAULT_REC_MS        2000U
 #define DMIC_TEST_NO_GPIO               ((uint32_t)0xFFFFFFFF)
 #define DMIC_TEST_DEFAULT_DAC_PORT      TUYA_AUDIO_DAC_PORT_0
-#define DMIC_TEST_DEFAULT_DAC_VOLUME    70U
+#define DMIC_TEST_DEFAULT_DAC_DIG_DB    (-7)
+#define DMIC_TEST_DEFAULT_DAC_ANA_DB    (4)
 
 typedef struct {
     bool initialized;
@@ -42,7 +43,8 @@ typedef struct {
     bool dac_inited;
     bool dac_started;
     TUYA_AUDIO_DAC_PORT_E dac_port;
-    uint8_t dac_volume;
+    INT32_T dac_dig_db;
+    INT32_T dac_ana_db;
     uint8_t *loop_mix_buf;
     uint32_t loop_mix_buf_size;
     volatile uint32_t loop_push_bytes;
@@ -72,7 +74,8 @@ static test_dmic_ctx_t s_dmic_ctx = {
     .dac_inited = false,
     .dac_started = false,
     .dac_port = DMIC_TEST_DEFAULT_DAC_PORT,
-    .dac_volume = DMIC_TEST_DEFAULT_DAC_VOLUME,
+    .dac_dig_db = DMIC_TEST_DEFAULT_DAC_DIG_DB,
+    .dac_ana_db = DMIC_TEST_DEFAULT_DAC_ANA_DB,
     .loop_mix_buf = NULL,
     .loop_mix_buf_size = 0U,
     .loop_push_bytes = 0U,
@@ -117,7 +120,8 @@ static void test_dmic_runtime_reset(void)
     s_dmic_ctx.dac_inited = false;
     s_dmic_ctx.dac_started = false;
     s_dmic_ctx.dac_port = DMIC_TEST_DEFAULT_DAC_PORT;
-    s_dmic_ctx.dac_volume = DMIC_TEST_DEFAULT_DAC_VOLUME;
+    s_dmic_ctx.dac_dig_db = DMIC_TEST_DEFAULT_DAC_DIG_DB;
+    s_dmic_ctx.dac_ana_db = DMIC_TEST_DEFAULT_DAC_ANA_DB;
     s_dmic_ctx.loop_mix_buf = NULL;
     s_dmic_ctx.loop_mix_buf_size = 0U;
     s_dmic_ctx.loop_push_bytes = 0U;
@@ -227,7 +231,7 @@ static void test_dmic_dac_deinit(void)
 }
 
 static OPERATE_RET test_dmic_dac_init_start(uint32_t dac_port, uint32_t sample_rate,
-                                            uint32_t frame_time_ms, uint32_t volume,
+                                            uint32_t frame_time_ms, INT32_T dig_db, INT32_T ana_db,
                                             uint32_t mono_frame_size)
 {
     OPERATE_RET ret;
@@ -250,7 +254,9 @@ static OPERATE_RET test_dmic_dac_init_start(uint32_t dac_port, uint32_t sample_r
     s_dmic_ctx.loop_mix_buf_size = mono_frame_size;
 
     (void)os_memset(&cfg, 0, sizeof(cfg));
-    cfg.volume = (uint8_t)((volume > 100U) ? 100U : volume);
+    cfg.gain[0] = dig_db;
+    cfg.gain[1] = ana_db;
+    cfg.gain_num = 2U;
     cfg.chan_num = 1U;
     cfg.sample_bits = TUYA_AUDIO_SAMPLE_BITS_16;
     cfg.sample_rate = sample_rate;
@@ -266,7 +272,8 @@ static OPERATE_RET test_dmic_dac_init_start(uint32_t dac_port, uint32_t sample_r
     }
     s_dmic_ctx.dac_inited = true;
     s_dmic_ctx.dac_port = (TUYA_AUDIO_DAC_PORT_E)dac_port;
-    s_dmic_ctx.dac_volume = cfg.volume;
+    s_dmic_ctx.dac_dig_db = dig_db;
+    s_dmic_ctx.dac_ana_db = ana_db;
 
     ret = tkl_aud_dac_start(s_dmic_ctx.dac_port);
     if (ret != OPRT_OK) {
@@ -279,7 +286,7 @@ static OPERATE_RET test_dmic_dac_init_start(uint32_t dac_port, uint32_t sample_r
 }
 
 static OPERATE_RET test_dmic_loop_start(uint32_t dmic_port, uint32_t dac_port, uint32_t sample_rate,
-                                        uint32_t frame_time_ms, uint32_t volume,
+                                        uint32_t frame_time_ms, INT32_T dig_db, INT32_T ana_db,
                                         uint32_t clk_gpio, uint32_t data_gpio, bool use_pinmux)
 {
     OPERATE_RET ret;
@@ -297,7 +304,7 @@ static OPERATE_RET test_dmic_loop_start(uint32_t dmic_port, uint32_t dac_port, u
     }
 
     mono_frame_size = s_dmic_ctx.frame_size / 2U;
-    ret = test_dmic_dac_init_start(dac_port, sample_rate, frame_time_ms, volume, mono_frame_size);
+    ret = test_dmic_dac_init_start(dac_port, sample_rate, frame_time_ms, dig_db, ana_db, mono_frame_size);
     if (ret != OPRT_OK) {
         (void)test_dmic_stop();
         (void)test_dmic_deinit();
@@ -438,6 +445,28 @@ static OPERATE_RET test_dmic_record(uint32_t rec_ms)
     return OPRT_OK;
 }
 
+
+/**
+ * @brief Parse signed decimal from CLI argv
+ * @param[in] s input string
+ * @return INT32_T value
+ */
+static INT32_T test_parse_s32(const char *s)
+{
+    int neg = 0;
+    UINT32_T v;
+
+    if ((s == NULL) || (s[0] == '\0')) {
+        return 0;
+    }
+    if (s[0] == '-') {
+        neg = 1;
+        s++;
+    }
+    v = os_strtoul(s, NULL, 10);
+    return neg ? -(INT32_T)v : (INT32_T)v;
+}
+
 void cli_tuya_dmic_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv)
 {
     OPERATE_RET ret = OPRT_OK;
@@ -448,7 +477,8 @@ void cli_tuya_dmic_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char 
     uint32_t rec_ms = DMIC_TEST_DEFAULT_REC_MS;
     uint32_t gain = 0U;
     uint32_t dac_port = DMIC_TEST_DEFAULT_DAC_PORT;
-    uint32_t volume = DMIC_TEST_DEFAULT_DAC_VOLUME;
+    INT32_T dig_db = DMIC_TEST_DEFAULT_DAC_DIG_DB;
+    INT32_T ana_db = DMIC_TEST_DEFAULT_DAC_ANA_DB;
     uint32_t clk_gpio = DMIC_TEST_NO_GPIO;
     uint32_t data_gpio = DMIC_TEST_NO_GPIO;
     bool use_pinmux = false;
@@ -459,7 +489,7 @@ void cli_tuya_dmic_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char 
 
     if (argc < 2) {
         snprintf(pcWriteBuffer, xWriteBufferLen,
-                 "Usage: xdmic <init [port] [rate] [frame_ms] [clk_gpio data_gpio]|start|rec [ms]|vol [gain]|loop_start [dmic_port] [dac_port] [rate] [frame_ms] [volume] [clk_gpio data_gpio]|loop_stop|stop|deinit|close|status>");
+                 "Usage: xdmic <init [port] [rate] [frame_ms] [clk_gpio data_gpio]|start|rec [ms]|vol [gain]|loop_start [dmic_port] [dac_port] [rate] [frame_ms] [dig_db] [ana_db] [clk_gpio data_gpio]|loop_stop|stop|deinit|close|status>");
         return;
     }
 
@@ -538,25 +568,29 @@ void cli_tuya_dmic_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char 
             frame_time_ms = os_strtoul(argv[5], NULL, 10);
         }
         if (argc >= 7) {
-            volume = os_strtoul(argv[6], NULL, 10);
+            dig_db = test_parse_s32(argv[6]);
         }
-        if (argc >= 9) {
-            clk_gpio = os_strtoul(argv[7], NULL, 10);
-            data_gpio = os_strtoul(argv[8], NULL, 10);
+        if (argc >= 8) {
+            ana_db = test_parse_s32(argv[7]);
+        }
+        if (argc >= 10) {
+            clk_gpio = os_strtoul(argv[8], NULL, 10);
+            data_gpio = os_strtoul(argv[9], NULL, 10);
             use_pinmux = true;
         }
 
-        ret = test_dmic_loop_start(port, dac_port, sample_rate, frame_time_ms, volume,
+        ret = test_dmic_loop_start(port, dac_port, sample_rate, frame_time_ms, dig_db, ana_db,
                                    clk_gpio, data_gpio, use_pinmux);
         snprintf(pcWriteBuffer, xWriteBufferLen,
-                 "xdmic loop_start %s (%d), dmic_port=%u dac_port=%u rate=%u frame_ms=%u vol=%u pinmux=%u clk=%u data=%u\r\n",
+                 "xdmic loop_start %s (%d), dmic_port=%u dac_port=%u rate=%u frame_ms=%u dig=%d ana=%d pinmux=%u clk=%u data=%u\r\n",
                  (ret == OPRT_OK) ? "ok" : "failed",
                  ret,
                  (unsigned int)port,
                  (unsigned int)dac_port,
                  (unsigned int)sample_rate,
                  (unsigned int)frame_time_ms,
-                 (unsigned int)volume,
+                 (int)dig_db,
+                 (int)ana_db,
                  (unsigned int)use_pinmux,
                  (unsigned int)(use_pinmux ? clk_gpio : 0U),
                  (unsigned int)(use_pinmux ? data_gpio : 0U));
@@ -581,7 +615,7 @@ void cli_tuya_dmic_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char 
                  ret);
     } else if (os_strcmp(cmd, "status") == 0) {
         snprintf(pcWriteBuffer, xWriteBufferLen,
-                 "xdmic status init=%u start=%u port=%u chan=%u rate=%u bits=%u frame_ms=%u frame_size=%u pinmux=%u clk=%u data=%u frame_cnt=%u total_bytes=%u last_frame=%u loop_on=%u dac_inited=%u dac_started=%u dac_port=%u dac_vol=%u loop_push=%u loop_drop=%u loop_busy=%u loop_err=%u\r\n",
+                 "xdmic status init=%u start=%u port=%u chan=%u rate=%u bits=%u frame_ms=%u frame_size=%u pinmux=%u clk=%u data=%u frame_cnt=%u total_bytes=%u last_frame=%u loop_on=%u dac_inited=%u dac_started=%u dac_port=%u dig=%d ana=%d loop_push=%u loop_drop=%u loop_busy=%u loop_err=%u\r\n",
                  (unsigned int)s_dmic_ctx.initialized,
                  (unsigned int)s_dmic_ctx.started,
                  (unsigned int)s_dmic_ctx.port,
@@ -600,13 +634,14 @@ void cli_tuya_dmic_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char 
                  (unsigned int)s_dmic_ctx.dac_inited,
                  (unsigned int)s_dmic_ctx.dac_started,
                  (unsigned int)s_dmic_ctx.dac_port,
-                 (unsigned int)s_dmic_ctx.dac_volume,
+                 (int)s_dmic_ctx.dac_dig_db,
+                 (int)s_dmic_ctx.dac_ana_db,
                  (unsigned int)s_dmic_ctx.loop_push_bytes,
                  (unsigned int)s_dmic_ctx.loop_drop_bytes,
                  (unsigned int)s_dmic_ctx.loop_busy_cnt,
                  (unsigned int)s_dmic_ctx.loop_write_err_cnt);
     } else {
         snprintf(pcWriteBuffer, xWriteBufferLen,
-                 "Usage: xdmic <init [port] [rate] [frame_ms] [clk_gpio data_gpio]|start|rec [ms]|vol [gain]|loop_start [dmic_port] [dac_port] [rate] [frame_ms] [volume] [clk_gpio data_gpio]|loop_stop|stop|deinit|close|status>");
+                 "Usage: xdmic <init [port] [rate] [frame_ms] [clk_gpio data_gpio]|start|rec [ms]|vol [gain]|loop_start [dmic_port] [dac_port] [rate] [frame_ms] [dig_db] [ana_db] [clk_gpio data_gpio]|loop_stop|stop|deinit|close|status>");
     }
 }

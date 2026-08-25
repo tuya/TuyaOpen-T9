@@ -285,7 +285,8 @@ STATIC OPERATE_RET __pt_adc_test(USHORT_T cmd, UCHAR_T *data, UINT_T len, UCHAR_
 #define TUYA_AUDIO_DAC_PORT_1          ((TUYA_AUDIO_DAC_PORT_E)1)
 #endif
 #define ADC_TEST_DAC_PORT_SPK2         TUYA_AUDIO_DAC_PORT_1
-#define ADC_TEST_DEFAULT_DAC_VOLUME    70U
+#define ADC_TEST_DEFAULT_DAC_DIG_DB    (-7)
+#define ADC_TEST_DEFAULT_DAC_ANA_DB    (4)
 #define HWLOOP_MIN_PEAK_ABS            (800)
 #define HWLOOP_CORR_THRESHOLD_PCT      (80)
 #define ADC_TEST_DUMP_MAX_SAMPLES      32U
@@ -323,7 +324,8 @@ typedef struct {
     bool dac_inited;
     bool dac_started;
     TUYA_AUDIO_DAC_PORT_E dac_port;
-    uint8_t dac_volume;
+    INT32_T dac_dig_db;
+    INT32_T dac_ana_db;
     uint8_t *loop_mix_buf;
     uint32_t loop_mix_buf_size;
     volatile uint32_t loop_push_bytes;
@@ -355,7 +357,8 @@ static test_adc_ctx_t s_adc_ctx = {
     .dac_inited = false,
     .dac_started = false,
     .dac_port = ADC_TEST_DEFAULT_DAC_PORT,
-    .dac_volume = ADC_TEST_DEFAULT_DAC_VOLUME,
+    .dac_dig_db = ADC_TEST_DEFAULT_DAC_DIG_DB,
+    .dac_ana_db = ADC_TEST_DEFAULT_DAC_ANA_DB,
     .loop_mix_buf = NULL,
     .loop_mix_buf_size = 0U,
     .loop_push_bytes = 0U,
@@ -397,10 +400,10 @@ static OPERATE_RET test_adc_stop(void);
 static OPERATE_RET test_adc_deinit(void);
 static void test_adc_dac_deinit(void);
 static OPERATE_RET test_adc_dac_init_start(uint32_t dac_port, uint32_t sample_rate,
-                                           uint32_t frame_time_ms, uint32_t volume,
+                                           uint32_t frame_time_ms, INT32_T dig_db, INT32_T ana_db,
                                            uint32_t mono_frame_size);
 static OPERATE_RET hwloop_dac_init_start(uint32_t dac_port, uint32_t sample_rate,
-                                         uint32_t frame_time_ms, uint32_t volume);
+                                         uint32_t frame_time_ms, INT32_T dig_db, INT32_T ana_db);
 static OPERATE_RET test_adc_init(uint32_t port, uint32_t chan, uint32_t sample_rate,
                                  uint32_t frame_time_ms, uint32_t gain);
 static OPERATE_RET test_adc_start(void);
@@ -734,7 +737,7 @@ static void hwloop_dac_frame_cb(TUYA_AUDIO_DAC_FRAME_EVT_E port, void *p_buf,
 /*                   Mono DAC init & start                                    */
 /* -------------------------------------------------------------------------- */
 static OPERATE_RET test_adc_dac_init_start(uint32_t dac_port, uint32_t sample_rate,
-                                           uint32_t frame_time_ms, uint32_t volume,
+                                           uint32_t frame_time_ms, INT32_T dig_db, INT32_T ana_db,
                                            uint32_t mono_frame_size)
 {
     OPERATE_RET ret;
@@ -755,7 +758,9 @@ static OPERATE_RET test_adc_dac_init_start(uint32_t dac_port, uint32_t sample_ra
     }
 
     memset(&cfg, 0, sizeof(cfg));
-    cfg.volume = (uint8_t)((volume > 100U) ? 100U : volume);
+    cfg.gain[0] = dig_db;
+    cfg.gain[1] = ana_db;
+    cfg.gain_num = 2U;
     cfg.chan_num = 1U;
     cfg.sample_bits = TUYA_AUDIO_SAMPLE_BITS_16;
     cfg.sample_rate = sample_rate;
@@ -771,7 +776,8 @@ static OPERATE_RET test_adc_dac_init_start(uint32_t dac_port, uint32_t sample_ra
     }
     s_adc_ctx.dac_inited = true;
     s_adc_ctx.dac_port = (TUYA_AUDIO_DAC_PORT_E)dac_port;
-    s_adc_ctx.dac_volume = cfg.volume;
+    s_adc_ctx.dac_dig_db = dig_db;
+    s_adc_ctx.dac_ana_db = ana_db;
 
     ret = tkl_aud_dac_start(s_adc_ctx.dac_port);
     if (ret != OPRT_OK) {
@@ -786,11 +792,13 @@ static OPERATE_RET test_adc_dac_init_start(uint32_t dac_port, uint32_t sample_ra
 /*                Stereo DAC init & start                                     */
 /* -------------------------------------------------------------------------- */
 static OPERATE_RET hwloop_dac_init_start(uint32_t dac_port, uint32_t sample_rate,
-                                         uint32_t frame_time_ms, uint32_t volume)
+                                         uint32_t frame_time_ms, INT32_T dig_db, INT32_T ana_db)
 {
     TKL_AUD_DAC_CFG_T cfg;
     memset(&cfg, 0, sizeof(cfg));
-    cfg.volume = (uint8_t)((volume > 100U) ? 100U : volume);
+    cfg.gain[0] = dig_db;
+    cfg.gain[1] = ana_db;
+    cfg.gain_num = 2U;
     cfg.chan_num = 2U;
     cfg.sample_bits = TUYA_AUDIO_SAMPLE_BITS_16;
     cfg.sample_rate = sample_rate;
@@ -809,7 +817,8 @@ static OPERATE_RET hwloop_dac_init_start(uint32_t dac_port, uint32_t sample_rate
     }
     s_adc_ctx.dac_inited = true;
     s_adc_ctx.dac_port = (TUYA_AUDIO_DAC_PORT_E)dac_port;
-    s_adc_ctx.dac_volume = cfg.volume;
+    s_adc_ctx.dac_dig_db = dig_db;
+    s_adc_ctx.dac_ana_db = ana_db;
     s_adc_ctx.dac_started = true;
     return OPRT_OK;
 }
@@ -918,7 +927,7 @@ static OPERATE_RET test_adc_deinit(void)
 /* -------------------------------------------------------------------------- */
 static OPERATE_RET test_adc_loop_start(uint32_t adc_port, uint32_t chan, uint32_t dac_port,
                                        uint32_t sample_rate, uint32_t frame_time_ms,
-                                       uint32_t dac_volume, uint32_t adc_gain)
+                                       INT32_T dig_db, INT32_T ana_db, uint32_t adc_gain)
 {
     OPERATE_RET ret;
     uint32_t mono_frame_size;
@@ -935,7 +944,7 @@ static OPERATE_RET test_adc_loop_start(uint32_t adc_port, uint32_t chan, uint32_
     if (s_adc_ctx.chan == TUYA_AUDIO_ADC_CHANNEL_LR) {
         mono_frame_size = mono_frame_size / 2U;
     }
-    ret = test_adc_dac_init_start(dac_port, sample_rate, frame_time_ms, dac_volume, mono_frame_size);
+    ret = test_adc_dac_init_start(dac_port, sample_rate, frame_time_ms, dig_db, ana_db, mono_frame_size);
     if (ret != OPRT_OK) {
         (void)test_adc_stop();
         (void)test_adc_deinit();
@@ -1015,13 +1024,15 @@ static OPERATE_RET hwloop_compare_test(uint8_t mode)
         ret = test_adc_dac_init_start(ADC_TEST_DAC_PORT_SPK1,
                                       ADC_TEST_DEFAULT_SAMPLE_RATE,
                                       ADC_TEST_DEFAULT_FRAME_TIME_MS,
-                                      ADC_TEST_DEFAULT_DAC_VOLUME,
+                                      ADC_TEST_DEFAULT_DAC_DIG_DB,
+                                      ADC_TEST_DEFAULT_DAC_ANA_DB,
                                       s_adc_ctx.frame_size);
     } else {
         ret = hwloop_dac_init_start(ADC_TEST_DAC_PORT_SPK1,
                                     ADC_TEST_DEFAULT_SAMPLE_RATE,
                                     ADC_TEST_DEFAULT_FRAME_TIME_MS,
-                                    ADC_TEST_DEFAULT_DAC_VOLUME);
+                                    ADC_TEST_DEFAULT_DAC_DIG_DB,
+                                    ADC_TEST_DEFAULT_DAC_ANA_DB);
     }
     if (ret != OPRT_OK) goto fail_dac;
     s_adc_ctx.dac_started = true;
@@ -1175,8 +1186,7 @@ static OPERATE_RET do_stereo_diff_loopback(bool *pass_mic1, bool *pass_mic2)
     s_adc_ctx.loop_on = false;
     ret = hwloop_dac_init_start(ADC_TEST_DAC_PORT_SPK1,
                                 ADC_TEST_DEFAULT_SAMPLE_RATE,
-                                ADC_TEST_DEFAULT_FRAME_TIME_MS,
-                                ADC_TEST_DEFAULT_DAC_VOLUME);
+                                ADC_TEST_DEFAULT_FRAME_TIME_MS, ADC_TEST_DEFAULT_DAC_DIG_DB, ADC_TEST_DEFAULT_DAC_ANA_DB);
     if (ret != OPRT_OK) {
         s_hwloop_testing = false;
         test_adc_stop();
@@ -1279,9 +1289,7 @@ static OPERATE_RET do_mic3_stereo_dac_loopback(bool *pass_mic3)
     s_adc_ctx.loop_on = false;
     ret = test_adc_dac_init_start(ADC_TEST_DAC_PORT_SPK1,
                                   ADC_TEST_DEFAULT_SAMPLE_RATE,
-                                  ADC_TEST_DEFAULT_FRAME_TIME_MS,
-                                  ADC_TEST_DEFAULT_DAC_VOLUME,
-                                  s_adc_ctx.frame_size);
+                                  ADC_TEST_DEFAULT_FRAME_TIME_MS, ADC_TEST_DEFAULT_DAC_DIG_DB, ADC_TEST_DEFAULT_DAC_ANA_DB, s_adc_ctx.frame_size);
     if (ret != OPRT_OK) {
         s_hwloop_testing = false;
         test_adc_stop();
