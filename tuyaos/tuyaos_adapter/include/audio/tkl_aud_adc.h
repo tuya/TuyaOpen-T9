@@ -29,7 +29,6 @@ extern "C" {
 /* Public typedefs -----------------------------------------------------------*/
 typedef struct {
     TUYA_AUDIO_ADC_CHAN_E chan;
-    UINT8_T vol;
     UINT8_T sample_bits;            // T5 SMP, only support 16bits
     UINT32_T sample_rate;
     UINT32_T frame_time_ms;
@@ -44,7 +43,7 @@ typedef struct {
 * @brief Initialize audio ADC
 *
 * @param[in] config: ADC configuration including chan, sample_rate, sample_bits,
-*                    frame_size, vol, upper_aud_adc_cb
+*                    frame_time_ms, upper_cb. Gain is set via tkl_aud_adc_set_gain().
 *
 * @note This API allocates context, configures ADC hardware, DMA ring buffer,
 *       and registers flash operation notify handler. On BK7259 V2 the onboard
@@ -68,15 +67,17 @@ OPERATE_RET tkl_aud_adc_init(TUYA_AUDIO_ADC_PORT_E port, TKL_AUD_ADC_CFG_T *conf
 OPERATE_RET tkl_aud_adc_start(TUYA_AUDIO_ADC_PORT_E port);
 
 /**
-* @brief Set audio ADC digital gain
+* @brief Set audio ADC digital/analog gain
 *
-* @param[in] gain: digital gain value, range 0x00~0x3F
+* @param[in] gain: gain array in dB (platform-dependent count)
+* @param[in] num:  number of gain values. On this platform (dig+ana): num=2,
+*                  gain[0]=digital dB, gain[1]=analog dB. num=1 sets dig only.
 *
-* @note This API sets the ADC digital gain register.
+* @note No volume remapping is performed; caller passes hardware gain directly.
 *
 * @return OPRT_OK on success. Others on error, please refer to tuya_error_code.h
 */
-OPERATE_RET tkl_aud_adc_set_vol(TUYA_AUDIO_ADC_PORT_E port, UINT32_T gain);
+OPERATE_RET tkl_aud_adc_set_gain(TUYA_AUDIO_ADC_PORT_E port, INT32_T gain[], UINT32_T num);
 
 /**
 * @brief Stop audio ADC capture
