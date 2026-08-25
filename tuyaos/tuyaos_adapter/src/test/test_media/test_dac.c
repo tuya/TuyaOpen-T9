@@ -168,9 +168,6 @@ static OPERATE_RET test_dac_init(uint32_t sample_rate, uint32_t frame_time_ms,
     }
 
     os_memset(&cfg, 0, sizeof(cfg));
-    cfg.gain[0] = dig_db;
-    cfg.gain[1] = ana_db;
-    cfg.gain_num = DAC_TEST_GAIN_NUM;
     cfg.chan_num = chan_num;
     cfg.sample_bits = DAC_TEST_DEFAULT_SAMPLE_BITS;
     cfg.sample_rate = sample_rate;
@@ -201,6 +198,19 @@ static OPERATE_RET test_dac_init(uint32_t sample_rate, uint32_t frame_time_ms,
     if (ret != OPRT_OK) {
         tkl_log_output("dac init failed: %d\r\n", ret);
         return ret;
+    }
+
+    {
+        INT32_T gain[2];
+
+        gain[0] = dig_db;
+        gain[1] = ana_db;
+        ret = tkl_aud_dac_set_gain(DAC_TEST_DEFAULT_PORT, gain, DAC_TEST_GAIN_NUM);
+        if (ret != OPRT_OK) {
+            tkl_log_output("dac set_gain failed: %d\r\n", ret);
+            (void)tkl_aud_dac_deinit(DAC_TEST_DEFAULT_PORT);
+            return ret;
+        }
     }
 
     s_dac_ctx.initialized = true;

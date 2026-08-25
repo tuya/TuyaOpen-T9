@@ -41,8 +41,6 @@ typedef enum {
 } TKL_AUD_DAC_SRC_E;
 
 typedef struct {
-    INT32_T gain[2];    /**< Hardware gain in dB: [0]=dig, [1]=ana when gain_num=2 */
-    UINT32_T gain_num;  /**< Gain count: 2=dig+ana, 1=dig only */
     UINT8_T  chan_num;      // now, only one speaker
     UINT8_T sample_bits;    // T5 SMP, only support 16bits
     UINT32_T sample_rate;
@@ -59,7 +57,7 @@ typedef struct {
 /**
  * @brief Initialize the DAC playback context and hardware resources.
  * @param[in] config DAC configuration used to set sample rate, frame size,
- *                   initial gain, and frame callback.
+ *                   and frame callback. Gain is set via tkl_aud_dac_set_gain().
  * @param[in] port DAC output port. This parameter is ignored on T5.
  * @return OPRT_OK on success, other error codes on failure.
  * @note The current platform only supports 16-bit PCM output and forces the
