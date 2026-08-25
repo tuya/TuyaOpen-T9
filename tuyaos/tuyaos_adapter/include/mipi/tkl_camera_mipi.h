@@ -134,6 +134,13 @@ OPERATE_RET tkl_camera_mipi_get_exposure_luminance(UINT32_T *luminance);
  */
 OPERATE_RET tkl_camera_mipi_set_color_to_gray(BOOL_T enable);
 /**
+ * @brief Switch ISP gamma-out between night curve and backed-up day curve
+ * @param[in] enable TRUE=apply night gamma-out (backup current first), FALSE=restore backup
+ * @return OPRT_OK on success
+ * @note Requires camera started. Night curve fields are left for product fill-in.
+ */
+OPERATE_RET tkl_camera_mipi_set_night_gamma(BOOL_T enable);
+/**
  * @brief Get current ISP CPROC attributes
  * @param[out] cproc CPROC snapshot (manual fields only)
  * @return OPRT_OK on success

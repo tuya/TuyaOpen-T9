@@ -36,6 +36,8 @@ typedef struct {
 } tkl_camera_mipi_ctx_t;
 
 static tkl_camera_mipi_ctx_t s_cam_ctx;
+static ISP_GAMMA_OUT_ATTR_S s_gamma_out_backup;
+static BOOL_T s_gamma_out_backup_valid = FALSE;
 
 static VOID_T tkl_camera_mipi_gpio_bank_ldo_enable(VOID_T)
 {
@@ -95,6 +97,7 @@ static void tkl_camera_mipi_runtime_reset(BOOL_T keep_config)
     }
 
     os_memset(&s_cam_ctx, 0, sizeof(s_cam_ctx));
+    s_gamma_out_backup_valid = FALSE;
 
     if (keep_config == TRUE) {
         os_memcpy(&s_cam_ctx.cfg, &cfg_backup, sizeof(cfg_backup));
@@ -1113,6 +1116,67 @@ OPERATE_RET tkl_camera_mipi_set_color_to_gray(BOOL_T enable)
     if (ret != AVDK_ERR_OK) {
         tkl_log_output("set cproc failed: %d\r\n", ret);
         return OPRT_COM_ERROR;
+    }
+
+    return OPRT_OK;
+}
+
+/**
+ * @brief Switch ISP gamma-out between night curve and backed-up day curve
+ * @param[in] enable TRUE=apply night gamma-out (backup current first), FALSE=restore backup
+ * @return OPRT_OK on success
+ * @note Requires camera started. Night curve fields are left for product fill-in.
+ */
+OPERATE_RET tkl_camera_mipi_set_night_gamma(BOOL_T enable)
+{
+    int ret;
+    isp_control_t *isp = NULL;
+    ISP_GAMMA_OUT_ATTR_S gamma_out = {0};
+
+    if (s_cam_ctx.started != TRUE || s_cam_ctx.isp_handle == NULL) {
+        return OPRT_RESOURCE_NOT_READY;
+    }
+
+    isp = (isp_control_t *)s_cam_ctx.isp_handle;
+
+    if (enable != FALSE) {
+        if (s_gamma_out_backup_valid == FALSE) {
+            ret = VSI_MPI_ISP_GetGammaOutAttr(isp->port, &gamma_out);
+            if (ret != 0) {
+                tkl_log_output("get gamma out failed: %d\r\n", ret);
+                return OPRT_COM_ERROR;
+            }
+            os_memcpy(&s_gamma_out_backup, &gamma_out, sizeof(s_gamma_out_backup));
+            s_gamma_out_backup_valid = TRUE;
+        }
+        else{
+            os_memcpy(&gamma_out, &s_gamma_out_backup, sizeof(gamma_out));   
+        }
+        vsi_u16_t  night_defY[ISP_GAMMA_OUT_NODE_NUM] = {
+            57,  106, 151, 202, 243, 288, 329, 373, 400, 429, 458, 485, 508, 529, 548, 567,
+            585, 601, 617, 632, 646, 660, 673, 686, 698, 711, 723, 734, 745, 754, 764, 773,
+            782, 791, 799, 808, 816, 823, 831, 839, 846, 853, 861, 869, 877, 885, 894, 902,
+            910, 918, 927, 935, 942, 950, 958, 966, 973, 981, 988, 995, 1003, 1010, 1017, 1023
+        };
+        os_memcpy(gamma_out.curve.redY, night_defY, sizeof(night_defY));
+        os_memcpy(gamma_out.curve.greenY, night_defY, sizeof(night_defY));
+        os_memcpy(gamma_out.curve.blueY, night_defY, sizeof(night_defY));
+
+        ret = VSI_MPI_ISP_SetGammaOutAttr(isp->port, &gamma_out);
+        if (ret != 0) {
+            tkl_log_output("set night gamma out failed: %d\r\n", ret);
+            return OPRT_COM_ERROR;
+        }
+    } else {
+        if (s_gamma_out_backup_valid == FALSE) {
+            return OPRT_RESOURCE_NOT_READY;
+        }
+
+        ret = VSI_MPI_ISP_SetGammaOutAttr(isp->port, &s_gamma_out_backup);
+        if (ret != 0) {
+            tkl_log_output("restore gamma out failed: %d\r\n", ret);
+            return OPRT_COM_ERROR;
+        }
     }
 
     return OPRT_OK;

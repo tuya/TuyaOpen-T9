@@ -45,7 +45,7 @@
 #define MIPI_TEST_MIRROR_SETTLE_FRAMES 2U
 #define MIPI_TEST_MIRROR_EDGE_COLS     8U
 #define MIPI_TEST_CAMERA_USAGE \
-    "Usage: xmipi camera <open [sw sh fps ow oh]|open_gpu [sw sh fps ow oh]|open_gpu_sp [sw sh fps ow oh spw sph]|start|switch <ow> <oh>|switch_sp <spw> <sph>|get_frame [mp|sp]|mirror [hmirror vflip]|mirror_test|luminance|luminance_test [n ms]|cproc|gray [0|1]|skip [n]|stop|close>"
+    "Usage: xmipi camera <open [sw sh fps ow oh]|open_gpu [sw sh fps ow oh]|open_gpu_sp [sw sh fps ow oh spw sph]|start|switch <ow> <oh>|switch_sp <spw> <sph>|get_frame [mp|sp]|mirror [hmirror vflip]|mirror_test|luminance|luminance_test [n ms]|cproc|gray [0|1]|night [0|1]|skip [n]|stop|close>"
 #define MIPI_TEST_LUMINANCE_MAX         255000U
 #define MIPI_TEST_LUMINANCE_DEFAULT_CNT 5U
 #define MIPI_TEST_LUMINANCE_DEFAULT_MS  200U
@@ -1812,6 +1812,31 @@ static OPERATE_RET test_mipi_camera_set_color_to_gray(BOOL_T gray)
     return OPRT_OK;
 }
 
+/**
+ * @brief Switch gamma-out between night curve and backed-up day curve
+ * @param[in] night TRUE=apply night gamma-out, FALSE=restore backup
+ * @return OPRT_OK on success
+ */
+static OPERATE_RET test_mipi_camera_set_night_gamma(BOOL_T night)
+{
+    OPERATE_RET ret;
+
+    if (s_mipi_camera_started != true) {
+        tkl_log_output("night needs started camera\r\n");
+        return OPRT_RESOURCE_NOT_READY;
+    }
+
+    ret = tkl_camera_mipi_set_night_gamma(night);
+    if (ret != OPRT_OK) {
+        tkl_log_output("camera set_night_gamma(%u) failed: %d\r\n",
+                       (unsigned int)night, ret);
+        return ret;
+    }
+
+    tkl_log_output("camera night_gamma=%u ok\r\n", (unsigned int)night);
+    return OPRT_OK;
+}
+
 void cli_tuya_mipi_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv)
 {
     OPERATE_RET ret;
@@ -2054,6 +2079,18 @@ void cli_tuya_mipi_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char 
                      (ret == OPRT_OK) ? "ok" : "failed",
                      ret,
                      (unsigned int)gray);
+        } else if (os_strcmp(cmd, "night") == 0) {
+            BOOL_T night = TRUE;
+
+            if (argc >= 4) {
+                night = (os_strtoul(argv[3], NULL, 10) != 0U) ? TRUE : FALSE;
+            }
+            ret = test_mipi_camera_set_night_gamma(night);
+            snprintf(pcWriteBuffer, xWriteBufferLen,
+                     "xmipi camera night %s (%d), enable=%u\r\n",
+                     (ret == OPRT_OK) ? "ok" : "failed",
+                     ret,
+                     (unsigned int)night);
         } else if (os_strcmp(cmd, "stop") == 0) {
             ret = test_mipi_camera_mipi_stop();
             snprintf(pcWriteBuffer, xWriteBufferLen,
