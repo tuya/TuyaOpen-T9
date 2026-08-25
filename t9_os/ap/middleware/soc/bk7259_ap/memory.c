@@ -19,6 +19,7 @@
 #include "sdkconfig.h"
 #include "stack_base.h"
 #include "reg_base.h"
+#include "sys_sw_regs.h"
 #include "memory.h"
 
 extern unsigned char _data_ram_begin;
@@ -168,8 +169,13 @@ uint32_t bk_get_sram_info_count(void)
 
 const bk_dump_mem_info_t bk7259_peri_reg_info[] = {
     {"SYS", (uint32_t)SOC_SYS_REG_BASE, (0x5c*4)},
-    // flash regs warning!!!
+#if CONFIG_SPE
     {"FLASH", (uint32_t)SOC_FLASH_REG_BASE, (0x20*4)},
+#else
+    /* FLASH registers 0xD..0x14 are Secure-only. */
+    {"FLASH", (uint32_t)SOC_FLASH_REG_BASE, (0x0d*4)},
+    {"FLASH", (uint32_t)SOC_FLASH_REG_BASE + (0x15*4), (0x0b*4)},
+#endif
     {"HSPL0_CFG", (uint32_t)SOC_HSPL0_REG_BASE, (0x10*4)},
     {"HSPL0_STA", (uint32_t)SOC_HSPL0_REG_BASE + (0x20*4), (0x10*4)},
     {"HSPL1_CFG", (uint32_t)SOC_HSPL1_REG_BASE, (0x10*4)},
@@ -211,7 +217,7 @@ const bk_dump_mem_info_t bk7259_peri_reg_info[] = {
      *            Reg0x4[31] ahbp_ahb_sresp gates bus-error response.
      *   PPRO   : 0x24*4  AHB access controller (M52 side), regs 0..0x23.
      *            Reg0x7/0x8/0x9 carry the AON/BAK sresp control bits.
-     *   SYS_AHBP: 0x60*4  M55 SYSTEM block @ 0x48000000 � PLL/clock/reset/
+     *   SYS_AHBP: 0x60*4  M55 SYSTEM block @ 0x48000000 — PLL/clock/reset/
      *            power-domain + per-master QoS + DPU sub-gates.  Without
      *            this we can't tell whether a victim peripheral was
      *            clock-gated or in reset at hang time. */
@@ -221,8 +227,10 @@ const bk_dump_mem_info_t bk7259_peri_reg_info[] = {
     {"H26E",   (uint32_t)SOC_H26E_REG_BASE,             (0x80*4)},
     {"DPU",    (uint32_t)SOC_DPU_REG_BASE,              (0x100*4)},
     {"GPU",    (uint32_t)SOC_GPU_REG_BASE,              (0x100*4)},
+#if CONFIG_SPE
     {"PPHS",   (uint32_t)SOC_PPHS_REG_BASE,             (0x10*4)},
     {"PPRO",   (uint32_t)SOC_PPRO_REG_BASE,             (0x24*4)},
+#endif
     {"SYS_AHBP", (uint32_t)SOC_SYS_AHBP_REG_BASE,       (0x60*4)},
 };
 
@@ -239,13 +247,23 @@ uint32_t bk_get_peri_reg_info_count(void)
 void bk_get_psram_heap_info(bk_dump_mem_info_t *info)
 {
     info->name = "PSRAM_HEAP";
-#if CONFIG_PSRAM_AS_SYS_MEMORY
-    if (bk_psram_heap_get_used_count() == 0) {
+#if defined(CONFIG_AP_PSRAM_HEAP_ADDR)
+    /*
+     * Dump only the used part of the PSRAM heap ("用了多少 dump 多少"): the heap
+     * allocator records the high-water mark (pool_base .. max_alloc_end) into
+     * the shared sys_sw_regs on every allocation, so we dump [pool_base,
+     * max_alloc_end) instead of the whole PSRAM_HEAP_SIZE. This is the same
+     * window the CP reads when it dumps AP memory, so the AP self-dump and the
+     * CP-initiated AP dump stay consistent.
+     */
+    ap_heap_dump_info_t heap_info = {0};
+    if (!bk_sys_sw_regs_get_ap_heap_dump(BK_SYS_SW_REGS_AP_HEAP_PSRAM, &heap_info) ||
+        (heap_info.max_alloc_end <= heap_info.pool_base)) {
         info->start_addr = 0;
         info->size = 0;
     } else {
-        info->start_addr = PSRAM_HEAP_ADDR;
-        info->size = PSRAM_HEAP_SIZE;
+        info->start_addr = heap_info.pool_base;
+        info->size = heap_info.max_alloc_end - heap_info.pool_base;
     }
 #else
     info->start_addr = 0;
@@ -253,12 +271,20 @@ void bk_get_psram_heap_info(bk_dump_mem_info_t *info)
 #endif
 }
 
+/*
+ * name<->range are kept self-consistent: PSRAM_BSS returns the .psram.bss
+ * range and PSRAM_DATA returns the .psram.data range. Historically these two
+ * were swapped; the swap cancelled out only on the CP-initiated AP dump path
+ * (coredump_publish_ap_psram_windows() -> CP slot naming) but mislabelled the
+ * AP-local psram dump. The publisher was updated to match, so both paths now
+ * emit correct offline field names (dump_format_version bumped).
+ */
 void bk_get_psram_bss_info(bk_dump_mem_info_t *info)
 {
     info->name = "PSRAM_BSS";
 #if CONFIG_AP_PSRAM_SECTION_ADDR
-    info->start_addr = PSRAM_DATA_START_ADDRESS;
-    info->size = PSRAM_DATA_END_ADDRESS - PSRAM_DATA_START_ADDRESS;
+    info->start_addr = PSRAM_BSS_START_ADDRESS;
+    info->size = PSRAM_BSS_END_ADDRESS - PSRAM_BSS_START_ADDRESS;
 #else
     info->start_addr = 0;
     info->size = 0;
@@ -269,8 +295,8 @@ void bk_get_psram_data_info(bk_dump_mem_info_t *info)
 {
     info->name = "PSRAM_DATA";
 #if CONFIG_AP_PSRAM_SECTION_ADDR
-    info->start_addr = PSRAM_BSS_START_ADDRESS;
-    info->size = PSRAM_BSS_END_ADDRESS - PSRAM_BSS_START_ADDRESS;
+    info->start_addr = PSRAM_DATA_START_ADDRESS;
+    info->size = PSRAM_DATA_END_ADDRESS - PSRAM_DATA_START_ADDRESS;
 #else
     info->start_addr = 0;
     info->size = 0;

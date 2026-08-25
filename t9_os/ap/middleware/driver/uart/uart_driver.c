@@ -25,12 +25,20 @@
 #include <os/os.h>
 #include "uart_statis.h"
 #include <driver/int.h>
+#include <driver/aon_rtc.h>
 #include "icu_driver.h"
 #include "power_driver.h"
 #include "clock_driver.h"
 #include <os/os.h>
 #include "bk_arch.h"
 #include <components/system.h>
+#include <driver/sys_pm.h>
+
+/* P0-3: bound the unsafe (coredump-context) UART byte write, aligned with the
+ * CP driver. 0 disables the timeout (legacy busy-wait). */
+#ifndef CONFIG_UART_UNSAFE_WRITE_TIMEOUT_MS
+#define CONFIG_UART_UNSAFE_WRITE_TIMEOUT_MS 2000U
+#endif
 
 #include "sys_driver.h"
 #include <modules/pm.h>
@@ -516,15 +524,9 @@ static void uart_init_gpio(uart_id_t id)
 
 	if (uart_cfg_rx_pin(id) >= GPIO_64 && uart_cfg_rx_pin(id) <= GPIO_71)
 	{
-		// Configure GPIO64~71 power supply to 3.3V via J16
-		// Set sys_ana reg69[28] = 1 to output 3.3V on J16
-		// Address: 0x44010000 + 0x69 * 4 = 0x440101A4
-		// Bit 28 controls J16 voltage selection (1 = 3.3V, 0 = 1.8V)
-		// Note: This must be configured before using GPIO64~71 or UART5
-		uint32_t reg69_addr = 0x44010000 + (0x69 << 2);
-		uint32_t reg69_value = REG_READ(reg69_addr);
-		reg69_value |= (1 << 28);
-		REG_WRITE(reg69_addr, reg69_value);
+		/* Enable the 3 V auxiliary LDO before using GPIO64~71. The system
+		 * driver resolves the correct Secure/Non-secure register alias. */
+		(void)sys_drv_auxldo_enable(AUXLDOS_SEL_3V, 1);
 	}
 }
 
@@ -939,9 +941,51 @@ const uart_unsafe_t s_uart_unsafe_hw[SOC_UART_ID_NUM_PER_UNIT] = {
 #endif
 };
 
+void bk_uart_snapshot_unsafe(uart_id_t id, bk_uart_unsafe_snapshot_t *snapshot)
+{
+	uart_hw_t *hw = s_uart_unsafe_hw[id].hal.hw;
+
+	snapshot->timestamp_ms = bk_aon_rtc_get_ms();
+	snapshot->global_ctrl = hw->global_ctrl.v;
+	snapshot->config = hw->config.v;
+	snapshot->fifo_config = hw->fifo_config.v;
+	snapshot->fifo_status = hw->fifo_status.v;
+	snapshot->int_enable = hw->int_enable.v;
+	snapshot->int_status = hw->int_status.v;
+	snapshot->flow_ctrl_config = hw->flow_ctrl_config.v;
+	snapshot->wake_config = hw->wake_config.v;
+}
+
+void bk_uart_recover_unsafe(uart_id_t id, const bk_uart_unsafe_snapshot_t *snapshot)
+{
+	uart_hw_t *hw = s_uart_unsafe_hw[id].hal.hw;
+
+	hw->int_enable.v = 0U;
+	hw->config.tx_enable = 0U;
+	hw->global_ctrl.soft_reset = 1U;
+	__DSB();
+
+	hw->config.v = snapshot->config & ~1U;
+	hw->fifo_config.v = snapshot->fifo_config;
+	hw->flow_ctrl_config.v = 0U;
+	hw->wake_config.v = 0U;
+	hw->int_status.v = 0xFFU;
+	hw->global_ctrl.clk_gate_bypass = 1U;
+	__DSB();
+
+	hw->config.tx_enable = 1U;
+	__DSB();
+}
+
 bk_err_t bk_uart_write_byte_unsafe(uart_id_t id, uint8_t data)
 {
-	BK_WHILE (!uart_hal_is_fifo_write_ready(&s_uart_unsafe_hw[id].hal, id));
+	uint64_t start_ms = bk_aon_rtc_get_ms();
+
+	while (!uart_hal_is_fifo_write_ready(&s_uart_unsafe_hw[id].hal, id)) {
+		if ((bk_aon_rtc_get_ms() - start_ms) >= CONFIG_UART_UNSAFE_WRITE_TIMEOUT_MS) {
+			return BK_ERR_TIMEOUT;
+		}
+	}
 	uart_hal_write_byte(&s_uart_unsafe_hw[id].hal, id, data);
 	return BK_OK;
 }

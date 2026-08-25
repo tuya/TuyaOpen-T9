@@ -201,8 +201,13 @@ const bk_dump_mem_info_t bk7259_peri_reg_info[] = {
      * gated or in reset at hang time.  0x60*4 = 384B covers all known
      * regs up to 0x53. */
     {"SYS_AHBP", (uint32_t)SOC_SYS_AHBP_REG_BASE,       (0x60*4)},
-    // flash regs warning!!!
+#if CONFIG_SPE
     {"FLASH", (uint32_t)SOC_FLASH_REG_BASE, (0x20*4)},
+#else
+    /* FLASH registers 0xD..0x14 are Secure-only. */
+    {"FLASH", (uint32_t)SOC_FLASH_REG_BASE, (0x0d*4)},
+    {"FLASH", (uint32_t)SOC_FLASH_REG_BASE + (0x15*4), (0x0b*4)},
+#endif
     {"HSPL0_CFG", (uint32_t)SOC_HSPL0_REG_BASE, (0x10*4)},
     {"HSPL0_STA", (uint32_t)SOC_HSPL0_REG_BASE + (0x20*4), (0x10*4)},
     {"HSPL1_CFG", (uint32_t)SOC_HSPL1_REG_BASE, (0x10*4)},
@@ -260,8 +265,10 @@ const bk_dump_mem_info_t bk7259_peri_reg_info[] = {
      *
      * Capturing these gives a 1-shot read of who is allowed to talk to
      * whom and whether bus-error response is enabled at hang time. */
+#if CONFIG_SPE
     {"PPHS",   (uint32_t)SOC_PPHS_REG_BASE,             (0x10*4)},
     {"PPRO",   (uint32_t)SOC_PPRO_REG_BASE,             (0x24*4)},
+#endif
 
 };
 
@@ -279,12 +286,17 @@ void bk_get_psram_heap_info(bk_dump_mem_info_t *info)
 {
 	info->name = "PSRAM_HEAP";
 #if CONFIG_PSRAM_AS_SYS_MEMORY
-    if (bk_psram_heap_get_used_count() == 0) {
+    /* Dump only the used part of the PSRAM heap ("用了多少 dump 多少"): the heap
+     * allocator records the high-water mark (max used bytes from base) on every
+     * allocation, so we emit [PSRAM_HEAP_ADDR, used) instead of the whole
+     * PSRAM_HEAP_SIZE. */
+    uint32_t used = bk_psram_heap_get_used_size();
+    if (used == 0) {
         info->start_addr = 0;
         info->size = 0;
     } else {
         info->start_addr = PSRAM_HEAP_ADDR;
-        info->size = PSRAM_HEAP_SIZE;
+        info->size = used;
     }
 #else
 	info->start_addr = 0;
@@ -371,12 +383,14 @@ bool bk_check_addr_in_ap_dump_range(uint32_t addr, uint32_t size)
            addr_range_is_inside_peri_regs(addr, size);
 }
 
+/* name<->range kept self-consistent (was previously swapped, mislabelling the
+ * CP self psram dump). See AP memory.c for the rationale and dump_format_version. */
 void bk_get_psram_bss_info(bk_dump_mem_info_t *info)
 {
 	info->name = "PSRAM_BSS";
 #if CONFIG_CP_PSRAM_SECTION_ADDR
-	info->start_addr = PSRAM_DATA_START_ADDRESS;
-	info->size = PSRAM_DATA_END_ADDRESS - PSRAM_DATA_START_ADDRESS;
+	info->start_addr = PSRAM_BSS_START_ADDRESS;
+	info->size = PSRAM_BSS_END_ADDRESS - PSRAM_BSS_START_ADDRESS;
 #else
 	info->start_addr = 0;
 	info->size = 0;
@@ -387,8 +401,8 @@ void bk_get_psram_data_info(bk_dump_mem_info_t *info)
 {
 	info->name = "PSRAM_DATA";
 #if CONFIG_CP_PSRAM_SECTION_ADDR
-	info->start_addr = PSRAM_BSS_START_ADDRESS;
-	info->size = PSRAM_BSS_END_ADDRESS - PSRAM_BSS_START_ADDRESS;
+	info->start_addr = PSRAM_DATA_START_ADDRESS;
+	info->size = PSRAM_DATA_END_ADDRESS - PSRAM_DATA_START_ADDRESS;
 #else
 	info->start_addr = 0;
 	info->size = 0;

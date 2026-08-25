@@ -42,19 +42,38 @@ static bk_uart_unsafe_snapshot_t s_coredump_uart_snapshots[COREDUMP_UART_MAX_TIM
 
 static bool bk_coredump_uart_lock(void)
 {
-    if (s_coredump_uart_locked == 0U) {
-        if (bk_hspl_res_must_lock(BK_HSPL_RES_UART_LOG) != BK_OK) {
-            if (bk_sys_sw_regs_get_ap_cp_hang_dumping() != 0U) {
-                return false;
-            }
-            s_coredump_uart_force_write = 1U;
-            s_coredump_uart_locked = 1U;
-            return true;
-        }
-        s_coredump_uart_force_write = 0U;
-        s_coredump_uart_locked = 1U;
+    if (s_coredump_uart_locked != 0U) {
+        return true;
     }
 
+    /* The AP owns the UART for the whole CP-hang dump (it force-writes and then
+     * reboots the board). A CP core that revives here must stay SILENT rather
+     * than fight for the UART and garble the AP dump. */
+    if (bk_sys_sw_regs_get_ap_cp_hang_dumping() != 0U) {
+        return false;
+    }
+
+    /* Req 3/4/5: acquire the shared CP/AP UART HSPL by BLOCKING - never time out
+     * and never fall back to a lock-less "force write". Two cores writing the
+     * UART hardware at the same time can wedge it; blocking guarantees exclusive
+     * access. This runs BEFORE coredump_stop_other_cores() (see
+     * bk_exception_preprocess), so the current holder is still alive and will
+     * release the lock when it finishes its own dump / reboots - we therefore
+     * never wait on a lock stranded by an already-stopped core.
+     *
+     * Fallback: keep feeding the CP watchdog so a legitimately long wait (the AP
+     * peer dumping) survives. A peer that is truly wedged while holding the UART
+     * trips its OWN independent watchdog (AP = WWDT, CP = AON-backed WDT) and
+     * reboots the board, which resets us here - so this never hangs forever. */
+    while (bk_hspl_res_try_lock(BK_HSPL_RES_UART_LOG) != BK_OK) {
+        if (bk_sys_sw_regs_get_ap_cp_hang_dumping() != 0U) {
+            return false;
+        }
+        bk_coredump_feed_watchdogs();
+    }
+
+    s_coredump_uart_force_write = 0U;
+    s_coredump_uart_locked = 1U;
     return true;
 }
 
@@ -214,7 +233,7 @@ static bool coredump_uart_write_memory_base64(const char *name, uint32_t sp, uin
     int base64_len = 0;
 
     if (!coredump_uart_write_checked(
-            ">>>>stack mem dump begin, region: %s, stack_top=%08x, stack end=%08x\r\n",
+            ">>>>stack mem dump begin, region: %s, encoding=base64, stack_top=%08x, stack end=%08x\r\n",
             name, sp, fp) ||
         !coredump_uart_write_data_checked((const uint8_t *)"\r\n", 2U)) {
         return false;
@@ -259,7 +278,7 @@ static bool coredump_uart_write_memory_ascii(const char *name, uint32_t sp, uint
     uint32_t cnt = 0;
 
     if (!coredump_uart_write_checked(
-            ">>>>stack mem dump begin, region: %s, stack_top=%08x, stack end=%08x\r\n",
+            ">>>>stack mem dump begin, region: %s, encoding=ascii, stack_top=%08x, stack end=%08x\r\n",
             name, sp, fp)) {
         return false;
     }
