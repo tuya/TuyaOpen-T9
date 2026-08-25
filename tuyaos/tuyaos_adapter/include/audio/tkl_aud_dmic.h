@@ -29,7 +29,6 @@ extern "C" {
 /* Public typedefs -----------------------------------------------------------*/
 typedef struct {
     TUYA_AUDIO_DMIC_CHAN_E chan;
-    UINT8_T vol;
     UINT8_T sample_bits;            // T5 SMP, only support 16bits
     UINT32_T sample_rate;
     UINT32_T frame_time_ms;
@@ -69,10 +68,12 @@ OPERATE_RET tkl_aud_dmic_start(TUYA_AUDIO_DMIC_PORT_E port);
 /**
  * @brief Set audio digital (DMIC) gain
  * @param[in] port Digital audio port number
- * @param[in] gain Digital gain value
+ * @param[in] gain Gain array in dB (platform-dependent count).
+ * @param[in] num Number of gain values. On this platform (dig+ana): num=2,
+ *                gain[0]=digital dB, gain[1]=analog dB. num=1 sets dig only.
  * @return OPRT_OK on success, error code on failure
  */
-OPERATE_RET tkl_aud_dmic_set_vol(TUYA_AUDIO_DMIC_PORT_E port, UINT32_T gain);
+OPERATE_RET tkl_aud_dmic_set_gain(TUYA_AUDIO_DMIC_PORT_E port, INT32_T gain[], UINT32_T num);
 
 /**
  * @brief Stop audio digital (DMIC) capture
