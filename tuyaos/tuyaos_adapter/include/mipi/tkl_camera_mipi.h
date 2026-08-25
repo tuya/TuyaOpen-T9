@@ -94,6 +94,14 @@ OPERATE_RET tkl_camera_mipi_init(TUYA_CAMERA_MIPI_CFG_T *config);
 OPERATE_RET tkl_camera_mipi_deinit(void);
 OPERATE_RET tkl_camera_mipi_start(void);
 OPERATE_RET tkl_camera_mipi_stop(void);
+/**
+ * @brief Set ISP output resolution of the given channel
+ * @param[in] channel_id TUYA_CAMERA_MIPI_CHANNEL_MP or TUYA_CAMERA_MIPI_CHANNEL_SP
+ * @param[in] width new output width in pixels
+ * @param[in] height new output height in pixels
+ * @return OPRT_OK on success
+ * @note MP-only streaming uses stop()+start(); MP+SP concurrent uses live channel switch.
+ */
 OPERATE_RET tkl_camera_mipi_set_output(UINT8_T channel_id, UINT16_T width, UINT16_T height);
 /**
  * @brief Set sensor horizontal mirror and vertical flip

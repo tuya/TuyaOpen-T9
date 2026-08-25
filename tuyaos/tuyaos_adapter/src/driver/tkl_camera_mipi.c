@@ -566,17 +566,21 @@ static OPERATE_RET tkl_camera_mipi_output_validate(UINT16_T width, UINT16_T heig
 }
 
 /**
- * @brief Set ISP output resolution of the given channel (live switch when streaming)
+ * @brief Set ISP output resolution of the given channel
  * @param[in] channel_id TUYA_CAMERA_MIPI_CHANNEL_MP or TUYA_CAMERA_MIPI_CHANNEL_SP
  * @param[in] width new output width in pixels
  * @param[in] height new output height in pixels
- * @return OPRT_OK on success; on reopen failure the channel is left closed while
+ * @return OPRT_OK on success; on live reopen failure the channel is left closed while
  *         the other channel keeps streaming
+ * @note When streaming MP-only (SP not TURN_ON), closing MP drops camera FSM to INIT and
+ *       live reopen/arm_probe fails. In that case this API does stop()+start() instead of
+ *       channel close/open. MP+SP concurrent still uses live switch.
  */
 OPERATE_RET tkl_camera_mipi_set_output(UINT8_T channel_id, UINT16_T width, UINT16_T height)
 {
     OPERATE_RET ret;
     uint8_t isp_chn_id;
+    BOOL_T sp_peer_on = FALSE;
 
     if (channel_id != TUYA_CAMERA_MIPI_CHANNEL_MP &&
         channel_id != TUYA_CAMERA_MIPI_CHANNEL_SP) {
@@ -604,6 +608,33 @@ OPERATE_RET tkl_camera_mipi_set_output(UINT8_T channel_id, UINT16_T width, UINT1
 
     /* not streaming yet: defer to next start() */
     if (s_cam_ctx.started != TRUE || s_cam_ctx.camera_ctlr_handle == NULL) {
+        return OPRT_OK;
+    }
+
+    if (s_cam_ctx.cfg.sp_enable == TRUE &&
+        bk_isp_camera_channel_state_get(s_cam_ctx.camera_ctlr_handle, ISP_SP_CHN_ID)
+            == ISP_CHANNEL_STATE_TURN_ON) {
+        sp_peer_on = TRUE;
+    }
+
+    /*
+     * MP-only: closing the last channel forces CAM_FSM_INIT; subsequent channel_open
+     * arm_probe/read requires CAM_FSM_ENABLE and fails. Rebuild via stop+start instead.
+     */
+    if (channel_id == TUYA_CAMERA_MIPI_CHANNEL_MP && sp_peer_on == FALSE) {
+        tkl_log_output("set_output MP restart (mp-only), %ux%u\r\n", width, height);
+        ret = tkl_camera_mipi_stop();
+        if (ret != OPRT_OK) {
+            tkl_log_output("set_output MP restart stop failed: %d\r\n", ret);
+            return ret;
+        }
+        ret = tkl_camera_mipi_start();
+        if (ret != OPRT_OK) {
+            tkl_log_output("set_output MP restart start failed: %d\r\n", ret);
+            return ret;
+        }
+        tkl_log_output("set_output ch%u restart ok, %ux%u\r\n",
+                       (unsigned int)channel_id, width, height);
         return OPRT_OK;
     }
 
