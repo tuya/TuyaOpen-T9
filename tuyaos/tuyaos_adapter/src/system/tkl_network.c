@@ -852,7 +852,26 @@ OPERATE_RET tkl_net_set_cloexec(IN CONST INT_T fd)
 */
 OPERATE_RET tkl_net_getsockname(INT_T fd, TUYA_IP_ADDR_T *addr, UINT16_T *port)
 {
-    return 0;
+    if (fd < 0) {
+        return -3000 + fd;
+    }
+
+    struct sockaddr_in sock_addr;
+    socklen_t len = sizeof(struct sockaddr_in);
+
+    if (0 != getsockname(fd, (struct sockaddr *)&sock_addr, &len)) {
+        return OPRT_COM_ERROR;
+    }
+
+    if (addr) {
+        *addr = ntohl(sock_addr.sin_addr.s_addr);
+    }
+
+    if (port) {
+        *port = ntohs(sock_addr.sin_port);
+    }
+
+    return OPRT_OK;
 }
 
 /**
