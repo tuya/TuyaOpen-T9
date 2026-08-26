@@ -94,6 +94,14 @@ OPERATE_RET tkl_camera_mipi_init(TUYA_CAMERA_MIPI_CFG_T *config);
 OPERATE_RET tkl_camera_mipi_deinit(void);
 OPERATE_RET tkl_camera_mipi_start(void);
 OPERATE_RET tkl_camera_mipi_stop(void);
+/**
+ * @brief Set ISP output resolution of the given channel
+ * @param[in] channel_id TUYA_CAMERA_MIPI_CHANNEL_MP or TUYA_CAMERA_MIPI_CHANNEL_SP
+ * @param[in] width new output width in pixels
+ * @param[in] height new output height in pixels
+ * @return OPRT_OK on success
+ * @note MP-only streaming uses stop()+start(); MP+SP concurrent uses live channel switch.
+ */
 OPERATE_RET tkl_camera_mipi_set_output(UINT8_T channel_id, UINT16_T width, UINT16_T height);
 /**
  * @brief Set sensor horizontal mirror and vertical flip
@@ -112,8 +120,8 @@ OPERATE_RET tkl_camera_mipi_set_mirror_flip(UINT8_T hmirror, UINT8_T vflip);
  */
 OPERATE_RET tkl_camera_mipi_get_mirror_flip(UINT8_T *hmirror, UINT8_T *vflip);
 /**
- * @brief Get ISP weighted mean exposure luminance
- * @param[out] luminance mean luminance scaled by 1000 (typical range 0~255000)
+ * @brief Get ISP exposure-normalized luminance
+ * @param[out] luminance (meanLum * 1e6) / (exposure[0] * 39)
  * @return OPRT_OK on success
  * @note Requires camera started. Wraps BK_CAM_IOCTL_GET_EXPOSURE_LUMINANCE.
  */
@@ -125,6 +133,13 @@ OPERATE_RET tkl_camera_mipi_get_exposure_luminance(UINT32_T *luminance);
  * @note Requires camera started. Gray keeps brightness/contrast/hue of the current CPROC.
  */
 OPERATE_RET tkl_camera_mipi_set_color_to_gray(BOOL_T enable);
+/**
+ * @brief Switch ISP gamma-out between night curve and backed-up day curve
+ * @param[in] enable TRUE=apply night gamma-out (backup current first), FALSE=restore backup
+ * @return OPRT_OK on success
+ * @note Requires camera started. Night curve fields are left for product fill-in.
+ */
+OPERATE_RET tkl_camera_mipi_set_night_gamma(BOOL_T enable);
 /**
  * @brief Get current ISP CPROC attributes
  * @param[out] cproc CPROC snapshot (manual fields only)

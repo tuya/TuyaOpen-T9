@@ -6,6 +6,7 @@ set(incs
     src/test/test_lvgl
     src/test/test_ringbuffer
     # src/test/test_face_recognize
+    # src/test/test_face_recog
     $ENV{ARMINO_PATH}/../../../../apps/$ENV{APP_NAME}/include
     $ENV{ARMINO_PATH}/../../tuyaos/tuyaos_adapter/include
     $ENV{ARMINO_PATH}/../../tuyaos/tuyaos_adapter/include/adc
@@ -236,6 +237,12 @@ else()
             # src/test/test_face_recognize/YolofaceDetectionModel.cc
             # src/test/test_face_recognize/yoloface_detect_model_data.cc
             # src/test/test_face_recognize/test_face_recognize.cc
+            # src/test/test_face_recog/AvdkMultiModel.cc
+            # src/test/test_face_recog/FaceDetectionRuntime.cc
+            # src/test/test_face_recog/FaceVerifyRuntime.cc
+            # src/test/test_face_recog/FaceRecognitionModel.cc
+            # src/test/test_face_recog/face_gallery.cc
+            # src/test/test_face_recog/test_face_recog.cc
             # src/test/test_littlefs.c
             src/test/cli_tuya_test_1.c
             src/test/test_i2c.c

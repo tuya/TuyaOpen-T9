@@ -1423,7 +1423,12 @@ bk_err_t bk_isp_get_exposure_luminance(isp_handle_t *handle, uint32_t *luminance
         return BK_FAIL;
     }
 
-    *luminance = exposure_info.meanLum;
+    *luminance = (exposure_info.meanLum * 1000 * 1000) / (exposure_info.exposure[0] * 39);
+    /*
+    LOGI("%s, expTime:%u again:%u dgain:%u exposure:%u iso:%u meanLum:%u luminance:%u\n",
+         __func__, exposure_info.expTime[0], exposure_info.again[0], exposure_info.dgain[0],
+         exposure_info.exposure[0], exposure_info.iso, exposure_info.meanLum, *luminance);
+    */
     return BK_OK;
 }
 

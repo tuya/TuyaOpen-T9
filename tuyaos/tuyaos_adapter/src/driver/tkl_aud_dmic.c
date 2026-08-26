@@ -38,7 +38,10 @@ extern void bk_printf(const char *fmt, ...);
 #define AUD_DMIC_FRAME_SIZE(sr, sb, t, ch)  (((sr) * ((sb) / 8) / 1000) * (ch) * (t))
 
 #define DMIC_DMA_BUF_SAFE_INTERVAL    (8)
+#define TKL_AUD_DMIC_GAIN_NUM         (2U)        /* dig then ana */
 #if CONFIG_AUD_DRIVER_V2
+#define TKL_AUD_DMIC_DEFAULT_DIG_DB   (16.0f)     /* OEM DEFAULT_AUD_ADC_CONFIG dig_gain */
+#define TKL_AUD_DMIC_DEFAULT_ANA_DB   (20)        /* OEM DEFAULT_AUD_ADC_CONFIG ana_gain */
 #define TKL_DMIC_CLK_GPIO             GPIO_6
 #define TKL_DMIC_DAT_GPIO             GPIO_5
 #else
@@ -56,7 +59,10 @@ typedef struct {
 #if CONFIG_AUD_DRIVER_V2
     aud_dmic_mode_t          dmic_mode;
     uint32_t                 adc_ch_bitmap;
+    float                    dig_db;        /**< Last dig gain from set_gain (dB) */
+    int32_t                  ana_db;        /**< Last ana gain from set_gain (dB) */
 #endif
+    BOOL_T                  gain_set;       /**< TRUE after first successful set_gain */
     uint32_t                frame_size;
     uint32_t                dma_frame_size;
     dma_id_t                dmic_dma_id;
@@ -305,11 +311,52 @@ STATIC VOID_T __tkl_aud_dmic_pause_dma(VOID_T)
     ring_buffer_clear(&gl_dmic_ctx->dmic_rb);
 }
 
+#if CONFIG_AUD_DRIVER_V2
+/**
+ * @brief Apply dig/ana gain to DMIC-backed ADC channels
+ * @param[in] dig_db digital gain in dB
+ * @param[in] ana_db analog gain in dB
+ * @return OPRT_OK on success
+ */
+STATIC OPERATE_RET __tkl_aud_dmic_apply_v2_gain(float dig_db, int32_t ana_db)
+{
+    if (dig_db > BK_AUD_ADC_DIG_GAIN_DB_MAX) {
+        dig_db = BK_AUD_ADC_DIG_GAIN_DB_MAX;
+    }
+    if (ana_db > BK_AUD_ADC_ANA_GAIN_DB_MAX) {
+        ana_db = BK_AUD_ADC_ANA_GAIN_DB_MAX;
+    }
+    if (ana_db < 0) {
+        ana_db = 0;
+    }
+
+    for (uint32_t ch = 0; ch < AUD_ADC_CHL_MAX; ch++) {
+        if (!(gl_dmic_ctx->adc_ch_bitmap & (1U << ch))) {
+            continue;
+        }
+        if (bk_aud_adc_set_ana_gain_db((aud_adc_chl_t)ch, ana_db) != BK_OK) {
+            TKL_AUD_DMIC_LOG("dmic: set ana gain fail, ch=%u\n", ch);
+            return OPRT_COM_ERROR;
+        }
+        if (bk_aud_adc_set_dig_gain_db((aud_adc_chl_t)ch, dig_db) != BK_OK) {
+            TKL_AUD_DMIC_LOG("dmic: set dig gain fail, ch=%u\n", ch);
+            return OPRT_COM_ERROR;
+        }
+    }
+
+    gl_dmic_ctx->dig_db = dig_db;
+    gl_dmic_ctx->ana_db = ana_db;
+    TKL_AUD_DMIC_LOG("dmic: gain apply dig_db=%.1f ana_db=%d\n", dig_db, ana_db);
+    return OPRT_OK;
+}
+#endif
+
 /**
  * @brief Initialize audio digital (DMIC) input
  * @param[in] port Digital audio port number
  * @param[in] config DMIC configuration
  * @return OPRT_OK on success, error code on failure
+ * @note Gain is set via tkl_aud_dmic_set_gain(); init keeps OEM default dig/ana.
  */
 OPERATE_RET tkl_aud_dmic_init(TUYA_AUDIO_DMIC_PORT_E port, TKL_AUD_DMIC_CFG_T *config)
 {
@@ -357,6 +404,11 @@ OPERATE_RET tkl_aud_dmic_init(TUYA_AUDIO_DMIC_PORT_E port, TKL_AUD_DMIC_CFG_T *c
     }
     os_memset(gl_dmic_ctx, 0, sizeof(tkl_aud_dmic_ctx_t));
     os_memcpy(&gl_dmic_ctx->cfg, config, sizeof(TKL_AUD_DMIC_CFG_T));
+    gl_dmic_ctx->gain_set = FALSE;
+#if CONFIG_AUD_DRIVER_V2
+    gl_dmic_ctx->dig_db = TKL_AUD_DMIC_DEFAULT_DIG_DB;
+    gl_dmic_ctx->ana_db = TKL_AUD_DMIC_DEFAULT_ANA_DB;
+#endif
 
 #if CONFIG_AUD_DRIVER_V2
     if (port == TUYA_AUDIO_DMIC_PORT_1) {
@@ -374,7 +426,14 @@ OPERATE_RET tkl_aud_dmic_init(TUYA_AUDIO_DMIC_PORT_E port, TKL_AUD_DMIC_CFG_T *c
     tkl_aud_dmic_cfg.dmic_mode = dmic_mode;
     tkl_aud_dmic_cfg.dmic_clk_gpio = gl_dmic_pinmux.clk_gpio;
     tkl_aud_dmic_cfg.dmic_data_gpio = gl_dmic_pinmux.data_gpio;
+    /* Gain applied later via tkl_aud_dmic_set_gain(); keep OEM default dig/ana. */
     tkl_aud_adc_cfg.sample_rate = config->sample_rate;
+    for (uint32_t ch = 0; ch < AUD_ADC_CHL_MAX; ch++) {
+        if (adc_ch_bitmap & (1U << ch)) {
+            tkl_aud_adc_cfg.chl_cfg[ch].dig_gain = gl_dmic_ctx->dig_db;
+            tkl_aud_adc_cfg.chl_cfg[ch].ana_gain = gl_dmic_ctx->ana_db;
+        }
+    }
     ret = bk_aud_adc_init(&tkl_aud_adc_cfg);
     if (ret != BK_OK) {
         TKL_AUD_DMIC_LOG("dmic: bk_aud_adc_init fail\n");
@@ -537,14 +596,47 @@ OPERATE_RET tkl_aud_dmic_start(TUYA_AUDIO_DMIC_PORT_E port)
 /**
  * @brief Set audio digital (DMIC) gain
  * @param[in] port Digital audio port number
- * @param[in] gain Digital gain value
+ * @param[in] gain Gain array in dB (platform-dependent count)
+ * @param[in] num Number of gain values. On this platform (dig+ana): num=2,
+ *                gain[0]=digital dB, gain[1]=analog dB. num=1 sets dig only.
  * @return OPRT_OK on success, error code on failure
- * @note DMIC gain control is hardware dependent. Currently a no-op
- *       placeholder; implement when hardware gain register is available.
+ * @note V2 applies gain via the ADC dig/ana path used by DMIC. V1 has no
+ *       hardware gain register and returns OPRT_NOT_SUPPORTED.
  */
-OPERATE_RET tkl_aud_dmic_set_vol(TUYA_AUDIO_DMIC_PORT_E port, UINT32_T gain)
+OPERATE_RET tkl_aud_dmic_set_gain(TUYA_AUDIO_DMIC_PORT_E port, INT32_T gain[], UINT32_T num)
 {
+    (void)port;
+
+    if (gl_dmic_ctx == NULL) {
+        return OPRT_COM_ERROR;
+    }
+
+    if ((gain == NULL) || (num == 0U)) {
+        return OPRT_INVALID_PARM;
+    }
+
+#if CONFIG_AUD_DRIVER_V2
+    {
+        float dig_db;
+        int32_t ana_db;
+
+        if (num > TKL_AUD_DMIC_GAIN_NUM) {
+            return OPRT_INVALID_PARM;
+        }
+
+        dig_db = (float)gain[0];
+        ana_db = (num >= 2U) ? gain[1] : gl_dmic_ctx->ana_db;
+        if (__tkl_aud_dmic_apply_v2_gain(dig_db, ana_db) != OPRT_OK) {
+            return OPRT_COM_ERROR;
+        }
+        gl_dmic_ctx->gain_set = TRUE;
+        return OPRT_OK;
+    }
+#else
+    (void)gain;
+    (void)num;
     return OPRT_NOT_SUPPORTED;
+#endif
 }
 
 /**

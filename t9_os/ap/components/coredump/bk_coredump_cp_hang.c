@@ -9,6 +9,7 @@
 #include <soc/soc.h>
 #include "bk_arch.h"
 #include "bk_coredump.h"
+#include "bk_dump_manifest.h"
 #include "multicore_driver.h"
 #include "reg_base.h"
 #include "sys_sw_regs.h"
@@ -30,8 +31,6 @@
 #define CP_HANG_MONITOR_WAKE_JUMP_MS (CP_HANG_MONITOR_CHECK_MS * 3U)
 #define CP_HANG_TIMEOUT_MARGIN_MS 2000U
 #define CP_HANG_TIMEOUT_FALLBACK_MS 6000U
-#define CP_HANG_TIMEOUT_MIN_MS (CONFIG_CP_HANG_DUMP_BY_AP_PERIOD_MS + 500U)
-#define CP_HANG_TIMEOUT_MAX_MS (UINT16_MAX)
 #define CP_HANG_AON_WDT_PERIOD_MAX 0x00ffffffU
 #define CP_HANG_AON_WDT_KEY_1ST 0x5aU
 #define CP_HANG_AON_WDT_KEY_2ND 0xa5U
@@ -51,6 +50,7 @@ typedef struct {
 	volatile uint16_t timeout_ms;
 	volatile uint32_t last_tick;
 	volatile uint32_t timeout_tick;
+	volatile uint32_t last_hb_bumped;
 } cp_hang_watch_state_t;
 
 static cp_hang_watch_state_t s_cp_hang_state;
@@ -61,23 +61,9 @@ static void cp_hang_set_ap_dumping(uint32_t value)
 	bk_sys_sw_regs_set_ap_cp_hang_dumping(value);
 }
 
-static inline uint32_t cp_hang_effective_timeout_ms(void)
-{
-	uint32_t timeout_ms = s_cp_hang_state.timeout_ms;
-
-	if (timeout_ms < CP_HANG_TIMEOUT_MIN_MS) {
-		timeout_ms = CP_HANG_TIMEOUT_MIN_MS;
-	}
-	if (timeout_ms > CP_HANG_TIMEOUT_MAX_MS) {
-		timeout_ms = CP_HANG_TIMEOUT_MAX_MS;
-	}
-
-	return timeout_ms;
-}
-
 __attribute__((weak)) void bk_cp_hang_dump_by_ap_feed_aon_wdt(void)
 {
-	uint32_t period_ms = cp_hang_effective_timeout_ms() + CP_HANG_TIMEOUT_MARGIN_MS;
+	uint32_t period_ms = (uint32_t)s_cp_hang_state.timeout_ms + CP_HANG_TIMEOUT_MARGIN_MS;
 	uint32_t ctrl_val;
 
 	if (period_ms > CP_HANG_AON_WDT_PERIOD_MAX) {
@@ -147,7 +133,7 @@ static void cp_hang_ipi_callback(ipi_core_id_t core_id, uint32_t value,
 		return;
 	}
 
-	s_cp_hang_state.timeout_ms = payload ? payload : CP_HANG_TIMEOUT_FALLBACK_MS;
+	s_cp_hang_state.timeout_ms = (uint16_t)CP_HANG_TIMEOUT_FALLBACK_MS;
 	s_cp_hang_state.src_cpu = src_cpu;
 	s_cp_hang_state.last_tick = cp_hang_now();
 	s_cp_hang_state.seen = 1U;
@@ -159,6 +145,7 @@ static void cp_hang_ipi_callback(ipi_core_id_t core_id, uint32_t value,
 	}
 }
 
+#if CONFIG_DEBUG_VERSION || CONFIG_DUMP_ENABLE
 static void cp_hang_dump_window(const char *name, uint32_t start, uint32_t size)
 {
 	if ((start == 0U) || (size == 0U)) {
@@ -169,11 +156,12 @@ static void cp_hang_dump_window(const char *name, uint32_t start, uint32_t size)
 	bk_coredump_write_memory(name, start, start + size);
 	cp_hang_feed_watchdog();
 }
+#endif /* CONFIG_DEBUG_VERSION || CONFIG_DUMP_ENABLE */
 
 static void cp_hang_dump_observer_context(uint32_t now)
 {
 	uint32_t last_tick = s_cp_hang_state.last_tick;
-	uint16_t timeout_ms = (uint16_t)cp_hang_effective_timeout_ms();
+	uint16_t timeout_ms = s_cp_hang_state.timeout_ms;
 	uint8_t src_cpu = s_cp_hang_state.src_cpu;
 
 	bk_coredump_write_prompt("***********************************************************************************************\r\n");
@@ -189,48 +177,33 @@ static void cp_hang_dump_observer_context(uint32_t now)
 		(unsigned long)bk_ipi_get_device_status());
 }
 
-static void cp_hang_dump_peripheral_context(void)
+/*
+ * Dump the CP context the AP can observe, sourced from the unified manifest
+ * (Topic A) instead of hand-coded magic-size windows. Peripheral windows are
+ * cross_read_safe (CP-local AHBP path); CP RAM/PSRAM windows are only
+ * cross_read_safe once verified on the target board (gated by
+ * CONFIG_CP_HANG_DUMP_BY_AP_MEMDUMP). Unsafe entries emit an explicit skip
+ * marker so the offline parser sees the gap.
+ */
+#if CONFIG_DEBUG_VERSION || CONFIG_DUMP_ENABLE
+static void cp_hang_dump_manifest_context(void)
 {
-#if defined(SOC_SYS_REG_BASE)
-	cp_hang_dump_window("CP_HANG_SYS", (uint32_t)SOC_SYS_REG_BASE, 0x5cU * 4U);
-#endif
-#if defined(SOC_SYS_AHBP_REG_BASE)
-	cp_hang_dump_window("CP_HANG_SYS_AHBP", (uint32_t)SOC_SYS_AHBP_REG_BASE, 0x60U * 4U);
-#endif
-#if defined(SOC_AON_PMU_REG_BASE)
-	cp_hang_dump_window("CP_HANG_AON_PMU", (uint32_t)SOC_AON_PMU_REG_BASE, 0x7fU * 4U);
-#endif
-#if defined(SOC_AON_RTC_REG_BASE)
-	cp_hang_dump_window("CP_HANG_AON_RTC", (uint32_t)SOC_AON_RTC_REG_BASE, 0x0aU * 4U);
-#endif
-#if defined(SOC_MBOX0_REG_BASE)
-	cp_hang_dump_window("CP_HANG_MBOX0", (uint32_t)SOC_MBOX0_REG_BASE, 0x38U * 4U);
-#endif
-#if defined(SOC_WDT_REG_BASE)
-	cp_hang_dump_window("CP_HANG_WDT", (uint32_t)SOC_WDT_REG_BASE, 0x20U * 4U);
-#endif
-#if defined(SOC_PPHS_REG_BASE)
-	cp_hang_dump_window("CP_HANG_PPHS", (uint32_t)SOC_PPHS_REG_BASE, 0x10U * 4U);
-#endif
-#if defined(SOC_PPRO_REG_BASE)
-	cp_hang_dump_window("CP_HANG_PPRO", (uint32_t)SOC_PPRO_REG_BASE, 0x24U * 4U);
-#endif
-}
+	uint32_t count = 0U;
+	const dump_region_t *manifest = bk_dump_manifest_get(DUMP_DOMAIN_CP, &count);
 
-static void cp_hang_dump_memory_context(void)
-{
-#if CONFIG_CP_HANG_DUMP_BY_AP_MEMDUMP
-#if defined(CONFIG_CP_RAM_ADDR) && defined(CONFIG_CP_RAM_SIZE) && CONFIG_CP_RAM_SIZE
-	cp_hang_dump_window("CP_RAM", (uint32_t)CONFIG_CP_RAM_ADDR, (uint32_t)CONFIG_CP_RAM_SIZE);
-#endif
-#if defined(CONFIG_CP_PSRAM_HEAP_ADDR) && defined(CONFIG_CP_PSRAM_HEAP_SIZE) && CONFIG_CP_PSRAM_HEAP_SIZE
-	cp_hang_dump_window("CP_PSRAM_HEAP", (uint32_t)CONFIG_CP_PSRAM_HEAP_ADDR,
-		(uint32_t)CONFIG_CP_PSRAM_HEAP_SIZE);
-#endif
-#else
-	bk_coredump_write_prompt("CP memory dump skipped: CONFIG_CP_HANG_DUMP_BY_AP_MEMDUMP=0\r\n");
-#endif
+	for (uint32_t i = 0U; i < count; i++) {
+		const dump_region_t *r = &manifest[i];
+		const char *name = (r->name != NULL) ? r->name : "CP_REGION";
+
+		if (r->cross_read_safe) {
+			cp_hang_dump_window(name, r->start_addr, r->size);
+		} else {
+			bk_coredump_write_prompt(
+				"%s skipped: cross_read_safe=0 (unverified on board)\r\n", name);
+		}
+	}
 }
+#endif /* CONFIG_DEBUG_VERSION || CONFIG_DUMP_ENABLE */
 
 static void cp_hang_dump_prompt_prologue(void)
 {
@@ -330,18 +303,27 @@ static void cp_hang_dump_from_ap(uint32_t now)
 #if CONFIG_SOC_SMP
 	bk_coredump_write_meta_info(COREDUMP_CORE_INFO, (void *)(rtos_get_core_id() & 0x1));
 #endif
+	/* Reboot reason: the AP resets the board with RESET_SOURCE_CRASH_ASSERT on a
+	 * CP heartbeat timeout (see cp_hang_reboot()). */
+	bk_coredump_write_prompt("@reset-reason: 0x%x\r\n", RESET_SOURCE_CRASH_ASSERT);
 	cp_hang_dump_observer_context(now);
 	cp_hang_dump_current_context();
 	cp_hang_dump_prompt_prologue();
 
+	bk_coredump_write_prompt("@dump_format_version: %u\r\n", (unsigned)BK_DUMP_FORMAT_VERSION);
+#if CONFIG_DEBUG_VERSION || CONFIG_DUMP_ENABLE
+	/* CP memory windows (peripheral banks + CP RAM/PSRAM from the unified
+	 * manifest): Debug only. In a Release build (CONFIG_DUMP_ENABLE=n) the
+	 * CP-hang dump is registers + system info + reboot reason ONLY - no CP
+	 * memory over the UART - even when CONFIG_CP_HANG_DUMP_BY_AP_MEMDUMP=y. */
 	bk_coredump_write_prompt("***********************************************************************************************\r\n");
 	bk_coredump_write_prompt("*************************************CP memory dump begin**************************************\r\n");
 	bk_coredump_write_prompt("***********************************************************************************************\r\n");
-	cp_hang_dump_peripheral_context();
-	cp_hang_dump_memory_context();
+	cp_hang_dump_manifest_context();
 	bk_coredump_write_prompt("***********************************************************************************************\r\n");
 	bk_coredump_write_prompt("**************************************CP memory dump end***************************************\r\n");
 	bk_coredump_write_prompt("***********************************************************************************************\r\n");
+#endif /* CONFIG_DEBUG_VERSION || CONFIG_DUMP_ENABLE */
 	cp_hang_feed_watchdog();
 	bk_coredump_writer_deinit();
 	cp_hang_set_ap_dumping(0U);
@@ -360,6 +342,7 @@ static void cp_hang_monitor_task(void *param)
 		uint32_t now;
 		uint32_t last_tick;
 		uint32_t loop_gap;
+		uint32_t last_hb_bumped;
 
 		rtos_delay_milliseconds(CP_HANG_MONITOR_CHECK_MS);
 
@@ -383,8 +366,17 @@ static void cp_hang_monitor_task(void *param)
 			continue;
 		}
 
+		last_hb_bumped = bk_sys_sw_regs_get_cp_heartbeat_bumped();
+		if (s_cp_hang_state.last_hb_bumped != last_hb_bumped) {
+			s_cp_hang_state.last_hb_bumped = last_hb_bumped;
+			s_cp_hang_state.last_tick = now;
+			BK_LOGV(CP_HANG_TAG, "CP heartbeat dumped=%u now tick=%u\r\n",
+				last_hb_bumped, now);
+			continue;
+		}
+
 		last_tick = s_cp_hang_state.last_tick;
-		if (cp_hang_elapsed(now, last_tick) < cp_hang_effective_timeout_ms()) {
+		if (cp_hang_elapsed(now, last_tick) < s_cp_hang_state.timeout_ms) {
 			continue;
 		}
 
@@ -395,7 +387,7 @@ static void cp_hang_monitor_task(void *param)
 		 * the dump can go straight out the UART. */
 		cp_hang_set_ap_dumping(1U);
 		BK_LOGE(CP_HANG_TAG, "CP heartbeat timeout: last=%u now=%u timeout=%u src=%u\r\n",
-			last_tick, now, (unsigned)cp_hang_effective_timeout_ms(), s_cp_hang_state.src_cpu);
+			last_tick, now, s_cp_hang_state.timeout_ms, s_cp_hang_state.src_cpu);
 		cp_hang_dump_from_ap(now);
 	}
 }

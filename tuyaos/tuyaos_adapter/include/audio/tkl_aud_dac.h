@@ -41,7 +41,6 @@ typedef enum {
 } TKL_AUD_DAC_SRC_E;
 
 typedef struct {
-    UINT8_T volume;
     UINT8_T  chan_num;      // now, only one speaker
     UINT8_T sample_bits;    // T5 SMP, only support 16bits
     UINT32_T sample_rate;
@@ -58,7 +57,7 @@ typedef struct {
 /**
  * @brief Initialize the DAC playback context and hardware resources.
  * @param[in] config DAC configuration used to set sample rate, frame size,
- *                   initial volume, and frame callback.
+ *                   and frame callback. Gain is set via tkl_aud_dac_set_gain().
  * @param[in] port DAC output port. This parameter is ignored on T5.
  * @return OPRT_OK on success, other error codes on failure.
  * @note The current platform only supports 16-bit PCM output and forces the
@@ -99,15 +98,16 @@ OPERATE_RET tkl_aud_dac_start(TUYA_AUDIO_DAC_PORT_E port);
 OPERATE_RET tkl_aud_dac_stop(TUYA_AUDIO_DAC_PORT_E port);
 
 /**
- * @brief Update the DAC output volume.
+ * @brief Set the DAC hardware gain.
  * @param[in] port DAC output port. This parameter is ignored on T5.
- * @param[in] volume Logical volume value in the range `0x00` to `0x3F`.
+ * @param[in] gain Gain array in dB (platform-dependent count).
+ * @param[in] num Number of gain values. On this platform (dig+ana): num=2,
+ *                gain[0]=digital dB, gain[1]=analog dB. num=1 sets dig only.
  * @return OPRT_OK on success, other error codes on failure.
- * @note The input volume is remapped to a non-linear hardware gain curve
- *       before calling the underlying DAC gain API.
- * @note A volume value of `0` mutes the DAC output. Non-zero values unmute it.
+ * @note Dig gain <= -100 (silence) mutes the DAC; otherwise unmutes and applies.
+ * @note No volume remapping is performed; caller passes hardware gain directly.
  */
-OPERATE_RET tkl_aud_dac_set_volume(TUYA_AUDIO_DAC_PORT_E port, UINT32_T volume);
+OPERATE_RET tkl_aud_dac_set_gain(TUYA_AUDIO_DAC_PORT_E port, INT32_T gain[], UINT32_T num);
 
 /**
  * @brief Write PCM data into the DAC DMA ring buffer.

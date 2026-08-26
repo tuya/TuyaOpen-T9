@@ -3,6 +3,7 @@
 #include <stddef.h>
 #include <string.h>
 #include "bk_coredump.h"
+#include "bk_dump_manifest.h"
 #include "bk_arch.h"
 #include "os/mem.h"
 #include "reg_base.h"
@@ -11,9 +12,16 @@
 #include "multicore_driver.h"
 #include "mb_ipc_cmd.h"
 #include "sys_sw_regs.h"
+#include "sys_ahbp_ll.h"
 #include "memory.h"
 #include "cache.h"
 #include <components/log.h>
+
+/* P1-2: bounded wait to confirm the peer AP core actually entered reset via
+ * reset-status readback. Fixed behaviour; timeout is a board-tuned constant. */
+#ifndef COREDUMP_STOP_READBACK_TIMEOUT_US
+#define COREDUMP_STOP_READBACK_TIMEOUT_US 2000U
+#endif
 
 #if CONFIG_SUPPORT_WWDT
 #include <driver/wwdt.h>
@@ -57,6 +65,31 @@ bool bk_check_assert(void)
     return false;
 }
 
+/* AP-core reset-status readback (M0-confirmed registers, active-LOW: 0 = in
+ * reset). CPU2 = AP core0 (reg4 cpu0_sw_rstn), CPU3 = AP core1 (reg5
+ * cpu1_sw_rstn). */
+static inline bool ap_cpu2_is_reset(void)
+{
+    return sys_ahbp_ll_get_reg4_cpu0_sw_rstn() == 0U;
+}
+static inline bool ap_cpu3_is_reset(void)
+{
+    return sys_ahbp_ll_get_reg5_cpu1_sw_rstn() == 0U;
+}
+
+static bool coredump_wait_reset_confirmed(bool (*is_reset)(void))
+{
+    uint64_t start_us = bk_aon_rtc_get_us();
+
+    while (!is_reset()) {
+        if ((bk_aon_rtc_get_us() - start_us) >= COREDUMP_STOP_READBACK_TIMEOUT_US) {
+            return is_reset();
+        }
+        coredump_feed_watchdogs();
+    }
+    return true;
+}
+
 static inline void coredump_stop_other_cores(void)
 {
     // smp needs stop other cores
@@ -65,8 +98,20 @@ static inline void coredump_stop_other_cores(void)
 
     if (core_id == CPU2_CORE_ID) {
         bk_multicore_stop(CPU3_CORE_ID);
+        /* P1-2: confirm the peer AP core entered reset before dumping shared AP
+         * memory (same power domain, so best-effort log-only downgrade). */
+        if (coredump_wait_reset_confirmed(ap_cpu3_is_reset)) {
+            BK_DUMP_OUT("@STOP_CONFIRMED core=CPU3\r\n");
+        } else {
+            BK_DUMP_OUT("@STOP_UNCONFIRMED core=CPU3\r\n");
+        }
     } else if (core_id == CPU3_CORE_ID) {
         bk_multicore_stop(CPU2_CORE_ID);
+        if (coredump_wait_reset_confirmed(ap_cpu2_is_reset)) {
+            BK_DUMP_OUT("@STOP_CONFIRMED core=CPU2\r\n");
+        } else {
+            BK_DUMP_OUT("@STOP_UNCONFIRMED core=CPU2\r\n");
+        }
     } else {
         BK_DUMP_OUT("warning: unexpected AP core id %u, cannot stop peer core\r\n", core_id);
     }
@@ -176,10 +221,18 @@ static void coredump_notify_cp_begin(void)
 #endif
 }
 
-static void coredump_notify_cp_end(void)
+static bk_err_t coredump_notify_cp_end(void)
 {
 #if (CONFIG_CPU_CNT > 1)
-    ipc_send_trap_handle_end();
+    /* P0-1: propagate the handoff result so the caller can fall back to an AP
+     * self-dump + reset when the CP does not accept the trap-end request. */
+    bk_err_t ret = ipc_send_trap_handle_end();
+    if (ret != BK_OK) {
+        BK_DUMP_OUT("warning: notify CP trap end failed, ret=%d\r\n", ret);
+    }
+    return ret;
+#else
+    return BK_OK;
 #endif
 }
 
@@ -321,16 +374,19 @@ static void coredump_publish_ap_psram_windows(void)
     bk_dump_mem_info_t mem_info = {0};
 
     /*
-     * AP memory.c currently maps bk_get_psram_bss_info() to the actual
-     * .psram.data range, and bk_get_psram_data_info() to .psram.bss.
+     * Publish the PSRAM .data/.bss section ranges into the shared-reg slots the
+     * CP dumps. The CP reads AP_HEAP_SRAM as "AP_PSRAM_DATA" and AP_HEAP_HSRAM
+     * as "AP_PSRAM_BSS", so publish .psram.data to the SRAM slot and .psram.bss
+     * to the HSRAM slot. The published ranges are unchanged versus before; only
+     * the getter name<->range mapping was made self-consistent (see memory.c).
      */
-    bk_get_psram_bss_info(&mem_info);
+    bk_get_psram_data_info(&mem_info);
     if ((mem_info.start_addr != 0U) && (mem_info.size != 0U)) {
         bk_sys_sw_regs_update_ap_heap_dump(BK_SYS_SW_REGS_AP_HEAP_SRAM,
             mem_info.start_addr, mem_info.start_addr + mem_info.size);
     }
 
-    bk_get_psram_data_info(&mem_info);
+    bk_get_psram_bss_info(&mem_info);
     if ((mem_info.start_addr != 0U) && (mem_info.size != 0U)) {
         bk_sys_sw_regs_update_ap_heap_dump(BK_SYS_SW_REGS_AP_HEAP_HSRAM,
             mem_info.start_addr, mem_info.start_addr + mem_info.size);
@@ -338,17 +394,72 @@ static void coredump_publish_ap_psram_windows(void)
 #endif
 }
 
+/* P0-1: AP waits for the CP to close the AP power domain and reset the board
+ * after a successful handoff. Bound the wait (< AON-WDT 8000ms) so a dead/slow
+ * CP cannot hang the AP forever. On a successful CP reboot the chip resets and
+ * this never returns; returning means the CP did NOT reboot within the budget,
+ * i.e. the AP must fall back to a self-dump + reset.
+ *
+ * TUNING (FI-2, board-measured): the budget MUST exceed the worst-case healthy
+ * CP AP-memory dump time, otherwise a slow-but-alive CP causes the AP to also
+ * self-dump (double dump / UART collision); it MUST stay below the AON-WDT
+ * period, otherwise the AON-WDT resets the board before the AP fallback runs. */
+#ifndef CONFIG_AP_HANDOFF_CP_REBOOT_BUDGET_MS
+#define CONFIG_AP_HANDOFF_CP_REBOOT_BUDGET_MS 6000U
+#endif
+#define AP_HANDOFF_CP_REBOOT_BUDGET_MS  ((uint32_t)CONFIG_AP_HANDOFF_CP_REBOOT_BUDGET_MS)
+
+static void ap_wait_cp_reboot(uint32_t budget_ms)
+{
+    uint64_t start_us = bk_aon_rtc_get_us();
+    uint64_t budget_us = (uint64_t)budget_ms * 1000ULL;
+
+    while ((bk_aon_rtc_get_us() - start_us) < budget_us) {
+        coredump_feed_watchdogs();
+    }
+}
+
 static void bk_exception_dump_main(bk_exception_t *self)
 {
+#if CONFIG_DEBUG_VERSION || CONFIG_DUMP_ENABLE
+    bk_err_t handoff;
+#endif
+
     bk_coredump_writer_init();
 
-    bk_coredump_meta_info();
+    /* Header - ALWAYS emitted (Debug and Release): CPU registers, system info
+     * (fault type / build / core) and the reboot reason. In a Release build
+     * (CONFIG_DUMP_ENABLE=n and no CONFIG_DEBUG_VERSION) this header is the
+     * ENTIRE dump: no memory image, no CP handoff - then reboot. */
+    if (self->secure_context != NULL &&
+        self->reset_reason != RESET_SOURCE_CRASH_ASSERT) {
+        bk_coredump_write_meta_info(COREDUMP_EXCEPTION_INFO, (void *)"SecureFault");
+        bk_coredump_write_meta_info(COREDUMP_BUILD_INFO, (void *)build_version);
+#if CONFIG_SOC_SMP
+        bk_coredump_write_meta_info(COREDUMP_CORE_INFO,
+            (void *)(self->secure_context->core_id & 0x1U));
+#endif
+    } else {
+        bk_coredump_meta_info();
+    }
+    bk_coredump_write_prompt("@dump_format_version: %u\r\n", (unsigned)BK_DUMP_FORMAT_VERSION);
     bk_coredump_dump_time(self->exception_time_us);
+    bk_coredump_write_prompt("@reset-reason: 0x%x\r\n", self->reset_reason);
 
-    bk_coredump_registers(self);
+    if (self->secure_context != NULL) {
+        bk_coredump_secure_registers(self->secure_context);
+    } else {
+        bk_coredump_registers(self);
+    }
 
+#if CONFIG_DEBUG_VERSION || CONFIG_DUMP_ENABLE
+    /* Full AP memory image + CP handoff: Debug only (or where the
+     * self-exception dump is explicitly enabled). */
     coredump_publish_ap_psram_windows();
+#if CONFIG_DEBUG_VERSION
+    /* PSRAM code compare is an engineering forensic probe: Debug builds only. */
     coredump_check_psram_code();
+#endif
     coredump_notify_cp_begin();
 
     coredump_prompt_prologue();
@@ -356,31 +467,64 @@ static void bk_exception_dump_main(bk_exception_t *self)
     // coredump_prompt_info();
 
 #if CONFIG_CM_BACKTRACE
-    if (self->reset_reason != RESET_SOURCE_CRASH_ASSERT) {
+    if (self->reset_reason != RESET_SOURCE_CRASH_ASSERT &&
+        self->secure_context == NULL) {
         cm_backtrace_fault(self->lr, self->sp);
     }
 #endif
 
-    // coredump_prompt_epilogue();
-
     bk_coredump_writer_deinit();
 
-    coredump_flush_for_cp_dump();
-    coredump_notify_cp_end();
+    coredump_flush_for_cp_dump();          /* flush PSRAM L2 before CP reads AP RAM */
+    handoff = coredump_notify_cp_end();    /* prefer handoff: CP dumps AP mem + resets */
+
+    if (handoff == BK_OK) {
+        ap_wait_cp_reboot(AP_HANDOFF_CP_REBOOT_BUDGET_MS);
+    }
+
+    /* Reached here => the CP rejected the handoff, or did not reset the board
+     * within the budget (CP hung). Take over: AP self-dumps its full memory and
+     * resets deterministically so the failure is never a silent no-dump hang. */
+    BK_DUMP_OUT("@AP_HANDOFF_FAILED: AP self-dump full memory then reset\r\n");
+    bk_coredump_writer_init();             /* re-acquire UART lock (released above) */
+    bk_coredump_self_full_memory();        /* manifest(AP), local reads (path 4) */
+    coredump_prompt_epilogue();            /* end marker before any (debug-only) probe */
+    bk_coredump_writer_deinit();
+    coredump_feed_watchdogs();
+    bk_reboot_ex(self->reset_reason);      /* AP is the sole reset issuer here */
+#else
+    /* Release (CONFIG_DUMP_ENABLE=n): header only, no memory image, no CP
+     * handoff. Bracket the (empty) body with the standard prologue/epilogue
+     * markers so the offline parser still sees a complete record, then fall
+     * through to bk_exception_postprocess() which issues the reboot. */
+    coredump_prompt_prologue();
+    coredump_prompt_epilogue();
+    bk_coredump_writer_deinit();
+#endif /* CONFIG_DEBUG_VERSION || CONFIG_DUMP_ENABLE */
 }
 
 static void bk_exception_postprocess(bk_exception_t *self)
 {
-#if CONFIG_DEBUG_VERSION || CONFIG_DUMP_ENABLE
-#if CONFIG_SUPPORT_WWDT
-    bk_wwdt_driver_deinit();
-#endif
-#else
+    /* The Debug / DUMP_ENABLE path reboots inside bk_exception_dump_main (CP
+     * handoff or AP self-dump), so it normally never returns here. The Release
+     * path returns after the minimal header dump, so this is where that build
+     * issues the reboot. Keep it as an unconditional fallback reboot for both. */
     if (self->reset_reason != RESET_SOURCE_CRASH_ASSERT) {
         BK_LOG_FLUSH();
     }
     bk_reboot_ex(self->reset_reason);
-#endif
+}
+
+static void bk_exception_handler_common(bk_exception_t *exception)
+{
+    bk_exception_preprocess(exception);
+    /* Always run: the dump header (registers + system info + reboot reason) is
+     * emitted in EVERY build; the memory image + CP handoff inside
+     * bk_exception_dump_main are gated by CONFIG_DEBUG_VERSION ||
+     * CONFIG_DUMP_ENABLE, so a Release build only produces the minimal header,
+     * then bk_exception_postprocess() reboots. */
+    bk_exception_dump_main(exception);
+    bk_exception_postprocess(exception);
 }
 
 void bk_exception_handler(uint32_t reset_reason, uint32_t lr, uint32_t sp)
@@ -403,13 +547,31 @@ void bk_exception_handler(uint32_t reset_reason, uint32_t lr, uint32_t sp)
         .basepri = __get_BASEPRI(),
         .faultmask = __get_FAULTMASK(),
         .control = __get_CONTROL(),
+        .secure_context = NULL,
         .exception_time_us = exception_time_us,
     };
-    bk_exception_preprocess(&exception);
-#if CONFIG_DEBUG_VERSION || CONFIG_DUMP_ENABLE
-    bk_exception_dump_main(&exception);
-#endif
-    bk_exception_postprocess(&exception);
+    bk_exception_handler_common(&exception);
+}
+
+void bk_exception_handler_from_secure(const ap_secure_fault_context_t *context)
+{
+    uint32_t reset_reason = bk_check_assert()
+        ? RESET_SOURCE_CRASH_ASSERT
+        : RESET_SOURCE_SECURE_FAULT;
+
+    bk_exception_t exception = {
+        .lr = context->exception_lr,
+        .sp = context->frame_sp,
+        .reset_reason = reset_reason,
+        .primask = context->primask_ns,
+        .basepri = context->basepri_ns,
+        .faultmask = context->faultmask_ns,
+        .control = context->control_ns,
+        .secure_context = context,
+        .exception_time_us = bk_aon_rtc_get_us(),
+    };
+
+    bk_exception_handler_common(&exception);
 }
 
 void bk_assert_handler(const char *func, int line)
@@ -451,10 +613,14 @@ uint32_t bk_get_dump_sys_mem_count(void)
 {
     for (int i = 0; i < MAX_DUMP_SYS_MEM_COUNT; i++) {
         if (s_dump_sys_mem_info[i].start_addr == 0 && s_dump_sys_mem_info[i].size == 0) {
-            return i + 1;
+            /* i is the first empty slot, i.e. the number of registered
+             * regions [0..i-1]. Returning i+1 used to dump one extra empty
+             * region (0-length EXTRA_MEM). */
+            return i;
         }
     }
-    return 0;
+    /* Table is full: every slot holds a registered region. */
+    return MAX_DUMP_SYS_MEM_COUNT;
 }
 
 bk_mem_addr_t *bk_get_dump_sys_mem_info(void)

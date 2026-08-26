@@ -14,9 +14,6 @@
 #include <os/mem.h>
 #include <os/os.h>
 #include <os/str.h>
-#if CONFIG_L2_CACHE_ENABLE || CONFIG_DCACHE
-#include "cache.h"
-#endif
 #include "sys_driver.h"
 #include "tkl_output.h"
 #include "tkl_system.h"
@@ -39,6 +36,8 @@ typedef struct {
 } tkl_camera_mipi_ctx_t;
 
 static tkl_camera_mipi_ctx_t s_cam_ctx;
+static ISP_GAMMA_OUT_ATTR_S s_gamma_out_backup;
+static BOOL_T s_gamma_out_backup_valid = FALSE;
 
 static VOID_T tkl_camera_mipi_gpio_bank_ldo_enable(VOID_T)
 {
@@ -98,6 +97,7 @@ static void tkl_camera_mipi_runtime_reset(BOOL_T keep_config)
     }
 
     os_memset(&s_cam_ctx, 0, sizeof(s_cam_ctx));
+    s_gamma_out_backup_valid = FALSE;
 
     if (keep_config == TRUE) {
         os_memcpy(&s_cam_ctx.cfg, &cfg_backup, sizeof(cfg_backup));
@@ -569,17 +569,21 @@ static OPERATE_RET tkl_camera_mipi_output_validate(UINT16_T width, UINT16_T heig
 }
 
 /**
- * @brief Set ISP output resolution of the given channel (live switch when streaming)
+ * @brief Set ISP output resolution of the given channel
  * @param[in] channel_id TUYA_CAMERA_MIPI_CHANNEL_MP or TUYA_CAMERA_MIPI_CHANNEL_SP
  * @param[in] width new output width in pixels
  * @param[in] height new output height in pixels
- * @return OPRT_OK on success; on reopen failure the channel is left closed while
+ * @return OPRT_OK on success; on live reopen failure the channel is left closed while
  *         the other channel keeps streaming
+ * @note When streaming MP-only (SP not TURN_ON), closing MP drops camera FSM to INIT and
+ *       live reopen/arm_probe fails. In that case this API does stop()+start() instead of
+ *       channel close/open. MP+SP concurrent still uses live switch.
  */
 OPERATE_RET tkl_camera_mipi_set_output(UINT8_T channel_id, UINT16_T width, UINT16_T height)
 {
     OPERATE_RET ret;
     uint8_t isp_chn_id;
+    BOOL_T sp_peer_on = FALSE;
 
     if (channel_id != TUYA_CAMERA_MIPI_CHANNEL_MP &&
         channel_id != TUYA_CAMERA_MIPI_CHANNEL_SP) {
@@ -607,6 +611,33 @@ OPERATE_RET tkl_camera_mipi_set_output(UINT8_T channel_id, UINT16_T width, UINT1
 
     /* not streaming yet: defer to next start() */
     if (s_cam_ctx.started != TRUE || s_cam_ctx.camera_ctlr_handle == NULL) {
+        return OPRT_OK;
+    }
+
+    if (s_cam_ctx.cfg.sp_enable == TRUE &&
+        bk_isp_camera_channel_state_get(s_cam_ctx.camera_ctlr_handle, ISP_SP_CHN_ID)
+            == ISP_CHANNEL_STATE_TURN_ON) {
+        sp_peer_on = TRUE;
+    }
+
+    /*
+     * MP-only: closing the last channel forces CAM_FSM_INIT; subsequent channel_open
+     * arm_probe/read requires CAM_FSM_ENABLE and fails. Rebuild via stop+start instead.
+     */
+    if (channel_id == TUYA_CAMERA_MIPI_CHANNEL_MP && sp_peer_on == FALSE) {
+        tkl_log_output("set_output MP restart (mp-only), %ux%u\r\n", width, height);
+        ret = tkl_camera_mipi_stop();
+        if (ret != OPRT_OK) {
+            tkl_log_output("set_output MP restart stop failed: %d\r\n", ret);
+            return ret;
+        }
+        ret = tkl_camera_mipi_start();
+        if (ret != OPRT_OK) {
+            tkl_log_output("set_output MP restart start failed: %d\r\n", ret);
+            return ret;
+        }
+        tkl_log_output("set_output ch%u restart ok, %ux%u\r\n",
+                       (unsigned int)channel_id, width, height);
         return OPRT_OK;
     }
 
@@ -786,189 +817,19 @@ OPERATE_RET tkl_camera_mipi_stop(void)
 }
 
 /**
- * @brief Flush CPU dcache for ISP DMA plane before CPU read
- * @param[in] addr plane base address
- * @param[in] size plane size in bytes
- * @return none
- */
-STATIC VOID_T __tkl_camera_mipi_plane_cache_sync(VOID_T *addr, UINT32_T size)
-{
-    if (addr == NULL || size == 0U) {
-        return;
-    }
-
-#if CONFIG_L2_CACHE_ENABLE || CONFIG_DCACHE
-    arch_dcache_flush_and_invd_range(addr, size);
-#else
-    (void)addr;
-    (void)size;
-#endif
-}
-
-/**
- * @brief Resolve ISP control and channel config
- * @param[in] chn_id ISP_MP_CHN_ID or ISP_SP_CHN_ID
- * @param[out] isp_control ISP control pointer
- * @param[out] chn_cfg channel config pointer
- * @return OPRT_OK on success
- */
-STATIC OPERATE_RET __tkl_camera_mipi_chn_get_control(UINT8_T chn_id,
-                                                     isp_control_t **isp_control,
-                                                     isp_channel_config_t **chn_cfg)
-{
-    isp_control_t *isp;
-
-    if (isp_control == NULL || chn_cfg == NULL ||
-        (chn_id != ISP_MP_CHN_ID && chn_id != ISP_SP_CHN_ID)) {
-        return OPRT_INVALID_PARM;
-    }
-
-    isp = (isp_control_t *)s_cam_ctx.isp_handle;
-    if (isp == NULL || isp->pop_buf == NULL || isp->free_buf == NULL) {
-        return OPRT_RESOURCE_NOT_READY;
-    }
-
-    *isp_control = isp;
-    *chn_cfg = &isp->chn[chn_id];
-    if ((*chn_cfg)->enable == 0U) {
-        return OPRT_RESOURCE_NOT_READY;
-    }
-
-    return OPRT_OK;
-}
-
-/**
- * @brief Copy NV12 planes into tightly packed buffer (stride == width)
- * @param[in] width frame width, must be even
- * @param[in] height frame height, must be even
- * @param[in] y_plane Y plane base
- * @param[in] y_stride Y plane stride in bytes
- * @param[in] uv_plane UV plane base
- * @param[in] uv_stride UV plane stride in bytes
- * @param[out] nv12 tightly packed NV12 output
- * @return OPRT_OK on success
- */
-STATIC OPERATE_RET __tkl_camera_mipi_nv12_copy_tight(UINT16_T width,
-                                                     UINT16_T height,
-                                                     const UINT8_T *y_plane,
-                                                     UINT32_T y_stride,
-                                                     const UINT8_T *uv_plane,
-                                                     UINT32_T uv_stride,
-                                                     UINT8_T *nv12)
-{
-    UINT32_T row;
-    UINT32_T y_plane_size;
-
-    if (y_plane == NULL || uv_plane == NULL || nv12 == NULL ||
-        (width & 1U) != 0U || (height & 1U) != 0U ||
-        y_stride < (UINT32_T)width || uv_stride < (UINT32_T)width) {
-        return OPRT_INVALID_PARM;
-    }
-
-    y_plane_size = (UINT32_T)width * (UINT32_T)height;
-
-    if (y_stride == (UINT32_T)width && uv_stride == (UINT32_T)width) {
-        if (uv_plane == (y_plane + y_plane_size)) {
-            os_memcpy(nv12, y_plane, y_plane_size + (y_plane_size / 2U));
-        } else {
-            os_memcpy(nv12, y_plane, y_plane_size);
-            os_memcpy(nv12 + y_plane_size, uv_plane, y_plane_size / 2U);
-        }
-        return OPRT_OK;
-    }
-
-    for (row = 0U; row < (UINT32_T)height; row++) {
-        os_memcpy(nv12 + row * (UINT32_T)width,
-                  y_plane + row * y_stride,
-                  (UINT32_T)width);
-    }
-
-    for (row = 0U; row < ((UINT32_T)height / 2U); row++) {
-        os_memcpy(nv12 + y_plane_size + row * (UINT32_T)width,
-                  uv_plane + row * uv_stride,
-                  (UINT32_T)width);
-    }
-
-    return OPRT_OK;
-}
-
-/**
- * @brief Copy RGBX/BGRx plane into tightly packed buffer
- * @param[in] width frame width
- * @param[in] height frame height
- * @param[in] src plane base
- * @param[in] src_stride source row stride in bytes
- * @param[in] row_bytes valid bytes per row (width * 4 for ISP RGB888)
- * @param[out] dst tightly packed output
- * @return OPRT_OK on success
- */
-STATIC OPERATE_RET __tkl_camera_mipi_plane_copy_tight(UINT16_T width,
-                                                      UINT16_T height,
-                                                      const UINT8_T *src,
-                                                      UINT32_T src_stride,
-                                                      UINT32_T row_bytes,
-                                                      UINT8_T *dst)
-{
-    UINT32_T row;
-
-    (void)width;
-    if (src == NULL || dst == NULL || height == 0U || row_bytes == 0U ||
-        src_stride < row_bytes) {
-        return OPRT_INVALID_PARM;
-    }
-
-    if (src_stride == row_bytes) {
-        os_memcpy(dst, src, row_bytes * (UINT32_T)height);
-        return OPRT_OK;
-    }
-
-    for (row = 0U; row < (UINT32_T)height; row++) {
-        os_memcpy(dst + row * row_bytes, src + row * src_stride, row_bytes);
-    }
-
-    return OPRT_OK;
-}
-
-/**
- * @brief Resolve plane CPU pointer and size from VIDEO_BUF_S
- * @param[in] plane plane descriptor
- * @param[out] addr plane address
- * @param[out] size plane size
- * @return OPRT_OK on success
- */
-STATIC OPERATE_RET __tkl_camera_mipi_plane_addr_get(const VB_PLANE_S *plane,
-                                                    uintptr_t *addr,
-                                                    UINT32_T *size)
-{
-    if (plane == NULL || addr == NULL || size == NULL) {
-        return OPRT_INVALID_PARM;
-    }
-
-    *addr = (uintptr_t)plane->dmaPhyAddr;
-    if (plane->pUserAddr != NULL) {
-        *addr = (uintptr_t)plane->pUserAddr;
-    }
-    *size = plane->size;
-    if (*addr == 0U || *size == 0U) {
-        return OPRT_COM_ERROR;
-    }
-
-    return OPRT_OK;
-}
-
-/**
- * @brief Pop one ISP frame and copy to tightly packed caller buffer
- * @param[in] chn_id ISP channel id
+ * @brief Read one ISP frame via camera_ctlr->read into caller buffer
+ * @param[in] chn_id ISP channel id (MP/SP frame mode)
  * @param[in] format pixel format
  * @param[in] width frame width
  * @param[in] height frame height
  * @param[out] dst caller buffer
  * @param[in] dst_size buffer capacity
- * @param[in] timeout_ms pop timeout
+ * @param[in] timeout_ms read timeout
  * @param[out] out_len packed bytes written
  * @param[out] y_stride packed Y/RGB row stride
  * @param[out] uv_stride packed UV row stride (0 if N/A)
  * @return OPRT_OK on success
+ * @note Dequeue is owned by cam_thread (same path as arm_probe). Flexa is rejected by caller.
  */
 STATIC OPERATE_RET __tkl_camera_mipi_pop_copy_frame(UINT8_T chn_id,
                                                     UINT32_T format,
@@ -981,18 +842,14 @@ STATIC OPERATE_RET __tkl_camera_mipi_pop_copy_frame(UINT8_T chn_id,
                                                     UINT32_T *y_stride,
                                                     UINT32_T *uv_stride)
 {
-    isp_control_t *isp_control = NULL;
-    isp_channel_config_t *chn_cfg = NULL;
-    VIDEO_BUF_S vbuf;
-    OPERATE_RET op_ret;
-    INT_T pop_ret;
-    BOOL_T held = FALSE;
+    avdk_err_t read_ret;
     UINT32_T need_size;
     UINT32_T packed_y_stride = 0U;
     UINT32_T packed_uv_stride = 0U;
 
     if (dst == NULL || dst_size == 0U || width == 0U || height == 0U ||
-        out_len == NULL || y_stride == NULL || uv_stride == NULL) {
+        out_len == NULL || y_stride == NULL || uv_stride == NULL ||
+        (chn_id != ISP_MP_CHN_ID && chn_id != ISP_SP_CHN_ID)) {
         return OPRT_INVALID_PARM;
     }
 
@@ -1026,121 +883,23 @@ STATIC OPERATE_RET __tkl_camera_mipi_pop_copy_frame(UINT8_T chn_id,
         return OPRT_INVALID_PARM;
     }
 
-    op_ret = __tkl_camera_mipi_chn_get_control(chn_id, &isp_control, &chn_cfg);
-    if (op_ret != OPRT_OK) {
-        return op_ret;
+    if (s_cam_ctx.camera_ctlr_handle == NULL) {
+        return OPRT_RESOURCE_NOT_READY;
     }
 
-    os_memset(&vbuf, 0, sizeof(vbuf));
-    pop_ret = isp_control->pop_buf(chn_cfg->channel, &vbuf, timeout_ms);
-    if (pop_ret != BK_OK) {
-        tkl_log_output("camera chn%u pop_buf failed: %d\r\n",
-                       (unsigned int)chn_id, pop_ret);
+    /* MP/SP 帧模式：走 camera_ctlr->read，由 cam_thread 统一 dequeue，与 arm_probe 一致 */
+    read_ret = bk_isp_camera_read(s_cam_ctx.camera_ctlr_handle, chn_id,
+                                  dst, need_size, timeout_ms);
+    if (read_ret != AVDK_ERR_OK) {
+        tkl_log_output("camera chn%u read failed: %d timeout_ms:%d\r\n",
+                       (unsigned int)chn_id, (int)read_ret, timeout_ms);
         return OPRT_COM_ERROR;
-    }
-    held = TRUE;
-
-    if (format == (UINT32_T)BK_PIXEL_FORMAT_NV12) {
-        UINT32_T y_plane_size = (UINT32_T)width * (UINT32_T)height;
-        const UINT8_T *nv12_y = NULL;
-        const UINT8_T *nv12_uv = NULL;
-        UINT32_T src_y_stride = (UINT32_T)width;
-        UINT32_T src_uv_stride = (UINT32_T)width;
-
-        if (vbuf.numPlanes >= 2U) {
-            uintptr_t y_addr = 0U;
-            uintptr_t uv_addr = 0U;
-            UINT32_T y_size = 0U;
-            UINT32_T uv_size = 0U;
-
-            op_ret = __tkl_camera_mipi_plane_addr_get(&vbuf.planes[0], &y_addr, &y_size);
-            if (op_ret == OPRT_OK) {
-                op_ret = __tkl_camera_mipi_plane_addr_get(&vbuf.planes[1], &uv_addr, &uv_size);
-            }
-            if (op_ret != OPRT_OK || y_size < y_plane_size || uv_size < (y_plane_size / 2U)) {
-                op_ret = OPRT_COM_ERROR;
-                goto cleanup;
-            }
-
-            src_y_stride = y_size / (UINT32_T)height;
-            src_uv_stride = uv_size / ((UINT32_T)height / 2U);
-            if (src_y_stride < (UINT32_T)width) {
-                src_y_stride = (UINT32_T)width;
-            }
-            if (src_uv_stride < (UINT32_T)width) {
-                src_uv_stride = (UINT32_T)width;
-            }
-
-            nv12_y = (const UINT8_T *)y_addr;
-            nv12_uv = (const UINT8_T *)uv_addr;
-            __tkl_camera_mipi_plane_cache_sync((VOID_T *)y_addr, y_size);
-            __tkl_camera_mipi_plane_cache_sync((VOID_T *)uv_addr, uv_size);
-        } else if (vbuf.numPlanes >= 1U) {
-            uintptr_t y_addr = 0U;
-            UINT32_T frame_size = 0U;
-
-            op_ret = __tkl_camera_mipi_plane_addr_get(&vbuf.planes[0], &y_addr, &frame_size);
-            if (vbuf.imageSize != 0U) {
-                frame_size = vbuf.imageSize;
-            }
-            if (op_ret != OPRT_OK || frame_size < need_size) {
-                op_ret = OPRT_COM_ERROR;
-                goto cleanup;
-            }
-
-            nv12_y = (const UINT8_T *)y_addr;
-            nv12_uv = nv12_y + y_plane_size;
-            __tkl_camera_mipi_plane_cache_sync((VOID_T *)y_addr, frame_size);
-        } else {
-            op_ret = OPRT_COM_ERROR;
-            goto cleanup;
-        }
-
-        op_ret = __tkl_camera_mipi_nv12_copy_tight(width, height, nv12_y, src_y_stride,
-                                                  nv12_uv, src_uv_stride, dst);
-    } else {
-        uintptr_t src_addr = 0U;
-        UINT32_T plane_size = 0U;
-        UINT32_T src_stride;
-
-        if (vbuf.numPlanes < 1U) {
-            op_ret = OPRT_COM_ERROR;
-            goto cleanup;
-        }
-
-        op_ret = __tkl_camera_mipi_plane_addr_get(&vbuf.planes[0], &src_addr, &plane_size);
-        if (op_ret != OPRT_OK) {
-            goto cleanup;
-        }
-
-        src_stride = plane_size / (UINT32_T)height;
-        if (src_stride < packed_y_stride) {
-            op_ret = OPRT_COM_ERROR;
-            goto cleanup;
-        }
-
-        __tkl_camera_mipi_plane_cache_sync((VOID_T *)src_addr, plane_size);
-        op_ret = __tkl_camera_mipi_plane_copy_tight(width, height,
-                                                   (const UINT8_T *)src_addr,
-                                                   src_stride,
-                                                   packed_y_stride,
-                                                   dst);
-    }
-
-    if (op_ret != OPRT_OK) {
-        goto cleanup;
     }
 
     *out_len = need_size;
     *y_stride = packed_y_stride;
     *uv_stride = packed_uv_stride;
-
-cleanup:
-    if (held != FALSE && isp_control != NULL && chn_cfg != NULL) {
-        (void)isp_control->free_buf(chn_cfg->channel, &vbuf);
-    }
-
-    return op_ret;
+    return OPRT_OK;
 }
 
 /**
@@ -1266,8 +1025,8 @@ OPERATE_RET tkl_camera_mipi_get_mirror_flip(UINT8_T *hmirror, UINT8_T *vflip)
 }
 
 /**
- * @brief Get ISP weighted mean exposure luminance via camera IOCTL
- * @param[out] luminance mean luminance * 1000
+ * @brief Get ISP exposure-normalized luminance via camera IOCTL
+ * @param[out] luminance (meanLum * 1e6) / (exposure[0] * 39)
  * @return OPRT_OK on success
  */
 OPERATE_RET tkl_camera_mipi_get_exposure_luminance(UINT32_T *luminance)
@@ -1357,6 +1116,67 @@ OPERATE_RET tkl_camera_mipi_set_color_to_gray(BOOL_T enable)
     if (ret != AVDK_ERR_OK) {
         tkl_log_output("set cproc failed: %d\r\n", ret);
         return OPRT_COM_ERROR;
+    }
+
+    return OPRT_OK;
+}
+
+/**
+ * @brief Switch ISP gamma-out between night curve and backed-up day curve
+ * @param[in] enable TRUE=apply night gamma-out (backup current first), FALSE=restore backup
+ * @return OPRT_OK on success
+ * @note Requires camera started. Night curve fields are left for product fill-in.
+ */
+OPERATE_RET tkl_camera_mipi_set_night_gamma(BOOL_T enable)
+{
+    int ret;
+    isp_control_t *isp = NULL;
+    ISP_GAMMA_OUT_ATTR_S gamma_out = {0};
+
+    if (s_cam_ctx.started != TRUE || s_cam_ctx.isp_handle == NULL) {
+        return OPRT_RESOURCE_NOT_READY;
+    }
+
+    isp = (isp_control_t *)s_cam_ctx.isp_handle;
+
+    if (enable != FALSE) {
+        if (s_gamma_out_backup_valid == FALSE) {
+            ret = VSI_MPI_ISP_GetGammaOutAttr(isp->port, &gamma_out);
+            if (ret != 0) {
+                tkl_log_output("get gamma out failed: %d\r\n", ret);
+                return OPRT_COM_ERROR;
+            }
+            os_memcpy(&s_gamma_out_backup, &gamma_out, sizeof(s_gamma_out_backup));
+            s_gamma_out_backup_valid = TRUE;
+        }
+        else{
+            os_memcpy(&gamma_out, &s_gamma_out_backup, sizeof(gamma_out));   
+        }
+        vsi_u16_t  night_defY[ISP_GAMMA_OUT_NODE_NUM] = {
+            57,  106, 151, 202, 243, 288, 329, 373, 400, 429, 458, 485, 508, 529, 548, 567,
+            585, 601, 617, 632, 646, 660, 673, 686, 698, 711, 723, 734, 745, 754, 764, 773,
+            782, 791, 799, 808, 816, 823, 831, 839, 846, 853, 861, 869, 877, 885, 894, 902,
+            910, 918, 927, 935, 942, 950, 958, 966, 973, 981, 988, 995, 1003, 1010, 1017, 1023
+        };
+        os_memcpy(gamma_out.curve.redY, night_defY, sizeof(night_defY));
+        os_memcpy(gamma_out.curve.greenY, night_defY, sizeof(night_defY));
+        os_memcpy(gamma_out.curve.blueY, night_defY, sizeof(night_defY));
+
+        ret = VSI_MPI_ISP_SetGammaOutAttr(isp->port, &gamma_out);
+        if (ret != 0) {
+            tkl_log_output("set night gamma out failed: %d\r\n", ret);
+            return OPRT_COM_ERROR;
+        }
+    } else {
+        if (s_gamma_out_backup_valid == FALSE) {
+            return OPRT_RESOURCE_NOT_READY;
+        }
+
+        ret = VSI_MPI_ISP_SetGammaOutAttr(isp->port, &s_gamma_out_backup);
+        if (ret != 0) {
+            tkl_log_output("restore gamma out failed: %d\r\n", ret);
+            return OPRT_COM_ERROR;
+        }
     }
 
     return OPRT_OK;
