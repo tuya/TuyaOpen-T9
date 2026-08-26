@@ -81,6 +81,7 @@ void cli_tkl_adc_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **
 void cli_tuya_lvgl_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv);
 #endif
 // void cli_tuya_face_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv);
+// void cli_tuya_face_recog_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv);
 int cli_mp3_init(void);
 int cli_dwt_init(void);
 
