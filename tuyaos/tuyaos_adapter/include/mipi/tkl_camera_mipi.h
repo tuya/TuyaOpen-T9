@@ -120,8 +120,8 @@ OPERATE_RET tkl_camera_mipi_set_mirror_flip(UINT8_T hmirror, UINT8_T vflip);
  */
 OPERATE_RET tkl_camera_mipi_get_mirror_flip(UINT8_T *hmirror, UINT8_T *vflip);
 /**
- * @brief Get ISP weighted mean exposure luminance
- * @param[out] luminance mean luminance scaled by 1000 (typical range 0~255000)
+ * @brief Get ISP exposure-normalized luminance
+ * @param[out] luminance (meanLum * 1e6) / (exposure[0] * 39)
  * @return OPRT_OK on success
  * @note Requires camera started. Wraps BK_CAM_IOCTL_GET_EXPOSURE_LUMINANCE.
  */

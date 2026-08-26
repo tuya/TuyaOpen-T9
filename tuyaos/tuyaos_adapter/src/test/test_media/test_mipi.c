@@ -46,7 +46,6 @@
 #define MIPI_TEST_MIRROR_EDGE_COLS     8U
 #define MIPI_TEST_CAMERA_USAGE \
     "Usage: xmipi camera <open [sw sh fps ow oh]|open_gpu [sw sh fps ow oh]|open_gpu_sp [sw sh fps ow oh spw sph]|start|switch <ow> <oh>|switch_sp <spw> <sph>|get_frame [mp|sp]|mirror [hmirror vflip]|mirror_test|luminance|luminance_test [n ms]|cproc|gray [0|1]|night [0|1]|skip [n]|stop|close>"
-#define MIPI_TEST_LUMINANCE_MAX         255000U
 #define MIPI_TEST_LUMINANCE_DEFAULT_CNT 5U
 #define MIPI_TEST_LUMINANCE_DEFAULT_MS  200U
 
@@ -1655,6 +1654,7 @@ restore:
  * @brief Query ISP exposure luminance once
  * @param[out] luminance optional output
  * @return OPRT_OK on success
+ * @note Value is exposure-normalized: (meanLum * 1e6) / (exposure[0] * 39).
  */
 static OPERATE_RET test_mipi_camera_get_luminance(UINT32_T *luminance)
 {
@@ -1672,8 +1672,8 @@ static OPERATE_RET test_mipi_camera_get_luminance(UINT32_T *luminance)
         return ret;
     }
 
-    tkl_log_output("camera luminance=%u (meanLum*1000, range 0~%u)\r\n",
-                   (unsigned int)lum, (unsigned int)MIPI_TEST_LUMINANCE_MAX);
+    tkl_log_output("camera luminance=%u (norm: meanLum*1e6/(exposure*39))\r\n",
+                   (unsigned int)lum);
     if (luminance != NULL) {
         *luminance = lum;
     }
@@ -1681,10 +1681,10 @@ static OPERATE_RET test_mipi_camera_get_luminance(UINT32_T *luminance)
 }
 
 /**
- * @brief Sample exposure luminance repeatedly and validate range
+ * @brief Sample exposure luminance repeatedly and report stats
  * @param[in] count sample count
  * @param[in] interval_ms delay between samples
- * @return OPRT_OK if all samples succeed and stay in range
+ * @return OPRT_OK if all samples succeed
  */
 static OPERATE_RET test_mipi_camera_luminance_test(UINT32_T count, UINT32_T interval_ms)
 {
@@ -1709,12 +1709,6 @@ static OPERATE_RET test_mipi_camera_luminance_test(UINT32_T count, UINT32_T inte
     for (i = 0U; i < count; i++) {
         ret = test_mipi_camera_get_luminance(&lum);
         if (ret != OPRT_OK) {
-            pass = FALSE;
-            break;
-        }
-        if (lum > MIPI_TEST_LUMINANCE_MAX) {
-            tkl_log_output("luminance_test FAIL: sample[%u]=%u out of range\r\n",
-                           (unsigned int)i, (unsigned int)lum);
             pass = FALSE;
             break;
         }
