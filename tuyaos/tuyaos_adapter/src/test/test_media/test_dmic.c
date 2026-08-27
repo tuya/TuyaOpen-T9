@@ -281,7 +281,8 @@ static OPERATE_RET test_dmic_dac_init_start(uint32_t dac_port, uint32_t sample_r
 
         gain[0] = dig_db;
         gain[1] = ana_db;
-        ret = tkl_aud_dac_set_gain((TUYA_AUDIO_DAC_PORT_E)dac_port, gain, 2U);
+        ret = tkl_aud_dac_set_gain((TUYA_AUDIO_DAC_PORT_E)dac_port, TUYA_AUDIO_DAC_CHANNEL_0,
+                                   gain, 2U);
         if (ret != OPRT_OK) {
             test_dmic_dac_deinit();
             return ret;

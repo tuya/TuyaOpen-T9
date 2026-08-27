@@ -27,6 +27,8 @@ extern "C" {
 /* Public macros -------------------------------------------------------------*/
 
 /* Public typedefs -----------------------------------------------------------*/
+#define AUDIA_DAC_INVALID_GAIN_VALUE   0xFFFFFFFF
+
 typedef VOID (*TKL_AUD_DAC_FRAME_CB)(TUYA_AUDIO_DAC_FRAME_EVT_E event, VOID_T *args);
 
 /**
@@ -50,6 +52,24 @@ typedef struct {
     TKL_AUD_DAC_SRC_E src;  /**< Digital source; 0=AUTO */
     UINT32_T pa_pin; /**< Speaker PA enable GPIO number (active-high). */
 }TKL_AUD_DAC_CFG_T;
+
+/**
+ * @brief audio dac channel
+ *
+ */
+typedef enum {
+    TUYA_AUDIO_DAC_CHANNEL_0,
+    TUYA_AUDIO_DAC_CHANNEL_1,
+    TUYA_AUDIO_DAC_CHANNEL_2,
+    TUYA_AUDIO_DAC_CHANNEL_3,
+    TUYA_AUDIO_DAC_CHANNEL_4,
+    TUYA_AUDIO_DAC_CHANNEL_5,
+    TUYA_AUDIO_DAC_CHANNEL_6,
+    TUYA_AUDIO_DAC_CHANNEL_7,
+    TUYA_AUDIO_DAC_CHANNEL_8,
+    TUYA_AUDIO_DAC_CHANNEL_9,
+    TUYA_AUDIO_DAC_CHANNEL_MAX
+} TUYA_AUDIO_DAC_CHANNEL_E;
 
 /* Public variables ----------------------------------------------------------*/
 
@@ -100,14 +120,16 @@ OPERATE_RET tkl_aud_dac_stop(TUYA_AUDIO_DAC_PORT_E port);
 /**
  * @brief Set the DAC hardware gain.
  * @param[in] port DAC output port. This parameter is ignored on T5.
- * @param[in] gain Gain array in dB (platform-dependent count).
- * @param[in] num Number of gain values. On this platform (dig+ana): num=2,
- *                gain[0]=digital dB, gain[1]=analog dB. num=1 sets dig only.
+ * @param[in] channel TUYA_AUDIO_DAC_CHANNEL_0/1 -> L/R. On this platform OEM dig
+ *                    API always programs L+R together; ana is global.
+ * @param[in] gain gain[0]=dig dB, gain[1]=ana dB (when num>=2). Pass
+ *                 AUDIA_DAC_INVALID_GAIN_VALUE to leave dig or ana unchanged.
+ * @param[in] num 1 (dig only) or 2 (dig then ana)
  * @return OPRT_OK on success, other error codes on failure.
- * @note Dig gain <= -100 (silence) mutes the DAC; otherwise unmutes and applies.
- * @note No volume remapping is performed; caller passes hardware gain directly.
+ * @note Dig and ana can be updated independently. At least one must be valid.
+ * @note Dig <= silence threshold mutes; otherwise unmutes when dig is applied.
  */
-OPERATE_RET tkl_aud_dac_set_gain(TUYA_AUDIO_DAC_PORT_E port, INT32_T gain[], UINT32_T num);
+OPERATE_RET tkl_aud_dac_set_gain(TUYA_AUDIO_DAC_PORT_E port, TUYA_AUDIO_DAC_CHANNEL_E channel, INT32_T gain[], UINT32_T num);
 
 /**
  * @brief Write PCM data into the DAC DMA ring buffer.
