@@ -59,8 +59,8 @@ typedef struct {
 #if CONFIG_AUD_DRIVER_V2
     aud_dmic_mode_t          dmic_mode;
     uint32_t                 adc_ch_bitmap;
-    float                    dig_db;        /**< Last dig gain from set_gain (dB) */
-    int32_t                  ana_db;        /**< Last ana gain from set_gain (dB) */
+    float                    dig_db[AUD_ADC_CHL_MAX]; /**< Last dig gain per ch (dB) */
+    int32_t                  ana_db[AUD_ADC_CHL_MAX]; /**< Last ana gain per ch (dB) */
 #endif
     BOOL_T                  gain_set;       /**< TRUE after first successful set_gain */
     uint32_t                frame_size;
@@ -313,40 +313,80 @@ STATIC VOID_T __tkl_aud_dmic_pause_dma(VOID_T)
 
 #if CONFIG_AUD_DRIVER_V2
 /**
- * @brief Apply dig/ana gain to DMIC-backed ADC channels
- * @param[in] dig_db digital gain in dB
- * @param[in] ana_db analog gain in dB
+ * @brief Check whether gain value means "do not change"
+ * @param[in] v gain value from caller
+ * @return TRUE if invalid/skip
+ */
+STATIC BOOL_T __tkl_aud_dmic_gain_is_invalid(INT32_T v)
+{
+    return ((UINT32_T)v == (UINT32_T)AUDIA_DMIC_INVALID_GAIN_VALUE) ? TRUE : FALSE;
+}
+
+/**
+ * @brief Map Tuya DMIC channel enum to OEM aud_adc_chl_t
+ * @param[in] channel TUYA_AUDIO_DMIC_CHANNEL_0/1/2
+ * @param[out] out OEM ADC channel
  * @return OPRT_OK on success
  */
-STATIC OPERATE_RET __tkl_aud_dmic_apply_v2_gain(float dig_db, int32_t ana_db)
+STATIC OPERATE_RET __tkl_aud_dmic_map_channel(TUYA_AUDIO_DMIC_CHANNEL_E channel, aud_adc_chl_t *out)
 {
-    if (dig_db > BK_AUD_ADC_DIG_GAIN_DB_MAX) {
-        dig_db = BK_AUD_ADC_DIG_GAIN_DB_MAX;
-    }
-    if (ana_db > BK_AUD_ADC_ANA_GAIN_DB_MAX) {
-        ana_db = BK_AUD_ADC_ANA_GAIN_DB_MAX;
-    }
-    if (ana_db < 0) {
-        ana_db = 0;
+    if ((out == NULL) || ((UINT32_T)channel >= (UINT32_T)AUD_ADC_CHL_MAX)) {
+        return OPRT_INVALID_PARM;
     }
 
-    for (uint32_t ch = 0; ch < AUD_ADC_CHL_MAX; ch++) {
-        if (!(gl_dmic_ctx->adc_ch_bitmap & (1U << ch))) {
-            continue;
-        }
-        if (bk_aud_adc_set_ana_gain_db((aud_adc_chl_t)ch, ana_db) != BK_OK) {
-            TKL_AUD_DMIC_LOG("dmic: set ana gain fail, ch=%u\n", ch);
-            return OPRT_COM_ERROR;
-        }
-        if (bk_aud_adc_set_dig_gain_db((aud_adc_chl_t)ch, dig_db) != BK_OK) {
-            TKL_AUD_DMIC_LOG("dmic: set dig gain fail, ch=%u\n", ch);
-            return OPRT_COM_ERROR;
-        }
+    *out = (aud_adc_chl_t)channel;
+    return OPRT_OK;
+}
+
+/**
+ * @brief Apply dig and/or ana gain to one DMIC-backed ADC channel
+ * @param[in] ch OEM ADC channel
+ * @param[in] set_dig TRUE to set digital gain
+ * @param[in] dig_db digital gain in dB
+ * @param[in] set_ana TRUE to set analog gain
+ * @param[in] ana_db analog gain in dB
+ * @return OPRT_OK on success
+ * @note Dig is the effective DMIC gain; ana targets analog MIC PGA.
+ */
+STATIC OPERATE_RET __tkl_aud_dmic_apply_v2_ch_gain(aud_adc_chl_t ch,
+                                                    BOOL_T set_dig, float dig_db,
+                                                    BOOL_T set_ana, int32_t ana_db)
+{
+    if ((UINT32_T)ch >= (UINT32_T)AUD_ADC_CHL_MAX) {
+        return OPRT_INVALID_PARM;
     }
 
-    gl_dmic_ctx->dig_db = dig_db;
-    gl_dmic_ctx->ana_db = ana_db;
-    TKL_AUD_DMIC_LOG("dmic: gain apply dig_db=%.1f ana_db=%d\n", dig_db, ana_db);
+    if (set_dig == TRUE) {
+        if (dig_db > BK_AUD_ADC_DIG_GAIN_DB_MAX) {
+            dig_db = BK_AUD_ADC_DIG_GAIN_DB_MAX;
+        }
+        if (bk_aud_adc_set_dig_gain_db(ch, dig_db) != BK_OK) {
+            TKL_AUD_DMIC_LOG("dmic: set dig gain fail, ch=%u\n", (unsigned)ch);
+            return OPRT_COM_ERROR;
+        }
+        gl_dmic_ctx->dig_db[ch] = dig_db;
+    }
+
+    if (set_ana == TRUE) {
+        if (ana_db > BK_AUD_ADC_ANA_GAIN_DB_MAX) {
+            ana_db = BK_AUD_ADC_ANA_GAIN_DB_MAX;
+        }
+        if (ana_db < 0) {
+            ana_db = 0;
+        }
+        if (bk_aud_adc_set_ana_gain_db(ch, ana_db) != BK_OK) {
+            TKL_AUD_DMIC_LOG("dmic: set ana gain fail, ch=%u\n", (unsigned)ch);
+            return OPRT_COM_ERROR;
+        }
+        gl_dmic_ctx->ana_db[ch] = ana_db;
+    }
+
+    TKL_AUD_DMIC_LOG("dmic: gain ch=%u dig=%s%.1f ana=%s%d\n",
+                     (unsigned)ch,
+                     (set_dig == TRUE) ? "" : "keep/",
+                     (set_dig == TRUE) ? dig_db : gl_dmic_ctx->dig_db[ch],
+                     (set_ana == TRUE) ? "" : "keep/",
+                     (set_ana == TRUE) ? ana_db : gl_dmic_ctx->ana_db[ch]);
     return OPRT_OK;
 }
 #endif
@@ -406,8 +446,10 @@ OPERATE_RET tkl_aud_dmic_init(TUYA_AUDIO_DMIC_PORT_E port, TKL_AUD_DMIC_CFG_T *c
     os_memcpy(&gl_dmic_ctx->cfg, config, sizeof(TKL_AUD_DMIC_CFG_T));
     gl_dmic_ctx->gain_set = FALSE;
 #if CONFIG_AUD_DRIVER_V2
-    gl_dmic_ctx->dig_db = TKL_AUD_DMIC_DEFAULT_DIG_DB;
-    gl_dmic_ctx->ana_db = TKL_AUD_DMIC_DEFAULT_ANA_DB;
+    for (uint32_t ch = 0; ch < AUD_ADC_CHL_MAX; ch++) {
+        gl_dmic_ctx->dig_db[ch] = TKL_AUD_DMIC_DEFAULT_DIG_DB;
+        gl_dmic_ctx->ana_db[ch] = TKL_AUD_DMIC_DEFAULT_ANA_DB;
+    }
 #endif
 
 #if CONFIG_AUD_DRIVER_V2
@@ -430,8 +472,8 @@ OPERATE_RET tkl_aud_dmic_init(TUYA_AUDIO_DMIC_PORT_E port, TKL_AUD_DMIC_CFG_T *c
     tkl_aud_adc_cfg.sample_rate = config->sample_rate;
     for (uint32_t ch = 0; ch < AUD_ADC_CHL_MAX; ch++) {
         if (adc_ch_bitmap & (1U << ch)) {
-            tkl_aud_adc_cfg.chl_cfg[ch].dig_gain = gl_dmic_ctx->dig_db;
-            tkl_aud_adc_cfg.chl_cfg[ch].ana_gain = gl_dmic_ctx->ana_db;
+            tkl_aud_adc_cfg.chl_cfg[ch].dig_gain = gl_dmic_ctx->dig_db[ch];
+            tkl_aud_adc_cfg.chl_cfg[ch].ana_gain = gl_dmic_ctx->ana_db[ch];
         }
     }
     ret = bk_aud_adc_init(&tkl_aud_adc_cfg);
@@ -594,16 +636,17 @@ OPERATE_RET tkl_aud_dmic_start(TUYA_AUDIO_DMIC_PORT_E port)
 }
 
 /**
- * @brief Set audio digital (DMIC) gain
- * @param[in] port Digital audio port number
- * @param[in] gain Gain array in dB (platform-dependent count)
- * @param[in] num Number of gain values. On this platform (dig+ana): num=2,
- *                gain[0]=digital dB, gain[1]=analog dB. num=1 sets dig only.
- * @return OPRT_OK on success, error code on failure
- * @note V2 applies gain via the ADC dig/ana path used by DMIC. V1 has no
- *       hardware gain register and returns OPRT_NOT_SUPPORTED.
+ * @brief Set DMIC dig/ana gain for one physical channel
+ * @param[in] port Digital audio port number (unused on this platform)
+ * @param[in] channel TUYA_AUDIO_DMIC_CHANNEL_0/1/2 -> ADC dig path CH0/1/2
+ * @param[in] gain gain[0]=dig, gain[1]=ana; AUDIA_DMIC_INVALID_GAIN_VALUE to skip
+ * @param[in] num 1 (dig only) or 2 (dig then ana)
+ * @return OPRT_OK on success
+ * @note V2: dig is effective for DMIC; ana maps to analog MIC PGA.
+ *       V1 returns OPRT_NOT_SUPPORTED.
  */
-OPERATE_RET tkl_aud_dmic_set_gain(TUYA_AUDIO_DMIC_PORT_E port, INT32_T gain[], UINT32_T num)
+OPERATE_RET tkl_aud_dmic_set_gain(TUYA_AUDIO_DMIC_PORT_E port, TUYA_AUDIO_DMIC_CHANNEL_E channel,
+                                  INT32_T gain[], UINT32_T num)
 {
     (void)port;
 
@@ -611,28 +654,54 @@ OPERATE_RET tkl_aud_dmic_set_gain(TUYA_AUDIO_DMIC_PORT_E port, INT32_T gain[], U
         return OPRT_COM_ERROR;
     }
 
-    if ((gain == NULL) || (num == 0U)) {
+    if ((gain == NULL) || (num == 0U) || (num > TKL_AUD_DMIC_GAIN_NUM)) {
         return OPRT_INVALID_PARM;
     }
 
 #if CONFIG_AUD_DRIVER_V2
     {
-        float dig_db;
-        int32_t ana_db;
+        aud_adc_chl_t ch;
+        BOOL_T set_dig;
+        BOOL_T set_ana;
+        float dig_db = 0.0f;
+        int32_t ana_db = 0;
 
-        if (num > TKL_AUD_DMIC_GAIN_NUM) {
+        if (__tkl_aud_dmic_map_channel(channel, &ch) != OPRT_OK) {
             return OPRT_INVALID_PARM;
         }
 
-        dig_db = (float)gain[0];
-        ana_db = (num >= 2U) ? gain[1] : gl_dmic_ctx->ana_db;
-        if (__tkl_aud_dmic_apply_v2_gain(dig_db, ana_db) != OPRT_OK) {
+        if (!(gl_dmic_ctx->adc_ch_bitmap & (1U << (UINT32_T)ch))) {
+            TKL_AUD_DMIC_LOG("dmic: set_gain ch=%u not in open bitmap=0x%x\n",
+                             (unsigned)ch, gl_dmic_ctx->adc_ch_bitmap);
+            return OPRT_INVALID_PARM;
+        }
+
+        set_dig = (__tkl_aud_dmic_gain_is_invalid(gain[0]) == TRUE) ? FALSE : TRUE;
+        if (num >= 2U) {
+            set_ana = (__tkl_aud_dmic_gain_is_invalid(gain[1]) == TRUE) ? FALSE : TRUE;
+        } else {
+            set_ana = FALSE;
+        }
+
+        if ((set_dig == FALSE) && (set_ana == FALSE)) {
+            return OPRT_INVALID_PARM;
+        }
+
+        if (set_dig == TRUE) {
+            dig_db = (float)gain[0];
+        }
+        if (set_ana == TRUE) {
+            ana_db = gain[1];
+        }
+
+        if (__tkl_aud_dmic_apply_v2_ch_gain(ch, set_dig, dig_db, set_ana, ana_db) != OPRT_OK) {
             return OPRT_COM_ERROR;
         }
         gl_dmic_ctx->gain_set = TRUE;
         return OPRT_OK;
     }
 #else
+    (void)channel;
     (void)gain;
     (void)num;
     return OPRT_NOT_SUPPORTED;

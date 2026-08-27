@@ -25,6 +25,7 @@ extern "C" {
 /* Includes ------------------------------------------------------------------*/
 
 /* Public macros -------------------------------------------------------------*/
+#define AUDIA_DMIC_INVALID_GAIN_VALUE   0xFFFFFFFF
 
 /* Public typedefs -----------------------------------------------------------*/
 typedef struct {
@@ -35,6 +36,24 @@ typedef struct {
     TKL_AUD_INPUT_CB upper_cb;
     VOID_T *args;
 } TKL_AUD_DMIC_CFG_T;
+
+/**
+ * @brief DMIC physical channel used by set_gain
+ * @note On this platform maps to ADC dig path CH0/1/2 (DMIC shares ADC dig gain).
+ */
+typedef enum {
+    TUYA_AUDIO_DMIC_CHANNEL_0,
+    TUYA_AUDIO_DMIC_CHANNEL_1,
+    TUYA_AUDIO_DMIC_CHANNEL_2,
+    TUYA_AUDIO_DMIC_CHANNEL_3,
+    TUYA_AUDIO_DMIC_CHANNEL_4,
+    TUYA_AUDIO_DMIC_CHANNEL_5,
+    TUYA_AUDIO_DMIC_CHANNEL_6,
+    TUYA_AUDIO_DMIC_CHANNEL_7,
+    TUYA_AUDIO_DMIC_CHANNEL_8,
+    TUYA_AUDIO_DMIC_CHANNEL_9,
+    TUYA_AUDIO_DMIC_MIC_CHANNEL_MAX
+} TUYA_AUDIO_DMIC_CHANNEL_E;
 
 /* Public variables ----------------------------------------------------------*/
 
@@ -55,6 +74,7 @@ OPERATE_RET tkl_aud_dmic_pinmux_config(UINT32_T clk_gpio, UINT32_T data_gpio);
  * @param[in] port Digital audio port number
  * @param[in] config DMIC configuration
  * @return OPRT_OK on success, error code on failure
+ * @note Gain is set via tkl_aud_dmic_set_gain().
  */
 OPERATE_RET tkl_aud_dmic_init(TUYA_AUDIO_DMIC_PORT_E port, TKL_AUD_DMIC_CFG_T *config);
 
@@ -66,14 +86,19 @@ OPERATE_RET tkl_aud_dmic_init(TUYA_AUDIO_DMIC_PORT_E port, TKL_AUD_DMIC_CFG_T *c
 OPERATE_RET tkl_aud_dmic_start(TUYA_AUDIO_DMIC_PORT_E port);
 
 /**
- * @brief Set audio digital (DMIC) gain
+ * @brief Set DMIC dig/ana gain for one physical channel
  * @param[in] port Digital audio port number
- * @param[in] gain Gain array in dB (platform-dependent count).
- * @param[in] num Number of gain values. On this platform (dig+ana): num=2,
- *                gain[0]=digital dB, gain[1]=analog dB. num=1 sets dig only.
+ * @param[in] channel TUYA_AUDIO_DMIC_CHANNEL_0/1/2 -> ADC dig path CH0/1/2
+ * @param[in] gain gain[0]=dig dB, gain[1]=ana dB (when num>=2). Pass
+ *                 AUDIA_DMIC_INVALID_GAIN_VALUE to leave dig or ana unchanged.
+ * @param[in] num 1 (dig only) or 2 (dig then ana)
  * @return OPRT_OK on success, error code on failure
+ * @note Dig is the effective gain for DMIC. Ana maps to analog MIC PGA and
+ *       has little/no effect on digital-mic amplitude on this platform.
+ * @note Dig and ana can be updated independently. At least one must be valid.
  */
-OPERATE_RET tkl_aud_dmic_set_gain(TUYA_AUDIO_DMIC_PORT_E port, INT32_T gain[], UINT32_T num);
+OPERATE_RET tkl_aud_dmic_set_gain(TUYA_AUDIO_DMIC_PORT_E port, TUYA_AUDIO_DMIC_CHANNEL_E channel,
+                                  INT32_T gain[], UINT32_T num);
 
 /**
  * @brief Stop audio digital (DMIC) capture
