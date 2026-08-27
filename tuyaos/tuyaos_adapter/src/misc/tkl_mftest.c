@@ -886,10 +886,34 @@ static OPERATE_RET test_adc_init(uint32_t port, uint32_t chan, uint32_t sample_r
 
     gain[0] = dig_db;
     gain[1] = ana_db;
-    ret = tkl_aud_adc_set_gain((TUYA_AUDIO_ADC_PORT_E)port, gain, ADC_TEST_GAIN_NUM);
-    if (ret != OPRT_OK) {
-        tkl_aud_adc_deinit((TUYA_AUDIO_ADC_PORT_E)port);
-        return ret;
+    s_adc_ctx.chan = (TUYA_AUDIO_ADC_CHAN_E)chan;
+    {
+        UINT32_T ch;
+        UINT32_T mic_cnt = 1U;
+
+        if ((chan == (uint32_t)TUYA_AUDIO_ADC_CHANNEL_LR) ||
+            (chan == (uint32_t)TUYA_AUDIO_ADC_CHANNEL_RAW3) ||
+            (chan == (uint32_t)TUYA_AUDIO_ADC_CHANNEL_MIC3)) {
+            mic_cnt = 3U;
+        } else if (chan == (uint32_t)TUYA_AUDIO_ADC_CHANNEL_R) {
+            ch = 1U;
+            ret = tkl_aud_adc_set_gain((TUYA_AUDIO_ADC_PORT_E)port,
+                                       TUYA_AUDIO_ADC_CHANNEL_1, gain, ADC_TEST_GAIN_NUM);
+            if (ret != OPRT_OK) {
+                tkl_aud_adc_deinit((TUYA_AUDIO_ADC_PORT_E)port);
+                return ret;
+            }
+            mic_cnt = 0U;
+        }
+
+        for (ch = 0U; ch < mic_cnt; ch++) {
+            ret = tkl_aud_adc_set_gain((TUYA_AUDIO_ADC_PORT_E)port,
+                                       (TUYA_AUDIO_ADC_CHANNEL_E)ch, gain, ADC_TEST_GAIN_NUM);
+            if (ret != OPRT_OK) {
+                tkl_aud_adc_deinit((TUYA_AUDIO_ADC_PORT_E)port);
+                return ret;
+            }
+        }
     }
 
     s_adc_ctx.initialized = true;

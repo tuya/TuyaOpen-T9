@@ -101,6 +101,43 @@ static OPERATE_RET test_adc_init(uint32_t port, uint32_t chan, uint32_t sample_r
 static OPERATE_RET test_adc_start(void);
 static OPERATE_RET test_adc_deinit(void);
 
+/**
+ * @brief Apply dig/ana gain to every open physical MIC for current cfg.chan
+ * @param[in] port ADC port
+ * @param[in] dig_db digital gain dB
+ * @param[in] ana_db analog gain dB
+ * @return OPRT_OK on success
+ */
+static OPERATE_RET test_adc_apply_gain_active(TUYA_AUDIO_ADC_PORT_E port, INT32_T dig_db, INT32_T ana_db)
+{
+    OPERATE_RET ret;
+    INT32_T gain[2];
+    UINT32_T ch;
+
+    gain[0] = dig_db;
+    gain[1] = ana_db;
+
+    switch (s_adc_ctx.chan) {
+        case TUYA_AUDIO_ADC_CHANNEL_L:
+            return tkl_aud_adc_set_gain(port, TUYA_AUDIO_ADC_CHANNEL_0, gain, ADC_TEST_GAIN_NUM);
+        case TUYA_AUDIO_ADC_CHANNEL_R:
+            return tkl_aud_adc_set_gain(port, TUYA_AUDIO_ADC_CHANNEL_1, gain, ADC_TEST_GAIN_NUM);
+        case TUYA_AUDIO_ADC_CHANNEL_MIC3:
+        case TUYA_AUDIO_ADC_CHANNEL_LR:
+        case TUYA_AUDIO_ADC_CHANNEL_RAW3:
+            /* These modes open MIC1/2/3 (or extract from 3ch); set each MIC. */
+            for (ch = 0U; ch < 3U; ch++) {
+                ret = tkl_aud_adc_set_gain(port, (TUYA_AUDIO_ADC_CHANNEL_E)ch, gain, ADC_TEST_GAIN_NUM);
+                if (ret != OPRT_OK) {
+                    return ret;
+                }
+            }
+            return OPRT_OK;
+        default:
+            return OPRT_INVALID_PARM;
+    }
+}
+
 static uint32_t test_adc_channel_count(TUYA_AUDIO_ADC_CHAN_E chan)
 {
     if (chan == TUYA_AUDIO_ADC_CHANNEL_L ||
@@ -496,7 +533,6 @@ static OPERATE_RET test_adc_init(uint32_t port, uint32_t chan, uint32_t sample_r
 {
     OPERATE_RET ret;
     TKL_AUD_ADC_CFG_T cfg;
-    INT32_T gain[2];
     uint32_t chan_num;
 
     if (port >= TUYA_AUDIO_ADC_PORT_MAX || chan >= TUYA_AUDIO_ADC_CHANNEL_MAX ||
@@ -534,9 +570,9 @@ static OPERATE_RET test_adc_init(uint32_t port, uint32_t chan, uint32_t sample_r
         return ret;
     }
 
-    gain[0] = dig_db;
-    gain[1] = ana_db;
-    ret = tkl_aud_adc_set_gain((TUYA_AUDIO_ADC_PORT_E)port, gain, ADC_TEST_GAIN_NUM);
+    /* Chan must be stored before apply_gain_active selects MIC targets. */
+    s_adc_ctx.chan = (TUYA_AUDIO_ADC_CHAN_E)chan;
+    ret = test_adc_apply_gain_active((TUYA_AUDIO_ADC_PORT_E)port, dig_db, ana_db);
     if (ret != OPRT_OK) {
         tkl_log_output("adc set_gain failed: %d\r\n", ret);
         tkl_aud_adc_deinit((TUYA_AUDIO_ADC_PORT_E)port);
@@ -603,20 +639,37 @@ static OPERATE_RET test_adc_record(uint32_t rec_ms)
 static OPERATE_RET test_adc_set_gain(INT32_T dig_db, INT32_T ana_db)
 {
     OPERATE_RET ret;
-    INT32_T gain[2];
 
     if (!s_adc_ctx.initialized) {
         return OPRT_INVALID_PARM;
     }
 
-    gain[0] = dig_db;
-    gain[1] = ana_db;
-    ret = tkl_aud_adc_set_gain(s_adc_ctx.port, gain, ADC_TEST_GAIN_NUM);
+    ret = test_adc_apply_gain_active(s_adc_ctx.port, dig_db, ana_db);
     if (ret == OPRT_OK) {
         s_adc_ctx.dig_db = dig_db;
         s_adc_ctx.ana_db = ana_db;
     }
     return ret;
+}
+
+/**
+ * @brief Set gain for one physical MIC (0=MIC1, 1=MIC2, 2=MIC3)
+ * @param[in] mic_ch physical MIC channel
+ * @param[in] dig_db digital gain, or AUDIA_ADC_INVALID_GAIN_VALUE to keep
+ * @param[in] ana_db analog gain, or AUDIA_ADC_INVALID_GAIN_VALUE to keep
+ * @return OPRT_OK on success
+ */
+static OPERATE_RET test_adc_set_gain_mic(UINT32_T mic_ch, INT32_T dig_db, INT32_T ana_db)
+{
+    INT32_T gain[2];
+
+    if (!s_adc_ctx.initialized || (mic_ch >= 3U)) {
+        return OPRT_INVALID_PARM;
+    }
+
+    gain[0] = dig_db;
+    gain[1] = ana_db;
+    return tkl_aud_adc_set_gain(s_adc_ctx.port, (TUYA_AUDIO_ADC_CHANNEL_E)mic_ch, gain, ADC_TEST_GAIN_NUM);
 }
 
 static void test_adc_dump_last_pcm(char *pcWriteBuffer, int xWriteBufferLen, uint32_t req_cnt)
@@ -771,25 +824,71 @@ void cli_adc_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv
                  (unsigned int)s_adc_ctx.frame_cnt,
                  (unsigned int)s_adc_ctx.total_bytes);
     } else if (os_strcmp(cmd, "gain") == 0) {
+        UINT32_T mic_ch = 0xFFU;
+        BOOL_T dig_keep = FALSE;
+        BOOL_T ana_keep = FALSE;
+
         if (argc < 3) {
             snprintf(pcWriteBuffer, xWriteBufferLen,
-                     "Usage: xadc gain <dig_db> [ana_db]\r\n");
+                     "Usage: xadc gain <dig_db|x> [ana_db|x] [mic 0|1|2]\r\n"
+                     "  x = keep (AUDIA_ADC_INVALID_GAIN_VALUE); mic omit = all active MICs\r\n");
             return;
         }
-        dig_db = test_parse_s32(argv[2]);
-        if (argc >= 4) {
-            ana_db = test_parse_s32(argv[3]);
+        if ((argv[2][0] == 'x' || argv[2][0] == 'X') && argv[2][1] == '\0') {
+            dig_keep = TRUE;
+            dig_db = (INT32_T)AUDIA_ADC_INVALID_GAIN_VALUE;
         } else {
-            ana_db = s_adc_ctx.ana_db;
+            dig_db = test_parse_s32(argv[2]);
+        }
+        if (argc >= 4) {
+            if ((argv[3][0] == 'x' || argv[3][0] == 'X') && argv[3][1] == '\0') {
+                ana_keep = TRUE;
+                ana_db = (INT32_T)AUDIA_ADC_INVALID_GAIN_VALUE;
+            } else {
+                ana_db = test_parse_s32(argv[3]);
+            }
+        } else {
+            ana_keep = TRUE;
+            ana_db = (INT32_T)AUDIA_ADC_INVALID_GAIN_VALUE;
+        }
+        if (argc >= 5) {
+            mic_ch = os_strtoul(argv[4], NULL, 10);
         }
 
-        ret = test_adc_set_gain(dig_db, ana_db);
+        if (mic_ch != 0xFFU) {
+            ret = test_adc_set_gain_mic(mic_ch, dig_db, ana_db);
+        } else if ((dig_keep == TRUE) || (ana_keep == TRUE)) {
+            /* Partial update on all active MICs */
+            UINT32_T ch;
+            INT32_T gain[2];
+
+            gain[0] = dig_db;
+            gain[1] = ana_db;
+            ret = OPRT_OK;
+            if (s_adc_ctx.chan == TUYA_AUDIO_ADC_CHANNEL_L) {
+                ret = tkl_aud_adc_set_gain(s_adc_ctx.port, TUYA_AUDIO_ADC_CHANNEL_0, gain, ADC_TEST_GAIN_NUM);
+            } else if (s_adc_ctx.chan == TUYA_AUDIO_ADC_CHANNEL_R) {
+                ret = tkl_aud_adc_set_gain(s_adc_ctx.port, TUYA_AUDIO_ADC_CHANNEL_1, gain, ADC_TEST_GAIN_NUM);
+            } else {
+                for (ch = 0U; ch < 3U; ch++) {
+                    ret = tkl_aud_adc_set_gain(s_adc_ctx.port, (TUYA_AUDIO_ADC_CHANNEL_E)ch, gain, ADC_TEST_GAIN_NUM);
+                    if (ret != OPRT_OK) {
+                        break;
+                    }
+                }
+            }
+        } else {
+            ret = test_adc_set_gain(dig_db, ana_db);
+        }
         snprintf(pcWriteBuffer, xWriteBufferLen,
-                 "xadc gain %s (%d), dig=%d ana=%d\r\n",
+                 "xadc gain %s (%d), dig=%s%d ana=%s%d mic=%s\r\n",
                  (ret == OPRT_OK) ? "ok" : "failed",
                  ret,
-                 (int)dig_db,
-                 (int)ana_db);
+                 (dig_keep == TRUE) ? "keep/" : "",
+                 (int)((dig_keep == TRUE) ? 0 : dig_db),
+                 (ana_keep == TRUE) ? "keep/" : "",
+                 (int)((ana_keep == TRUE) ? 0 : ana_db),
+                 (mic_ch == 0xFFU) ? "all" : "one");
     } else if (os_strcmp(cmd, "loop_start") == 0) {
         if (argc >= 3) {
             port = os_strtoul(argv[2], NULL, 10);
