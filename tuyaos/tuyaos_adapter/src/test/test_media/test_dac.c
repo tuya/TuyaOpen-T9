@@ -174,7 +174,7 @@ static OPERATE_RET test_dac_init(uint32_t sample_rate, uint32_t frame_time_ms,
     cfg.frame_time_ms = frame_time_ms;
     cfg.frame_cb = test_dac_frame_cb;
     cfg.args = NULL;
-    cfg.pa_pin = 60;
+    cfg.pa_pin = 28;
 
     for (retry = 0U; retry < DAC_TEST_INIT_RETRY_CNT; retry++) {
         ret = tkl_aud_dac_init(DAC_TEST_DEFAULT_PORT, &cfg);

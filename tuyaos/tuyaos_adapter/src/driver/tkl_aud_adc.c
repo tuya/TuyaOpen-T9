@@ -44,6 +44,18 @@ extern void bk_printf(const char *fmt, ...);
 #if CONFIG_AUD_DRIVER_V2
 #define TKL_AUD_ADC_DEFAULT_DIG_DB         (16.0f)      /* OEM DEFAULT_AUD_ADC_CONFIG dig_gain */
 #define TKL_AUD_ADC_DEFAULT_ANA_DB         (20)         /* OEM DEFAULT_AUD_ADC_CONFIG ana_gain */
+/*
+ * Index of AEC/loopback-reference mic in the 3ch DMA frame [mic1,mic2,mic3].
+ *   0 = MIC1 is ref, talk path uses MIC2+MIC3 (this board)
+ *   2 = MIC3 is ref, talk path uses MIC1+MIC2 (legacy T9 / mftest)
+ * Override via -DTKL_AUD_ADC_AEC_REF_IDX=<n> if needed.
+ */
+#ifndef TKL_AUD_ADC_AEC_REF_IDX
+#define TKL_AUD_ADC_AEC_REF_IDX            (2U)
+#endif
+#if (TKL_AUD_ADC_AEC_REF_IDX > 2U)
+#error "TKL_AUD_ADC_AEC_REF_IDX must be 0..2"
+#endif
 #endif
 
 typedef struct {
@@ -305,20 +317,23 @@ static void __tkl_aud_adc_push_frame(uint32_t read_size)
         /*
          * Mixed 3ch layout when CHL_0|1|2 are enabled (aec_en=0):
          * [mic1, mic2, mic3, ...] matching AUD_ADC_CHL_0/1/2 order.
-         * MIC3 is the board AEC-reference mic (drop for L/R/LR talk path).
-         *   L    -> mic1 (index 0)
-         *   R    -> mic2 (index 1)
-         *   MIC3 -> mic3 (index 2)
+         * TKL_AUD_ADC_AEC_REF_IDX selects the board AEC/loopback-ref lane.
+         * CHANNEL_MIC3 always means "ref mic", not hard-wired physical MIC3.
+         *   L    -> first talk mic (lowest non-ref index)
+         *   R    -> second talk mic (highest non-ref index)
+         *   MIC3 -> AEC ref (TKL_AUD_ADC_AEC_REF_IDX)
          */
         if (raw_ch_num == 3U) {
             uint32_t mic_idx;
+            uint32_t talk0 = (TKL_AUD_ADC_AEC_REF_IDX == 0U) ? 1U : 0U;
+            uint32_t talk1 = (TKL_AUD_ADC_AEC_REF_IDX == 2U) ? 1U : 2U;
 
             if (gl_adc_ctx->cfg.chan == TUYA_AUDIO_ADC_CHANNEL_MIC3) {
-                mic_idx = 2U;
+                mic_idx = TKL_AUD_ADC_AEC_REF_IDX;
             } else if (gl_adc_ctx->cfg.chan == TUYA_AUDIO_ADC_CHANNEL_R) {
-                mic_idx = 1U;
+                mic_idx = talk1;
             } else {
-                mic_idx = 0U;
+                mic_idx = talk0;
             }
             for (uint32_t i = 0; i < frame_pts; i++) {
                 dst[i] = src[i * 3U + mic_idx];
@@ -389,6 +404,8 @@ static void __tkl_aud_adc_push_frame(uint32_t read_size)
             int16_t *src = (int16_t *)gl_adc_ctx->read_buf;
             int16_t *dst = (int16_t *)gl_adc_ctx->output_buf;
             uint32_t frame_pts;
+            uint32_t talk0 = (TKL_AUD_ADC_AEC_REF_IDX == 0U) ? 1U : 0U;
+            uint32_t talk1 = (TKL_AUD_ADC_AEC_REF_IDX == 2U) ? 1U : 2U;
 
             if ((dst == NULL) || ((read_size & 0x1U) != 0U)) {
                 return;
@@ -399,10 +416,10 @@ static void __tkl_aud_adc_push_frame(uint32_t read_size)
                 return;
             }
 
-            /* Keep talk mics [mic1, mic2], drop MIC3 (AEC ref) at index 2. */
+            /* Keep talk mics, drop AEC/loopback-ref lane (TKL_AUD_ADC_AEC_REF_IDX). */
             for (uint32_t i = 0; i < frame_pts; i++) {
-                dst[2U * i] = src[3U * i];
-                dst[2U * i + 1U] = src[3U * i + 1U];
+                dst[2U * i] = src[3U * i + talk0];
+                dst[2U * i + 1U] = src[3U * i + talk1];
             }
 
             gl_adc_ctx->cfg.upper_cb(TUYA_AUDIO_FRAME_EVENT_ADC_RX,
@@ -673,19 +690,21 @@ OPERATE_RET tkl_aud_adc_init(TUYA_AUDIO_ADC_PORT_E port, TKL_AUD_ADC_CFG_T *conf
             adc_mode = AUD_ADC_MODE_DIFFEN;
             break;
         case TUYA_AUDIO_ADC_CHANNEL_LR:
-            /* Mixed frame: [mic1, mic2, mic3], callback keeps [mic1, mic2]. */
+            /* Mixed frame: [mic1,mic2,mic3]; callback keeps two talk mics
+             * (drops TKL_AUD_ADC_AEC_REF_IDX). With REF=0 -> [mic2,mic3]. */
             adc_ch_bitmap = (1U << AUD_ADC_CHL_0) | (1U << AUD_ADC_CHL_1) | (1U << AUD_ADC_CHL_2);
             adc_mode = AUD_ADC_MODE_DIFFEN;
             chl_num = 2;
             raw_ch_num = 3;
             break;
         case TUYA_AUDIO_ADC_CHANNEL_MIC3:
-            /* AEC ref mic: same 3ch DMA as LR, extract index 2 in ISR. */
+            /* AEC/loopback ref lane: extract TKL_AUD_ADC_AEC_REF_IDX from 3ch DMA. */
             adc_ch_bitmap = (1U << AUD_ADC_CHL_0) | (1U << AUD_ADC_CHL_1) | (1U << AUD_ADC_CHL_2);
             adc_mode = AUD_ADC_MODE_DIFFEN;
             chl_num = 1;
             raw_ch_num = 3;
-            TKL_AUD_ADC_LOG("chan MIC3(AEC ref): 3ch DMA [mic1,mic2,mic3], output mic3 lane\r\n");
+            TKL_AUD_ADC_LOG("chan MIC3(AEC ref): 3ch DMA, output ref idx=%u\r\n",
+                            (unsigned)TKL_AUD_ADC_AEC_REF_IDX);
             break;
         case TUYA_AUDIO_ADC_CHANNEL_RAW3:
             /* Pass through full [mic1, mic2, mic3] frame for dump/analysis. */

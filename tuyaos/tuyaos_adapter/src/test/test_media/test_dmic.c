@@ -269,7 +269,7 @@ static OPERATE_RET test_dmic_dac_init_start(uint32_t dac_port, uint32_t sample_r
     cfg.frame_time_ms = frame_time_ms;
     cfg.frame_cb = NULL;
     cfg.args = NULL;
-    cfg.pa_pin = 60;
+    cfg.pa_pin = 28;
 
     ret = tkl_aud_dac_init((TUYA_AUDIO_DAC_PORT_E)dac_port, &cfg);
     if (ret != OPRT_OK) {

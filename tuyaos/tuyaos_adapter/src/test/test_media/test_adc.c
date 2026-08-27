@@ -23,6 +23,7 @@
 #define ADC_TEST_DEFAULT_DAC_PORT      TUYA_AUDIO_DAC_PORT_0
 #define ADC_TEST_DEFAULT_DAC_DIG_DB    (-7)
 #define ADC_TEST_DEFAULT_DAC_ANA_DB    (4)
+#define ADC_TEST_DEFAULT_LOOP_REF_MIC  (1U)   /* MIC1..MIC3, used by RAW3 loop */
 #define ADC_TEST_DUMP_MAX_SAMPLES      32U
 #define ADC_TEST_DUMP_DEFAULT_SAMPLES  12U
 
@@ -48,6 +49,7 @@ typedef struct {
     TUYA_AUDIO_DAC_PORT_E dac_port;
     INT32_T dac_dig_db;
     INT32_T dac_ana_db;
+    uint8_t loop_ref_mic;       /**< RAW3 loop: 1..3 which MIC is 回采 (dropped) */
     uint8_t *loop_mix_buf;
     uint32_t loop_mix_buf_size;
     volatile uint32_t loop_push_bytes;
@@ -82,6 +84,7 @@ static test_adc_ctx_t s_adc_ctx = {
     .dac_port = ADC_TEST_DEFAULT_DAC_PORT,
     .dac_dig_db = ADC_TEST_DEFAULT_DAC_DIG_DB,
     .dac_ana_db = ADC_TEST_DEFAULT_DAC_ANA_DB,
+    .loop_ref_mic = ADC_TEST_DEFAULT_LOOP_REF_MIC,
     .loop_mix_buf = NULL,
     .loop_mix_buf_size = 0U,
     .loop_push_bytes = 0U,
@@ -100,11 +103,16 @@ static OPERATE_RET test_adc_deinit(void);
 
 static uint32_t test_adc_channel_count(TUYA_AUDIO_ADC_CHAN_E chan)
 {
-    if (chan == TUYA_AUDIO_ADC_CHANNEL_L || chan == TUYA_AUDIO_ADC_CHANNEL_R) {
+    if (chan == TUYA_AUDIO_ADC_CHANNEL_L ||
+        chan == TUYA_AUDIO_ADC_CHANNEL_R ||
+        chan == TUYA_AUDIO_ADC_CHANNEL_MIC3) {
         return 1U;
     }
     if (chan == TUYA_AUDIO_ADC_CHANNEL_LR) {
         return 2U;
+    }
+    if (chan == TUYA_AUDIO_ADC_CHANNEL_RAW3) {
+        return 3U;
     }
     return 0U;
 }
@@ -141,6 +149,7 @@ static void test_adc_runtime_reset(void)
     s_adc_ctx.dac_port = ADC_TEST_DEFAULT_DAC_PORT;
     s_adc_ctx.dac_dig_db = ADC_TEST_DEFAULT_DAC_DIG_DB;
     s_adc_ctx.dac_ana_db = ADC_TEST_DEFAULT_DAC_ANA_DB;
+    s_adc_ctx.loop_ref_mic = ADC_TEST_DEFAULT_LOOP_REF_MIC;
     s_adc_ctx.loop_mix_buf = NULL;
     s_adc_ctx.loop_mix_buf_size = 0U;
     s_adc_ctx.loop_push_bytes = 0U;
@@ -204,6 +213,32 @@ static void test_adc_mix_stereo_to_mono_16(const uint8_t *in_buf, uint32_t in_le
     }
 }
 
+/**
+ * @brief Drop one MIC from RAW3 interleaved frame and mix the other two to mono
+ * @param[in] in_buf 3ch interleaved PCM [mic1,mic2,mic3,...]
+ * @param[in] in_len input bytes (must be multiple of 6)
+ * @param[out] out_buf mono PCM
+ * @param[in] ref_mic 回采 MIC number 1..3 (dropped)
+ * @return none
+ */
+static void test_adc_mix_raw3_drop_ref_to_mono_16(const uint8_t *in_buf, uint32_t in_len,
+                                                   uint8_t *out_buf, uint8_t ref_mic)
+{
+    const int16_t *in_pcm = (const int16_t *)in_buf;
+    int16_t *out_pcm = (int16_t *)out_buf;
+    uint32_t frame_pts = in_len / (sizeof(int16_t) * 3U);
+    uint32_t ref_idx = (ref_mic >= 1U && ref_mic <= 3U) ? (uint32_t)(ref_mic - 1U) : 0U;
+    uint32_t talk0 = (ref_idx == 0U) ? 1U : 0U;
+    uint32_t talk1 = (ref_idx == 2U) ? 1U : 2U;
+    uint32_t i;
+
+    for (i = 0U; i < frame_pts; i++) {
+        int32_t a = in_pcm[i * 3U + talk0];
+        int32_t b = in_pcm[i * 3U + talk1];
+        out_pcm[i] = (int16_t)((a + b) / 2);
+    }
+}
+
 static void test_adc_input_cb(TUYA_AUDIO_FRAME_EVT_E event, uint8_t *buf, uint32_t buf_len, void *args)
 {
     uint32_t mono_len;
@@ -240,6 +275,20 @@ static void test_adc_input_cb(TUYA_AUDIO_FRAME_EVT_E event, uint8_t *buf, uint32
             return;
         }
         test_adc_mix_stereo_to_mono_16(buf, buf_len, s_adc_ctx.loop_mix_buf);
+        ret = tkl_aud_dac_write(s_adc_ctx.dac_port, s_adc_ctx.loop_mix_buf, mono_len);
+    } else if (s_adc_ctx.chan == TUYA_AUDIO_ADC_CHANNEL_RAW3) {
+        /* 3ch interleaved; each sample triple is 6 bytes. */
+        if ((buf_len % 6U) != 0U) {
+            s_adc_ctx.loop_write_err_cnt++;
+            return;
+        }
+        mono_len = buf_len / 3U;
+        if (s_adc_ctx.loop_mix_buf == NULL || mono_len > s_adc_ctx.loop_mix_buf_size) {
+            s_adc_ctx.loop_write_err_cnt++;
+            return;
+        }
+        test_adc_mix_raw3_drop_ref_to_mono_16(buf, buf_len, s_adc_ctx.loop_mix_buf,
+                                              s_adc_ctx.loop_ref_mic);
         ret = tkl_aud_dac_write(s_adc_ctx.dac_port, s_adc_ctx.loop_mix_buf, mono_len);
     } else {
         mono_len = buf_len;
@@ -316,7 +365,8 @@ static OPERATE_RET test_adc_dac_init_start(uint32_t dac_port, uint32_t sample_ra
 
     test_adc_dac_deinit();
 
-    if (s_adc_ctx.chan == TUYA_AUDIO_ADC_CHANNEL_LR) {
+    if ((s_adc_ctx.chan == TUYA_AUDIO_ADC_CHANNEL_LR) ||
+        (s_adc_ctx.chan == TUYA_AUDIO_ADC_CHANNEL_RAW3)) {
         s_adc_ctx.loop_mix_buf = (uint8_t *)tkl_system_malloc(mono_frame_size);
         if (s_adc_ctx.loop_mix_buf == NULL) {
             return OPRT_MALLOC_FAILED;
@@ -331,7 +381,7 @@ static OPERATE_RET test_adc_dac_init_start(uint32_t dac_port, uint32_t sample_ra
     cfg.frame_time_ms = frame_time_ms;
     cfg.frame_cb = NULL;
     cfg.args = NULL;
-    cfg.pa_pin = 60;
+    cfg.pa_pin = 28;
 
     ret = tkl_aud_dac_init((TUYA_AUDIO_DAC_PORT_E)dac_port, &cfg);
     if (ret != OPRT_OK) {
@@ -366,14 +416,24 @@ static OPERATE_RET test_adc_dac_init_start(uint32_t dac_port, uint32_t sample_ra
 static OPERATE_RET test_adc_loop_start(uint32_t adc_port, uint32_t chan, uint32_t dac_port,
                                        uint32_t sample_rate, uint32_t frame_time_ms,
                                        INT32_T dig_db, INT32_T ana_db,
-                                       INT32_T adc_dig_db, INT32_T adc_ana_db)
+                                       INT32_T adc_dig_db, INT32_T adc_ana_db,
+                                       uint32_t ref_mic)
 {
     OPERATE_RET ret;
     uint32_t mono_frame_size;
 
+    if ((chan == (uint32_t)TUYA_AUDIO_ADC_CHANNEL_RAW3) &&
+        ((ref_mic < 1U) || (ref_mic > 3U))) {
+        return OPRT_INVALID_PARM;
+    }
+
     ret = test_adc_init(adc_port, chan, sample_rate, frame_time_ms, adc_dig_db, adc_ana_db);
     if (ret != OPRT_OK) {
         return ret;
+    }
+
+    if (s_adc_ctx.chan == TUYA_AUDIO_ADC_CHANNEL_RAW3) {
+        s_adc_ctx.loop_ref_mic = (uint8_t)ref_mic;
     }
 
     /*
@@ -384,6 +444,9 @@ static OPERATE_RET test_adc_loop_start(uint32_t adc_port, uint32_t chan, uint32_
     mono_frame_size = s_adc_ctx.frame_size;
     if (s_adc_ctx.chan == TUYA_AUDIO_ADC_CHANNEL_LR) {
         mono_frame_size = mono_frame_size / 2U;
+    } else if (s_adc_ctx.chan == TUYA_AUDIO_ADC_CHANNEL_RAW3) {
+        /* Drop 回采 lane, mix remaining 2 talk mics -> mono. */
+        mono_frame_size = mono_frame_size / 3U;
     }
     ret = test_adc_dac_init_start(dac_port, sample_rate, frame_time_ms, dig_db, ana_db, mono_frame_size);
     if (ret != OPRT_OK) {
@@ -640,6 +703,7 @@ void cli_adc_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv
     uint32_t dac_port = ADC_TEST_DEFAULT_DAC_PORT;
     INT32_T dac_dig_db = ADC_TEST_DEFAULT_DAC_DIG_DB;
     INT32_T dac_ana_db = ADC_TEST_DEFAULT_DAC_ANA_DB;
+    uint32_t ref_mic = ADC_TEST_DEFAULT_LOOP_REF_MIC;
     uint32_t dump_cnt = ADC_TEST_DUMP_DEFAULT_SAMPLES;
 
     if (pcWriteBuffer == NULL || xWriteBufferLen <= 0) {
@@ -648,7 +712,7 @@ void cli_adc_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv
 
     if (argc < 2) {
         snprintf(pcWriteBuffer, xWriteBufferLen,
-                 "Usage: xadc <init [port] [chan] [rate] [frame_ms] [dig_db] [ana_db]|start|rec [ms]|gain <dig_db> [ana_db]|loop_start [adc_port] [chan] [dac_port] [rate] [frame_ms] [dac_dig] [dac_ana] [adc_dig] [adc_ana]|loop_stop|stop|deinit|close|status|stat|dump [n]>");
+                 "Usage: xadc <init [port] [chan 0=L 1=R 2=LR 3=MIC3 4=RAW3] [rate] [frame_ms] [dig_db] [ana_db]|start|rec [ms]|gain <dig_db> [ana_db]|loop_start [adc_port] [chan] [dac_port] [rate] [frame_ms] [dac_dig] [dac_ana] [adc_dig] [adc_ana] [ref_mic 1..3 for RAW3]|loop_stop|stop|deinit|close|status|stat|dump [n]>");
         return;
     }
 
@@ -754,11 +818,14 @@ void cli_adc_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv
         if (argc >= 11) {
             ana_db = test_parse_s32(argv[10]);
         }
+        if (argc >= 12) {
+            ref_mic = os_strtoul(argv[11], NULL, 10);
+        }
 
         ret = test_adc_loop_start(port, chan, dac_port, sample_rate, frame_time_ms,
-                                  dac_dig_db, dac_ana_db, dig_db, ana_db);
+                                  dac_dig_db, dac_ana_db, dig_db, ana_db, ref_mic);
         snprintf(pcWriteBuffer, xWriteBufferLen,
-                 "xadc loop_start %s (%d), adc_port=%u chan=%u dac_port=%u rate=%u frame_ms=%u dac_dig=%d dac_ana=%d adc_dig=%d adc_ana=%d\r\n",
+                 "xadc loop_start %s (%d), adc_port=%u chan=%u dac_port=%u rate=%u frame_ms=%u dac_dig=%d dac_ana=%d adc_dig=%d adc_ana=%d ref_mic=%u\r\n",
                  (ret == OPRT_OK) ? "ok" : "failed",
                  ret,
                  (unsigned int)port,
@@ -769,7 +836,9 @@ void cli_adc_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv
                  (int)dac_dig_db,
                  (int)dac_ana_db,
                  (int)dig_db,
-                 (int)ana_db);
+                 (int)ana_db,
+                 (unsigned int)((chan == (uint32_t)TUYA_AUDIO_ADC_CHANNEL_RAW3) ?
+                                ref_mic : 0U));
     } else if (os_strcmp(cmd, "loop_stop") == 0) {
         ret = test_adc_loop_stop();
         snprintf(pcWriteBuffer, xWriteBufferLen,
@@ -791,7 +860,7 @@ void cli_adc_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv
                  ret);
     } else if (os_strcmp(cmd, "status") == 0) {
         snprintf(pcWriteBuffer, xWriteBufferLen,
-                 "xadc status init=%u start=%u port=%u chan=%u rate=%u bits=%u frame_ms=%u dig=%d ana=%d frame_size=%u frame_cnt=%u total_bytes=%u last_frame=%u loop_on=%u dac_inited=%u dac_started=%u dac_port=%u dac_dig=%d dac_ana=%d loop_push=%u loop_drop=%u loop_busy=%u loop_err=%u\r\n",
+                 "xadc status init=%u start=%u port=%u chan=%u rate=%u bits=%u frame_ms=%u dig=%d ana=%d frame_size=%u frame_cnt=%u total_bytes=%u last_frame=%u loop_on=%u ref_mic=%u dac_inited=%u dac_started=%u dac_port=%u dac_dig=%d dac_ana=%d loop_push=%u loop_drop=%u loop_busy=%u loop_err=%u\r\n",
                  (unsigned int)s_adc_ctx.initialized,
                  (unsigned int)s_adc_ctx.started,
                  (unsigned int)s_adc_ctx.port,
@@ -806,6 +875,7 @@ void cli_adc_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv
                  (unsigned int)s_adc_ctx.total_bytes,
                  (unsigned int)s_adc_ctx.last_frame_bytes,
                  (unsigned int)s_adc_ctx.loop_on,
+                 (unsigned int)s_adc_ctx.loop_ref_mic,
                  (unsigned int)s_adc_ctx.dac_inited,
                  (unsigned int)s_adc_ctx.dac_started,
                  (unsigned int)s_adc_ctx.dac_port,
@@ -837,6 +907,6 @@ void cli_adc_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv
         test_adc_dump_last_pcm(pcWriteBuffer, xWriteBufferLen, dump_cnt);
     } else {
         snprintf(pcWriteBuffer, xWriteBufferLen,
-                 "Usage: xadc <init [port] [chan] [rate] [frame_ms] [dig_db] [ana_db]|start|rec [ms]|gain <dig_db> [ana_db]|loop_start [adc_port] [chan] [dac_port] [rate] [frame_ms] [dac_dig] [dac_ana] [adc_dig] [adc_ana]|loop_stop|stop|deinit|close|status|stat|dump [n]>");
+                 "Usage: xadc <init [port] [chan 0=L 1=R 2=LR 3=MIC3 4=RAW3] [rate] [frame_ms] [dig_db] [ana_db]|start|rec [ms]|gain <dig_db> [ana_db]|loop_start [adc_port] [chan] [dac_port] [rate] [frame_ms] [dac_dig] [dac_ana] [adc_dig] [adc_ana] [ref_mic 1..3 for RAW3]|loop_stop|stop|deinit|close|status|stat|dump [n]>");
     }
 }
