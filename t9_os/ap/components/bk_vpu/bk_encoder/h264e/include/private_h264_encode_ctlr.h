@@ -175,6 +175,9 @@ typedef struct
 	uint32_t pending_out_buf;
 	uint32_t pending_out_size;
 	bool pending_valid;
+	/* Set by an ioctl-driven vcenc_h264_abort() so the worker can tell a frame it
+	 * killed on purpose from a real encode failure. Cleared by the worker. */
+	bool aborting;
 	/*
 	 * Last sync error from vcenc_h264_encode_frame; published in the
 	 * worker dispatch callback so the encoder thread can decide whether to
