@@ -269,7 +269,7 @@ static OPERATE_RET test_dmic_dac_init_start(uint32_t dac_port, uint32_t sample_r
     cfg.frame_time_ms = frame_time_ms;
     cfg.frame_cb = NULL;
     cfg.args = NULL;
-    cfg.pa_pin = 60;
+    cfg.pa_pin = 28;
 
     ret = tkl_aud_dac_init((TUYA_AUDIO_DAC_PORT_E)dac_port, &cfg);
     if (ret != OPRT_OK) {
@@ -281,7 +281,8 @@ static OPERATE_RET test_dmic_dac_init_start(uint32_t dac_port, uint32_t sample_r
 
         gain[0] = dig_db;
         gain[1] = ana_db;
-        ret = tkl_aud_dac_set_gain((TUYA_AUDIO_DAC_PORT_E)dac_port, gain, 2U);
+        ret = tkl_aud_dac_set_gain((TUYA_AUDIO_DAC_PORT_E)dac_port, TUYA_AUDIO_DAC_CHANNEL_0,
+                                   gain, 2U);
         if (ret != OPRT_OK) {
             test_dmic_dac_deinit();
             return ret;
@@ -403,14 +404,22 @@ static OPERATE_RET test_dmic_init(uint32_t port, uint32_t sample_rate, uint32_t 
 
     {
         INT32_T gain[2];
+        UINT32_T ch;
+        UINT32_T ch_cnt;
 
         gain[0] = DMIC_TEST_DEFAULT_DIG_DB;
         gain[1] = DMIC_TEST_DEFAULT_ANA_DB;
-        ret = tkl_aud_dmic_set_gain((TUYA_AUDIO_DMIC_PORT_E)port, gain, DMIC_TEST_GAIN_NUM);
-        if (ret != OPRT_OK) {
-            tkl_log_output("dmic set_gain failed: %d\r\n", ret);
-            tkl_aud_dmic_deinit((TUYA_AUDIO_DMIC_PORT_E)port);
-            return ret;
+        /* PORT_0 -> CH0; PORT_1 -> CH0/1/2 (matches driver adc_ch_bitmap) */
+        ch_cnt = ((TUYA_AUDIO_DMIC_PORT_E)port == TUYA_AUDIO_DMIC_PORT_1) ? 3U : 1U;
+        for (ch = 0U; ch < ch_cnt; ch++) {
+            ret = tkl_aud_dmic_set_gain((TUYA_AUDIO_DMIC_PORT_E)port,
+                                        (TUYA_AUDIO_DMIC_CHANNEL_E)ch,
+                                        gain, DMIC_TEST_GAIN_NUM);
+            if (ret != OPRT_OK) {
+                tkl_log_output("dmic set_gain failed: %d ch=%u\r\n", ret, (unsigned)ch);
+                tkl_aud_dmic_deinit((TUYA_AUDIO_DMIC_PORT_E)port);
+                return ret;
+            }
         }
     }
 
@@ -519,7 +528,7 @@ void cli_tuya_dmic_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char 
 
     if (argc < 2) {
         snprintf(pcWriteBuffer, xWriteBufferLen,
-                 "Usage: xdmic <init [port] [rate] [frame_ms] [clk_gpio data_gpio]|start|rec [ms]|gain <dig_db> [ana_db]|loop_start [dmic_port] [dac_port] [rate] [frame_ms] [dig_db] [ana_db] [clk_gpio data_gpio]|loop_stop|stop|deinit|close|status>");
+                 "Usage: xdmic <init [port] [rate] [frame_ms] [clk_gpio data_gpio]|start|rec [ms]|gain <dig|x> [ana|x] [ch 0|1|2]|loop_start [dmic_port] [dac_port] [rate] [frame_ms] [dig_db] [ana_db] [clk_gpio data_gpio]|loop_stop|stop|deinit|close|status>");
         return;
     }
 
@@ -577,31 +586,77 @@ void cli_tuya_dmic_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char 
         INT32_T dig = DMIC_TEST_DEFAULT_DIG_DB;
         INT32_T ana = DMIC_TEST_DEFAULT_ANA_DB;
         INT32_T garr[2];
+        UINT32_T mic_ch = 0xFFU;
+        BOOL_T dig_keep = FALSE;
+        BOOL_T ana_keep = FALSE;
+        UINT32_T ch;
+        UINT32_T ch_cnt;
 
         if (argc < 3) {
             snprintf(pcWriteBuffer, xWriteBufferLen,
-                     "Usage: xdmic gain <dig_db> [ana_db]\r\n");
+                     "Usage: xdmic gain <dig_db|x> [ana_db|x] [ch 0|1|2]\r\n"
+                     "  x = keep (AUDIA_DMIC_INVALID_GAIN_VALUE); ch omit = all open ch\r\n");
             return;
         }
-        dig = test_parse_s32(argv[2]);
-        if (argc >= 4) {
-            ana = test_parse_s32(argv[3]);
-        } else if (s_dmic_ctx.initialized) {
-            ana = s_dmic_ctx.ana_db;
+        if ((argv[2][0] == 'x' || argv[2][0] == 'X') && argv[2][1] == '\0') {
+            dig_keep = TRUE;
+            dig = (INT32_T)AUDIA_DMIC_INVALID_GAIN_VALUE;
+        } else {
+            dig = test_parse_s32(argv[2]);
         }
+        if (argc >= 4) {
+            if ((argv[3][0] == 'x' || argv[3][0] == 'X') && argv[3][1] == '\0') {
+                ana_keep = TRUE;
+                ana = (INT32_T)AUDIA_DMIC_INVALID_GAIN_VALUE;
+            } else {
+                ana = test_parse_s32(argv[3]);
+            }
+        } else {
+            ana_keep = TRUE;
+            ana = (INT32_T)AUDIA_DMIC_INVALID_GAIN_VALUE;
+        }
+        if (argc >= 5) {
+            mic_ch = (UINT32_T)test_parse_s32(argv[4]);
+        }
+
+        if (!s_dmic_ctx.initialized) {
+            snprintf(pcWriteBuffer, xWriteBufferLen, "xdmic gain failed: not init\r\n");
+            return;
+        }
+
         garr[0] = dig;
         garr[1] = ana;
-        ret = tkl_aud_dmic_set_gain(s_dmic_ctx.port, garr, DMIC_TEST_GAIN_NUM);
+        ret = OPRT_OK;
+        if (mic_ch != 0xFFU) {
+            ret = tkl_aud_dmic_set_gain(s_dmic_ctx.port, (TUYA_AUDIO_DMIC_CHANNEL_E)mic_ch,
+                                        garr, DMIC_TEST_GAIN_NUM);
+        } else {
+            ch_cnt = (s_dmic_ctx.port == TUYA_AUDIO_DMIC_PORT_1) ? 3U : 1U;
+            for (ch = 0U; ch < ch_cnt; ch++) {
+                ret = tkl_aud_dmic_set_gain(s_dmic_ctx.port, (TUYA_AUDIO_DMIC_CHANNEL_E)ch,
+                                            garr, DMIC_TEST_GAIN_NUM);
+                if (ret != OPRT_OK) {
+                    break;
+                }
+            }
+        }
         if (ret == OPRT_OK) {
-            s_dmic_ctx.dig_db = dig;
-            s_dmic_ctx.ana_db = ana;
+            if (dig_keep != TRUE) {
+                s_dmic_ctx.dig_db = dig;
+            }
+            if (ana_keep != TRUE) {
+                s_dmic_ctx.ana_db = ana;
+            }
         }
         snprintf(pcWriteBuffer, xWriteBufferLen,
-                 "xdmic gain %s (%d), dig=%d ana=%d\r\n",
+                 "xdmic gain %s (%d), ch=%s dig=%s%d ana=%s%d\r\n",
                  (ret == OPRT_OK) ? "ok" : "failed",
                  ret,
-                 (int)dig,
-                 (int)ana);
+                 (mic_ch != 0xFFU) ? "one" : "all",
+                 (dig_keep == TRUE) ? "keep/" : "",
+                 (dig_keep == TRUE) ? (int)s_dmic_ctx.dig_db : (int)dig,
+                 (ana_keep == TRUE) ? "keep/" : "",
+                 (ana_keep == TRUE) ? (int)s_dmic_ctx.ana_db : (int)ana);
     } else if (os_strcmp(cmd, "loop_start") == 0) {
         if (argc >= 3) {
             port = os_strtoul(argv[2], NULL, 10);
@@ -690,6 +745,6 @@ void cli_tuya_dmic_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char 
                  (unsigned int)s_dmic_ctx.loop_write_err_cnt);
     } else {
         snprintf(pcWriteBuffer, xWriteBufferLen,
-                 "Usage: xdmic <init [port] [rate] [frame_ms] [clk_gpio data_gpio]|start|rec [ms]|gain <dig_db> [ana_db]|loop_start [dmic_port] [dac_port] [rate] [frame_ms] [dig_db] [ana_db] [clk_gpio data_gpio]|loop_stop|stop|deinit|close|status>");
+                 "Usage: xdmic <init [port] [rate] [frame_ms] [clk_gpio data_gpio]|start|rec [ms]|gain <dig|x> [ana|x] [ch 0|1|2]|loop_start [dmic_port] [dac_port] [rate] [frame_ms] [dig_db] [ana_db] [clk_gpio data_gpio]|loop_stop|stop|deinit|close|status>");
     }
 }

@@ -733,15 +733,26 @@ OPERATE_RET tkl_aud_dac_stop(TUYA_AUDIO_DAC_PORT_E port)
 }
 
 /**
- * @brief Set the DAC hardware gain.
- * @param[in] port DAC output port. This parameter is ignored on T5.
- * @param[in] gain Gain array in dB (V2) or dig register units (V1)
- * @param[in] num Gain count: V2 supports 2 (dig then ana) or 1 (dig only);
- *                V1 supports 1 (dig register 0..0x3F style)
- * @return OPRT_OK on success, other error codes on failure
- * @note V2: dig <= BK_AUD_DAC_DIG_GAIN_DB_SILENCE mutes; otherwise unmutes.
+ * @brief Check whether gain value means "do not change"
+ * @param[in] v gain value from caller
+ * @return TRUE if invalid/skip
  */
-OPERATE_RET tkl_aud_dac_set_gain(TUYA_AUDIO_DAC_PORT_E port, INT32_T gain[], UINT32_T num)
+static BOOL_T __tkl_aud_dac_gain_is_invalid(INT32_T v)
+{
+    return ((UINT32_T)v == (UINT32_T)AUDIA_DAC_INVALID_GAIN_VALUE) ? TRUE : FALSE;
+}
+
+/**
+ * @brief Set the DAC hardware gain.
+ * @param[in] port DAC output port (unused on this platform)
+ * @param[in] channel TUYA_AUDIO_DAC_CHANNEL_0/1 -> L/R (OEM dig still sets both)
+ * @param[in] gain gain[0]=dig, gain[1]=ana; AUDIA_DAC_INVALID_GAIN_VALUE to skip
+ * @param[in] num 1 (dig only) or 2 (dig then ana)
+ * @return OPRT_OK on success
+ * @note V2: dig <= BK_AUD_DAC_DIG_GAIN_DB_SILENCE mutes when dig is applied.
+ */
+OPERATE_RET tkl_aud_dac_set_gain(TUYA_AUDIO_DAC_PORT_E port, TUYA_AUDIO_DAC_CHANNEL_E channel,
+                                 INT32_T gain[], UINT32_T num)
 {
     (void)port;
 
@@ -749,7 +760,12 @@ OPERATE_RET tkl_aud_dac_set_gain(TUYA_AUDIO_DAC_PORT_E port, INT32_T gain[], UIN
         return OPRT_COM_ERROR;
     }
 
-    if ((gain == NULL) || (num == 0U)) {
+    if ((gain == NULL) || (num == 0U) || (num > 2U)) {
+        return OPRT_INVALID_PARM;
+    }
+
+    /* This SoC exposes L/R as CHANNEL_0/1; higher channels are unsupported. */
+    if ((UINT32_T)channel > (UINT32_T)TUYA_AUDIO_DAC_CHANNEL_1) {
         return OPRT_INVALID_PARM;
     }
 
@@ -760,62 +776,67 @@ OPERATE_RET tkl_aud_dac_set_gain(TUYA_AUDIO_DAC_PORT_E port, INT32_T gain[], UIN
 
 #if CONFIG_AUD_DRIVER_V2
     {
-        float dig_db;
-        int32_t ana_db;
+        BOOL_T set_dig;
+        BOOL_T set_ana;
+        float dig_db = 0.0f;
+        int32_t ana_db = 0;
 
-        /* This platform supports dig + ana: expect num=2; num=1 sets dig only. */
-        if (num > TKL_AUD_DAC_GAIN_NUM) {
+        (void)channel; /* OEM dig API always programs L+R together */
+
+        set_dig = (__tkl_aud_dac_gain_is_invalid(gain[0]) == TRUE) ? FALSE : TRUE;
+        if (num >= 2U) {
+            set_ana = (__tkl_aud_dac_gain_is_invalid(gain[1]) == TRUE) ? FALSE : TRUE;
+        } else {
+            set_ana = FALSE;
+        }
+
+        if ((set_dig == FALSE) && (set_ana == FALSE)) {
             return OPRT_INVALID_PARM;
         }
 
-        dig_db = (float)gain[0];
-        if (dig_db <= BK_AUD_DAC_DIG_GAIN_DB_SILENCE) {
-            bk_aud_dac_mute();
-            if (bk_aud_dac_set_dig_gain_db(BK_AUD_DAC_DIG_GAIN_DB_SILENCE) != BK_OK) {
-                TKL_DAC_LOG("set dac dig gain fail\n");
-                return OPRT_COM_ERROR;
-            }
-            if (num >= 2U) {
-                ana_db = gain[1];
-                if (bk_aud_dac_set_ana_gain_db(ana_db) != BK_OK) {
-                    TKL_DAC_LOG("set dac ana gain fail\n");
+        if (set_dig == TRUE) {
+            dig_db = (float)gain[0];
+            if (dig_db <= BK_AUD_DAC_DIG_GAIN_DB_SILENCE) {
+                bk_aud_dac_mute();
+                if (bk_aud_dac_set_dig_gain_db(BK_AUD_DAC_DIG_GAIN_DB_SILENCE) != BK_OK) {
+                    TKL_DAC_LOG("set dac dig gain fail\n");
                     return OPRT_COM_ERROR;
                 }
+                gl_dac_ctx->dig_db = BK_AUD_DAC_DIG_GAIN_DB_SILENCE;
+            } else {
+                bk_aud_dac_unmute();
+                if (bk_aud_dac_set_dig_gain_db(dig_db) != BK_OK) {
+                    TKL_DAC_LOG("set dac dig gain fail\n");
+                    return OPRT_COM_ERROR;
+                }
+                gl_dac_ctx->dig_db = dig_db;
             }
-            gl_dac_ctx->dig_db = BK_AUD_DAC_DIG_GAIN_DB_SILENCE;
-            if (num >= 2U) {
-                gl_dac_ctx->ana_db = ana_db;
-            }
-            gl_dac_ctx->gain_set = TRUE;
-            bk_printf("dac gain mute dig=%.1fdB\r\n", dig_db);
-            return OPRT_OK;
         }
 
-        bk_aud_dac_unmute();
-        if (bk_aud_dac_set_dig_gain_db(dig_db) != BK_OK) {
-            TKL_DAC_LOG("set dac dig gain fail\n");
-            return OPRT_COM_ERROR;
-        }
-        if (num >= 2U) {
+        if (set_ana == TRUE) {
             ana_db = gain[1];
             if (bk_aud_dac_set_ana_gain_db(ana_db) != BK_OK) {
                 TKL_DAC_LOG("set dac ana gain fail\n");
                 return OPRT_COM_ERROR;
             }
             gl_dac_ctx->ana_db = ana_db;
-            bk_printf("dac gain dig=%.1fdB ana=%ddB\r\n", dig_db, ana_db);
-        } else {
-            bk_printf("dac gain dig=%.1fdB (ana unchanged)\r\n", dig_db);
         }
-        gl_dac_ctx->dig_db = dig_db;
+
         gl_dac_ctx->gain_set = TRUE;
+        bk_printf("dac gain ch=%u dig%s=%.1f ana%s=%d\r\n",
+                  (unsigned)channel,
+                  (set_dig == TRUE) ? "" : "(keep)",
+                  gl_dac_ctx->dig_db,
+                  (set_ana == TRUE) ? "" : "(keep)",
+                  gl_dac_ctx->ana_db);
         return OPRT_OK;
     }
 #else
     {
         uint32_t hw_gain;
 
-        if (num != TKL_AUD_DAC_GAIN_NUM) {
+        (void)channel;
+        if (__tkl_aud_dac_gain_is_invalid(gain[0]) == TRUE) {
             return OPRT_INVALID_PARM;
         }
 
