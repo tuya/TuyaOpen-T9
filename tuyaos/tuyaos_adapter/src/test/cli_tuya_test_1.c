@@ -98,13 +98,11 @@ static const struct cli_command tuya_cli_commands[] = {
     // {"audio_test", "mic to speaker test", cli_audio_test_cmd},
     {"info",    "system info",      cli_system_info_cmd},
     {"xmem",    "memory debug commands", cli_memory_test_cmd},
-    {"xmipi",    "mipi test",        cli_tuya_mipi_cmd},
-    {"xgpu",    "gpu pipeline test", cli_tuya_gpu_cmd},
+    {"xmipi",   "mipi cam/dsi test", cli_tuya_mipi_cmd},
 #if (CONFIG_LVGL && CONFIG_LVGL_V9)
     {"xlvgl",   "lvgl test",         cli_tuya_lvgl_cmd},
 #endif
-    {"xvenc",   "video encode test", cli_tuya_venc_cmd},
-    {"xvdec",   "video decode test", cli_tuya_vdec_cmd},
+    {"ximg",    "one-shot image ops", cli_tuya_image_cmd},
     {"xuvc",    "usb camera test",   cli_tuya_uvc_cmd},
     {"xdac",    "audio dac test",    cli_tuya_dac_cmd},
     {"xdmic",   "audio dmic test",   cli_tuya_dmic_cmd},

@@ -8,6 +8,7 @@
 #include "mt_mipi.h"
 #include "tuya_error_code.h"
 #include "tkl_system.h"
+#include "tkl_media_buf.h"
 #include <avdk_check.h>
 #include <avdk_error.h>
 #include <common/avdk_pixel_types.h>
@@ -78,16 +79,15 @@ STATIC CONST UINT32_T s_prbs7_data[127] = {
  * Function implementations
  * --------------------------------------------------------------------------- */
 /**
- * @brief Initialize frame buffer mem_slab once before UNCODED heap malloc
+ * @brief Bring the frame-buffer slab heaps up before any UNCODED allocation.
  * @return none
- * @note Required by bk_frame_buffer_malloc(MEM_SLAB_HEAP_UNCODED, ...)
+ * @note Routed through tkl_media_buf_init(): bk_frame_buffer_init() is
+ *       destructive and cannot be asked whether the heaps are already up, so
+ *       one guard has to own it.
  */
 STATIC VOID_T __mt_mipi_frame_buffer_init_once(VOID_T)
 {
-    if (s_mipi_fb_inited == FALSE) {
-        bk_frame_buffer_init();
-        s_mipi_fb_inited = TRUE;
-    }
+    tkl_media_buf_init();
 }
 
 /**

@@ -70,9 +70,6 @@ void cli_mic_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv
 void cli_tuya_i2s_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv);
 void cli_xmtd_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv);
 void cli_lp_test_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv);
-void cli_tuya_gpu_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv);
-void cli_tuya_venc_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv);
-void cli_tuya_vdec_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv);
 void cli_tuya_uvc_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv);
 void cli_tuya_dac_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv);
 void cli_tuya_dmic_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv);
@@ -85,7 +82,10 @@ void cli_tuya_lvgl_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char 
 int cli_mp3_init(void);
 int cli_dwt_init(void);
 
+void cli_tuya_mipi_dsi_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv);
 void cli_tuya_mipi_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv);
+void cli_tuya_image_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv);
+void cli_tuya_mipi_cam_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv);
 // void cli_xmbedtls_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv);
 // void cli_xplat_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv);
 #endif // CONFIG_SYS_CPU1

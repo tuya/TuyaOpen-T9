@@ -229,7 +229,11 @@ static void tuya_lvgl_widgets_flush(void *args, void *frame_buffer, int (*cb)(vo
     ret = tkl_mipi_dsi_flush(&flush_frame);
     if (ret != OPRT_OK) {
         tkl_log_output("lvgl mipi flush failed: %d\r\n", ret);
-        tuya_lvgl_widgets_frame_done((UINT8_T *)frame_buffer);
+        /* a flush that got past validation already ran free_cb, which is this
+         * very function - re-running it would notify lvgl twice */
+        if (ret == OPRT_INVALID_PARM || ret == OPRT_RESOURCE_NOT_READY) {
+            tuya_lvgl_widgets_frame_done((UINT8_T *)frame_buffer);
+        }
     }
 }
 
@@ -371,7 +375,7 @@ static OPERATE_RET tuya_lvgl_demo_start(tuya_lvgl_demo_type_t demo, bool output_
     }
 
     if (test_mipi_lcd_is_open() != TRUE) {
-        tkl_log_output("mipi lcd is not open, use xmipi lcd open first\r\n");
+        tkl_log_output("mipi lcd is not open, use xmipi dsi open first\r\n");
         return OPRT_RESOURCE_NOT_READY;
     }
 

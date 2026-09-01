@@ -38,6 +38,7 @@ extern void bk_printf(const char *fmt, ...);
  */
 TUYA_WEAK_ATTRIBUTE INT_T tkl_fs_mkdir(CONST CHAR_T *path)
 {
+    DIR *dirp;
     int ret;
 
     if (path == NULL) {
@@ -45,12 +46,22 @@ TUYA_WEAK_ATTRIBUTE INT_T tkl_fs_mkdir(CONST CHAR_T *path)
     }
 
     ret = mkdir(path, 0777);
-    if ((ret != 0) && (errno != EEXIST)) {
-        bk_printf("tkl_fs_mkdir failed, path:%s ret=%d errno=%d\r\n", path, ret, errno);
-        return -1;
+    if (ret == 0) {
+        return 0;
     }
 
-    return 0;
+    /* "already exists" is success, but errno does not say so here: FatFs
+     * reports FR_EXIST(8) as the return value and leaves errno at 0. Verify the
+     * path instead, with opendir() rather than stat() so that mount roots like
+     * "/sdcard" also work. */
+    dirp = opendir(path);
+    if (dirp != NULL) {
+        closedir(dirp);
+        return 0;
+    }
+
+    bk_printf("tkl_fs_mkdir failed, path:%s ret=%d errno=%d\r\n", path, ret, errno);
+    return -1;
 }
 
 /**

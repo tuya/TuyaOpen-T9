@@ -1,34 +1,9 @@
-#include "components/bk_draw_osd.h"
+/* blend.h brings in modules/lcd_font.h (gui_font_digit_struct / GUI_CONST_STORAGE)
+ * along with the stdint/stddef that header depends on but does not include. */
 #include "blend.h"   /* OSD_VIEW_W / OSD_VIEW_H：元素坐标空间，随 OSD_LAYOUT_ROTATED 切换 */
 
-#define CLOCK_LOGO_W    220   /* enough for "HH:MM:SS" */
-#define CLOCK_LOGO_H    44
+/* text geometry lives in blend.h so the element table can reach it too */
 
-#define DATA_LOGO_W     220
-#define DATA_LOGO_H     24
-
-#define VERSION_LOGO_W  180
-#define VERSION_LOGO_H  24
-
-/* 以下位置全部按 OSD_VIEW_W/H 的比例推导，横屏(1024x600)与竖屏(600x1024)共用同一套公式。
- * 代入 OSD_VIEW_H=600 时，结果与改动前的横屏布局逐值相同。 */
-
-/* ver: horizontal center, slightly above vertical center */
-#define VER_X           ((OSD_VIEW_W - VERSION_LOGO_W) / 2)  /* 竖屏 210 / 横屏 422 */
-#define VER_Y           (OSD_VIEW_H / 3)                     /* 竖屏 341 / 横屏 200 */
-
-/* clock + date stacked: horizontal center, slightly below vertical center */
-#define CLOCK_DATE_GAP  8
-#define CLOCK_DATE_STACK_H  (CLOCK_LOGO_H + CLOCK_DATE_GAP + DATA_LOGO_H) /* 76 */
-/* 中线下方 OSD_VIEW_H/15（竖屏 68 / 横屏 40），再上移半个堆叠高度 */
-#define CLOCK_DATE_STACK_TOP  ((OSD_VIEW_H / 2) + (OSD_VIEW_H / 15) - (CLOCK_DATE_STACK_H / 2))
-#define CLOCK_X         ((OSD_VIEW_W - CLOCK_LOGO_W) / 2)    /* 竖屏 190 / 横屏 402 */
-#define CLOCK_Y         CLOCK_DATE_STACK_TOP                 /* 竖屏 542 / 横屏 302 */
-#define DATE_X          ((OSD_VIEW_W - DATA_LOGO_W) / 2)     /* 竖屏 190 / 横屏 402 */
-#define DATE_Y          (CLOCK_Y + CLOCK_LOGO_H + CLOCK_DATE_GAP)
-
-#define FONT_COLOR      0xFFFF
-/* Start of unicode area <Basic Latin> */
 GUI_CONST_STORAGE unsigned char acGUI_FontRoboto53_0020[  1] =/* code 0020, SPACE */
 {
     0x00
@@ -1825,83 +1800,3 @@ static const gui_font_digit_struct GUI_Fontblack24_anti_CharInfo[] =
     , {0, 4, 24,  24,   0,  0,   24, NULL} //the end must 0.
 };
 const gui_font_digit_struct *const font_digit_black24 = GUI_Fontblack24_anti_CharInfo;
-
-
-GUI_CONST_STORAGE bk_blend_t font_clock =
-{
-    .version = 0,
-    .blend_type = BLEND_TYPE_FONT,
-    .name = "clock",
-    .width = CLOCK_LOGO_W,
-    .height = CLOCK_LOGO_H,
-    .xpos = CLOCK_X,
-    .ypos = CLOCK_Y,
-    .font =
-    {
-        .font_digit_type = font_digit_Roboto53,
-        .color = FONT_COLOR,
-    },
-};
-GUI_CONST_STORAGE bk_blend_t font_dates =
-{
-    .version = 0,
-    .blend_type = BLEND_TYPE_FONT,
-    .name = "date",
-    .width = DATA_LOGO_W,
-    .height = DATA_LOGO_H,
-    .xpos = DATE_X,
-    .ypos = DATE_Y,
-    .font =
-    {
-        .font_digit_type = font_digit_black24,
-        .color = FONT_COLOR,
-    },
-};
-
-GUI_CONST_STORAGE bk_blend_t font_week =
-{
-    .version = 0,
-    .blend_type = BLEND_TYPE_FONT,
-    .name = "week",
-    .width = DATA_LOGO_W,
-    .height = DATA_LOGO_H,
-    .xpos = DATE_X,
-    .ypos = DATE_Y + DATA_LOGO_H,
-    .font =
-    {
-        .font_digit_type = font_digit_black24,
-        .color = FONT_COLOR,
-    },
-};
-GUI_CONST_STORAGE bk_blend_t font_weather =
-{
-    .version = 0,
-    .blend_type = BLEND_TYPE_FONT,
-    .name = "weather",
-    .width = DATA_LOGO_W,
-    .height = DATA_LOGO_H,
-    .xpos = DATE_X,
-    .ypos = DATE_Y,
-    .font =
-    {
-        .font_digit_type = font_digit_black24,
-        .color = FONT_COLOR,
-    },
-};
-
-GUI_CONST_STORAGE bk_blend_t font_ver =
-{
-    .version = 0,
-    .blend_type = BLEND_TYPE_FONT,
-    .name = "ver",
-    .width = VERSION_LOGO_W,
-    .height = VERSION_LOGO_H,
-    .xpos = VER_X,
-    .ypos = VER_Y,
-    .font =
-    {
-        .font_digit_type = font_digit_black24,
-        .color = FONT_COLOR,
-    },
-};
-

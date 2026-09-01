@@ -5,6 +5,8 @@
 #include <components/bk_display_bus.h>
 #include <driver/mipi_dsi.h>
 #include <driver/mipi_dsi_types.h>
+#include <os/mem.h>
+#include <os/os.h>
 #include "tkl_mipi_dsi.h"
 #include "tkl_output.h"
 
@@ -26,7 +28,88 @@ static tkl_mipi_dpu_runtime_t s_dpu_runtime;
 /* Panel descriptor consumed by bk_lcd_mipi_panel_new(); the panel handle keeps a
  * pointer to it (no copy), so it must outlive the panel -> static storage. */
 static bk_display_dsi_panel_t s_dsi_panel_desc;
-static void (*s_flush_free_cb)(UINT8_T *frame_buff) = NULL;
+
+/**
+ * Pending (buffer, free_cb) pairs.
+ *
+ * A single static free_cb would be wrong: the DPU keeps two frames per layer and
+ * releases the *older* one after a newer flush is published, so with two sources
+ * on the same panel frame N would be released with frame N-1's callback.
+ * dpu_core_flush() hands the buffer pointer back, so matching by buffer is
+ * exact. Depth 4 covers the DPU's 2 outstanding frames plus the overlap.
+ */
+#define TKL_MIPI_DSI_FLUSH_SLOTS 4
+
+typedef struct {
+    UINT8_T *buffer;
+    void (*free_cb)(UINT8_T *frame_buff);
+} tkl_mipi_dsi_flush_slot_t;
+
+static tkl_mipi_dsi_flush_slot_t s_flush_slots[TKL_MIPI_DSI_FLUSH_SLOTS];
+
+/**
+ * @brief Remember how to release one buffer once the DPU is done with it.
+ * @param[in] buffer  frame handed to bk_display_flush()
+ * @param[in] free_cb its release function
+ * @return TRUE when recorded
+ * @note Re-flushing a buffer that is still pending just refreshes its callback.
+ */
+static BOOL_T tkl_mipi_dsi_flush_slot_add(UINT8_T *buffer, void (*free_cb)(UINT8_T *))
+{
+    UINT32_T i;
+    INT_T free_idx = -1;
+    BOOL_T ok = FALSE;
+    UINT32_T flags = rtos_disable_int();
+
+    for (i = 0U; i < TKL_MIPI_DSI_FLUSH_SLOTS; i++) {
+        if (s_flush_slots[i].buffer == buffer) {
+            s_flush_slots[i].free_cb = free_cb;
+            ok = TRUE;
+            break;
+        }
+        if (free_idx < 0 && s_flush_slots[i].buffer == NULL) {
+            free_idx = (INT_T)i;
+        }
+    }
+
+    if (ok != TRUE && free_idx >= 0) {
+        s_flush_slots[free_idx].buffer = buffer;
+        s_flush_slots[free_idx].free_cb = free_cb;
+        ok = TRUE;
+    }
+
+    rtos_enable_int(flags);
+
+    if (ok != TRUE) {
+        tkl_log_output("tkl_mipi_dsi: flush slots exhausted, buffer=%p\r\n", buffer);
+    }
+
+    return ok;
+}
+
+/**
+ * @brief Claim the release function belonging to one buffer.
+ * @param[in] buffer buffer the DPU reported as done
+ * @return its free_cb, or NULL when the buffer is unknown
+ */
+static void (*tkl_mipi_dsi_flush_slot_take(UINT8_T *buffer))(UINT8_T *)
+{
+    UINT32_T i;
+    void (*cb)(UINT8_T *) = NULL;
+    UINT32_T flags = rtos_disable_int();
+
+    for (i = 0U; i < TKL_MIPI_DSI_FLUSH_SLOTS; i++) {
+        if (s_flush_slots[i].buffer == buffer) {
+            cb = s_flush_slots[i].free_cb;
+            s_flush_slots[i].buffer = NULL;
+            s_flush_slots[i].free_cb = NULL;
+            break;
+        }
+    }
+
+    rtos_enable_int(flags);
+    return cb;
+}
 
 static OPERATE_RET tkl_mipi_dpu_init(const TUYA_MIPI_BASE_CFG_T *base_cfg);
 static OPERATE_RET tkl_mipi_dpu_deinit(VOID_T);
@@ -98,8 +181,10 @@ static bk_pixel_format_t tkl_mipi_dpu_pixel_format_convert(DISPLAY_PIXEL_FORMAT_
 
 static OPERATE_RET tkl_mipi_dsi_flush_done(void *args)
 {
-    if (s_flush_free_cb != NULL) {
-        s_flush_free_cb((uint8_t *)args);
+    void (*free_cb)(UINT8_T *) = tkl_mipi_dsi_flush_slot_take((UINT8_T *)args);
+
+    if (free_cb != NULL) {
+        free_cb((UINT8_T *)args);
     }
 
     return OPRT_OK;
@@ -316,7 +401,30 @@ static OPERATE_RET tkl_mipi_dpu_deinit(VOID_T)
     }
 
     tkl_mipi_dpu_runtime_reset();
-    s_flush_free_cb = NULL;
+
+    /* bk_display_deinit() drains its pending frames and invokes their callbacks,
+     * which land in tkl_mipi_dsi_flush_done() and clear their own slots. Anything
+     * still here after that was never reported done - drop the record but do not
+     * call the callback: whoever owns that buffer may still hold the pointer. */
+    {
+        UINT32_T i;
+        UINT32_T leaked = 0U;
+        UINT32_T flags = rtos_disable_int();
+
+        for (i = 0U; i < TKL_MIPI_DSI_FLUSH_SLOTS; i++) {
+            if (s_flush_slots[i].buffer != NULL) {
+                leaked++;
+            }
+        }
+        os_memset(s_flush_slots, 0, sizeof(s_flush_slots));
+        rtos_enable_int(flags);
+
+        if (leaked != 0U) {
+            tkl_log_output("tkl_mipi_dsi: %u frame(s) never reported done at deinit\r\n",
+                           (unsigned int)leaked);
+        }
+    }
+
     return OPRT_OK;
 }
 
@@ -329,18 +437,31 @@ OPERATE_RET tkl_mipi_dsi_flush(tkl_mipi_dsi_flush_frame_t *frame)
     }
 
     if (s_dpu_runtime.inited != TRUE || s_dpu_runtime.dpu_ctlr_handle == NULL) {
-        return OPRT_COM_ERROR;
+        return OPRT_RESOURCE_NOT_READY;
     }
 
     if (frame->buffer == NULL) {
         return OPRT_INVALID_PARM;
     }
 
-    s_flush_free_cb = frame->free_cb;
+    if (frame->free_cb != NULL) {
+        if (tkl_mipi_dsi_flush_slot_add(frame->buffer, frame->free_cb) != TRUE) {
+            return OPRT_RESOURCE_NOT_READY;
+        }
+    }
+
     ret = bk_display_flush(s_dpu_runtime.dpu_ctlr_handle, frame->buffer,
                            (frame->free_cb != NULL) ? tkl_mipi_dsi_flush_done : NULL);
     if (ret != OPRT_OK) {
-        s_flush_free_cb = NULL;
+        /* dpu_core_flush() releases the frame itself when the commit fails,
+         * which empties the slot. A still-occupied slot means the failure
+         * happened earlier and nobody released it - do it here, so the caller
+         * never has to guess. */
+        void (*free_cb)(UINT8_T *) = tkl_mipi_dsi_flush_slot_take(frame->buffer);
+
+        if (free_cb != NULL) {
+            free_cb(frame->buffer);
+        }
         return ret;
     }
 

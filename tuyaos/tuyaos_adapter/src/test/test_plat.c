@@ -48,6 +48,7 @@
 #endif
 
 #include "sdkconfig.h"
+#include "tkl_media_buf.h"
 
 /* GDMA memcpy helpers live in private bk_general_dma */
 extern bk_err_t dma_memcpy(void *out, const void *in, uint32_t len);
@@ -4889,13 +4890,12 @@ static void xplat_run_psram_nc_matrix(void)
     xplat_log_freq();
 
 #if CONFIG_PSRAM && XPLAT_HAS_FB_UNCODED
-    /* MEM_SLAB_HEAP_UNCODED is normally brought up by the video subsystem via
-     * bk_frame_buffer_init(); this app never starts video, so the slab stays at
-     * heap_size==0 and bk_frame_buffer_malloc() would BK_ASSERT(0) ("not init").
-     * Bring it up here, once per boot. The backing region is the non-cacheable
-     * PSRAM window (VIDEO_MEM_SLAB_UNCODED_ADDR, 0x60 MPU attribute). */
+    /* The slab heaps are normally brought up by the video subsystem, which this
+     * app never starts, so bk_frame_buffer_malloc() would assert "not init".
+     * Routed through tkl_media_buf_init(): it owns the one guard, and
+     * bk_frame_buffer_init() is destructive. */
     if (s_uncoded_slab_inited == 0) {
-        bk_frame_buffer_init();
+        tkl_media_buf_init();
         s_uncoded_slab_inited = 1;
         bk_printf("[xplat] INFO psram_nc slab init done (MEM_SLAB_HEAP_UNCODED)\r\n");
     }

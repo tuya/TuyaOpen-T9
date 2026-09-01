@@ -12,7 +12,8 @@
 #include <components/avdk_utils/avdk_error.h>
 #include <components/bk_decode/bk_jpeg_decode_ctlr.h>
 #include "tkl_memory.h"
-#include "tkl_vdec.h"
+#include "tkl_media_buf.h"
+#include "tkl_vdec_internal.h"
 
 #define TKL_VDEC_DEFAULT_TIMEOUT_MS 1000U
 #define TKL_VDEC_DEFAULT_FLEXA_LINES 16U
@@ -428,7 +429,10 @@ static VOID *tkl_vdec_frame_alloc(TUYA_VDEC_CTX_T *ctx, UINT32_T size)
         return ctx->sink.alloc_cb(size, ctx->sink.cb_arg);
     }
 
-    return tkl_system_malloc(size);
+    /* No sink allocator: TKL picks the pool. A decoder output is always a pixel
+     * frame, and the decoder DMAs into it, so it cannot come from the ordinary
+     * heap (see tkl_media_buf.h). */
+    return tkl_media_buf_alloc(TKL_BUF_USE_PIXEL, size, TKL_MEDIA_BUF_OWNER_VDEC);
 }
 
 static VOID tkl_vdec_frame_free(TUYA_VDEC_CTX_T *ctx, VOID *ptr)
@@ -440,7 +444,7 @@ static VOID tkl_vdec_frame_free(TUYA_VDEC_CTX_T *ctx, VOID *ptr)
     if (ctx->sink.free_cb != NULL) {
         (void)ctx->sink.free_cb(ptr, ctx->sink.cb_arg);
     } else {
-        tkl_system_free(ptr);
+        tkl_media_buf_free(TKL_MEDIA_BUF_OWNER_VDEC, ptr);
     }
 }
 
@@ -707,6 +711,34 @@ OPERATE_RET tkl_vdec_submit_stream(TUYA_VDEC_HANDLE handle, const TUYA_VCODEC_ST
     }
 
     return tkl_vdec_ret_convert(ret);
+}
+
+OPERATE_RET tkl_vdec_get_frame_size(TUYA_VDEC_HANDLE handle,
+                                   const TUYA_VCODEC_STREAM_T *stream,
+                                   UINT32_T *size)
+{
+    TUYA_VDEC_CTX_T *ctx = tkl_vdec_ctx_get(handle);
+    UINT32_T out;
+
+    if (ctx == NULL || stream == NULL || size == NULL) {
+        return OPRT_INVALID_PARM;
+    }
+
+    if (stream->data == NULL || stream->size == 0U) {
+        return OPRT_INVALID_PARM;
+    }
+
+    if (ctx->backend_handle == NULL) {
+        return OPRT_RESOURCE_NOT_READY;
+    }
+
+    out = tkl_vdec_frame_output_size(ctx, stream);
+    if (out == 0U) {
+        return OPRT_COM_ERROR;
+    }
+
+    *size = out;
+    return OPRT_OK;
 }
 
 OPERATE_RET tkl_vdec_get_handle(TUYA_VDEC_HANDLE handle, VOID **backend_handle)

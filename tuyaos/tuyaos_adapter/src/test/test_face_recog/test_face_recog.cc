@@ -7,9 +7,8 @@
  *
  * Prerequisite (other tests):
  *   xsd mount
- *   xmipi lcd open_gpu ...
- *   xmipi camera open_gpu_sp ... with SP 320x320 (or switch_sp 320 320)
- *   xmipi camera start
+ *   xmipi cam open frame 640 1024 rgb888 320 320   (SP must be exactly 320x320)
+ *   xmipi dsi open_gpu <panel> 1                   (only if a preview is wanted)
  *
  * Models on SD:
  *   /sdcard/tflite/face_detection_int8_vela.tflite
@@ -25,6 +24,7 @@ extern "C" {
 
 #include "cli_tuya_test.h"
 #include "tkl_camera_mipi.h"
+#include "tkl_media_fmt.h"
 #include "tkl_fs.h"
 #include "tuya_cloud_types.h"
 }
@@ -57,7 +57,6 @@ static uint32_t s_recog_rounds = 1;
 static uint32_t s_recog_delay_ms = RECOG_TEST_DEFAULT_DELAY_MS;
 static recog_mode_t s_recog_mode = RECOG_MODE_DETECT;
 static FaceRecognitionModel *s_model = NULL;
-static uint8_t *s_frame_buf = NULL;
 static bool s_model_ready = false;
 static volatile bool s_enroll_cb_done = false;
 static volatile bool s_enroll_cb_ok = false;
@@ -146,7 +145,9 @@ static void recog_usage(void)
     bk_printf("xrecog clear [id|all]\r\n");
     bk_printf("xrecog release\r\n");
     bk_printf("xrecog status\r\n");
-    bk_printf("need: xsd mount; xmipi SP=320x320 started; models under /sdcard/tflite/\r\n");
+    bk_printf("need: xsd mount; SP=320x320 rgb888 started; models under /sdcard/tflite/\r\n");
+    bk_printf("  no preview: xmipi cam open frame 640 1024 rgb888 320 320\r\n");
+    bk_printf("  + preview:  xmipi dsi open_gpu <panel> 1, then open display ... rgb888 320 320\r\n");
 }
 
 static uint32_t recog_parse_u32(const char *str, uint32_t fallback)
@@ -164,18 +165,21 @@ static uint32_t recog_parse_u32(const char *str, uint32_t fallback)
     return (uint32_t)value;
 }
 
-static bk_err_t recog_read_sp_frame(TUYA_CAMERA_MIPI_FRAME_T *frame)
+/**
+ * @brief Borrow one SP frame. Release with frame->free_cb(frame->data).
+ * @param[out] frame receives the frame on success; untouched on failure
+ * @return BK_OK on success
+ */
+static bk_err_t recog_read_sp_frame(TKL_MEDIA_BUF_T *frame)
 {
     OPERATE_RET ret;
 
-    if (frame == NULL || frame->buffer == NULL || frame->size < RECOG_TEST_FRAME_SIZE) {
+    if (frame == NULL) {
         return BK_ERR_PARAM;
     }
 
-    frame->channel_id = TUYA_CAMERA_MIPI_CHANNEL_SP;
-    frame->timeout_ms = 1000U;
-
-    ret = tkl_camera_mipi_get_frame(frame);
+    /* The camera owns the buffer and lends it; nothing to size or allocate here. */
+    ret = tkl_camera_mipi_get_frame(frame, TUYA_CAMERA_MIPI_CHANNEL_SP, 1000U);
     if (ret != OPRT_OK) {
         bk_printf("[xrecog] get SP frame failed, ret=%d\r\n", ret);
         return BK_FAIL;
@@ -183,12 +187,13 @@ static bk_err_t recog_read_sp_frame(TUYA_CAMERA_MIPI_FRAME_T *frame)
 
     if ((frame->width != RECOG_TEST_WIDTH) ||
         (frame->height != RECOG_TEST_HEIGHT) ||
-        (frame->out_len < RECOG_TEST_FRAME_SIZE)) {
+        (frame->size < RECOG_TEST_FRAME_SIZE)) {
         bk_printf("[xrecog] unexpected SP frame: %ux%u fmt=%u len=%u (need 320x320 BGRX)\r\n",
                   frame->width,
                   frame->height,
                   (unsigned int)frame->format,
-                  (unsigned int)frame->out_len);
+                  (unsigned int)frame->size);
+        frame->free_cb(frame->data);
         return BK_FAIL;
     }
     return BK_OK;
@@ -201,7 +206,7 @@ static bk_err_t recog_read_sp_frame(TUYA_CAMERA_MIPI_FRAME_T *frame)
  */
 static bk_err_t recog_dump_sp_ppm(const char *path)
 {
-    TUYA_CAMERA_MIPI_FRAME_T frame;
+    TKL_MEDIA_BUF_T frame;
     TUYA_FILE f = NULL;
     char header[48];
     int n;
@@ -211,29 +216,20 @@ static bk_err_t recog_dump_sp_ppm(const char *path)
     uint32_t sum = 0;
     const char *out_path = (path != NULL && path[0] != '\0') ? path : "/sdcard/sp_dump.ppm";
 
-    if (s_frame_buf == NULL) {
-        s_frame_buf = (uint8_t *)bk_frame_buffer_malloc(MEM_SLAB_HEAP_CODED, RECOG_TEST_FRAME_SIZE);
-        if (s_frame_buf == NULL) {
-            bk_printf("[xrecog] dump alloc failed\r\n");
-            return BK_ERR_NO_MEM;
-        }
-    }
-
     memset(&frame, 0, sizeof(frame));
-    frame.buffer = s_frame_buf;
-    frame.size = RECOG_TEST_FRAME_SIZE;
     if (recog_read_sp_frame(&frame) != BK_OK) {
         return BK_FAIL;
     }
 
     for (i = 0; i < 64U; i++) {
         const uint32_t off = (i * 503U) % (RECOG_TEST_WIDTH * RECOG_TEST_HEIGHT);
-        sum += s_frame_buf[off * 4U] + s_frame_buf[off * 4U + 1U] + s_frame_buf[off * 4U + 2U];
+        sum += frame.data[off * 4U] + frame.data[off * 4U + 1U] + frame.data[off * 4U + 2U];
     }
 
     f = tkl_fopen(out_path, "wb");
     if (f == NULL) {
         bk_printf("[xrecog] dump open failed: %s\r\n", out_path);
+        frame.free_cb(frame.data);
         return BK_FAIL;
     }
 
@@ -242,19 +238,21 @@ static bk_err_t recog_dump_sp_ppm(const char *path)
     bw = tkl_fwrite(header, n, f);
     if (bw != n) {
         tkl_fclose(f);
+        frame.free_cb(frame.data);
         bk_printf("[xrecog] dump header write failed\r\n");
         return BK_FAIL;
     }
 
     /* Write as RGB: vendor/ISP 4bpp treated as BGRX -> R=s[2],G=s[1],B=s[0] */
     for (i = 0; i < RECOG_TEST_WIDTH * RECOG_TEST_HEIGHT; i++) {
-        const uint8_t *s = &s_frame_buf[i * 4U];
+        const uint8_t *s = &frame.data[i * 4U];
         rgb[0] = s[2];
         rgb[1] = s[1];
         rgb[2] = s[0];
         bw = tkl_fwrite(rgb, 3, f);
         if (bw != 3) {
             tkl_fclose(f);
+            frame.free_cb(frame.data);
             bk_printf("[xrecog] dump pixel write failed at %u\r\n", (unsigned)i);
             return BK_FAIL;
         }
@@ -264,8 +262,9 @@ static bk_err_t recog_dump_sp_ppm(const char *path)
     bk_printf("[xrecog] dump ok path=%s fmt=%u len=%u mean~%u (BGRX->RGB)\r\n",
               out_path,
               (unsigned)frame.format,
-              (unsigned)frame.out_len,
+              (unsigned)frame.size,
               (unsigned)(sum / (64U * 3U)));
+    frame.free_cb(frame.data);
     return BK_OK;
 }
 
@@ -280,10 +279,6 @@ static void recog_model_release(void)
         s_model = NULL;
         s_model_ready = false;
     }
-    if (s_frame_buf != NULL) {
-        bk_frame_buffer_free(s_frame_buf);
-        s_frame_buf = NULL;
-    }
 }
 
 static bk_err_t recog_model_prepare(void)
@@ -293,14 +288,6 @@ static bk_err_t recog_model_prepare(void)
     if (face_gallery_prepare() != 0) {
         bk_printf("[xrecog] sd/gallery prepare failed (try: xsd mount)\r\n");
         return BK_FAIL;
-    }
-
-    if (s_frame_buf == NULL) {
-        s_frame_buf = (uint8_t *)bk_frame_buffer_malloc(MEM_SLAB_HEAP_CODED, RECOG_TEST_FRAME_SIZE);
-        if (s_frame_buf == NULL) {
-            bk_printf("[xrecog] frame buffer alloc failed\r\n");
-            return BK_ERR_NO_MEM;
-        }
     }
 
     if (s_model == NULL) {
@@ -331,7 +318,7 @@ static bk_err_t recog_model_prepare(void)
 
 static void recog_task(void *arg)
 {
-    TUYA_CAMERA_MIPI_FRAME_T frame;
+    TKL_MEDIA_BUF_T frame;
     uint32_t rounds = s_recog_rounds;
     uint32_t delay_ms = s_recog_delay_ms;
     recog_mode_t mode = s_recog_mode;
@@ -350,8 +337,6 @@ static void recog_task(void *arg)
         bk_printf("[xrecog] round %u start\r\n", (unsigned)(index + 1));
 
         memset(&frame, 0, sizeof(frame));
-        frame.buffer = s_frame_buf;
-        frame.size = RECOG_TEST_FRAME_SIZE;
 
         if (recog_read_sp_frame(&frame) == BK_OK) {
             float max_score = -1.0f;
@@ -360,9 +345,9 @@ static void recog_task(void *arg)
             s_enroll_cb_done = false;
             s_enroll_cb_ok = false;
             s_model->setVerifyEnabled(mode != RECOG_MODE_DETECT);
-            ret = s_model->run(s_frame_buf,
-                               frame.out_len,
-                               (bk_pixel_format_t)frame.format);
+            ret = s_model->run(frame.data,
+                               frame.size,
+                               (bk_pixel_format_t)tkl_media_fmt_to_bk(frame.format));
             s_model->getLastDetectDebug(&max_score, &pass_count);
             bk_printf("[xrecog] round %u done faces=%d mode=%d ok=%d fmt=%u max_score=%.3f pass=%d\r\n",
                       (unsigned)(index + 1),
@@ -372,6 +357,10 @@ static void recog_task(void *arg)
                       (unsigned)frame.format,
                       max_score,
                       pass_count);
+
+            /* Borrowed for this round only - skipping this leaks a 400 KB
+             * buffer per round and wedges the pool. */
+            frame.free_cb(frame.data);
         }
 
         index++;
