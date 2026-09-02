@@ -96,7 +96,7 @@
     #define SC3336P_VMAX_300W20FPS_LINEAR (1440)
     #define SC3336P_VMAX_300W10FPS_LINEAR (2880)
     #define SC3336P_VMAX_300W15FPS_LINEAR (1920)
-    #define SC3336P_VMAX_300W17FPS_LINEAR (1512)
+    #define SC3336P_VMAX_300W17FPS_LINEAR (1728)
 #endif
 
 enum SC3336P_REG_INDEX {
@@ -698,164 +698,6 @@ static const uint16_t sensor_sc3336p_init_table[][2] = {
     {0x37f9,0x34},
     // {0x0100,0x01},
 };
-
-// 2304x1296@17fps
-//VTS=1512.000000,HTS=2500.000000,SCLK=31.500000,PCLK=63.000000,MipiCLK=315.000000,Tline=39.682540us,TExp_step=1.0*Tline=39.682540us,TExp_offset=8.380952us
-static const uint16_t sensor_sc3336p_init_table_17fps[][2] = {
-    {0x0103,0x01},
-    {0x36e9,0x80},
-    {0x37f9,0x80},
-    {0x3018,0x3a},
-    {0x3019,0x0c},
-    {0x301f,0x4a},
-    {0x30b8,0x33},
-    {0x320e,0x05},
-    {0x320f,0xe8},
-    {0x3253,0x10},
-    {0x325f,0x20},
-    {0x3301,0x04},
-    {0x3306,0x50},
-    {0x3308,0x08},
-    {0x3309,0xa8},
-    {0x330a,0x00},
-    {0x330b,0xd8},
-    {0x330d,0x14},
-    {0x3314,0x13},
-    {0x331f,0x99},
-    {0x3333,0x10},
-    {0x3334,0x40},
-    {0x335e,0x06},
-    {0x335f,0x0a},
-    {0x3364,0x5e},
-    {0x337c,0x02},
-    {0x337d,0x0e},
-    {0x3390,0x01},
-    {0x3391,0x03},
-    {0x3392,0x07},
-    {0x3393,0x04},
-    {0x3394,0x04},
-    {0x3395,0x04},
-    {0x3396,0x08},
-    {0x3397,0x0b},
-    {0x3398,0x1f},
-    {0x3399,0x04},
-    {0x339a,0x0a},
-    {0x339b,0x3a},
-    {0x339c,0xa0},
-    {0x33a2,0x04},
-    {0x33ac,0x08},
-    {0x33ad,0x1c},
-    {0x33ae,0x10},
-    {0x33af,0x30},
-    {0x33b1,0x80},
-    {0x33b3,0x48},
-    {0x33f9,0x60},
-    {0x33fb,0x74},
-    {0x33fc,0x4b},
-    {0x33fd,0x5f},
-    {0x349f,0x03},
-    {0x34a6,0x4b},
-    {0x34a7,0x5f},
-    {0x34a8,0x20},
-    {0x34a9,0x18},
-    {0x34ab,0xe8},
-    {0x34ac,0x01},
-    {0x34ad,0x00},
-    {0x34f8,0x5f},
-    {0x34f9,0x18},
-    {0x3630,0xc0},
-    {0x3631,0x84},
-    {0x3632,0x64},
-    {0x3633,0x32},
-    {0x363b,0x03},
-    {0x363c,0x08},
-    {0x3641,0x38},
-    {0x3670,0x4e},
-    {0x3674,0xc0},
-    {0x3675,0xc0},
-    {0x3676,0xc0},
-    {0x3677,0x86},
-    {0x3678,0x86},
-    {0x3679,0x86},
-    {0x367c,0x48},
-    {0x367d,0x49},
-    {0x367e,0x4b},
-    {0x367f,0x5f},
-    {0x3690,0x32},
-    {0x3691,0x32},
-    {0x3692,0x42},
-    {0x369c,0x4b},
-    {0x369d,0x5f},
-    {0x36b0,0x87},
-    {0x36b1,0x90},
-    {0x36b2,0xa1},
-    {0x36b3,0xd8},
-    {0x36b4,0x49},
-    {0x36b5,0x4b},
-    {0x36b6,0x4f},
-    {0x36ea,0x07},
-    {0x36eb,0x0d},
-    {0x36ec,0x1c},
-    {0x36ed,0x26},
-    {0x370f,0x01},
-    {0x3722,0x09},
-    {0x3724,0x41},
-    {0x3725,0xc1},
-    {0x3771,0x09},
-    {0x3772,0x09},
-    {0x3773,0x05},
-    {0x377a,0x48},
-    {0x377b,0x5f},
-    {0x37fa,0x07},
-    {0x37fb,0x33},
-    {0x37fc,0x11},
-    {0x37fd,0x18},
-    {0x3904,0x04},
-    {0x3905,0x8c},
-    {0x391d,0x04},
-    {0x3921,0x20},
-    {0x3926,0x21},
-    {0x3933,0x80},
-    {0x3934,0x0a},
-    {0x3935,0x00},
-    {0x3936,0x2a},
-    {0x3937,0x6a},
-    {0x3938,0x6a},
-    {0x39dc,0x02},
-    {0x3e00,0x00},
-    {0x3e01,0x00},
-    {0x3e02,0x80},
-    {0x3e09,0x00},
-    {0x440d,0x10},
-    {0x440e,0x01},
-    {0x4509,0x20},
-    {0x4819,0x05},
-    {0x481b,0x03},
-    {0x481d,0x09},
-    {0x481f,0x02},
-    {0x4821,0x08},
-    {0x4823,0x02},
-    {0x4825,0x02},
-    {0x4827,0x02},
-    {0x4829,0x04},
-    {0x5ae0,0xfe},
-    {0x5ae1,0x40},
-    {0x5ae2,0x38},
-    {0x5ae3,0x30},
-    {0x5ae4,0x28},
-    {0x5ae5,0x38},
-    {0x5ae6,0x30},
-    {0x5ae7,0x28},
-    {0x5ae8,0x3f},
-    {0x5ae9,0x34},
-    {0x5aea,0x2c},
-    {0x5aeb,0x3f},
-    {0x5aec,0x34},
-    {0x5aed,0x2c},
-    {0x36e9,0x53},
-    {0x37f9,0x53},
-    // {0x0100,0x01},
-};
 #endif
 
 //1920x1080@25fps
@@ -1289,7 +1131,8 @@ static int sc3336p_InitAeDefault(ISP_PORT IspPort)
             pAeSnsDft->fullLinesStd = SC3336P_VMAX_300W17FPS_LINEAR;
             pAeSnsDft->fullLines = pAeSnsDft->fullLinesStd;
             pAeSnsDft->fps = 1667; //17 * ISP_SNS_FPS_ACCU;
-            pAeSnsDft->fullLinesMax = SC3336P_VMAX_300W17FPS_LINEAR;
+            pAeSnsDft->fullLinesMax =
+                pAeSnsDft->fps * SC3336P_VMAX_300W17FPS_LINEAR / ISP_SNS_FPS_ACCU;
             pAeSnsDft->linesPer500ms =
                 pAeSnsDft->fullLines * pAeSnsDft->fps / (2 * ISP_SNS_FPS_ACCU);
 
@@ -1366,7 +1209,6 @@ static int sc3336p_SetMode(ISP_PORT IspPort, ISP_SNS_MODE_S *pSnsMode)
         (pSnsMode->height == 1296) &&
         (pSnsMode->hdrMode == HDR_MODE_LINEAR) &&
         (pSnsMode->fps == 17 * ISP_SNS_FPS_ACCU)) {
-        LOGI("sc3336p_SetMode: 300W17FPS_LINEAR_MODE\n");
         os_memcpy(&psc3336pDev->snsMode, pSnsMode, sizeof(*pSnsMode));
         psc3336pDev->snsModeId = SC3336P_300W17FPS_LINEAR_MODE;
         sc3336p_InitAeDefault(IspPort);
@@ -1692,6 +1534,13 @@ static const bk_camera_sensor_format_t sc3336p_format_array[] = {
     {
         .width = 2304,
         .height = 1296,
+        .fps = 17,
+        .output_pixel_fmt = BK_PIXEL_FORMAT_BGGR10,
+    },
+
+    {
+        .width = 2304,
+        .height = 1296,
         .fps = 10,
         .output_pixel_fmt = BK_PIXEL_FORMAT_BGGR10,
     },
@@ -1700,13 +1549,6 @@ static const bk_camera_sensor_format_t sc3336p_format_array[] = {
         .width = 2304,
         .height = 1296,
         .fps = 15,
-        .output_pixel_fmt = BK_PIXEL_FORMAT_BGGR10,
-    },
-
-    {
-        .width = 2304,
-        .height = 1296,
-        .fps = 17,
         .output_pixel_fmt = BK_PIXEL_FORMAT_BGGR10,
     },
 
@@ -1841,11 +1683,12 @@ static avdk_err_t sc3336p_set_fps(bk_camera_sensor_ctlr_t *controller, uint16_t 
     bk_camera_bus_t *bus = csi_sensor->config.bus;
 
     if (s_sc3336p_width == 2304 && s_sc3336p_height == 1296 && fps == 17) {
-        uint32_t size = sc3336p_TABLE_SIZE(sensor_sc3336p_init_table_17fps);
-        for (int i = 0; i < size; i++) {
-            bus->write16(bus, sensor_sc3336p_init_table_17fps[i][0], sensor_sc3336p_init_table_17fps[i][1]);
-        }
-        LOGI("set 17fps success\n");
+        //16.67 fps
+        uint32_t fps_real = 1667;
+        uint32_t pclk = SC3336P_PCLK;
+        uint16_t vts = (pclk / SC3336P_HTS * 100 + fps_real / 2) / fps_real;
+        bus->write16(bus, SC3336P_REG_VTS_L, (vts & 0xff));
+        bus->write16(bus, SC3336P_REG_VTS_H, (vts >> 8));
     } else {
         if (s_sc3336p_width == 2304 && s_sc3336p_height == 1296) {
             uint32_t pclk = SC3336P_PCLK;
