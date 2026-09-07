@@ -28,7 +28,6 @@ extern "C" {
 typedef struct {
     OPERATE_RET (*init)                         (WIFI_EVENT_CB cb);
     OPERATE_RET (*scan_ap)                      (CONST SCHAR_T *ssid, AP_IF_S **ap_ary, UINT_T *num);
-    OPERATE_RET (*scan_ap_channel)              (CONST SCHAR_T *ssid, CONST UCHAR_T channel, AP_IF_S **ap_ary, UINT_T *num);
     OPERATE_RET (*release_ap)                   (AP_IF_S *ap);
     OPERATE_RET (*start_ap)                     (CONST WF_AP_CFG_IF_S *cfg);
     OPERATE_RET (*stop_ap)                      (VOID_T);
@@ -45,14 +44,18 @@ typedef struct {
     OPERATE_RET (*get_connected_ap_info)        (FAST_WF_CONNECTED_AP_INFO_T **fast_ap_info);
     OPERATE_RET (*get_bssid)                    (UCHAR_T *mac);
     OPERATE_RET (*set_country_code)             (CONST COUNTRY_CODE_E ccode);
+#if defined(ENABLE_WIFI_COUNTRY_CODE_V2) && (ENABLE_WIFI_COUNTRY_CODE_V2 == 1)
     OPERATE_RET (*set_country_code_v2)          (CONST UCHAR_T *ccode);
     OPERATE_RET (*get_country_code)             (UCHAR_T *ccode);
+#endif
     OPERATE_RET (*set_lp_mode)                  (CONST BOOL_T en, CONST UCHAR_T dtim);
     BOOL_T      (*set_rf_calibrated)            (VOID_T);
+    OPERATE_RET (*scan_ap_channel)              (CONST SCHAR_T *ssid, CONST UCHAR_T channel, AP_IF_S **ap_ary, UINT_T *num);
     OPERATE_RET (*station_fast_connect)         (CONST FAST_WF_CONNECTED_AP_INFO_T *fast_ap_info);
     OPERATE_RET (*station_connect)              (CONST SCHAR_T *ssid, CONST SCHAR_T *passwd);
     OPERATE_RET (*station_disconnect)           (VOID_T);
     OPERATE_RET (*station_get_conn_ap_rssi)     (SCHAR_T *rssi);
+    OPERATE_RET (*station_get_conn_ap_snr)      (SCHAR_T *snr);
     OPERATE_RET (*station_get_status)           (WF_STATION_STAT_E *stat);
     OPERATE_RET (*send_mgnt)                    (CONST UCHAR_T *buf, CONST UINT_T len);
     OPERATE_RET (*register_recv_mgnt_callback)  (CONST BOOL_T enable, CONST WIFI_REV_MGNT_CB recv_cb);

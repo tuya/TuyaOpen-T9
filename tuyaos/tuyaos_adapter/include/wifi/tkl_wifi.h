@@ -152,9 +152,13 @@ typedef enum {
 /* tuya sdk definition of wifi ioctl cmd */
 typedef enum {
     WFI_BEACON_CMD,
-    WFI_GET_LAST_DISCONN_REASON,                     ///< Get WiFi last disconnect reason
-    WFI_AP_GET_STALIST_CMD,                          ///< Get Sta List Cmd 
-    WFI_CONNECT_CMD,
+    WFI_GET_LAST_DISCONN_REASON,             ///< Get WiFi last disconnect reason
+    WFI_AP_GET_STALIST_CMD,                  ///< Get Sta List Cmd
+    WFI_CONNECT_CMD,                         //Chaannel Connect WiFi, specify the channel to connect
+    WFI_GET_AP_STATE,                       //Get AP state
+    WFI_BLE_LV_SLEEP_CMD,                   //Get BLE LV sleep command
+	WFI_DHCPC_CMD,
+	WFI_DISABLE,                           ///Turn off the Wi-Fi connection function
 } WF_IOCTL_CMD_E;
 
 typedef struct {
@@ -445,6 +449,13 @@ OPERATE_RET tkl_wifi_station_disconnect(VOID_T);
  */
 OPERATE_RET tkl_wifi_station_get_conn_ap_rssi(SCHAR_T *rssi);
 
+/**
+ * @brief get wifi connect snr
+ *
+ * @param[out]      snr        the return snr (average snr)
+ * @return OPRT_OK on success. Others on error, please refer to tuya_error_code.h
+ */
+OPERATE_RET tkl_wifi_station_get_conn_ap_snr(SCHAR_T *snr);
 
 /**
  * @brief get wifi station work status

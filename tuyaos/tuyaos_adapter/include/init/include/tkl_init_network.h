@@ -61,7 +61,8 @@ typedef struct {
     OPERATE_RET           (*tkl_getpeername)        (INT_T fd, TUYA_IP_ADDR_T *addr, UINT16_T *port);
     OPERATE_RET           (*tkl_sethostname)        (CONST CHAR_T *hostname);
     OPERATE_RET           (*tkl_check_ipv4_ipv6)    (BOOL_T *has_ipv4, BOOL_T *has_ipv6);
-    OPERATE_RET           (*tkl_set_default_netif_by_ip)  (CONST TUYA_IP_ADDR_T addr);
+    OPERATE_RET           (*tkl_add_membership)     (CONST INT_T fd, TUYA_IP_ADDR_T src_addr, TUYA_IP_ADDR_T group_addr);
+    OPERATE_RET           (*tkl_gethostbyname_by_mode)   (CONST CHAR_T *domain, CONST DNS_MODE_E mode, TUYA_IP_ADDR_T *addr);
 } TKL_NETWORK_DESC_T;
 
 /**
