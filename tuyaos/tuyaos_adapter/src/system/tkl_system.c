@@ -100,7 +100,8 @@ SYS_TICK_T tkl_system_get_tick_count(VOID_T)
  */
 SYS_TIME_T tkl_system_get_millisecond(VOID_T)
 {
-    return (SYS_TIME_T)(tkl_system_get_tick_count() * portTICK_RATE_MS);
+    // return (SYS_TIME_T)(tkl_system_get_tick_count() * portTICK_RATE_MS);
+    return (SYS_TIME_T)(bk_aon_rtc_get_ms());
 }
 
 /**
