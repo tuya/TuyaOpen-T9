@@ -34,7 +34,9 @@ menu "SDCARD"
 		int "SD card transfer clock frequency in Hz"
 		depends on SDCARD
 		default 20000000
-		range 400000 25000000
+		# Modified by TUYA Start
+		range 400000 80000000
+		# Modified by TUYA End
 		help
 		  SD data-transfer clock after card identification, passed to
 		  bk_sdio_host_set_clock(). Identification still runs at the
