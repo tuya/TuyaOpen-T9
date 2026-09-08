@@ -1541,13 +1541,6 @@ static const bk_camera_sensor_format_t sc3336p_format_array[] = {
     {
         .width = 2304,
         .height = 1296,
-        .fps = 12, /* 12.5 fps via VTS */
-        .output_pixel_fmt = BK_PIXEL_FORMAT_BGGR10,
-    },
-
-    {
-        .width = 2304,
-        .height = 1296,
         .fps = 10,
         .output_pixel_fmt = BK_PIXEL_FORMAT_BGGR10,
     },
@@ -1683,59 +1676,31 @@ static avdk_err_t sc3336p_set_ppi(bk_camera_sensor_ctlr_t *controller, uint16_t 
     return 0;
 }
 
-static void sc3336p_sync_ae_vts(uint16_t vts, uint32_t fps_accu)
-{
-    uint8_t dev_id;
-    uint8_t port_id;
-
-    for (dev_id = 0; dev_id < ISP_DEV_CNT; dev_id++) {
-        for (port_id = 0; port_id < ISP_PORT_CNT; port_id++) {
-            sc3336p_DEVICE_S *dev = sc3336pDev[dev_id][port_id];
-            if (dev == NULL) {
-                continue;
-            }
-            dev->aeDefault.fullLines = vts;
-            dev->aeDefault.maxIntLine = (vts > 8U) ? (vts - 8U) : vts;
-            if (fps_accu != 0U) {
-                dev->aeDefault.fps = fps_accu;
-            }
-            dev->snsRegsInfo.snsData[REG_VTS_H].data = (vts >> 8) & 0xFF;
-            dev->snsRegsInfo.snsData[REG_VTS_L].data = vts & 0xFF;
-        }
-    }
-}
-
 static avdk_err_t sc3336p_set_fps(bk_camera_sensor_ctlr_t *controller, uint16_t fps)
 {
     bk_camera_csi_sensor_t *csi_sensor = __containerof(controller, bk_camera_csi_sensor_t, ops);
     AVDK_RETURN_ON_FALSE(csi_sensor, AVDK_ERR_INVAL, TAG, "csi sensor is NULL");
     bk_camera_bus_t *bus = csi_sensor->config.bus;
-    uint16_t vts = 0;
-    uint32_t fps_accu = (uint32_t)fps * ISP_SNS_FPS_ACCU;
 
-    if (s_sc3336p_width == 2304 && s_sc3336p_height == 1296) {
+    if (s_sc3336p_width == 2304 && s_sc3336p_height == 1296 && fps == 17) {
+        //16.67 fps
+        uint32_t fps_real = 1667;
         uint32_t pclk = SC3336P_PCLK;
-        uint32_t fps_real;
-
-        if (fps == 17) {
-            fps_real = 1667; /* 16.67 fps */
-            fps_accu = 1667;
-        } else if (fps == 12) {
-            fps_real = 1250; /* 12.5 fps */
-            fps_accu = 1250;
-        } else {
-            fps_real = (uint32_t)fps * 100U;
+        uint16_t vts = (pclk / SC3336P_HTS * 100 + fps_real / 2) / fps_real;
+        bus->write16(bus, SC3336P_REG_VTS_L, (vts & 0xff));
+        bus->write16(bus, SC3336P_REG_VTS_H, (vts >> 8));
+    } else {
+        if (s_sc3336p_width == 2304 && s_sc3336p_height == 1296) {
+            uint32_t pclk = SC3336P_PCLK;
+            uint16_t vts = pclk / SC3336P_HTS / fps;
+            bus->write16(bus, SC3336P_REG_VTS_L, (vts & 0xff));
+            bus->write16(bus, SC3336P_REG_VTS_H, (vts >> 8));
+        } else if (s_sc3336p_width == 1920 && s_sc3336p_height == 1080) {
+            uint32_t pclk = 2500 * 1360 * 30;
+            uint16_t vts = pclk / 2500 / fps;
+            bus->write16(bus, SC3336P_REG_VTS_L, (vts & 0xff));
+            bus->write16(bus, SC3336P_REG_VTS_H, (vts >> 8));
         }
-        vts = (uint16_t)((pclk / SC3336P_HTS * 100U + fps_real / 2U) / fps_real);
-        bus->write16(bus, SC3336P_REG_VTS_L, (vts & 0xff));
-        bus->write16(bus, SC3336P_REG_VTS_H, (vts >> 8));
-        sc3336p_sync_ae_vts(vts, fps_accu);
-        LOGI("sc3336p_set_fps: fps=%u vts=%u\n", fps, vts);
-    } else if (s_sc3336p_width == 1920 && s_sc3336p_height == 1080) {
-        uint32_t pclk = 2500 * 1360 * 30;
-        vts = pclk / 2500 / fps;
-        bus->write16(bus, SC3336P_REG_VTS_L, (vts & 0xff));
-        bus->write16(bus, SC3336P_REG_VTS_H, (vts >> 8));
     }
 
     return BK_OK;
@@ -1856,15 +1821,6 @@ static avdk_err_t sc3336p_ioctl(bk_camera_sensor_ctlr_t *controller, uint32_t cm
             os_memcpy(out->auto_attr.saturation, src->autoAttr.saturation, sizeof(out->auto_attr.saturation));
             os_memcpy(out->auto_attr.hue, src->autoAttr.hue, sizeof(out->auto_attr.hue));
             return AVDK_ERR_OK;
-        }
-
-        case BK_CAMERA_SENSOR_IOCTL_SET_FPS:
-        {
-            uint16_t fps;
-
-            AVDK_RETURN_ON_FALSE(arg, AVDK_ERR_INVAL, TAG, "set fps arg is NULL");
-            fps = *(uint16_t *)arg;
-            return sc3336p_set_fps(controller, fps);
         }
 
         default:
