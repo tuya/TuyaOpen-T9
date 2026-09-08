@@ -188,18 +188,20 @@ static void flash_lock_deinit(void)
 
 static inline uint32_t flash_lock(void)
 {
-	uint32_t int_level = flash_enter_critical();
+	uint32_t int_level;
 
 	mb_flash_op_prepare();
+
+	int_level = flash_enter_critical();
 
 	return int_level;
 }
 
 static inline void flash_unlock(uint32_t int_level)
 {
-	mb_flash_op_finish();
-
 	flash_exit_critical(int_level);
+
+	mb_flash_op_finish();
 }
 
 
