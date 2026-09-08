@@ -753,18 +753,8 @@ int tkl_net_set_keepalive(int fd, const bool_t alive, const unsigned int idle, c
  */
 OPERATE_RET tkl_net_gethostbyname(CONST CHAR_T *domain, TUYA_IP_ADDR_T *addr)
 {
-    if ((domain == NULL) || (addr == NULL)) {
-        return OPRT_OS_ADAPTER_INVALID_PARM;
-    }
-
-    struct hostent *h = NULL;
-    if ((h = gethostbyname(domain)) == NULL) {
-        return OPRT_COM_ERROR;
-    }
-
-    *addr = ntohl(((struct in_addr *)(h->h_addr_list[0]))->s_addr);
-
-    return OPRT_OK;
+    /* 本接口仅用于 IPv4 DNS 查询;需按地址族查询请使用 tkl_net_gethostbyname_by_mode */
+    return tkl_net_gethostbyname_by_mode(domain, DNS_IPV4, addr);
 }
 
 /**
@@ -929,5 +919,45 @@ OPERATE_RET tkl_net_add_membership(CONST INT_T fd, TUYA_IP_ADDR_T src_addr, TUYA
 
 OPERATE_RET tkl_net_gethostbyname_by_mode(CONST CHAR_T *domain, CONST DNS_MODE_E mode, TUYA_IP_ADDR_T *addr)
 {
-    return OPRT_NOT_SUPPORTED;
+    if ((domain == NULL) || (addr == NULL) || ((mode != DNS_IPV4) && (mode != DNS_IPV6))) {
+        return OPRT_OS_ADAPTER_INVALID_PARM;
+    }
+
+#if defined(ENABLE_IPv6) && (ENABLE_IPv6 == 1)
+    struct addrinfo hints = {0};
+    struct addrinfo *res = NULL;
+    OPERATE_RET ret;
+
+    /* 与 tkl_net_gethostbyname 不同,地址族由调用方通过 mode 显式指定,
+     * 返回的 addr.type 与 mode 一致,上层依据该 type 创建对应地址族的 socket */
+    hints.ai_family = (mode == DNS_IPV6) ? AF_INET6 : AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+
+    if ((getaddrinfo(domain, NULL, &hints, &res) != 0) || (res == NULL)) {
+        return OPRT_COM_ERROR;
+    }
+
+    ret = __tkl_net_sockaddr_to_ip_addr((union sockaddr_46 *)res->ai_addr, addr, NULL);
+    freeaddrinfo(res);
+
+    return ret;
+#else
+    if (mode == DNS_IPV6) {
+        return OPRT_NOT_SUPPORTED;
+    }
+
+    if ((domain == NULL) || (addr == NULL)) {
+        return OPRT_OS_ADAPTER_INVALID_PARM;
+    }
+
+    struct hostent *h = NULL;
+    if ((h = gethostbyname(domain)) == NULL) {
+        return OPRT_COM_ERROR;
+    }
+
+    *addr = ntohl(((struct in_addr *)(h->h_addr_list[0]))->s_addr);
+
+    return OPRT_OK;
+#endif
+
 }
