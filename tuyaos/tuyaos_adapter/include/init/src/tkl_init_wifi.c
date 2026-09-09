@@ -20,8 +20,10 @@ CONST TKL_WIFI_DESC_T TKL_WIFI = {
     .set_work_mode                  = tkl_wifi_set_work_mode,
     .get_work_mode                  = tkl_wifi_get_work_mode,
     .set_country_code               = tkl_wifi_set_country_code,
+#if defined(ENABLE_WIFI_COUNTRY_CODE_V2) && (ENABLE_WIFI_COUNTRY_CODE_V2 == 1)
     .set_country_code_v2            = tkl_wifi_set_country_code_v2,
     .get_country_code               = tkl_wifi_get_country_code,
+#endif
     .set_lp_mode                    = tkl_wifi_set_lp_mode,
     .set_rf_calibrated              = tkl_wifi_set_rf_calibrated,
     .send_mgnt                      = tkl_wifi_send_mgnt,
@@ -42,6 +44,7 @@ CONST TKL_WIFI_DESC_T TKL_WIFI = {
     .station_get_status             = tkl_wifi_station_get_status,
     .get_connected_ap_info          = tkl_wifi_get_connected_ap_info,
     .station_get_conn_ap_rssi       = tkl_wifi_station_get_conn_ap_rssi,
+    .station_get_conn_ap_snr       = tkl_wifi_station_get_conn_ap_snr,
 #endif
 };
 

@@ -1,6 +1,6 @@
 /**
 * @file tkl_wired.h
-* @brief Common process - adapter the wired api
+* @brief Adapt the network API provided by the platform
 * @version 0.1
 * @date 2020-11-09
 *
@@ -503,8 +503,7 @@ OPERATE_RET tkl_net_getpeername(INT_T fd, TUYA_IP_ADDR_T *addr, UINT16_T *port);
 OPERATE_RET tkl_net_sethostname(CONST CHAR_T *hostname);
 
 /**
- * @brief get netif by index
- *
+ * @brief Get netif by index
  * @param[in]       net_if_idx    the num of netif index
  * @return  NULL: get netif fail   other: the point of netif
  */
@@ -520,16 +519,41 @@ PVOID_T tkl_net_get_netif_by_index(CONST TUYA_NETIF_TYPE_E net_if_idx);
 */
 OPERATE_RET tkl_net_check_system_ipv4_ipv6(BOOL_T *has_ipv4, BOOL_T *has_ipv6);
 
+
 /**
-* @brief Set the default route by IP address
+* @brief Join a multicast group on the specified socket
 *
-* @param[in] addr: IP address to set
+* @param[in] fd: file descriptor, must be a UDP socket, TCP sockets are not supported
+* @param[in] src_addr: local interface address used to join the group, pass
+*                      TY_IPADDR_ANY/TY_IP6_ADDR_ANY to let the protocol stack
+*                      select it. Implementations that always join on the default
+*                      netif may ignore this parameter
+* @param[in] group_addr: multicast group address to join, its address type
+*                        (TY_AF_INET/TY_AF_INET6) selects IPv4 or IPv6 membership
 *
-* @note This API is used to set the default route by IP address.
+* @note This API is used to join a multicast group, it corresponds to the
+*       IP_ADD_MEMBERSHIP/IPV6_JOIN_GROUP socket option. The membership is
+*       released when the socket is closed.
 *
 * @return OPRT_OK on success. Others on error, please refer to tuya_error_code.h
 */
-OPERATE_RET tkl_net_set_default_netif_by_ip(const TUYA_IP_ADDR_T addr);
+OPERATE_RET tkl_net_add_membership(CONST INT_T fd, TUYA_IP_ADDR_T src_addr, TUYA_IP_ADDR_T group_addr);
+
+
+/**
+* @brief Receive data from network
+* @brief Get address information by domain
+*
+* @param[in] domain: domain information
+* @param[in] mode: dns mode
+* @param[in] addr: address information
+*
+* @note This API is used for getting address information by domain for IPv6.
+*
+* @return OPRT_OK on success. Others on error, please refer to tuya_error_code.h
+*/
+
+OPERATE_RET tkl_net_gethostbyname_by_mode(CONST CHAR_T *domain, CONST DNS_MODE_E mode, TUYA_IP_ADDR_T *addr);
 
 #ifdef __cplusplus
 }

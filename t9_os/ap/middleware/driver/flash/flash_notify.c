@@ -22,6 +22,8 @@ static void (*s_flash_op_notify)(uint32_t param) = NULL;
 static void (*s_flash_op_notify_camera)(uint32_t param) = NULL;
 static flash_op_notify_onboard_mic_stream_callback_t s_flash_op_notify_onboard_mic_stream = NULL;
 static void *s_flash_op_notify_onboard_mic_stream_args = NULL;
+static flash_op_notify_flexa_bond_callback_t s_flash_op_notify_flexa_bond = NULL;
+static void *s_flash_op_notify_flexa_bond_args = NULL;
 static void (*s_flash_op_notify_uart)(uint32_t param) = NULL;
 
 bk_err_t mb_flash_register_op_uart_notify(void * notify_cb)
@@ -97,6 +99,22 @@ bk_err_t mb_flash_unregister_op_onboard_mic_stream_notify(void)
 	return BK_OK;
 }
 
+bk_err_t mb_flash_register_op_flexa_bond_notify(void *notify_cb, void *args)
+{
+	s_flash_op_notify_flexa_bond = notify_cb;
+	s_flash_op_notify_flexa_bond_args = args;
+
+	return BK_OK;
+}
+
+bk_err_t mb_flash_unregister_op_flexa_bond_notify(void)
+{
+	s_flash_op_notify_flexa_bond = NULL;
+	s_flash_op_notify_flexa_bond_args = NULL;
+
+	return BK_OK;
+}
+
 #if CONFIG_FLASH_MB
 
 #include <driver/mailbox_channel.h>
@@ -149,6 +167,11 @@ static void cpu1_pause_handle(mb_chnl_cmd_t *cmd_buf)
 			s_flash_op_notify_uart(1);
 		}
 
+		if (s_flash_op_notify_flexa_bond != NULL)
+		{
+			s_flash_op_notify_flexa_bond(1, s_flash_op_notify_flexa_bond_args);
+		}
+
 	}
 	else if(cmd_buf->hdr.cmd == IPC_FLASH_OP_END)
 	{
@@ -169,6 +192,11 @@ static void cpu1_pause_handle(mb_chnl_cmd_t *cmd_buf)
 		if (s_flash_op_notify_uart != NULL)
 		{
 			s_flash_op_notify_uart(0);
+		}
+
+		if (s_flash_op_notify_flexa_bond != NULL)
+		{
+			s_flash_op_notify_flexa_bond(0, s_flash_op_notify_flexa_bond_args);
 		}
 	}
 
@@ -261,6 +289,11 @@ bk_err_t mb_flash_op_prepare(void)
 	{
 		s_flash_op_notify_uart(1);
 	}
+
+	if (s_flash_op_notify_flexa_bond != NULL)
+	{
+		s_flash_op_notify_flexa_bond(1, s_flash_op_notify_flexa_bond_args);
+	}
 	
 	return BK_OK;
 }
@@ -284,6 +317,11 @@ bk_err_t mb_flash_op_finish(void)
 	if (s_flash_op_notify_uart != NULL)
 	{
 		s_flash_op_notify_uart(0);
+	}
+
+	if (s_flash_op_notify_flexa_bond != NULL)
+	{
+		s_flash_op_notify_flexa_bond(0, s_flash_op_notify_flexa_bond_args);
 	}
 
 	return BK_OK;
@@ -311,7 +349,12 @@ bk_err_t mb_flash_op_prepare(void)
 	{
 		s_flash_op_notify_uart(1);
 	}
-	
+
+	if (s_flash_op_notify_flexa_bond != NULL)
+	{
+		s_flash_op_notify_flexa_bond(1, s_flash_op_notify_flexa_bond_args);
+	}
+
 	return BK_OK;
 }
 
@@ -329,6 +372,11 @@ bk_err_t mb_flash_op_finish(void)
 	if (s_flash_op_notify_uart != NULL)
 	{
 		s_flash_op_notify_uart(0);
+	}
+
+	if (s_flash_op_notify_flexa_bond != NULL)
+	{
+		s_flash_op_notify_flexa_bond(0, s_flash_op_notify_flexa_bond_args);
 	}
 
 	return BK_OK;

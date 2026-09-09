@@ -1903,6 +1903,16 @@ OPERATE_RET tkl_wifi_station_get_conn_ap_rssi(SCHAR_T *rssi)
 }
 
 /**
+ * @brief Get the SNR of the connected STA uplink.
+ * @param[out] snr SNR output
+ * @return OPRT_OK on success, error code on failure
+ */
+OPERATE_RET tkl_wifi_station_get_conn_ap_snr(SCHAR_T *snr)
+{
+    return OPRT_NOT_SUPPORTED;
+}
+
+/**
  * @brief Get the current station status.
  * @param[out] stat station status output
  * @return OPRT_OK on success, error code on failure

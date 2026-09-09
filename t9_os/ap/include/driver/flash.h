@@ -474,6 +474,29 @@ bk_err_t mb_flash_unregister_op_onboard_mic_stream_notify(void);
  */
 bk_err_t mb_flash_register_op_onboard_mic_stream_notify(void * notify_cb, void *args);
 
+/**
+ * @brief  register a callback to be called when flash is busy waiting.
+ * @param notify_cb:If flash is writing/erasing, it will block all of other applications.
+ *                But maybe the application can't be blocked when flash is writing/erasing.
+ *                So the application should register this notify_cb to flash.
+ *                When flash is writing/erasing, it will call this notify_cb
+ * @param args: the arguments to pass to notify_cb (flexa bond pointer)
+ *
+ * @return
+ *    - BK_OK: succeed
+ *    - others: registered too many(>4) notify_cb to flash.
+ */
+bk_err_t mb_flash_register_op_flexa_bond_notify(void *notify_cb, void *args);
+
+/**
+ * @brief  unregister the flexa bond notify_cb from flash waiting.
+ *
+ * @return
+ *    - BK_OK: succeed
+ *    - others: The notify_cb isn't registered to flash.
+ */
+bk_err_t mb_flash_unregister_op_flexa_bond_notify(void);
+
 uint32_t flash_get_excute_enable();
 
 /**
