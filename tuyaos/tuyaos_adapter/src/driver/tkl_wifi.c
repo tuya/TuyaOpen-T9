@@ -1388,7 +1388,7 @@ OPERATE_RET tkl_wifi_set_ip(CONST WF_IF_E wf, NW_IP_S *ip)
         return op_ret;
     }
 
-    bk_ret = bk_netif_set_ip4_config(ifx, &ip4_cfg);
+    bk_ret = bk_netif_static_ip(ip4_cfg);
     if (bk_ret != BK_OK) {
         return __wifi_map_ret(bk_ret, OPRT_OS_ADAPTER_IP_GET_FAILED);
     }
