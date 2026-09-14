@@ -185,6 +185,21 @@ static bk_err_t isp_camera_ctlr_port_change(bk_isp_camera_ctlr_handle_t handle)
     return AVDK_ERR_OK;
 }
 
+static void isp_camera_ctlr_unregister_read_isr(bk_camera_isp_ctlr_t *control)
+{
+    if (control == NULL || control->read_register == false || control->isp_handle == NULL)
+    {
+        return;
+    }
+
+    bk_err_t ret = bk_isp_deregister_isr_callback(&control->isp_handle, ISP_FRAME_END_DONE, control);
+    if (ret != BK_OK)
+    {
+        LOGW("%s, deregister read isr failed: %d\n", __func__, ret);
+    }
+    control->read_register = false;
+}
+
 static avdk_err_t isp_camera_ctlr_deinit(bk_isp_camera_ctlr_handle_t handle)
 {
     avdk_err_t ret = AVDK_ERR_GENERIC;
@@ -213,6 +228,8 @@ static avdk_err_t isp_camera_ctlr_deinit(bk_isp_camera_ctlr_handle_t handle)
             rtos_deinit_semaphore(&control->sem);
         }
     }
+
+    isp_camera_ctlr_unregister_read_isr(control);
 
     // Deinitialize ISP core resources (threads, buffers, semaphores, etc.)
     if (control->isp_handle)
@@ -299,9 +316,14 @@ static avdk_err_t isp_camera_ctlr_read(bk_isp_camera_ctlr_handle_t handle, uint1
     if (control->read_register == false)
     {
         // register frame end cb
-        bk_isp_register_isr_callback((isp_handle_t *)&isp_control, ISP_FRAME_END_DONE,
+        bk_err_t isr_ret = bk_isp_register_isr_callback((isp_handle_t *)&isp_control, ISP_FRAME_END_DONE,
             camera_frame_complete_callback, control);
-
+        if (isr_ret != BK_OK)
+        {
+            LOGE("%s, %d register frame end cb failed: %d\n", __func__, __LINE__, isr_ret);
+            return ret;
+        }
+    
         control->read_register = true;
     }
 
@@ -542,6 +564,7 @@ static avdk_err_t isp_camera_ctlr_channel_close(bk_isp_camera_ctlr_handle_t hand
         && controller->channel_state[ISP_SP_CHN_ID] == ISP_CHANNEL_STATE_TURN_OFF
         && controller->state == CAM_FSM_ENABLE)
     {
+        isp_camera_ctlr_unregister_read_isr(controller);
         controller->state = CAM_FSM_INIT;
         LOGI("%s, %d, all channels closed, state changed to INIT\n", __func__, __LINE__);
     }
