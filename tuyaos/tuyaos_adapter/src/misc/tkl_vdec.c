@@ -432,7 +432,7 @@ static VOID *tkl_vdec_frame_alloc(TUYA_VDEC_CTX_T *ctx, UINT32_T size)
     /* No sink allocator: TKL picks the pool. A decoder output is always a pixel
      * frame, and the decoder DMAs into it, so it cannot come from the ordinary
      * heap (see tkl_media_buf.h). */
-    return tkl_media_buf_alloc(TKL_BUF_USE_PIXEL, size, TKL_MEDIA_BUF_OWNER_VDEC);
+    return tkl_media_buf_alloc(TKL_BUF_USE_PIXEL, size, TUYA_MEDIA_BUF_OWNER_VDEC);
 }
 
 static VOID tkl_vdec_frame_free(TUYA_VDEC_CTX_T *ctx, VOID *ptr)
@@ -444,7 +444,7 @@ static VOID tkl_vdec_frame_free(TUYA_VDEC_CTX_T *ctx, VOID *ptr)
     if (ctx->sink.free_cb != NULL) {
         (void)ctx->sink.free_cb(ptr, ctx->sink.cb_arg);
     } else {
-        tkl_media_buf_free(TKL_MEDIA_BUF_OWNER_VDEC, ptr);
+        tkl_media_buf_free(TUYA_MEDIA_BUF_OWNER_VDEC, ptr);
     }
 }
 

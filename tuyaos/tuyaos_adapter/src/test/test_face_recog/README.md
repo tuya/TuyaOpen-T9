@@ -127,7 +127,7 @@ PASS 条件：`best >= 0.70` **且** `avg >= 0.62`。
 2. `xmipi cam open` 一步带起 sensor、ISP、两个通道，以及（选了 `display` 时）GPU 与面板：
    - **MP** 通道：`display` / `h264` 走 flexa，直接进 GPU 或编码器。
    - **SP** 通道：模型输入，**320×320** RGB888（实际 4bpp），frame mode。
-3. `xrecog` 通过 `tkl_camera_mipi_get_frame(&frame, TUYA_CAMERA_MIPI_CHANNEL_SP, timeout)`
+3. `xrecog` 通过 `tkl_mipi_csi_get_frame(&frame, TUYA_MIPI_CSI_CHANNEL_SECONDARY, timeout)`
    取帧。**帧是借来的**：用完必须 `frame.free_cb(frame.data)` 还回去，见下面「帧归还契约」。
 4. `FaceRecognitionModel::run()`：
    - 4bpp BGRX→RGB，像素值减 128，得到检测 int8 输入；
@@ -143,32 +143,31 @@ SP 帧大小按 `320 * 320 * 4` 处理。虽然格式常标记为 `BK_PIXEL_FORM
 
 为跑通该 demo，除本目录外还依赖以下已有适配（多数在 `xface` 移植时已完成，本 demo 复用）。
 
-### tkl_camera_mipi.h/c
+### tkl_mipi_csi.h/c
 
 路径：
 
-- `vendor/T9/tuyaos/tuyaos_adapter/include/mipi/tkl_camera_mipi.h`
-- `vendor/T9/tuyaos/tuyaos_adapter/src/driver/tkl_camera_mipi.c`
+- `vendor/T9/tuyaos/tuyaos_adapter/include/mipi/tkl_mipi_csi.h`
+- `vendor/T9/tuyaos/tuyaos_adapter/src/driver/tkl_mipi_csi.c`
 
 主要能力：
 
-- `TUYA_CAMERA_MIPI_CHANNEL_MP` / `TUYA_CAMERA_MIPI_CHANNEL_SP`。
-- SP 配置字段：`sp_out_kinds`、`sp_width`、`sp_height`、`sp_format`。
-  `sp_out_kinds` 只接受 `TKL_CAM_OUT_FRAME`（所有 ISP bond 都硬编码 MP 通道），
-  给 `TKL_CAM_OUT_NONE` 则关掉 SP。缓冲数量、flexa 标志、work mode 不再由调用方给，
-  由 `mp_out_kinds` / `sp_out_kinds` 推出来。
-- `tkl_camera_mipi_get_frame()` 支持按 channel 读 MP 或 SP。
+- `TKL_MIPI_CSI_CHANNEL_PRIMARY` / `TKL_MIPI_CSI_CHANNEL_SECONDARY`。
+- SP 配置字段集中在 `cfg.secondary`：`output_kinds`、`width`、`height`、`format`。
+  SP 只接受 `TKL_MIPI_CSI_OUTPUT_FRAME`，设为 `TKL_MIPI_CSI_OUTPUT_NONE` 即关闭。缓冲数量、
+  flexa 标志和 work mode 由适配层根据 path 配置推导。
+- `tkl_mipi_csi_get_frame()` 支持按 channel 读 MP 或 SP。
 - SP 为 RGB888 时返回大小按 `width * height * 4`（这颗 PP 的 RGB888 是 4 字节/像素）。
 - MP 挂了 display 或 h264 就在跑 flexa，没有帧队列可读，取帧返回 `OPRT_NOT_SUPPORTED`；
   SP frame mode 可直接读。
 
 #### 帧归还契约（重要）
 
-`tkl_camera_mipi_get_frame()` **借出**缓冲，不转移所有权：
+`tkl_mipi_csi_get_frame()` **借出**缓冲，不转移所有权：
 
 ```c
-TKL_MEDIA_BUF_T frame;
-if (tkl_camera_mipi_get_frame(&frame, TUYA_CAMERA_MIPI_CHANNEL_SP, timeout) == OPRT_OK) {
+TUYA_MEDIA_BUF_T frame;
+if (tkl_mipi_csi_get_frame(&frame, TUYA_MIPI_CSI_CHANNEL_SECONDARY, timeout) == OPRT_OK) {
     /* ... 用 frame.data ... */
     frame.free_cb(frame.data);   /* 每条退出路径都要走到 */
 }

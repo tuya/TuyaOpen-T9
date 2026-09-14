@@ -8,13 +8,15 @@
  *
  *   device layer (static)  USB enumeration, the vendor uvc backend, per-frame
  *                          callbacks
- *   facade (public)        open / close / get_frame / decode_once / set_osd
+ *   facade (public)        init / start / stop / deinit / set_osd / set_encode
  *
- * The facade exists for buffer ownership. The device layer and tkl_vdec both
- * **lend** their buffer for one callback and reclaim it on return, which would
- * force every caller to memcpy the frame out. Here the buffers come from pools
- * this file owns and the reclaim hook publishes to the ready queue instead, so
- * the borrow becomes a loan business ends by calling buf.free_cb.
+ * The facade exists for buffer ownership and for the decode task: an adapter
+ * thread that pops the capture queue into the decoder, which is what feeds the
+ * PIXEL/STREAM outputs. The device layer and tkl_vdec both **lend** their
+ * buffer for one callback and reclaim it on return, which would force every
+ * caller to memcpy the frame out. Here the buffers come from pools this file
+ * owns and the reclaim hook publishes to the ready queue instead, so the
+ * borrow becomes a loan business ends by calling buf.free_cb.
  *
  * @version 0.2
  * @date 2026-08-29
@@ -59,10 +61,8 @@ typedef struct {
     UINT16_T width;
     UINT16_T height;
     UINT8_T fps;                    /* default 30 */
-    UINT8_T drop_num;
-    UINT32_T codec;                 /* TUYA_VCODEC_TYPE_MJPEG/H264, default MJPEG */
-    UINT32_T connect_timeout_ms;    /* default 4000 */
-} TUYA_UVC_CFG_T;
+    UINT32_T input_format;          /* TUYA_VCODEC_TYPE_MJPEG/H264, default MJPEG */
+} TKL_UVC_CFG_T;
 
 /**
  * @brief Where the device's frames go, and optionally who owns their memory.
@@ -74,7 +74,7 @@ typedef struct {
  */
 typedef struct {
     TUYA_UVC_STREAM_CB stream_cb;
-    TKL_UVC_STATE_CB  state_cb;
+    TUYA_UVC_STATE_CB  state_cb;
     TUYA_VCODEC_ALLOC_CB alloc_cb;
     TUYA_VCODEC_FREE_CB free_cb;
     VOID *cb_arg;
@@ -83,7 +83,7 @@ typedef struct {
 /* ---------------------------------------------------------------------------
  * Device layer - internal only. The facade below is the only caller.
  * ------------------------------------------------------------------------- */
-STATIC OPERATE_RET uvc_dev_init(TUYA_UVC_HANDLE *handle, const TUYA_UVC_CFG_T *config);
+STATIC OPERATE_RET uvc_dev_init(TUYA_UVC_HANDLE *handle, const TKL_UVC_CFG_T *config);
 STATIC OPERATE_RET uvc_dev_deinit(TUYA_UVC_HANDLE handle);
 STATIC OPERATE_RET uvc_dev_set_sink(TUYA_UVC_HANDLE handle, const TUYA_UVC_SINK_T *sink);
 STATIC OPERATE_RET uvc_dev_start(TUYA_UVC_HANDLE handle);
@@ -96,9 +96,9 @@ STATIC OPERATE_RET uvc_dev_stop(TUYA_UVC_HANDLE handle);
 #include <components/usbh_hub_multiple_classes_api.h>
 #include <os/os.h>
 
-#define TKL_UVC_DEFAULT_PORT               1U
-#define TKL_UVC_DEFAULT_FPS                30U
-#define TKL_UVC_DEFAULT_CONNECT_TIMEOUT_MS 4000U
+#define TUYA_UVC_DEFAULT_PORT               1U
+#define TUYA_UVC_DEFAULT_FPS                30U
+#define TUYA_UVC_DEFAULT_CONNECT_TIMEOUT_MS 4000U
 
 typedef struct {
     frame_buffer_t frame;
@@ -109,7 +109,7 @@ typedef struct {
 typedef struct {
     BOOL_T started;
     BOOL_T backend_inited;
-    TUYA_UVC_CFG_T cfg;
+    TKL_UVC_CFG_T cfg;
     TUYA_UVC_SINK_T sink;
     bk_uvc_callback_t callbacks;
     bk_uvc_ctlr_handle_t backend_handle;
@@ -192,7 +192,7 @@ static TUYA_VCODEC_FRAME_TYPE_E uvc_dev_frame_type_convert(UINT32_T h264_type)
     }
 }
 
-static OPERATE_RET uvc_dev_cfg_validate(const TUYA_UVC_CFG_T *cfg)
+static OPERATE_RET uvc_dev_cfg_validate(const TKL_UVC_CFG_T *cfg)
 {
     bk_image_format_t format;
 
@@ -200,7 +200,7 @@ static OPERATE_RET uvc_dev_cfg_validate(const TUYA_UVC_CFG_T *cfg)
         return OPRT_INVALID_PARM;
     }
 
-    return uvc_dev_format_convert(cfg->codec, &format);
+    return uvc_dev_format_convert(cfg->input_format, &format);
 }
 
 static OPERATE_RET uvc_dev_sink_validate(const TUYA_UVC_SINK_T *sink)
@@ -216,22 +216,18 @@ static OPERATE_RET uvc_dev_sink_validate(const TUYA_UVC_SINK_T *sink)
     return OPRT_OK;
 }
 
-static VOID uvc_dev_cfg_resolve(TUYA_UVC_CFG_T *cfg)
+static VOID uvc_dev_cfg_resolve(TKL_UVC_CFG_T *cfg)
 {
     if (cfg->port == 0U) {
-        cfg->port = TKL_UVC_DEFAULT_PORT;
+        cfg->port = TUYA_UVC_DEFAULT_PORT;
     }
 
     if (cfg->fps == 0U) {
-        cfg->fps = TKL_UVC_DEFAULT_FPS;
+        cfg->fps = TUYA_UVC_DEFAULT_FPS;
     }
 
-    if (cfg->codec == TUYA_VCODEC_TYPE_NONE) {
-        cfg->codec = TUYA_VCODEC_TYPE_MJPEG;
-    }
-
-    if (cfg->connect_timeout_ms == 0U) {
-        cfg->connect_timeout_ms = TKL_UVC_DEFAULT_CONNECT_TIMEOUT_MS;
+    if (cfg->input_format == TUYA_VCODEC_TYPE_NONE) {
+        cfg->input_format = TUYA_VCODEC_TYPE_MJPEG;
     }
 }
 
@@ -256,7 +252,7 @@ static frame_buffer_t *uvc_dev_frame_malloc(bk_image_format_t format, uint32_t s
         /* No sink allocator: TKL picks the pool. USB DMAs an encoded frame
          * straight into it, so it belongs in the stream slab, not the heap. */
         payload = tkl_media_buf_alloc(TKL_BUF_USE_STREAM, size,
-                                      TKL_MEDIA_BUF_OWNER_UVC_STREAM);
+                                      TUYA_MEDIA_BUF_OWNER_UVC_STREAM);
     }
 
     if (payload == NULL) {
@@ -285,7 +281,7 @@ static VOID uvc_dev_frame_free(TUYA_UVC_CTX_T *ctx, TUYA_UVC_FRAME_T *node)
         if (ctx != NULL && ctx->sink.free_cb != NULL) {
             (void)ctx->sink.free_cb(node->payload, ctx->sink.cb_arg);
         } else {
-            tkl_media_buf_free(TKL_MEDIA_BUF_OWNER_UVC_STREAM, node->payload);
+            tkl_media_buf_free(TUYA_MEDIA_BUF_OWNER_UVC_STREAM, node->payload);
         }
     }
 
@@ -489,7 +485,7 @@ static OPERATE_RET uvc_dev_power_on(TUYA_UVC_CTX_T *ctx)
         return OPRT_OK;
     }
 
-    ret = rtos_get_semaphore(&ctx->connect_sem, ctx->cfg.connect_timeout_ms);
+    ret = rtos_get_semaphore(&ctx->connect_sem, TUYA_UVC_DEFAULT_CONNECT_TIMEOUT_MS);
     return uvc_dev_ret_convert(ret);
 }
 
@@ -524,7 +520,7 @@ static OPERATE_RET uvc_dev_config_fill(TUYA_UVC_CTX_T *ctx, bk_cam_uvc_config_t 
         return OPRT_INVALID_PARM;
     }
 
-    op_ret = uvc_dev_format_convert(ctx->cfg.codec, &format);
+    op_ret = uvc_dev_format_convert(ctx->cfg.input_format, &format);
     if (op_ret != OPRT_OK) {
         return op_ret;
     }
@@ -539,27 +535,11 @@ static OPERATE_RET uvc_dev_config_fill(TUYA_UVC_CTX_T *ctx, bk_cam_uvc_config_t 
     return OPRT_OK;
 }
 
-/* BK 4.0.1.8：跳帧数（AE 预热）由 ioctl 配置，必须在 bk_uvc_init 之后、
- * bk_uvc_open 之前调用；该值存在 stream handle 上，每次 open 复位到
- * skip_frames_remaining，直到 bk_uvc_deinit 才失效，因此只需下发一次。 */
 static OPERATE_RET uvc_dev_backend_set_skip_frames(TUYA_UVC_CTX_T *ctx)
 {
-    bk_uvc_skip_frames_config_t skip_cfg;
-    avdk_err_t ret;
-
-    if (ctx == NULL || ctx->backend_handle == NULL) {
-        return OPRT_INVALID_PARM;
-    }
-
-    if (ctx->cfg.drop_num == 0U) {
-        return OPRT_OK;     /* 后端默认即为 0，无需下发 */
-    }
-
-    skip_cfg.port = ctx->cfg.port;
-    skip_cfg.count = ctx->cfg.drop_num;
-
-    ret = bk_uvc_ioctl(ctx->backend_handle, BK_UVC_IOCTL_SET_SKIP_FRAMES, &skip_cfg);
-    return uvc_dev_ret_convert(ret);
+    (void)ctx;
+    /* AE warm-up is a backend policy, not part of the public UVC contract. */
+    return OPRT_OK;
 }
 
 static OPERATE_RET uvc_dev_backend_prepare(TUYA_UVC_CTX_T *ctx)
@@ -687,7 +667,7 @@ static OPERATE_RET uvc_dev_backend_release(TUYA_UVC_CTX_T *ctx)
     return op_ret;
 }
 
-STATIC OPERATE_RET uvc_dev_init(TUYA_UVC_HANDLE *handle, const TUYA_UVC_CFG_T *config)
+STATIC OPERATE_RET uvc_dev_init(TUYA_UVC_HANDLE *handle, const TKL_UVC_CFG_T *config)
 {
     TUYA_UVC_CTX_T *ctx = NULL;
     OPERATE_RET ret;
@@ -711,7 +691,7 @@ STATIC OPERATE_RET uvc_dev_init(TUYA_UVC_HANDLE *handle, const TUYA_UVC_CFG_T *c
     }
 
     tkl_system_memset(ctx, 0, sizeof(TUYA_UVC_CTX_T));
-    tkl_system_memcpy(&ctx->cfg, config, sizeof(TUYA_UVC_CFG_T));
+    tkl_system_memcpy(&ctx->cfg, config, sizeof(TKL_UVC_CFG_T));
     uvc_dev_cfg_resolve(&ctx->cfg);
 
     ret = uvc_dev_backend_prepare(ctx);
@@ -830,50 +810,41 @@ STATIC OPERATE_RET uvc_dev_stop(TUYA_UVC_HANDLE handle)
  * or every allocation is refused. Same expression as the vendor's own pipeline
  * demo, uvc_pipeline.c:37. */
 #ifdef CONFIG_UVC_FRAME_SIZE
-#define TKL_UVC_OUT_SLOT_SIZE (CONFIG_UVC_FRAME_SIZE)
+#define TUYA_UVC_INTERNAL_SLOT_SIZE (CONFIG_UVC_FRAME_SIZE)
 #else
-#define TKL_UVC_OUT_SLOT_SIZE (1024U * 200U)
+#define TUYA_UVC_INTERNAL_SLOT_SIZE (1024U * 200U)
 #endif
 
-/* Pull needs three: one filling, one queued, one out with business.
- *
- * Push needs five: tkl_uvc_decode_once() holds its slot for the *whole* decode,
- * the longest step in the loop, so three leaves no slack and drops 2-4% of
- * frames at 1280x720. Five is also the vendor's own ENCODE_FRAME_COUNT. */
-#define TKL_UVC_OUT_POOL_DEPTH_PULL  3U
-#define TKL_UVC_OUT_POOL_DEPTH_PUSH  5U
-
-/* One decoded picture in business's hands, one being decoded. */
-#define TKL_UVC_OUT_FRAME_DEPTH      2U
+#define TUYA_UVC_INTERNAL_POOL_DEPTH_DEFAULT 5U
 
 /* Slack in the ring the decoder writes slices into. */
-#define TKL_UVC_OUT_FLEXA_DEPTH      3U
+#define TUYA_UVC_INTERNAL_FLEXA_DEPTH      3U
 
 /* Sizes the scratch array in tkl_uvc_pool_free_count(), which must hold the
- * deepest pool this file creates. Static-asserted below: getting it wrong is a
- * stack overrun. */
-#define TKL_UVC_OUT_POOL_DEPTH_MAX   TKL_UVC_OUT_POOL_DEPTH_PUSH
-typedef char tkl_uvc_pool_depth_max_check[
-    (TKL_UVC_OUT_POOL_DEPTH_MAX >= TKL_UVC_OUT_POOL_DEPTH_PULL &&
-     TKL_UVC_OUT_POOL_DEPTH_MAX >= TKL_UVC_OUT_FRAME_DEPTH) ? 1 : -1];
+ * deepest pool this file creates. */
+#define TUYA_UVC_INTERNAL_POOL_DEPTH_MAX   TUYA_UVC_INTERNAL_POOL_DEPTH_DEFAULT
 /* The decoder emits in slices of this many lines; tkl_vdec rounds anything
  * smaller up to it, and every vendor pipeline uses exactly 16. */
-#define TKL_UVC_OUT_FLEXA_LINES      16U
+#define TUYA_UVC_INTERNAL_FLEXA_LINES      16U
 
-#define TKL_UVC_OUT_DRAIN_MS         500U
-#define TKL_UVC_OUT_DRAIN_STEP_MS    10U
+#define TUYA_UVC_INTERNAL_DRAIN_MS         500U
+#define TUYA_UVC_INTERNAL_DRAIN_STEP_MS    10U
 /* the picture the panel is still scanning out when the pipeline stops - same
- * reasoning as tkl_camera_mipi_deinit() */
-#define TKL_UVC_OUT_DISPLAY_RESIDUAL 1U
+ * reasoning as tkl_mipi_csi_deinit() */
+#define TUYA_UVC_OUTPUT_PIXEL_RESIDUAL 1U
 
-/** Pull outputs: mutually exclusive, fetched with tkl_uvc_get_frame(). */
-#define TKL_UVC_OUT_PULL_MASK (TKL_UVC_OUT_MJPEG | TKL_UVC_OUT_FRAME)
-/** Push outputs: combinable, driven by tkl_uvc_decode_once(). */
-#define TKL_UVC_OUT_PUSH_MASK (TKL_UVC_OUT_DISPLAY | TKL_UVC_OUT_H264)
+/* How often the internal decode task re-checks its stop flag while the ready
+ * queue is idle. That idle poll is the join bound of stop(). */
+#define TUYA_UVC_INTERNAL_TASK_POLL_MS     100U
+#define TUYA_UVC_INTERNAL_TASK_STACK       (1024U * 4U)
 
-#define TKL_UVC_OUT_ALIGN16(v)       (((v) + 15U) & ~15U)
+#define TUYA_UVC_OUTPUT_KIND_MASK     (TUYA_UVC_OUTPUT_FRAME | TUYA_UVC_OUTPUT_PIXEL | \
+                                      TUYA_UVC_OUTPUT_STREAM)
+#define TUYA_UVC_OUTPUT_PIPELINE_MASK (TUYA_UVC_OUTPUT_PIXEL | TUYA_UVC_OUTPUT_STREAM)
 
-#define TKL_UVC_OUT_MS()             ((UINT32_T)tkl_system_get_millisecond())
+#define TUYA_UVC_INTERNAL_ALIGN16(v)       (((v) + 15U) & ~15U)
+
+#define TUYA_UVC_INTERNAL_MS()             ((UINT32_T)tkl_system_get_millisecond())
 
 /** One pool slot. Allocated once at open, recycled for the life of the stream. */
 typedef struct {
@@ -883,8 +854,8 @@ typedef struct {
     /* filled in by the producer, read by whoever pops it */
     UINT32_T len;
     UINT64_T pts;
-    UINT32_T codec;         /**< TKL_MEDIA_CODEC_E */
-    UINT32_T frame_type;    /**< TKL_MEDIA_FRAME_TYPE_E */
+    TUYA_FRAME_FMT_E fmt;   /**< TUYA_FRAME_FMT_JPEG or TUYA_FRAME_FMT_H264 */
+    TUYA_VIDEO_FRAME_TYPE_E frame_type;
 
     /** Set between the two halves of one vendor callback pair and read only by
      *  the second half, on the same thread. See tkl_uvc_out_free(). */
@@ -896,7 +867,7 @@ typedef struct {
     UINT8_T   depth;
     UINT32_T  slot_size;
     beken_queue_t free_q;
-    beken_queue_t ready_q;      /**< stream pool only; NULL for the pixel pool */
+    beken_queue_t ready_q;      /**< frames the decode task has not taken yet */
 } tkl_uvc_pool_t;
 
 /**
@@ -905,19 +876,20 @@ typedef struct {
  * stop() costs about 180 ms against 720 ms for a fresh open.
  */
 typedef enum {
-    TKL_UVC_ST_IDLE = 0,    /**< nothing built */
-    TKL_UVC_ST_INIT,        /**< enumerated and pooled, not streaming */
-    TKL_UVC_ST_STARTED,     /**< streaming */
+    TUYA_UVC_ST_IDLE = 0,    /**< nothing built */
+    TUYA_UVC_ST_INIT,        /**< enumerated and pooled, not streaming */
+    TUYA_UVC_ST_STARTED,     /**< streaming */
 } tkl_uvc_state_e;
 
 typedef struct {
     tkl_uvc_state_e state;
-    TKL_UVC_CFG_T cfg;
+    TUYA_UVC_CFG_T cfg;
 
     TUYA_UVC_HANDLE uvc;
-    TUYA_VDEC_HANDLE vdec;      /**< every mode but TKL_UVC_OUT_MJPEG */
+    TUYA_VDEC_HANDLE vdec;      /**< every mode but TUYA_UVC_OUTPUT_FRAME */
 
-    /* push outputs (TKL_UVC_OUT_DISPLAY / _H264) */
+    /* PIXEL and STREAM outputs use the internal decoder pipeline.
+     * The public API does not expose how they are delivered internally. */
     BOOL_T want_display;
     BOOL_T want_encode;
     TKL_GPU_HANDLE gpu;
@@ -929,33 +901,18 @@ typedef struct {
     UINT16_T src_height;
 
     tkl_uvc_pool_t stream_pool;
-    tkl_uvc_pool_t pixel_pool;  /**< TKL_UVC_OUT_FRAME only */
 
-    /* Set by the decoder's frame callback and consumed by the get_frame() call
-     * that triggered it - tkl_vdec_submit_stream() runs the whole decode
-     * synchronously on the calling thread, so no other party can observe this
-     * in between. get_frame() is documented single-consumer for this reason. */
-    struct {
-        BOOL_T   valid;
-        UINT8_T *data;
-        UINT32_T size;
-        UINT16_T width;
-        UINT16_T height;
-        UINT32_T y_stride;
-    } dec_out;
-
-    UINT8_T frame_depth;        /**< pixel pool depth; 0 until the first frame builds it */
-
-    /** Set by tkl_uvc_out_dec_alloc() when the pixel pool had nothing left, read
-     *  by tkl_uvc_out_decode() to tell that apart from a real allocation
-     *  failure. Both run on the caller's thread inside one get_frame(). */
-    BOOL_T pixel_empty;
-    BOOL_T pixel_empty_logged;
+    /* The internal decode task: pops the ready queue and feeds the decoder,
+     * which is what PIXEL/STREAM outputs run on. Owned by the adapter, so
+     * business never has to pump - see tkl_uvc_out_decode_task(). */
+    beken_thread_t    task;
+    beken_semaphore_t task_done;    /**< posted once, when the task exits */
+    BOOL_T            task_live;
+    volatile BOOL_T   task_stop;
 
     /* diagnostics, reported by tkl_uvc_deinit() */
     UINT32_T frames;
     UINT32_T drop_stream_empty;
-    UINT32_T drop_pixel_empty;
     UINT32_T drop_too_big;
     UINT32_T decode_fail;
     UINT32_T decoded;
@@ -963,6 +920,9 @@ typedef struct {
 } tkl_uvc_out_ctx_t;
 
 STATIC tkl_uvc_out_ctx_t s_uvc_out;
+
+STATIC OPERATE_RET tkl_uvc_out_task_start(VOID_T);
+STATIC VOID tkl_uvc_out_decode_task(beken_thread_arg_t arg);
 
 /* ---------------------------------------------------------------------------
  * Pool
@@ -989,7 +949,7 @@ STATIC OPERATE_RET tkl_uvc_pool_create(tkl_uvc_pool_t *pool,
                                        UINT8_T depth,
                                        UINT32_T slot_size,
                                        TKL_BUF_USE_E use,
-                                       TKL_MEDIA_BUF_OWNER_E owner,
+                                       TUYA_MEDIA_BUF_OWNER_E owner,
                                        BOOL_T with_ready,
                                        CONST CHAR_T *name)
 {
@@ -1045,7 +1005,7 @@ STATIC OPERATE_RET tkl_uvc_pool_create(tkl_uvc_pool_t *pool,
  * @warning Frees the slot memory. The caller must have established that nobody
  *          still holds a slot - see the drain in tkl_uvc_deinit().
  */
-STATIC VOID_T tkl_uvc_pool_destroy(tkl_uvc_pool_t *pool, TKL_MEDIA_BUF_OWNER_E owner)
+STATIC VOID_T tkl_uvc_pool_destroy(tkl_uvc_pool_t *pool, TUYA_MEDIA_BUF_OWNER_E owner)
 {
     UINT8_T i;
 
@@ -1147,7 +1107,7 @@ STATIC tkl_uvc_slot_t *tkl_uvc_pool_find(tkl_uvc_pool_t *pool, CONST UINT8_T *da
 STATIC UINT8_T tkl_uvc_pool_free_count(tkl_uvc_pool_t *pool)
 {
     /* sized for the larger of the two pools; both maxima are checked at open */
-    tkl_uvc_slot_t *held[TKL_UVC_OUT_POOL_DEPTH_MAX];
+    tkl_uvc_slot_t *held[TUYA_UVC_INTERNAL_POOL_DEPTH_MAX];
     UINT8_T n = 0U;
     UINT8_T i;
 
@@ -1181,8 +1141,8 @@ STATIC OPERATE_RET tkl_uvc_pool_drain(tkl_uvc_pool_t *pool, UINT32_T timeout_ms)
         if (waited >= timeout_ms) {
             return OPRT_TIMEOUT;
         }
-        rtos_delay_milliseconds(TKL_UVC_OUT_DRAIN_STEP_MS);
-        waited += TKL_UVC_OUT_DRAIN_STEP_MS;
+        rtos_delay_milliseconds(TUYA_UVC_INTERNAL_DRAIN_STEP_MS);
+        waited += TUYA_UVC_INTERNAL_DRAIN_STEP_MS;
     }
 
     return OPRT_OK;
@@ -1191,21 +1151,9 @@ STATIC OPERATE_RET tkl_uvc_pool_drain(tkl_uvc_pool_t *pool, UINT32_T timeout_ms)
 /* ---------------------------------------------------------------------------
  * Release callbacks handed to business
  *
- * TKL_MEDIA_BUF_T::free_cb takes no context argument, so these reach the pools
+ * TUYA_MEDIA_BUF_T::free_cb takes no context argument, so these reach the pools
  * through the singleton context.
  * ------------------------------------------------------------------------- */
-
-STATIC VOID_T tkl_uvc_out_stream_release(UINT8_T *buffer)
-{
-    tkl_uvc_pool_give(&s_uvc_out.stream_pool,
-                      tkl_uvc_pool_find(&s_uvc_out.stream_pool, buffer));
-}
-
-STATIC VOID_T tkl_uvc_out_pixel_release(UINT8_T *buffer)
-{
-    tkl_uvc_pool_give(&s_uvc_out.pixel_pool,
-                      tkl_uvc_pool_find(&s_uvc_out.pixel_pool, buffer));
-}
 
 /* ---------------------------------------------------------------------------
  * tkl_uvc sink - capture side
@@ -1229,7 +1177,7 @@ STATIC VOID *tkl_uvc_out_alloc(UINT32_T size, VOID *arg)
 
     (void)arg;
 
-    if (size > TKL_UVC_OUT_SLOT_SIZE) {
+    if (size > TUYA_UVC_INTERNAL_SLOT_SIZE) {
         s_uvc_out.drop_too_big++;
         return NULL;
     }
@@ -1270,20 +1218,38 @@ STATIC VOID tkl_uvc_out_stream_cb(CONST TUYA_VCODEC_STREAM_T *stream, VOID *arg)
 
     slot->len = stream->size;
     slot->pts = stream->pts;
-    slot->codec = (stream->codec == (UINT32_T)TUYA_VCODEC_TYPE_H264)
-                      ? (UINT32_T)TKL_MEDIA_CODEC_H264
-                      : (UINT32_T)TKL_MEDIA_CODEC_JPEG;
+    slot->fmt = (stream->codec == (UINT32_T)TUYA_VCODEC_TYPE_H264)
+                    ? TUYA_FRAME_FMT_H264
+                    : TUYA_FRAME_FMT_JPEG;
 
     switch (stream->frame_type) {
     case TUYA_VCODEC_FRAME_I:
-        slot->frame_type = (UINT32_T)TKL_MEDIA_FRAME_I;
+        slot->frame_type = (UINT32_T)TUYA_VIDEO_FRAME_I;
         break;
     case TUYA_VCODEC_FRAME_P:
-        slot->frame_type = (UINT32_T)TKL_MEDIA_FRAME_P;
+        slot->frame_type = (UINT32_T)TUYA_VIDEO_FRAME_P;
         break;
     default:
-        slot->frame_type = (UINT32_T)TKL_MEDIA_FRAME_UNKNOWN;
+        slot->frame_type = (UINT32_T)TUYA_VIDEO_FRAME_UNKNOWN;
         break;
+    }
+
+    /* FRAME is an independent raw-input output. The vendor buffer is borrowed
+     * only for this callback - free_cb stays NULL, so business must copy; the
+     * slot is published to the decode task or recycled by free_cb below. */
+    if ((s_uvc_out.cfg.output_kinds & TUYA_UVC_OUTPUT_FRAME) != 0U &&
+        s_uvc_out.cfg.frame_cb != NULL) {
+        TUYA_MEDIA_BUF_T buf;
+
+        os_memset(&buf, 0, sizeof(buf));
+        buf.data = slot->data;
+        buf.size = slot->len;
+        buf.pts = slot->pts;
+        buf.width = s_uvc_out.cfg.width;
+        buf.height = s_uvc_out.cfg.height;
+        buf.format = slot->fmt;
+        buf.frame_type = slot->frame_type;
+        s_uvc_out.cfg.frame_cb(&buf, s_uvc_out.cfg.frame_arg);
     }
 
     slot->ready = TRUE;
@@ -1296,10 +1262,10 @@ STATIC VOID tkl_uvc_out_stream_cb(CONST TUYA_VCODEC_STREAM_T *stream, VOID *arg)
  * @param[in] arg unused
  *
  * @note This, not tkl_uvc_out_stream_cb(), is where a frame becomes visible to
- *       get_frame(). Publishing from stream_cb would let a fast consumer pop,
- *       release and have the slot reissued before this call runs, which would
- *       then free the reissued slot a second time. Publish only once the driver
- *       is done with the slot.
+ *       the decode task. Publishing from stream_cb would let a fast consumer
+ *       pop, release and have the slot reissued before this call runs, which
+ *       would then free the reissued slot a second time. Publish only once the
+ *       driver is done with the slot.
  *
  * @return OPRT_OK
  */
@@ -1322,10 +1288,17 @@ STATIC OPERATE_RET tkl_uvc_out_free(VOID *ptr, VOID *arg)
     slot->ready = FALSE;
     s_uvc_out.frames++;
 
-    /* Cannot fill: the ready queue is as deep as the pool, and a slot sitting
-     * in it is not in the free queue, so it could not have been handed out
-     * again. Recycle anyway rather than lose the slot if that ever changes. */
-    if (rtos_push_to_queue(&s_uvc_out.stream_pool.ready_q, &slot, BEKEN_NO_WAIT) != 0) {
+    /* With a PIXEL/STREAM consumer the frame goes to the decode task; without
+     * one it already reached frame_cb and must recycle straight back, or the
+     * pool fills with frames nobody will pop. Cannot fill either way: the
+     * ready queue is as deep as the pool, and a slot sitting in it is not in
+     * the free queue, so it could not have been handed out again. Recycle
+     * rather than lose the slot if that ever changes. */
+    if (s_uvc_out.task_live == TRUE) {
+        if (rtos_push_to_queue(&s_uvc_out.stream_pool.ready_q, &slot, BEKEN_NO_WAIT) != 0) {
+            tkl_uvc_pool_give(&s_uvc_out.stream_pool, slot);
+        }
+    } else {
         tkl_uvc_pool_give(&s_uvc_out.stream_pool, slot);
     }
 
@@ -1342,87 +1315,17 @@ STATIC VOID tkl_uvc_out_state_cb(BOOL_T connected, VOID *arg)
 }
 
 /* ---------------------------------------------------------------------------
- * tkl_vdec sink - decode side, TKL_UVC_OUT_FRAME only
- * ------------------------------------------------------------------------- */
-
-STATIC VOID *tkl_uvc_out_dec_alloc(UINT32_T size, VOID *arg)
-{
-    tkl_uvc_slot_t *slot;
-
-    (void)arg;
-
-    /* tkl_vdec sizes the output from the JPEG header, so this can legitimately
-     * ask for more than the configured geometry implies. The pool is built for
-     * the worst case that probe can return; anything beyond it is a picture
-     * bigger than what was negotiated with the device. */
-    if (size > s_uvc_out.pixel_pool.slot_size) {
-        s_uvc_out.drop_too_big++;
-        return NULL;
-    }
-
-    slot = tkl_uvc_pool_take(&s_uvc_out.pixel_pool);
-    if (slot == NULL) {
-        s_uvc_out.drop_pixel_empty++;
-        s_uvc_out.pixel_empty = TRUE;
-        return NULL;
-    }
-
-    return slot->data;
-}
-
-/**
- * @brief Take ownership of the decoded picture.
+ * PIXEL and STREAM output implementation - GPU and encoder consumers.
  *
- * @param[in] frame decoded NV12 picture
- * @param[in] arg   unused
- *
- * @note Runs inside tkl_vdec_submit_stream(), on the thread that called
- *       tkl_uvc_get_frame(). Recording the pointer here is what stops
- *       tkl_uvc_out_dec_free() - called moments later by the same
- *       submit_stream - from putting the picture back in the pool.
- */
-STATIC VOID tkl_uvc_out_dec_frame_cb(CONST TUYA_VCODEC_FRAME_T *frame, VOID *arg)
-{
-    (void)arg;
-
-    if (frame == NULL || frame->buffer == NULL) {
-        return;
-    }
-
-    s_uvc_out.dec_out.data = frame->buffer;
-    s_uvc_out.dec_out.size = frame->size;
-    s_uvc_out.dec_out.width = frame->width;
-    s_uvc_out.dec_out.height = frame->height;
-    s_uvc_out.dec_out.y_stride = frame->stride;
-    s_uvc_out.dec_out.valid = TRUE;
-}
-
-STATIC OPERATE_RET tkl_uvc_out_dec_free(VOID *ptr, VOID *arg)
-{
-    (void)arg;
-
-    if (s_uvc_out.dec_out.valid == TRUE && s_uvc_out.dec_out.data == (UINT8_T *)ptr) {
-        return OPRT_OK;     /* on its way to business, not back to the pool */
-    }
-
-    tkl_uvc_pool_give(&s_uvc_out.pixel_pool,
-                      tkl_uvc_pool_find(&s_uvc_out.pixel_pool, (CONST UINT8_T *)ptr));
-    return OPRT_OK;
-}
-
-/* ---------------------------------------------------------------------------
- * Push outputs - the GPU and encoder sides of TKL_UVC_OUT_DISPLAY / _H264
- *
- * Same shape as the MIPI camera's: the bonds are the vendor's, the buffers on
- * their far side are ours, and the release callback travels with the buffer.
- * The difference is upstream - a MIPI ISP feeds its flexa ring in hardware, a
- * USB decoder has to be fed by tkl_uvc_decode_once().
+ * Same shape as the MIPI camera's: the hardware connections stay internal, the
+ * buffers on their far side are ours, and the release callback travels with the
+ * buffer. The USB decoder is fed by the adapter's internal decode task.
  * ------------------------------------------------------------------------- */
 
 STATIC VOID *tkl_uvc_out_display_alloc(UINT32_T size, VOID *arg)
 {
     (void)arg;
-    return tkl_media_buf_alloc(TKL_BUF_USE_PIXEL_WT, size, TKL_MEDIA_BUF_OWNER_UVC_DISPLAY);
+    return tkl_media_buf_alloc(TKL_BUF_USE_PIXEL_WT, size, TUYA_MEDIA_BUF_OWNER_UVC_DISPLAY);
 }
 
 STATIC OPERATE_RET tkl_uvc_out_display_free(VOID *ptr, VOID *arg)
@@ -1433,7 +1336,7 @@ STATIC OPERATE_RET tkl_uvc_out_display_free(VOID *ptr, VOID *arg)
         return OPRT_INVALID_PARM;
     }
 
-    tkl_media_buf_free(TKL_MEDIA_BUF_OWNER_UVC_DISPLAY, ptr);
+    tkl_media_buf_free(TUYA_MEDIA_BUF_OWNER_UVC_DISPLAY, ptr);
     return OPRT_OK;
 }
 
@@ -1451,7 +1354,7 @@ STATIC OPERATE_RET tkl_uvc_out_display_free(VOID *ptr, VOID *arg)
  */
 STATIC VOID tkl_uvc_out_display_done(VOID *frame, UINT32_T frame_size, VOID *arg)
 {
-    TKL_MEDIA_BUF_T buf;
+    TUYA_MEDIA_BUF_T buf;
 
     (void)arg;
 
@@ -1459,28 +1362,27 @@ STATIC VOID tkl_uvc_out_display_done(VOID *frame, UINT32_T frame_size, VOID *arg
         return;
     }
 
-    if (s_uvc_out.cfg.display_cb == NULL) {
-        tkl_media_buf_free(TKL_MEDIA_BUF_OWNER_UVC_DISPLAY, frame);
+    if (s_uvc_out.cfg.pixel_cb == NULL) {
+        tkl_media_buf_free(TUYA_MEDIA_BUF_OWNER_UVC_DISPLAY, frame);
         return;
     }
 
     os_memset(&buf, 0, sizeof(buf));
     buf.data = (UINT8_T *)frame;
     buf.size = frame_size;
-    buf.free_cb = tkl_media_buf_free_cb(TKL_MEDIA_BUF_OWNER_UVC_DISPLAY);
-    buf.kind = (UINT8_T)TKL_MEDIA_BUF_PIXEL;
+    buf.free_cb = tkl_media_buf_free_cb(TUYA_MEDIA_BUF_OWNER_UVC_DISPLAY);
     buf.pts = (UINT64_T)tkl_system_get_millisecond();
-    buf.width = s_uvc_out.cfg.display.dst_w;
-    buf.height = s_uvc_out.cfg.display.dst_h;
-    buf.format = s_uvc_out.cfg.display.format;
+    buf.width = s_uvc_out.cfg.pixel.target_width;
+    buf.height = s_uvc_out.cfg.pixel.target_height;
+    buf.format = s_uvc_out.cfg.pixel.format;
 
-    s_uvc_out.cfg.display_cb(&buf, s_uvc_out.cfg.display_arg);
+    s_uvc_out.cfg.pixel_cb(&buf, s_uvc_out.cfg.pixel_arg);
 }
 
 STATIC VOID *tkl_uvc_out_venc_alloc(UINT32_T size, VOID *arg)
 {
     (void)arg;
-    return tkl_media_buf_alloc(TKL_BUF_USE_STREAM, size, TKL_MEDIA_BUF_OWNER_UVC_STREAM);
+    return tkl_media_buf_alloc(TKL_BUF_USE_STREAM, size, TUYA_MEDIA_BUF_OWNER_UVC_STREAM);
 }
 
 STATIC OPERATE_RET tkl_uvc_out_venc_free(VOID *ptr, VOID *arg)
@@ -1491,7 +1393,7 @@ STATIC OPERATE_RET tkl_uvc_out_venc_free(VOID *ptr, VOID *arg)
         return OPRT_INVALID_PARM;
     }
 
-    tkl_media_buf_free(TKL_MEDIA_BUF_OWNER_UVC_STREAM, ptr);
+    tkl_media_buf_free(TUYA_MEDIA_BUF_OWNER_UVC_STREAM, ptr);
     return OPRT_OK;
 }
 
@@ -1504,12 +1406,12 @@ STATIC OPERATE_RET tkl_uvc_out_venc_free(VOID *ptr, VOID *arg)
  * @note Runs on the shared hardware-encoder thread. tkl_venc releases the
  *       payload as soon as this returns, so the buffer carries a NULL free_cb -
  *       business must copy anything it needs to keep. That is the one place
- *       where a pushed buffer differs from a pulled one, and it is the vendor
- *       encoder's lifetime, not a choice made here.
+ *       where an asynchronously delivered buffer differs from a synchronous
+ *       compatibility pull.
  */
 STATIC VOID tkl_uvc_out_venc_stream_cb(CONST TUYA_VCODEC_STREAM_T *stream, VOID *arg)
 {
-    TKL_MEDIA_BUF_T buf;
+    TUYA_MEDIA_BUF_T buf;
 
     (void)arg;
 
@@ -1521,21 +1423,20 @@ STATIC VOID tkl_uvc_out_venc_stream_cb(CONST TUYA_VCODEC_STREAM_T *stream, VOID 
     buf.data = stream->data;
     buf.size = stream->size;
     buf.free_cb = NULL;             /* borrowed for the duration of this call */
-    buf.kind = (UINT8_T)TKL_MEDIA_BUF_STREAM;
     buf.pts = stream->pts;
     buf.width = s_uvc_out.src_width;
     buf.height = s_uvc_out.src_height;
-    buf.codec = (UINT32_T)TKL_MEDIA_CODEC_H264;
+    buf.format = TUYA_FRAME_FMT_H264;
 
     switch (stream->frame_type) {
     case TUYA_VCODEC_FRAME_I:
-        buf.frame_type = (UINT32_T)TKL_MEDIA_FRAME_I;
+        buf.frame_type = (UINT32_T)TUYA_VIDEO_FRAME_I;
         break;
     case TUYA_VCODEC_FRAME_P:
-        buf.frame_type = (UINT32_T)TKL_MEDIA_FRAME_P;
+        buf.frame_type = (UINT32_T)TUYA_VIDEO_FRAME_P;
         break;
     default:
-        buf.frame_type = (UINT32_T)TKL_MEDIA_FRAME_UNKNOWN;
+        buf.frame_type = (UINT32_T)TUYA_VIDEO_FRAME_UNKNOWN;
         break;
     }
 
@@ -1546,20 +1447,19 @@ STATIC VOID tkl_uvc_out_venc_stream_cb(CONST TUYA_VCODEC_STREAM_T *stream, VOID 
  * @brief Allocate the ring the decoder writes slices into.
  *
  * @note Sixteen lines per segment - 92 KB at 1280 wide, against 1.3 MB for a
- *       whole NV12 picture. That gap is why the push outputs exist. Uncoded
- *       pool rather than the vendor demo's HSRAM, so every media buffer in this
- *       file goes through one allocator.
+ *       decoded pixel picture. Uncoded pool rather than the vendor demo's HSRAM,
+ *       so every media buffer in this file goes through one allocator.
  *
  * @return OPRT_OK on success
  */
 STATIC OPERATE_RET tkl_uvc_out_flexa_ring_alloc(UINT8_T depth)
 {
     s_uvc_out.flexa_size = (UINT32_T)s_uvc_out.cfg.width *
-                           TKL_UVC_OUT_FLEXA_LINES * 3U / 2U * (UINT32_T)depth;
+                           TUYA_UVC_INTERNAL_FLEXA_LINES * 3U / 2U * (UINT32_T)depth;
 
     s_uvc_out.flexa_ring = (UINT8_T *)tkl_media_buf_alloc(TKL_BUF_USE_PIXEL,
                                                           s_uvc_out.flexa_size,
-                                                          TKL_MEDIA_BUF_OWNER_UVC_FRAME);
+                                                          TUYA_MEDIA_BUF_OWNER_UVC_FRAME);
     if (s_uvc_out.flexa_ring == NULL) {
         tkl_log_output("tkl_uvc_out: flexa ring %u bytes failed\r\n",
                        (unsigned)s_uvc_out.flexa_size);
@@ -1573,7 +1473,7 @@ STATIC OPERATE_RET tkl_uvc_out_flexa_ring_alloc(UINT8_T depth)
 STATIC VOID_T tkl_uvc_out_flexa_ring_free(VOID_T)
 {
     if (s_uvc_out.flexa_ring != NULL) {
-        tkl_media_buf_free(TKL_MEDIA_BUF_OWNER_UVC_FRAME, s_uvc_out.flexa_ring);
+        tkl_media_buf_free(TUYA_MEDIA_BUF_OWNER_UVC_FRAME, s_uvc_out.flexa_ring);
         s_uvc_out.flexa_ring = NULL;
     }
     s_uvc_out.flexa_size = 0U;
@@ -1607,7 +1507,7 @@ STATIC OPERATE_RET tkl_uvc_out_decoder_open_flexa(TUYA_VCODEC_FLEXA_BUFFER_T *fl
     TUYA_VDEC_SINK_T sink;
     OPERATE_RET ret;
 
-    ret = tkl_uvc_out_flexa_ring_alloc(TKL_UVC_OUT_FLEXA_DEPTH);
+    ret = tkl_uvc_out_flexa_ring_alloc(TUYA_UVC_INTERNAL_FLEXA_DEPTH);
     if (ret != OPRT_OK) {
         return ret;
     }
@@ -1616,7 +1516,7 @@ STATIC OPERATE_RET tkl_uvc_out_decoder_open_flexa(TUYA_VCODEC_FLEXA_BUFFER_T *fl
     cfg.codec = (UINT32_T)TUYA_VCODEC_TYPE_MJPEG;
     cfg.width = s_uvc_out.cfg.width;
     cfg.height = s_uvc_out.cfg.height;
-    cfg.flexa_lines = (UINT8_T)TKL_UVC_OUT_FLEXA_LINES;
+    cfg.flexa_lines = (UINT8_T)TUYA_UVC_INTERNAL_FLEXA_LINES;
 
     ret = tkl_vdec_init(&s_uvc_out.vdec, &cfg);
     if (ret != OPRT_OK) {
@@ -1630,7 +1530,7 @@ STATIC OPERATE_RET tkl_uvc_out_decoder_open_flexa(TUYA_VCODEC_FLEXA_BUFFER_T *fl
     /* Must be the same count the ring was allocated with: the decoder walks the
      * ring by this number, so a smaller one wastes segments and a larger one
      * runs off the end. One constant, read twice, rather than a variable. */
-    sink.flexa.flexa.buf_cnt = TKL_UVC_OUT_FLEXA_DEPTH;
+    sink.flexa.flexa.buf_cnt = TUYA_UVC_INTERNAL_FLEXA_DEPTH;
     sink.flexa.flexa_cb = tkl_uvc_out_flexa_done_cb;
 
     ret = tkl_vdec_set_sink(s_uvc_out.vdec, &sink);
@@ -1659,7 +1559,7 @@ STATIC OPERATE_RET tkl_uvc_out_decoder_open_flexa(TUYA_VCODEC_FLEXA_BUFFER_T *fl
     s_uvc_out.src_height = flexa->height;
 
     tkl_log_output("tkl_uvc_out: flexa ring %u x %u lines = %u bytes, src %ux%u\r\n",
-                   (unsigned)TKL_UVC_OUT_FLEXA_DEPTH, (unsigned)TKL_UVC_OUT_FLEXA_LINES,
+                   (unsigned)TUYA_UVC_INTERNAL_FLEXA_DEPTH, (unsigned)TUYA_UVC_INTERNAL_FLEXA_LINES,
                    (unsigned)s_uvc_out.flexa_size,
                    (unsigned)flexa->width, (unsigned)flexa->height);
     return OPRT_OK;
@@ -1685,15 +1585,15 @@ STATIC OPERATE_RET tkl_uvc_out_display_open(CONST TUYA_VCODEC_FLEXA_BUFFER_T *fl
     OPERATE_RET ret;
 
     os_memset(&gpu_cfg, 0, sizeof(gpu_cfg));
-    gpu_cfg.dst_width = s_uvc_out.cfg.display.dst_w;
-    gpu_cfg.dst_height = s_uvc_out.cfg.display.dst_h;
-    gpu_cfg.rotate_degree = s_uvc_out.cfg.display.rotate;
-    gpu_cfg.dst_format = tkl_media_fmt_to_bk(s_uvc_out.cfg.display.format);
+    gpu_cfg.dst_width = s_uvc_out.cfg.pixel.target_width;
+    gpu_cfg.dst_height = s_uvc_out.cfg.pixel.target_height;
+    gpu_cfg.rotate_degree = s_uvc_out.cfg.pixel.rotate;
+    gpu_cfg.dst_format = tkl_media_fmt_to_bk(s_uvc_out.cfg.pixel.format);
     gpu_cfg.scale = TRUE;
     /* always compressed: a display frame goes straight to the DPU, which
      * decompresses. Same call as the camera facade makes. */
     gpu_cfg.dst_compress = TRUE;
-    gpu_cfg.flexa_lines = TKL_UVC_OUT_FLEXA_LINES;
+    gpu_cfg.flexa_lines = TUYA_UVC_INTERNAL_FLEXA_LINES;
 
     ret = tkl_gpu_init(&gpu_cfg, &s_uvc_out.gpu);
     if (ret != OPRT_OK) {
@@ -1751,9 +1651,9 @@ STATIC OPERATE_RET tkl_uvc_out_encode_open(CONST TUYA_VCODEC_FLEXA_BUFFER_T *fle
     os_memset(&venc_cfg, 0, sizeof(venc_cfg));
     venc_cfg.width = flexa->width;
     venc_cfg.height = flexa->height;
-    venc_cfg.fps = (s_uvc_out.cfg.encode.fps != 0U) ? s_uvc_out.cfg.encode.fps
+    venc_cfg.fps = (s_uvc_out.cfg.encoder.fps != 0U) ? s_uvc_out.cfg.encoder.fps
                                                     : s_uvc_out.cfg.fps;
-    venc_cfg.gop = s_uvc_out.cfg.encode.gop;
+    venc_cfg.gop = s_uvc_out.cfg.encoder.gop;
     venc_cfg.codec = (UINT32_T)TUYA_VCODEC_TYPE_H264;
     venc_cfg.input_format = flexa->format;
 
@@ -1763,9 +1663,9 @@ STATIC OPERATE_RET tkl_uvc_out_encode_open(CONST TUYA_VCODEC_FLEXA_BUFFER_T *fle
         return ret;
     }
 
-    if (s_uvc_out.cfg.encode.bitrate != 0U) {
+    if (s_uvc_out.cfg.encoder.bitrate != 0U) {
         os_memset(&rc, 0, sizeof(rc));
-        rc.bitrate = s_uvc_out.cfg.encode.bitrate;
+        rc.bitrate = s_uvc_out.cfg.encoder.bitrate;
         (void)tkl_venc_set_rate_ctrl(s_uvc_out.venc, &rc);
     }
 
@@ -1799,29 +1699,7 @@ err:
 }
 
 /**
- * @brief Resolve the display rotation into an angle the overlay hardware takes.
- *
- * @note The compositor does 0, 90 and 270 only - there is no 180 in the
- *       hardware. A picture rotated 180 therefore carries an upright overlay
- *       rather than being refused, which is the useful failure of the two.
- *
- * @return 0, 90 or 270
- */
-STATIC UINT16_T tkl_uvc_out_osd_rotate(VOID_T)
-{
-    UINT16_T deg = s_uvc_out.cfg.display.rotate;
-
-    return (deg == 90U || deg == 270U) ? deg : 0U;
-}
-
-/**
  * @brief Attach the display overlay to the running GPU pipeline.
- *
- * @note Optional and never fatal: an overlay that fails to open costs the
- *       overlay, not the video. Must run after tkl_gpu_start() - the compositor
- *       binds to a backend that is already composing.
- *
- * @return OPRT_OK on success
  */
 STATIC OPERATE_RET tkl_uvc_out_osd_display_open(VOID_T)
 {
@@ -1835,10 +1713,9 @@ STATIC OPERATE_RET tkl_uvc_out_osd_display_open(VOID_T)
     }
 
     os_memset(&cfg, 0, sizeof(cfg));
-    cfg.target_w = s_uvc_out.cfg.display.dst_w;
-    cfg.target_h = s_uvc_out.cfg.display.dst_h;
-    cfg.rotate = tkl_uvc_out_osd_rotate();
-    /* the compositor writes ARGB8888; the compressed display path reads ABGR */
+    cfg.target_w = s_uvc_out.cfg.pixel.target_width;
+    cfg.target_h = s_uvc_out.cfg.pixel.target_height;
+    /* the caller supplies the rotation per overlay request */
     cfg.src_format = (UINT32_T)BK_PIXEL_FORMAT_ABGR8888;
 
     return tkl_osd_engine_open(TKL_OSD_BACKEND_GPU, gpu_raw, &cfg, &s_uvc_out.osd_display);
@@ -1896,7 +1773,12 @@ STATIC OPERATE_RET tkl_uvc_out_push_open(VOID_T)
         (void)tkl_uvc_out_osd_display_open();   /* optional, never fatal */
     }
 
-    return OPRT_OK;
+    /* The decode task consumes the capture queue into the decoder. It must
+     * exist before the camera starts producing - tkl_uvc_start() starts the
+     * camera last. Failure is fatal for PIXEL/STREAM: the caller's err path
+     * runs push_close(), which also retires a half-started task. */
+    ret = tkl_uvc_out_task_start();
+    return ret;
 
 err_gpu_started:
     if (s_uvc_out.want_display == TRUE) {
@@ -1928,6 +1810,17 @@ err_vdec:
  */
 STATIC VOID_T tkl_uvc_out_push_close(VOID_T)
 {
+    if (s_uvc_out.task_live == TRUE) {
+        /* End the decode task before any backend it feeds goes away. It polls
+         * task_stop while the ready queue idles, so this join costs at most one
+         * poll plus whatever decode is already in flight. */
+        s_uvc_out.task_stop = TRUE;
+        (void)rtos_get_semaphore(&s_uvc_out.task_done, TUYA_UVC_INTERNAL_DRAIN_MS);
+        (void)rtos_deinit_semaphore(&s_uvc_out.task_done);
+        s_uvc_out.task_live = FALSE;
+        s_uvc_out.task_stop = FALSE;
+    }
+
     if (s_uvc_out.osd_display != NULL) {
         (void)tkl_osd_engine_close(s_uvc_out.osd_display);
         s_uvc_out.osd_display = NULL;
@@ -1955,59 +1848,6 @@ STATIC VOID_T tkl_uvc_out_push_close(VOID_T)
  * ------------------------------------------------------------------------- */
 
 /**
- * @brief Open the decoder that turns the device's MJPEG into NV12.
- * @return OPRT_OK on success
- */
-STATIC OPERATE_RET tkl_uvc_out_decoder_open(VOID_T)
-{
-    TUYA_VDEC_CFG_T cfg;
-    TUYA_VDEC_SINK_T sink;
-    OPERATE_RET ret;
-
-    os_memset(&cfg, 0, sizeof(cfg));
-    cfg.codec = (UINT32_T)TUYA_VCODEC_TYPE_MJPEG;
-    cfg.width = s_uvc_out.cfg.width;
-    cfg.height = s_uvc_out.cfg.height;
-    /* output_format left at 0: tkl_vdec resolves that to NV12, and rejects
-     * anything else outright, so there is nothing to choose here. */
-
-    ret = tkl_vdec_init(&s_uvc_out.vdec, &cfg);
-    if (ret != OPRT_OK) {
-        tkl_log_output("tkl_uvc_out: vdec init failed: %d\r\n", ret);
-        return ret;
-    }
-
-    os_memset(&sink, 0, sizeof(sink));
-    sink.type = TUYA_VDEC_SINK_FRAME;
-    sink.frame.frame_cb = tkl_uvc_out_dec_frame_cb;
-    sink.alloc_cb = tkl_uvc_out_dec_alloc;
-    sink.free_cb = tkl_uvc_out_dec_free;
-
-    ret = tkl_vdec_set_sink(s_uvc_out.vdec, &sink);
-    if (ret != OPRT_OK) {
-        tkl_log_output("tkl_uvc_out: vdec sink failed: %d\r\n", ret);
-        goto err;
-    }
-
-    ret = tkl_vdec_start(s_uvc_out.vdec);
-    if (ret != OPRT_OK) {
-        tkl_log_output("tkl_uvc_out: vdec start failed: %d\r\n", ret);
-        goto err;
-    }
-
-    return OPRT_OK;
-
-err:
-    (void)tkl_vdec_deinit(s_uvc_out.vdec);
-    s_uvc_out.vdec = NULL;
-    return ret;
-}
-
-/**
- * @brief Open the USB camera itself, wired to this file's pool.
- * @return OPRT_OK on success
- */
-/**
  * @brief Enumerate the USB camera and attach the capture sink. No streaming.
  *
  * @note The expensive half of the facade: uvc_dev_init() powers the hub port
@@ -2029,12 +1869,10 @@ STATIC OPERATE_RET tkl_uvc_out_camera_init(VOID_T)
     cfg.width = s_uvc_out.cfg.width;
     cfg.height = s_uvc_out.cfg.height;
     cfg.fps = s_uvc_out.cfg.fps;
-    cfg.drop_num = s_uvc_out.cfg.drop_num;
-    cfg.codec = (s_uvc_out.cfg.src_codec == (UINT32_T)TKL_MEDIA_CODEC_H264)
+    cfg.input_format = (s_uvc_out.cfg.input_format == (UINT32_T)TUYA_FRAME_FMT_H264)
                     ? (UINT32_T)TUYA_VCODEC_TYPE_H264
                     : (UINT32_T)TUYA_VCODEC_TYPE_MJPEG;
-    cfg.connect_timeout_ms = s_uvc_out.cfg.connect_timeout_ms;
-
+    
     ret = uvc_dev_init(&s_uvc_out.uvc, &cfg);
     if (ret != OPRT_OK) {
         tkl_log_output("tkl_uvc_out: uvc init failed: %d\r\n", ret);
@@ -2062,10 +1900,10 @@ STATIC OPERATE_RET tkl_uvc_out_camera_init(VOID_T)
  * is the order a reader wants. */
 STATIC UINT32_T tkl_uvc_out_flush_ready(tkl_uvc_pool_t *pool);
 STATIC VOID_T tkl_uvc_out_retire_pool(tkl_uvc_pool_t *pool,
-                                      TKL_MEDIA_BUF_OWNER_E owner,
+                                      TUYA_MEDIA_BUF_OWNER_E owner,
                                       CONST CHAR_T *name);
 
-OPERATE_RET tkl_uvc_init(CONST TKL_UVC_CFG_T *cfg)
+OPERATE_RET tkl_uvc_init(CONST TUYA_UVC_CFG_T *cfg)
 {
     UINT8_T depth;
     UINT32_T ms_pool;
@@ -2077,98 +1915,71 @@ OPERATE_RET tkl_uvc_init(CONST TKL_UVC_CFG_T *cfg)
         return OPRT_INVALID_PARM;
     }
 
-    if (s_uvc_out.state != TKL_UVC_ST_IDLE) {
+    if (s_uvc_out.state != TUYA_UVC_ST_IDLE) {
         return OPRT_RESOURCE_NOT_READY;
     }
 
-    /* Pull and push are different delivery contracts, not flags to combine: a
-     * pulled picture is a whole buffer business owns for a while, a pushed one
-     * never exists as a whole buffer at all. Mixing them would mean decoding
-     * twice. Within pull, exactly one; within push, either or both. */
-    if ((cfg->out_kinds & ~(TKL_UVC_OUT_PULL_MASK | TKL_UVC_OUT_PUSH_MASK)) != 0U ||
-        cfg->out_kinds == TKL_UVC_OUT_NONE) {
-        tkl_log_output("tkl_uvc_out: out_kinds 0x%x has no meaning\r\n",
-                       (unsigned)cfg->out_kinds);
+    /* All requested outputs share one capture queue. The adapter chooses its
+     * internal depth; output combinations are independent of delivery style. */
+    if ((cfg->output_kinds & ~TUYA_UVC_OUTPUT_KIND_MASK) != 0U ||
+        cfg->output_kinds == TUYA_UVC_OUTPUT_NONE) {
+        tkl_log_output("tkl_uvc_out: output_kinds 0x%x has no meaning\r\n",
+                       (unsigned)cfg->output_kinds);
         return OPRT_INVALID_PARM;
     }
 
-    if ((cfg->out_kinds & TKL_UVC_OUT_PULL_MASK) != 0U &&
-        (cfg->out_kinds & TKL_UVC_OUT_PUSH_MASK) != 0U) {
-        tkl_log_output("tkl_uvc_out: MJPEG/FRAME are pulled, DISPLAY/H264 are pushed - "
-                       "pick one family\r\n");
+    /* This backend decodes MJPEG for PIXEL/STREAM. H264 remains a raw FRAME
+     * source until a H264 decode path is added. */
+    if ((cfg->output_kinds & ~TUYA_UVC_OUTPUT_FRAME) != 0U &&
+        cfg->input_format == (UINT32_T)TUYA_FRAME_FMT_H264) {
+        tkl_log_output("tkl_uvc_out: only JPEG can feed PIXEL/STREAM\r\n");
         return OPRT_NOT_SUPPORTED;
     }
 
-    if (cfg->out_kinds == (TKL_UVC_OUT_MJPEG | TKL_UVC_OUT_FRAME)) {
-        tkl_log_output("tkl_uvc_out: MJPEG and FRAME both pull, pick one\r\n");
-        return OPRT_NOT_SUPPORTED;
-    }
-
-    /* Everything but raw passthrough goes through the JPEG decoder. */
-    if (cfg->out_kinds != TKL_UVC_OUT_MJPEG &&
-        cfg->src_codec == (UINT32_T)TKL_MEDIA_CODEC_H264) {
-        tkl_log_output("tkl_uvc_out: only JPEG can be decoded, not H264\r\n");
-        return OPRT_NOT_SUPPORTED;
-    }
-
-    if ((cfg->out_kinds & TKL_UVC_OUT_DISPLAY) != 0U &&
-        (cfg->display.dst_w == 0U || cfg->display.dst_h == 0U)) {
-        tkl_log_output("tkl_uvc_out: DISPLAY needs display.dst_w/dst_h\r\n");
+    if ((cfg->output_kinds & TUYA_UVC_OUTPUT_PIXEL) != 0U &&
+        (cfg->pixel.target_width == 0U || cfg->pixel.target_height == 0U)) {
+        tkl_log_output("tkl_uvc_out: PIXEL needs pixel.target_width/target_height\r\n");
         return OPRT_INVALID_PARM;
     }
 
     os_memset(&s_uvc_out, 0, sizeof(s_uvc_out));
     os_memcpy(&s_uvc_out.cfg, cfg, sizeof(s_uvc_out.cfg));
 
-    if ((cfg->out_kinds & TKL_UVC_OUT_DISPLAY) != 0U) {
+    if ((cfg->output_kinds & TUYA_UVC_OUTPUT_PIXEL) != 0U) {
         s_uvc_out.want_display = TRUE;
     }
-    if ((cfg->out_kinds & TKL_UVC_OUT_H264) != 0U) {
+    if ((cfg->output_kinds & TUYA_UVC_OUTPUT_STREAM) != 0U) {
         s_uvc_out.want_encode = TRUE;
     }
 
-    depth = ((cfg->out_kinds & TKL_UVC_OUT_PUSH_MASK) != 0U)
-                ? TKL_UVC_OUT_POOL_DEPTH_PUSH
-                : TKL_UVC_OUT_POOL_DEPTH_PULL;
+    depth = TUYA_UVC_INTERNAL_POOL_DEPTH_DEFAULT;
 
-    t = TKL_UVC_OUT_MS();
-    ret = tkl_uvc_pool_create(&s_uvc_out.stream_pool, depth, TKL_UVC_OUT_SLOT_SIZE,
-                              TKL_BUF_USE_STREAM, TKL_MEDIA_BUF_OWNER_UVC_STREAM,
+    t = TUYA_UVC_INTERNAL_MS();
+    ret = tkl_uvc_pool_create(&s_uvc_out.stream_pool, depth, TUYA_UVC_INTERNAL_SLOT_SIZE,
+                              TKL_BUF_USE_STREAM, TUYA_MEDIA_BUF_OWNER_UVC_STREAM,
                               TRUE, "uvc_stream");
-    ms_pool = TKL_UVC_OUT_MS() - t;
+    ms_pool = TUYA_UVC_INTERNAL_MS() - t;
     if (ret != OPRT_OK) {
         os_memset(&s_uvc_out, 0, sizeof(s_uvc_out));
         return ret;
     }
 
-    t = TKL_UVC_OUT_MS();
+    t = TUYA_UVC_INTERNAL_MS();
     ret = tkl_uvc_out_camera_init();
-    ms_device = TKL_UVC_OUT_MS() - t;
+    ms_device = TUYA_UVC_INTERNAL_MS() - t;
     if (ret != OPRT_OK) {
-        tkl_uvc_pool_destroy(&s_uvc_out.stream_pool, TKL_MEDIA_BUF_OWNER_UVC_STREAM);
+        tkl_uvc_pool_destroy(&s_uvc_out.stream_pool, TUYA_MEDIA_BUF_OWNER_UVC_STREAM);
         os_memset(&s_uvc_out, 0, sizeof(s_uvc_out));
         return ret;
     }
 
-    if (cfg->out_kinds == TKL_UVC_OUT_FRAME) {
-        /* The pixel pool itself is built on the first frame, not here - see
-         * tkl_uvc_out_pixel_pool_build(). Sizing it now would mean sizing it for
-         * three bytes per pixel, the worst case an unreadable JPEG header or a
-         * YUV444 source can cost, which is double what a YUV420 camera needs. */
-        s_uvc_out.frame_depth = TKL_UVC_OUT_FRAME_DEPTH;
-    }
-
-    s_uvc_out.state = TKL_UVC_ST_INIT;
-    tkl_log_output("tkl_uvc_out: init %ux%u %s%s%s, pool %u x %u bytes, "
+    s_uvc_out.state = TUYA_UVC_ST_INIT;
+    tkl_log_output("tkl_uvc_out: init %ux%u kinds 0x%x, pool %u x %u bytes, "
                    "%u ms (pool %u, device %u)\r\n",
                    (unsigned)cfg->width, (unsigned)cfg->height,
-                   (cfg->out_kinds == TKL_UVC_OUT_MJPEG) ? "mjpeg" : "",
-                   (cfg->out_kinds == TKL_UVC_OUT_FRAME) ? "frame" : "",
-                   (s_uvc_out.want_display == TRUE)
-                       ? ((s_uvc_out.want_encode == TRUE) ? "display+h264" : "display")
-                       : ((s_uvc_out.want_encode == TRUE) ? "h264" : ""),
+                   (unsigned)cfg->output_kinds,
                    (unsigned)s_uvc_out.stream_pool.depth,
-                   (unsigned)TKL_UVC_OUT_SLOT_SIZE,
+                   (unsigned)TUYA_UVC_INTERNAL_SLOT_SIZE,
                    (unsigned)(ms_pool + ms_device),
                    (unsigned)ms_pool, (unsigned)ms_device);
     return OPRT_OK;
@@ -2181,22 +1992,20 @@ OPERATE_RET tkl_uvc_start(VOID_T)
     UINT32_T t;
     OPERATE_RET ret;
 
-    if (s_uvc_out.state == TKL_UVC_ST_STARTED) {
+    if (s_uvc_out.state == TUYA_UVC_ST_STARTED) {
         return OPRT_OK;
     }
-    if (s_uvc_out.state != TKL_UVC_ST_INIT) {
+    if (s_uvc_out.state != TUYA_UVC_ST_INIT) {
         return OPRT_RESOURCE_NOT_READY;
     }
 
-    t = TKL_UVC_OUT_MS();
-    if (s_uvc_out.cfg.out_kinds == TKL_UVC_OUT_FRAME) {
-        ret = tkl_uvc_out_decoder_open();
-    } else if ((s_uvc_out.cfg.out_kinds & TKL_UVC_OUT_PUSH_MASK) != 0U) {
+    t = TUYA_UVC_INTERNAL_MS();
+    if ((s_uvc_out.cfg.output_kinds & (TUYA_UVC_OUTPUT_PIXEL | TUYA_UVC_OUTPUT_STREAM)) != 0U) {
         ret = tkl_uvc_out_push_open();
     } else {
         ret = OPRT_OK;
     }
-    ms_consumer = TKL_UVC_OUT_MS() - t;
+    ms_consumer = TUYA_UVC_INTERNAL_MS() - t;
     if (ret != OPRT_OK) {
         goto err_consumer;
     }
@@ -2204,15 +2013,15 @@ OPERATE_RET tkl_uvc_start(VOID_T)
     /* Camera last. It is the only thing here that produces: from the moment it
      * starts, alloc/stream/free run against the pool, so everything downstream
      * has to be standing already or the first frames are dropped for nothing. */
-    t = TKL_UVC_OUT_MS();
+    t = TUYA_UVC_INTERNAL_MS();
     ret = uvc_dev_start(s_uvc_out.uvc);
-    ms_stream = TKL_UVC_OUT_MS() - t;
+    ms_stream = TUYA_UVC_INTERNAL_MS() - t;
     if (ret != OPRT_OK) {
         tkl_log_output("tkl_uvc_out: uvc start failed: %d\r\n", ret);
         goto err_consumer;
     }
 
-    s_uvc_out.state = TKL_UVC_ST_STARTED;
+    s_uvc_out.state = TUYA_UVC_ST_STARTED;
     tkl_log_output("tkl_uvc_out: start took %u ms (consumer %u, stream %u)\r\n",
                    (unsigned)(ms_consumer + ms_stream),
                    (unsigned)ms_consumer, (unsigned)ms_stream);
@@ -2238,40 +2047,35 @@ OPERATE_RET tkl_uvc_stop(VOID_T)
     UINT32_T ms_consumer;
     UINT32_T t;
 
-    if (s_uvc_out.state != TKL_UVC_ST_STARTED) {
+    if (s_uvc_out.state != TUYA_UVC_ST_STARTED) {
         return OPRT_OK;
     }
 
-    /* Refuse new get_frame() / decode_once() calls before anything is
-     * dismantled, so a consumer that has not been stopped yet is turned away
-     * instead of reaching a queue that is about to be deleted. It does not help
-     * one already parked inside get_frame(): stop your own thread first, as the
-     * xuvc CLI does. */
-    s_uvc_out.state = TKL_UVC_ST_INIT;
+    /* Nothing new can enter from here on: the state gate turns fresh calls away
+     * while the pipeline is dismantled. */
+    s_uvc_out.state = TUYA_UVC_ST_INIT;
 
-    t = TKL_UVC_OUT_MS();
+    t = TUYA_UVC_INTERNAL_MS();
 
     /* 1. producer first - once uvc_dev_stop() returns, nothing else will call
-     *    alloc / stream / free, so the pool stops moving. In push mode the thing
-     *    that actually feeds the bonds is the decoder, and the caller has
-     *    already stopped pumping it; cutting the bitstream off here as well
-     *    means a decode_once() that slipped through drains within one frame. */
+     *    alloc / stream / free, so the pool stops moving and the decode task
+     *    drains whatever the ready queue still holds within a frame. */
     (void)uvc_dev_stop(s_uvc_out.uvc);
-    ms_device = TKL_UVC_OUT_MS() - t;
-    t = TKL_UVC_OUT_MS();
+    ms_device = TUYA_UVC_INTERNAL_MS() - t;
+    t = TUYA_UVC_INTERNAL_MS();
 
     /* 2. every bond, then every backend - the iron rule. Both calls are no-ops
-     *    when the push outputs were never built. */
+     *    when the PIXEL/STREAM consumers were never built. */
     tkl_uvc_out_push_close();
 
-    /* 3. then the decoder. In pull mode it only ever ran inside get_frame() and
-     *    that caller has stopped; in push mode its consumers are already gone. */
+    /* 3. then the decoder; push_close() above has already joined the decode
+     *    task that feeds it. FRAME-only never built one. */
     if (s_uvc_out.vdec != NULL) {
         (void)tkl_vdec_deinit(s_uvc_out.vdec);
         s_uvc_out.vdec = NULL;
     }
     tkl_uvc_out_flexa_ring_free();
-    ms_consumer = TKL_UVC_OUT_MS() - t;
+    ms_consumer = TUYA_UVC_INTERNAL_MS() - t;
 
     /* 4. frames sitting in the ready queue belong to nobody now that production
      *    has stopped - take them back so the pool is whole again for the next
@@ -2281,7 +2085,7 @@ OPERATE_RET tkl_uvc_stop(VOID_T)
     /* Deliberately NOT draining tkl_media_buf here. Business is allowed to hold
      * a frame across a stop/start - the pool survives, it is just one slot
      * short until the buffer comes back. Waiting for it would add up to
-     * TKL_UVC_OUT_DRAIN_MS to every pause, which is exactly the cost this API
+     * TUYA_UVC_INTERNAL_DRAIN_MS to every pause, which is exactly the cost this API
      * split exists to remove. tkl_uvc_deinit() does the waiting instead. */
     tkl_log_output("tkl_uvc_out: stop took %u ms (device %u, consumer %u), "
                    "%u frame(s) reclaimed unconsumed\r\n",
@@ -2297,46 +2101,43 @@ OPERATE_RET tkl_uvc_deinit(VOID_T)
     UINT32_T ms_pool;
     UINT32_T t;
 
-    if (s_uvc_out.state == TKL_UVC_ST_IDLE) {
+    if (s_uvc_out.state == TUYA_UVC_ST_IDLE) {
         return OPRT_OK;
     }
 
     (void)tkl_uvc_stop();
 
     tkl_log_output("tkl_uvc_out: deinit, %u frames published, %u decoded, "
-                   "drops stream %u pixel %u size %u, decode fail %u\r\n",
+                   "drops stream %u size %u, decode fail %u\r\n",
                    (unsigned)s_uvc_out.frames,
                    (unsigned)s_uvc_out.decoded,
                    (unsigned)s_uvc_out.drop_stream_empty,
-                   (unsigned)s_uvc_out.drop_pixel_empty,
                    (unsigned)s_uvc_out.drop_too_big,
                    (unsigned)s_uvc_out.decode_fail);
 
-    t = TKL_UVC_OUT_MS();
+    t = TUYA_UVC_INTERNAL_MS();
     if (s_uvc_out.uvc != NULL) {
         (void)uvc_dev_deinit(s_uvc_out.uvc);
         s_uvc_out.uvc = NULL;
     }
-    ms_device = TKL_UVC_OUT_MS() - t;
-    t = TKL_UVC_OUT_MS();
+    ms_device = TUYA_UVC_INTERNAL_MS() - t;
+    t = TUYA_UVC_INTERNAL_MS();
 
-    tkl_uvc_out_retire_pool(&s_uvc_out.pixel_pool,
-                            TKL_MEDIA_BUF_OWNER_UVC_FRAME, "pixel pool");
     tkl_uvc_out_retire_pool(&s_uvc_out.stream_pool,
-                            TKL_MEDIA_BUF_OWNER_UVC_STREAM, "stream pool");
+                            TUYA_MEDIA_BUF_OWNER_UVC_STREAM, "stream pool");
 
     /* Pushed buffers are per-frame rather than pooled, so they settle by
      * counter. Display tolerates one still out - the panel is scanning it and
      * nothing will replace it now - while a bitstream must reach zero. Waited
      * here rather than in stop(), where the memory does not yet go away. */
     if (s_uvc_out.want_display == TRUE) {
-        (void)tkl_media_buf_drain(TKL_MEDIA_BUF_OWNER_UVC_DISPLAY,
-                                  TKL_UVC_OUT_DISPLAY_RESIDUAL, TKL_UVC_OUT_DRAIN_MS);
+        (void)tkl_media_buf_drain(TUYA_MEDIA_BUF_OWNER_UVC_DISPLAY,
+                                  TUYA_UVC_OUTPUT_PIXEL_RESIDUAL, TUYA_UVC_INTERNAL_DRAIN_MS);
     }
     if (s_uvc_out.want_encode == TRUE) {
-        (void)tkl_media_buf_drain(TKL_MEDIA_BUF_OWNER_UVC_STREAM, 0U, TKL_UVC_OUT_DRAIN_MS);
+        (void)tkl_media_buf_drain(TUYA_MEDIA_BUF_OWNER_UVC_STREAM, 0U, TUYA_UVC_INTERNAL_DRAIN_MS);
     }
-    ms_pool = TKL_UVC_OUT_MS() - t;
+    ms_pool = TUYA_UVC_INTERNAL_MS() - t;
 
     tkl_log_output("tkl_uvc_out: deinit took %u ms (device %u, pool+drain %u)\r\n",
                    (unsigned)(ms_device + ms_pool),
@@ -2387,14 +2188,14 @@ STATIC UINT32_T tkl_uvc_out_flush_ready(tkl_uvc_pool_t *pool)
  *       arrives find no slot and do nothing, which is the safe outcome.
  */
 STATIC VOID_T tkl_uvc_out_retire_pool(tkl_uvc_pool_t *pool,
-                                      TKL_MEDIA_BUF_OWNER_E owner,
+                                      TUYA_MEDIA_BUF_OWNER_E owner,
                                       CONST CHAR_T *name)
 {
     if (pool->slots == NULL) {
         return;
     }
 
-    if (tkl_uvc_pool_drain(pool, TKL_UVC_OUT_DRAIN_MS) != OPRT_OK) {
+    if (tkl_uvc_pool_drain(pool, TUYA_UVC_INTERNAL_DRAIN_MS) != OPRT_OK) {
         tkl_log_output("tkl_uvc_out: %s still has %u buffers out, leaking %u bytes\r\n",
                        name,
                        (unsigned)(pool->depth - tkl_uvc_pool_free_count(pool)),
@@ -2412,89 +2213,22 @@ STATIC VOID_T tkl_uvc_out_retire_pool(tkl_uvc_pool_t *pool,
     tkl_uvc_pool_destroy(pool, owner);
 }
 
-/**
- * @brief Deliver a stream slot straight to business, no copy.
- * @param[in]  slot slot popped from the ready queue
- * @param[out] out  receives the frame
- */
-STATIC VOID_T tkl_uvc_out_fill_stream(CONST tkl_uvc_slot_t *slot, TKL_MEDIA_BUF_T *out)
-{
-    os_memset(out, 0, sizeof(*out));
-    out->data = slot->data;
-    out->size = slot->len;
-    out->free_cb = tkl_uvc_out_stream_release;
-    out->kind = (UINT8_T)TKL_MEDIA_BUF_STREAM;
-    out->pts = slot->pts;
-    out->width = s_uvc_out.cfg.width;
-    out->height = s_uvc_out.cfg.height;
-    out->codec = slot->codec;
-    out->frame_type = slot->frame_type;
-}
+/* ---------------------------------------------------------------------------
+ * Decode task - the adapter-owned consumer that turns captured frames into
+ * PIXEL/STREAM outputs. Business no longer pumps: start() spawns this task
+ * inside the consumer lifecycle and stop() joins it.
+ * ------------------------------------------------------------------------- */
 
 /**
- * @brief Decode one stream slot and deliver the picture.
+ * @brief Feed one captured frame to the decoder.
  *
- * @param[in]  slot stream slot to decode; returned to its pool either way
- * @param[out] out  receives the decoded picture
+ * @param[in] slot frame to decode; returned to the pool either way
  *
- * @return OPRT_OK on success
+ * @return OPRT_OK when the decoder accepted the frame
  */
-/**
- * @brief Build the pixel pool once the first real frame says how big it is.
- *
- * @param[in] stream the first compressed frame, used only as a probe
- *
- * @note Deferred out of tkl_uvc_init() on purpose: the size comes from the
- *       JPEG header, and at open time there is no frame to read one from, so
- *       sizing there costs the worst case - double, for a YUV420 camera.
- * @note The pool is fixed after this. A source that changes picture shape mid
- *       stream will later ask for more than a slot holds; that frame is dropped
- *       and counted in drop_too_big rather than corrupting anything.
- * @warning Runs on the caller's thread inside the first tkl_uvc_get_frame().
- *          Nothing else touches the pixel pool before it exists.
- *
- * @return OPRT_OK on success
- */
-STATIC OPERATE_RET tkl_uvc_out_pixel_pool_build(CONST TUYA_VCODEC_STREAM_T *stream)
-{
-    UINT32_T slot_size = 0U;
-    UINT32_T worst;
-    OPERATE_RET ret;
-
-    worst = (UINT32_T)s_uvc_out.cfg.width *
-            TKL_UVC_OUT_ALIGN16((UINT32_T)s_uvc_out.cfg.height) * 3U;
-
-    if (tkl_vdec_get_frame_size(s_uvc_out.vdec, stream, &slot_size) != OPRT_OK ||
-        slot_size == 0U) {
-        tkl_log_output("tkl_uvc_out: header probe failed, pixel slot falls back to %u bytes\r\n",
-                       (unsigned)worst);
-        slot_size = worst;
-    }
-
-    ret = tkl_uvc_pool_create(&s_uvc_out.pixel_pool, s_uvc_out.frame_depth, slot_size,
-                              TKL_BUF_USE_PIXEL, TKL_MEDIA_BUF_OWNER_UVC_FRAME,
-                              FALSE, "uvc_pixel");
-    if (ret != OPRT_OK) {
-        tkl_log_output("tkl_uvc_out: pixel pool %u x %u bytes failed: %d\r\n",
-                       (unsigned)s_uvc_out.frame_depth, (unsigned)slot_size, ret);
-        tkl_uvc_pool_destroy(&s_uvc_out.pixel_pool, TKL_MEDIA_BUF_OWNER_UVC_FRAME);
-        return ret;
-    }
-
-    tkl_log_output("tkl_uvc_out: pixel pool %u x %u bytes (worst case %u, saved %u)\r\n",
-                   (unsigned)s_uvc_out.frame_depth,
-                   (unsigned)slot_size,
-                   (unsigned)worst,
-                   (unsigned)((worst > slot_size)
-                                  ? ((worst - slot_size) * s_uvc_out.frame_depth)
-                                  : 0U));
-    return OPRT_OK;
-}
-
-STATIC OPERATE_RET tkl_uvc_out_decode(tkl_uvc_slot_t *slot, TKL_MEDIA_BUF_T *out)
+STATIC OPERATE_RET tkl_uvc_out_decode_frame(tkl_uvc_slot_t *slot)
 {
     TUYA_VCODEC_STREAM_T stream;
-    UINT64_T pts;
     OPERATE_RET ret;
 
     os_memset(&stream, 0, sizeof(stream));
@@ -2503,144 +2237,99 @@ STATIC OPERATE_RET tkl_uvc_out_decode(tkl_uvc_slot_t *slot, TKL_MEDIA_BUF_T *out
     stream.pts = slot->pts;
     stream.codec = (UINT32_T)TUYA_VCODEC_TYPE_MJPEG;
 
-    /* Copied out now: the moment the slot goes back in the pool the capture
-     * thread may take it and overwrite these fields. */
-    pts = slot->pts;
-
-    if (s_uvc_out.pixel_pool.slots == NULL) {
-        ret = tkl_uvc_out_pixel_pool_build(&stream);
-        if (ret != OPRT_OK) {
-            tkl_uvc_pool_give(&s_uvc_out.stream_pool, slot);
-            return ret;
-        }
-    }
-
-    s_uvc_out.dec_out.valid = FALSE;
-    s_uvc_out.pixel_empty = FALSE;
+    /* Synchronous: blocks until the decoder has finished this picture. Nothing
+     * comes back here - the output leaves in slices through the ring the GPU
+     * and the encoder are bonded to, and their results reach business on
+     * pixel_cb / stream_cb, from the vendor worker threads. */
     ret = tkl_vdec_submit_stream(s_uvc_out.vdec, &stream);
 
-    /* The compressed frame has served its purpose the moment the decoder is
-     * done with it, whether or not it decoded - hand the slot straight back so
-     * capture never waits on business releasing the picture. */
+    /* The frame has served its purpose the moment the decoder is done with it,
+     * whether or not it decoded - hand the slot straight back so capture never
+     * waits on the downstream consumers. */
     tkl_uvc_pool_give(&s_uvc_out.stream_pool, slot);
 
-    if (ret != OPRT_OK || s_uvc_out.dec_out.valid != TRUE) {
-        s_uvc_out.decode_fail++;
-        s_uvc_out.dec_out.valid = FALSE;
-
-        /* Usually not a fault but the caller holding both pictures the pool
-         * has; the bare error code reads as an allocation failure. Logged once,
-         * it would otherwise repeat at the frame rate. */
-        if (s_uvc_out.pixel_empty == TRUE && s_uvc_out.pixel_empty_logged != TRUE) {
-            s_uvc_out.pixel_empty_logged = TRUE;
-            tkl_log_output("tkl_uvc_out: pixel pool empty (depth %u) - release the previous "
-                           "frame with buf.free_cb(buf.data) before the next get_frame\r\n",
-                           (unsigned)s_uvc_out.frame_depth);
-        }
-
-        return (ret != OPRT_OK) ? ret : OPRT_COM_ERROR;
-    }
-
-    os_memset(out, 0, sizeof(*out));
-    out->data = s_uvc_out.dec_out.data;
-    out->size = s_uvc_out.dec_out.size;
-    out->free_cb = tkl_uvc_out_pixel_release;
-    out->kind = (UINT8_T)TKL_MEDIA_BUF_PIXEL;
-    out->pts = pts;
-    out->width = s_uvc_out.dec_out.width;
-    out->height = s_uvc_out.dec_out.height;
-    /* tkl_vdec refuses to start on anything but NV12, so this needs no lookup. */
-    out->format = (UINT32_T)TKL_PIXEL_FMT_NV12;
-    out->y_stride = s_uvc_out.dec_out.y_stride;
-    out->uv_stride = s_uvc_out.dec_out.y_stride;
-
-    s_uvc_out.dec_out.valid = FALSE;
-    return OPRT_OK;
-}
-
-OPERATE_RET tkl_uvc_decode_once(UINT32_T timeout_ms)
-{
-    TUYA_VCODEC_STREAM_T stream;
-    tkl_uvc_slot_t *slot = NULL;
-    OPERATE_RET ret;
-
-    if (s_uvc_out.state != TKL_UVC_ST_STARTED) {
-        return OPRT_RESOURCE_NOT_READY;
-    }
-
-    if ((s_uvc_out.cfg.out_kinds & TKL_UVC_OUT_PUSH_MASK) == 0U) {
-        return OPRT_NOT_SUPPORTED;
-    }
-
-    if (rtos_pop_from_queue(&s_uvc_out.stream_pool.ready_q, &slot, timeout_ms) != 0 ||
-        slot == NULL) {
-        return OPRT_TIMEOUT;
-    }
-
-    os_memset(&stream, 0, sizeof(stream));
-    stream.data = slot->data;
-    stream.size = slot->len;
-    stream.pts = slot->pts;
-    stream.codec = (UINT32_T)TUYA_VCODEC_TYPE_MJPEG;
-
-    /* Blocks until the decoder has finished this picture. Nothing comes back
-     * here: the output leaves in slices through the ring the GPU and the encoder
-     * are bonded to, and their results reach business on display_cb / stream_cb,
-     * from the vendor worker threads. */
-    ret = tkl_vdec_submit_stream(s_uvc_out.vdec, &stream);
-
     if (ret != OPRT_OK) {
         s_uvc_out.decode_fail++;
-        tkl_uvc_pool_give(&s_uvc_out.stream_pool, slot);
         return ret;
     }
 
     s_uvc_out.decoded++;
-
-    /* The device's own bitstream for the picture that just went downstream.
-     * Borrowed, not lent: free_cb is NULL and the slot goes straight back below,
-     * so a recorder must copy inside the callback. */
-    if (s_uvc_out.cfg.mjpeg_cb != NULL) {
-        TKL_MEDIA_BUF_T buf;
-
-        tkl_uvc_out_fill_stream(slot, &buf);
-        buf.free_cb = NULL;
-        s_uvc_out.cfg.mjpeg_cb(&buf, s_uvc_out.cfg.mjpeg_arg);
-    }
-
-    tkl_uvc_pool_give(&s_uvc_out.stream_pool, slot);
     return OPRT_OK;
 }
 
-OPERATE_RET tkl_uvc_get_frame(TKL_MEDIA_BUF_T *out, UINT32_T timeout_ms)
+/**
+ * @brief The adapter's decode task.
+ *
+ * @param[in] arg unused
+ *
+ * @note Pops frames off the capture queue and feeds the decoder. The ready
+ *       queue is as deep as the pool, so a slow decode backs up into capture
+ *       dropping frames (drop_stream_empty) - the same back pressure the old
+ *       business pump had, owned by the adapter now.
+ * @note stop() ends the task by setting task_stop and joining on task_done.
+ *       While the queue is idle the task wakes every poll period to re-check
+ *       the flag, which bounds the join to one poll plus one decode in flight.
+ */
+STATIC VOID tkl_uvc_out_decode_task(beken_thread_arg_t arg)
 {
     tkl_uvc_slot_t *slot = NULL;
 
-    if (out == NULL) {
-        return OPRT_INVALID_PARM;
+    (void)arg;
+
+    for (;;) {
+        if (s_uvc_out.task_stop == TRUE) {
+            break;
+        }
+
+        if (rtos_pop_from_queue(&s_uvc_out.stream_pool.ready_q, &slot,
+                                TUYA_UVC_INTERNAL_TASK_POLL_MS) != 0 ||
+            slot == NULL) {
+            continue;   /* idle poll; the loop head re-checks task_stop */
+        }
+
+        /* stop() may already be waiting for us: a frame nobody can consume
+         * goes straight back to the pool instead of through the decoder. */
+        if (s_uvc_out.task_stop == TRUE) {
+            tkl_uvc_pool_give(&s_uvc_out.stream_pool, slot);
+            break;
+        }
+
+        (void)tkl_uvc_out_decode_frame(slot);
     }
 
-    if (s_uvc_out.state != TKL_UVC_ST_STARTED) {
-        return OPRT_RESOURCE_NOT_READY;
+    (void)rtos_set_semaphore(&s_uvc_out.task_done);
+    rtos_delete_thread(NULL);
+}
+
+/**
+ * @brief Spawn the decode task. PIXEL/STREAM consumers only - the pure FRAME
+ *        configuration has nothing to decode and never starts one.
+ * @return OPRT_OK on success
+ */
+STATIC OPERATE_RET tkl_uvc_out_task_start(VOID_T)
+{
+    OPERATE_RET ret;
+
+    ret = rtos_init_semaphore_ex(&s_uvc_out.task_done, 1, 0);
+    if (ret != OPRT_OK) {
+        return ret;
     }
 
-    /* Nothing to pull in push mode: the decoded picture only ever exists as
-     * slices inside the ring. Taking a frame off the ready queue here would
-     * also starve tkl_uvc_decode_once() of the very bitstream it needs. */
-    if ((s_uvc_out.cfg.out_kinds & TKL_UVC_OUT_PUSH_MASK) != 0U) {
-        return OPRT_NOT_SUPPORTED;
+    s_uvc_out.task_stop = FALSE;
+    s_uvc_out.task_live = TRUE;
+
+    ret = rtos_create_thread(&s_uvc_out.task,
+                             BEKEN_DEFAULT_WORKER_PRIORITY,
+                             "uvc_decode",
+                             (beken_thread_function_t)tkl_uvc_out_decode_task,
+                             TUYA_UVC_INTERNAL_TASK_STACK,
+                             NULL);
+    if (ret != OPRT_OK) {
+        (void)rtos_deinit_semaphore(&s_uvc_out.task_done);
+        s_uvc_out.task_live = FALSE;
+        return ret;
     }
 
-    if (rtos_pop_from_queue(&s_uvc_out.stream_pool.ready_q, &slot, timeout_ms) != 0 ||
-        slot == NULL) {
-        return OPRT_TIMEOUT;
-    }
-
-    if (s_uvc_out.cfg.out_kinds == TKL_UVC_OUT_FRAME) {
-        return tkl_uvc_out_decode(slot, out);
-    }
-
-    tkl_uvc_out_fill_stream(slot, out);
     return OPRT_OK;
 }
 
@@ -2648,7 +2337,7 @@ OPERATE_RET tkl_uvc_get_frame(TKL_MEDIA_BUF_T *out, UINT32_T timeout_ms)
  * Runtime controls
  * ------------------------------------------------------------------------- */
 
-OPERATE_RET tkl_uvc_set_encode(CONST TKL_MEDIA_ENC_CTRL_T *ctrl)
+OPERATE_RET tkl_uvc_set_encode(CONST TUYA_MEDIA_ENC_CTRL_T *ctrl)
 {
     TUYA_VENC_RATE_CTRL_T rc;
     OPERATE_RET ret = OPRT_OK;
@@ -2660,7 +2349,7 @@ OPERATE_RET tkl_uvc_set_encode(CONST TKL_MEDIA_ENC_CTRL_T *ctrl)
     /* The encoder is built by start() and torn down by stop(), so there is
      * nothing to configure in between. Refused rather than remembered: a
      * setting that silently waits for the next start() is a bug factory. */
-    if (s_uvc_out.state != TKL_UVC_ST_STARTED || s_uvc_out.venc == NULL) {
+    if (s_uvc_out.state != TUYA_UVC_ST_STARTED || s_uvc_out.venc == NULL) {
         return OPRT_RESOURCE_NOT_READY;
     }
 
@@ -2668,7 +2357,7 @@ OPERATE_RET tkl_uvc_set_encode(CONST TKL_MEDIA_ENC_CTRL_T *ctrl)
         os_memset(&rc, 0, sizeof(rc));
         rc.bitrate = ctrl->bitrate;
         rc.force_idr = ctrl->force_idr;
-        s_uvc_out.cfg.encode.bitrate = ctrl->bitrate;
+        s_uvc_out.cfg.encoder.bitrate = ctrl->bitrate;
         return tkl_venc_set_rate_ctrl(s_uvc_out.venc, &rc);
     }
 
@@ -2679,68 +2368,33 @@ OPERATE_RET tkl_uvc_set_encode(CONST TKL_MEDIA_ENC_CTRL_T *ctrl)
     return ret;
 }
 
-OPERATE_RET tkl_uvc_set_osd(TKL_UVC_CHN_E chn, CONST TKL_OSD_T *osd)
+OPERATE_RET tkl_uvc_set_osd(TUYA_UVC_OSD_CHANNEL_E chn, CONST TUYA_OSD_T *osd)
 {
     if (osd == NULL) {
         return OPRT_INVALID_PARM;
     }
 
-    /* Same reasoning as tkl_uvc_set_encode(): the OSD engine belongs to the
-     * running pipeline, so it is refused while stopped rather than queued. */
-    if (s_uvc_out.state != TKL_UVC_ST_STARTED) {
+    if (s_uvc_out.state != TUYA_UVC_ST_STARTED) {
         return OPRT_RESOURCE_NOT_READY;
     }
 
-    if (chn == TKL_UVC_CHN_DISPLAY) {
-        TKL_OSD_T local;
-
+    if (chn == TUYA_UVC_OSD_PIXEL) {
         if (s_uvc_out.osd_display == NULL) {
             return OPRT_NOT_SUPPORTED;
         }
-
-        /* The compositor rejects a slot whose angle differs from the channel's,
-         * and the channel's angle is something this module resolved. Making the
-         * caller repeat a value it has to guess buys nothing but mismatches. */
-        local = *osd;
-        local.rotate = tkl_uvc_out_osd_rotate();
-        return tkl_osd_engine_submit(s_uvc_out.osd_display, &local);
+        return tkl_osd_engine_submit(s_uvc_out.osd_display, osd);
     }
 
     if (s_uvc_out.venc == NULL) {
         return OPRT_NOT_SUPPORTED;
     }
 
-    /* the encode overlay lives inside tkl_venc, bound when the encoder started */
     return tkl_venc_set_osd(s_uvc_out.venc, osd);
-}
-
-OPERATE_RET tkl_uvc_get_osd_caps(TKL_UVC_CHN_E chn, TKL_OSD_CAPS_T *caps)
-{
-    if (caps == NULL) {
-        return OPRT_INVALID_PARM;
-    }
-
-    if (s_uvc_out.state != TKL_UVC_ST_STARTED) {
-        return OPRT_RESOURCE_NOT_READY;
-    }
-
-    if (chn == TKL_UVC_CHN_DISPLAY) {
-        if (s_uvc_out.osd_display == NULL) {
-            return OPRT_NOT_SUPPORTED;
-        }
-        return tkl_osd_engine_caps(s_uvc_out.osd_display, caps);
-    }
-
-    if (s_uvc_out.venc == NULL) {
-        return OPRT_NOT_SUPPORTED;
-    }
-
-    return tkl_venc_get_osd_caps(s_uvc_out.venc, caps);
 }
 
 #else /* CONFIG_USB_CAMERA */
 
-OPERATE_RET tkl_uvc_init(CONST TKL_UVC_CFG_T *cfg)
+OPERATE_RET tkl_uvc_init(CONST TUYA_UVC_CFG_T *cfg)
 {
     (void)cfg;
     return OPRT_NOT_SUPPORTED;
@@ -2761,36 +2415,16 @@ OPERATE_RET tkl_uvc_deinit(VOID_T)
     return OPRT_NOT_SUPPORTED;
 }
 
-OPERATE_RET tkl_uvc_get_frame(TKL_MEDIA_BUF_T *out, UINT32_T timeout_ms)
-{
-    (void)out;
-    (void)timeout_ms;
-    return OPRT_NOT_SUPPORTED;
-}
-
-OPERATE_RET tkl_uvc_decode_once(UINT32_T timeout_ms)
-{
-    (void)timeout_ms;
-    return OPRT_NOT_SUPPORTED;
-}
-
-OPERATE_RET tkl_uvc_set_encode(CONST TKL_MEDIA_ENC_CTRL_T *ctrl)
+OPERATE_RET tkl_uvc_set_encode(CONST TUYA_MEDIA_ENC_CTRL_T *ctrl)
 {
     (void)ctrl;
     return OPRT_NOT_SUPPORTED;
 }
 
-OPERATE_RET tkl_uvc_set_osd(TKL_UVC_CHN_E chn, CONST TKL_OSD_T *osd)
+OPERATE_RET tkl_uvc_set_osd(TUYA_UVC_OSD_CHANNEL_E chn, CONST TUYA_OSD_T *osd)
 {
     (void)chn;
     (void)osd;
-    return OPRT_NOT_SUPPORTED;
-}
-
-OPERATE_RET tkl_uvc_get_osd_caps(TKL_UVC_CHN_E chn, TKL_OSD_CAPS_T *caps)
-{
-    (void)chn;
-    (void)caps;
     return OPRT_NOT_SUPPORTED;
 }
 

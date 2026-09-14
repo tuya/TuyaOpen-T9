@@ -6,7 +6,7 @@ extern "C" {
 #include <components/bk_frame_buffer.h>
 #include <common/avdk_pixel_types.h>
 
-#include "tkl_camera_mipi.h"
+#include "tkl_mipi_csi.h"
 #include "tkl_media_fmt.h"
 #include "tuya_cloud_types.h"
 
@@ -114,7 +114,7 @@ static uint32_t face_test_parse_u32(const char *str, uint32_t fallback)
  * @param[out] frame receives the frame on success; untouched on failure
  * @return BK_OK on success
  */
-static bk_err_t face_test_read_sp_frame(TKL_MEDIA_BUF_T *frame)
+static bk_err_t face_test_read_sp_frame(TUYA_MEDIA_BUF_T *frame)
 {
     OPERATE_RET ret;
 
@@ -123,7 +123,7 @@ static bk_err_t face_test_read_sp_frame(TKL_MEDIA_BUF_T *frame)
     }
 
     /* The camera owns the buffer and lends it; nothing to size or allocate here. */
-    ret = tkl_camera_mipi_get_frame(frame, TUYA_CAMERA_MIPI_CHANNEL_SP, 1000U);
+    ret = tkl_mipi_csi_get_frame(frame, TUYA_MIPI_CSI_CHANNEL_SECONDARY, 1000U);
     if (ret != OPRT_OK) {
         bk_printf("[xface] get SP frame failed, ret=%d\r\n", ret);
         return BK_FAIL;
@@ -144,7 +144,7 @@ static bk_err_t face_test_read_sp_frame(TKL_MEDIA_BUF_T *frame)
     return BK_OK;
 }
 
-static bk_pixel_format_t face_test_get_model_input_format(const TKL_MEDIA_BUF_T *frame)
+static bk_pixel_format_t face_test_get_model_input_format(const TUYA_MEDIA_BUF_T *frame)
 {
     bk_pixel_format_t bk_fmt;
 
@@ -209,7 +209,7 @@ static bk_err_t face_test_model_prepare(void)
 
 static void face_test_task(void *arg)
 {
-    TKL_MEDIA_BUF_T frame;
+    TUYA_MEDIA_BUF_T frame;
     uint32_t rounds = s_face_rounds;
     uint32_t delay_ms = s_face_delay_ms;
     uint32_t index = 0;

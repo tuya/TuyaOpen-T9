@@ -1620,6 +1620,17 @@ typedef enum {
     TUYA_FRAME_FMT_RGB888,
     TUYA_FRAME_FMT_JPEG,
     TUYA_FRAME_FMT_H264,
+    /* --- T9 multimedia additions; appended, do not renumber above --- */
+    TUYA_FRAME_FMT_NV12,      /* YCbCr 4:2:0 semiplanar, Y plane then interleaved CbCr; != YUV420 */
+    TUYA_FRAME_FMT_YUYV,      /* packed 4:2:2; != YUV422 */
+    TUYA_FRAME_FMT_ARGB8888,
+    TUYA_FRAME_FMT_ABGR8888,
+    /* Raw Bayer phase as it leaves the sensor: the 2x2 cell read left-to-right,
+     * top-to-bottom. A wrong phase swaps red and blue after demosaic. */
+    TUYA_FRAME_FMT_BGGR10,    /* B G / G R, 10-bit */
+    TUYA_FRAME_FMT_GBRG10,    /* G B / R G, 10-bit */
+    TUYA_FRAME_FMT_GRBG10,    /* G R / B G, 10-bit */
+    TUYA_FRAME_FMT_RGGB10,    /* R G / G B, 10-bit */
 } TUYA_FRAME_FMT_E;
 
 typedef enum {

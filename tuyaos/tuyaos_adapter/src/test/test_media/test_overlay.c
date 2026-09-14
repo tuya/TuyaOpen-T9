@@ -8,7 +8,7 @@
 #include "tkl_system.h"
 #include "tkl_thread.h"
 #include "cli_tuya_test.h"
-#include "tkl_camera_mipi.h"
+#include "tkl_mipi_csi.h"
 #include "tkl_uvc.h"
 
 /* The channel index is the peripheral's own channel value, passed straight
@@ -21,10 +21,10 @@
 #define TEST_OVERLAY_CH_MAX     2U
 
 typedef char test_overlay_ch_numbering_check[
-    ((INT_T)TKL_CAM_CHN_DISPLAY == (INT_T)TEST_OVERLAY_CH_DISPLAY &&
-     (INT_T)TKL_CAM_CHN_ENCODE  == (INT_T)TEST_OVERLAY_CH_ENCODE  &&
-     (INT_T)TKL_UVC_CHN_DISPLAY == (INT_T)TEST_OVERLAY_CH_DISPLAY &&
-     (INT_T)TKL_UVC_CHN_ENCODE  == (INT_T)TEST_OVERLAY_CH_ENCODE) ? 1 : -1];
+    ((INT_T)TUYA_MIPI_CSI_OSD_PIXEL == (INT_T)TEST_OVERLAY_CH_DISPLAY &&
+     (INT_T)TUYA_MIPI_CSI_OSD_STREAM  == (INT_T)TEST_OVERLAY_CH_ENCODE  &&
+     (INT_T)TUYA_UVC_OSD_PIXEL == (INT_T)TEST_OVERLAY_CH_DISPLAY &&
+     (INT_T)TUYA_UVC_OSD_STREAM == (INT_T)TEST_OVERLAY_CH_ENCODE) ? 1 : -1];
 
 #define TEST_OVERLAY_TIME_TEXT_LEN 16U
 

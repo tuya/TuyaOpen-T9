@@ -202,7 +202,7 @@ static void *tkl_gpu_frame_malloc(uint32_t size)
      * needs a PSRAM write-through mapping - the one place in the tree that
      * genuinely does. tkl_media_buf owns the channel and the 64-byte rounding
      * the vendor pool demands (see tkl_media_buf.h). */
-    return tkl_media_buf_alloc(TKL_BUF_USE_PIXEL_WT, size, TKL_MEDIA_BUF_OWNER_GPU);
+    return tkl_media_buf_alloc(TKL_BUF_USE_PIXEL_WT, size, TUYA_MEDIA_BUF_OWNER_GPU);
 }
 
 static OPERATE_RET tkl_gpu_frame_free(VOID *ptr)
@@ -217,7 +217,7 @@ static OPERATE_RET tkl_gpu_frame_free(VOID *ptr)
         return ctx->sink.free_cb(ptr, ctx->sink.cb_arg);
     }
 
-    tkl_media_buf_free(TKL_MEDIA_BUF_OWNER_GPU, ptr);
+    tkl_media_buf_free(TUYA_MEDIA_BUF_OWNER_GPU, ptr);
     return OPRT_OK;
 }
 

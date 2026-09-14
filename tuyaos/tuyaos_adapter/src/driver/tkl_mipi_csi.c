@@ -1,10 +1,10 @@
 /**
- * @file tkl_camera_mipi.c
+ * @file tkl_mipi_csi.c
  * @brief TKL adapter - the MIPI camera peripheral for T9 (BK7259).
  *
  * @details
  * Two layers, split internally only; the public face is
- * include/mipi/tkl_camera_mipi.h.
+ * include/mipi/tkl_mipi_csi.h.
  *
  *   hardware layer (static)  sensor power, ISP channel open/close, frame pop,
  *                            live resolution switch
@@ -25,7 +25,7 @@
  */
 
 #include "sys_driver.h"
-#include "tkl_camera_mipi.h"
+#include "tkl_mipi_csi.h"
 #include "tkl_gpu_internal.h"
 #include "tkl_media_buf.h"
 #include "tkl_media_fmt.h"
@@ -71,8 +71,8 @@ typedef struct {
     UINT16_T sensor_height;
     UINT8_T sensor_fps;
     UINT32_T sensor_input_format;   /* bk_pixel_format_t, default RAW10 */
-    UINT8_T hmirror;                /* Horizontal mirror: 0=off, 1=on */
-    UINT8_T vflip;                  /* Vertical flip: 0=off, 1=on */
+    UINT8_T hmirror;                /* Runtime mirror state, default off */
+    UINT8_T vflip;                  /* Runtime flip state, default off */
 
     UINT16_T output_width;
     UINT16_T output_height;
@@ -81,7 +81,6 @@ typedef struct {
     BOOL_T enable_flexa;
     UINT8_T work_mode;              /* 0: frame mode, 1: flexa mode */
     UINT32_T read_timeout_ms;
-    UINT8_T skip_frames;    /* MP AE 预热：通道打开后丢弃前 N 帧，0=关闭 */
 
     BOOL_T sp_enable;
     UINT16_T sp_width;
@@ -90,7 +89,7 @@ typedef struct {
     UINT8_T sp_buf_cnt;
     BOOL_T sp_enable_flexa;
     UINT8_T sp_work_mode;           /* 0: frame mode, 1: flexa mode */
-} TUYA_CAMERA_MIPI_CFG_T;
+} TUYA_MIPI_CSI_HW_CFG_T;
 
 typedef struct {
     VOID *isp_handle;
@@ -102,51 +101,51 @@ typedef struct {
     UINT32_T y_addr;
     UINT32_T u_addr;
     UINT32_T v_addr;
-} TUYA_CAMERA_MIPI_FLEXA_SOURCE_T;
+} TUYA_MIPI_CSI_FLEXA_SOURCE_T;
 
 /* ---------------------------------------------------------------------------
  * Hardware layer - internal only. The facade below is the only caller.
  * ------------------------------------------------------------------------- */
-STATIC OPERATE_RET cam_mipi_init(TUYA_CAMERA_MIPI_CFG_T *config);
+STATIC OPERATE_RET cam_mipi_init(TUYA_MIPI_CSI_HW_CFG_T *config);
 STATIC OPERATE_RET cam_mipi_deinit(void);
 STATIC OPERATE_RET cam_mipi_start(void);
 STATIC OPERATE_RET cam_mipi_stop(void);
-/* Renamed off the tkl_camera_mipi_* prefix on purpose: the facade's public
+/* Renamed off the tkl_mipi_csi_* prefix on purpose: the facade's public
  * entry point took that name. This is the hardware-layer half of it - it
  * reprograms one ISP channel and nothing else. */
 STATIC OPERATE_RET cam_mipi_set_output(UINT8_T channel_id, UINT16_T width, UINT16_T height);
-STATIC OPERATE_RET cam_mipi_get_flexa_source(TUYA_CAMERA_MIPI_FLEXA_SOURCE_T *source);
+STATIC OPERATE_RET cam_mipi_get_flexa_source(TUYA_MIPI_CSI_FLEXA_SOURCE_T *source);
 
 
-#define TKL_CAM_MIPI_POWER_SETTLE_MS    20U
-#define TKL_CAM_MIPI_SYS_ANA_REG_BASE   (0x44010000U)
-#define TKL_CAM_MIPI_LDO_ANA_REG        (0x69U)
+#define TUYA_MIPI_CSI_POWER_SETTLE_MS    20U
+#define TUYA_MIPI_CSI_SYS_ANA_REG_BASE   (0x44010000U)
+#define TUYA_MIPI_CSI_LDO_ANA_REG        (0x69U)
 
 typedef struct {
     BOOL_T initialized;
     BOOL_T started;
     BOOL_T sensor_power_on;
-    TUYA_CAMERA_MIPI_CFG_T cfg;
+    TUYA_MIPI_CSI_HW_CFG_T cfg;
     UINT16_T active_output_width;
     UINT16_T active_output_height;
     VOID *isp_handle;
     bk_camera_bus_t *bus_handle;
     bk_camera_sensor_handle_t sensor_handle;
     bk_isp_camera_ctlr_handle_t camera_ctlr_handle;
-} tkl_camera_mipi_ctx_t;
+} tkl_mipi_csi_ctx_t;
 
-static tkl_camera_mipi_ctx_t s_cam_ctx;
+static tkl_mipi_csi_ctx_t s_cam_ctx;
 static ISP_GAMMA_OUT_ATTR_S s_gamma_out_backup;
 static BOOL_T s_gamma_out_backup_valid = FALSE;
 
 static VOID_T cam_mipi_gpio_bank_ldo_enable(VOID_T)
 {
-    UINT32_T reg = REG_READ(TKL_CAM_MIPI_SYS_ANA_REG_BASE + TKL_CAM_MIPI_LDO_ANA_REG * 4U);
+    UINT32_T reg = REG_READ(TUYA_MIPI_CSI_SYS_ANA_REG_BASE + TUYA_MIPI_CSI_LDO_ANA_REG * 4U);
 
     reg |= (0xFU << 28) | (0x2U << 23) | (0x7U << 19) | (0x7U << 15);
     reg &= ~(0xFU << 11);
     reg |= (0x8U << 11);
-    REG_WRITE(TKL_CAM_MIPI_SYS_ANA_REG_BASE + TKL_CAM_MIPI_LDO_ANA_REG * 4U, reg);
+    REG_WRITE(TUYA_MIPI_CSI_SYS_ANA_REG_BASE + TUYA_MIPI_CSI_LDO_ANA_REG * 4U, reg);
 }
 
 static OPERATE_RET cam_mipi_sensor_power_enable(BOOL_T enable)
@@ -182,7 +181,7 @@ static OPERATE_RET cam_mipi_sensor_power_enable(BOOL_T enable)
     }
 
     if (enable != FALSE) {
-        tkl_system_sleep(TKL_CAM_MIPI_POWER_SETTLE_MS);
+        tkl_system_sleep(TUYA_MIPI_CSI_POWER_SETTLE_MS);
     }
     s_cam_ctx.sensor_power_on = (enable != FALSE) ? TRUE : FALSE;
     return OPRT_OK;
@@ -190,7 +189,7 @@ static OPERATE_RET cam_mipi_sensor_power_enable(BOOL_T enable)
 
 static void cam_mipi_runtime_reset(BOOL_T keep_config)
 {
-    TUYA_CAMERA_MIPI_CFG_T cfg_backup;
+    TUYA_MIPI_CSI_HW_CFG_T cfg_backup;
 
     if (keep_config == TRUE) {
         os_memcpy(&cfg_backup, &s_cam_ctx.cfg, sizeof(cfg_backup));
@@ -205,7 +204,7 @@ static void cam_mipi_runtime_reset(BOOL_T keep_config)
     }
 }
 
-static void cam_mipi_cfg_normalize(TUYA_CAMERA_MIPI_CFG_T *cfg)
+static void cam_mipi_cfg_normalize(TUYA_MIPI_CSI_HW_CFG_T *cfg)
 {
     if (cfg->i2c_id == 0U) {
         cfg->i2c_id = 1U;
@@ -313,7 +312,7 @@ static OPERATE_RET cam_mipi_apply_mirror(VOID_T)
     return OPRT_OK;
 }
 
-static OPERATE_RET cam_mipi_cfg_validate(const TUYA_CAMERA_MIPI_CFG_T *cfg)
+static OPERATE_RET cam_mipi_cfg_validate(const TUYA_MIPI_CSI_HW_CFG_T *cfg)
 {
     if (cfg == NULL) {
         return OPRT_INVALID_PARM;
@@ -417,7 +416,7 @@ static OPERATE_RET cam_mipi_open_mp_channel(void)
 }
 
 static OPERATE_RET cam_mipi_sensor_check_format(bk_camera_sensor_handle_t sensor_handle,
-                                                       const TUYA_CAMERA_MIPI_CFG_T *cfg)
+                                                       const TUYA_MIPI_CSI_HW_CFG_T *cfg)
 {
     int detect_index = 0;
     bk_camera_sensor_format_array_t format_array;
@@ -451,7 +450,7 @@ static OPERATE_RET cam_mipi_sensor_check_format(bk_camera_sensor_handle_t sensor
     return OPRT_OK;
 }
 
-static OPERATE_RET cam_mipi_sensor_detect_and_check(TUYA_CAMERA_MIPI_CFG_T *cfg)
+static OPERATE_RET cam_mipi_sensor_detect_and_check(TUYA_MIPI_CSI_HW_CFG_T *cfg)
 {
     bk_camera_sensor_config_t sensor_cfg;
     OPERATE_RET ret;
@@ -474,34 +473,6 @@ static OPERATE_RET cam_mipi_sensor_detect_and_check(TUYA_CAMERA_MIPI_CFG_T *cfg)
         bk_camera_sensor_destroy(s_cam_ctx.sensor_handle);
         s_cam_ctx.sensor_handle = NULL;
         return ret;
-    }
-
-    return OPRT_OK;
-}
-
-STATIC OPERATE_RET cam_mipi_apply_skip_frames(VOID_T)
-{
-    bk_isp_camera_skip_frames_config_t skip_cfg;
-    OPERATE_RET ret;
-
-    if (s_cam_ctx.cfg.skip_frames == 0U) {
-        return OPRT_OK;
-    }
-
-    if (s_cam_ctx.camera_ctlr_handle == NULL) {
-        return OPRT_RESOURCE_NOT_READY;
-    }
-
-    skip_cfg.channel = ISP_MP_CHN_ID;
-    skip_cfg.count = s_cam_ctx.cfg.skip_frames;
-
-    ret = bk_isp_camera_ctlr_ioctl(s_cam_ctx.camera_ctlr_handle,
-                                   BK_CAM_IOCTL_SET_SKIP_FRAMES,
-                                   &skip_cfg);
-    if (ret != AVDK_ERR_OK) {
-        tkl_log_output("camera set MP skip_frames %u failed: %d\r\n",
-                       (unsigned int)s_cam_ctx.cfg.skip_frames, ret);
-        return OPRT_COM_ERROR;
     }
 
     return OPRT_OK;
@@ -624,10 +595,10 @@ static void cam_mipi_cleanup_resources(void)
     }
 }
 
-STATIC OPERATE_RET cam_mipi_init(TUYA_CAMERA_MIPI_CFG_T *config)
+STATIC OPERATE_RET cam_mipi_init(TUYA_MIPI_CSI_HW_CFG_T *config)
 {
     OPERATE_RET ret;
-    TUYA_CAMERA_MIPI_CFG_T cfg_local;
+    TUYA_MIPI_CSI_HW_CFG_T cfg_local;
     bk_camera_bus_config_t bus_cfg;
 
     if (config == NULL) {
@@ -718,7 +689,7 @@ static OPERATE_RET cam_mipi_output_validate(UINT16_T width, UINT16_T height)
 
 /**
  * @brief Set ISP output resolution of the given channel
- * @param[in] channel_id TUYA_CAMERA_MIPI_CHANNEL_MP or TUYA_CAMERA_MIPI_CHANNEL_SP
+ * @param[in] channel_id TUYA_MIPI_CSI_CHANNEL_PRIMARY or TUYA_MIPI_CSI_CHANNEL_SECONDARY
  * @param[in] width new output width in pixels
  * @param[in] height new output height in pixels
  * @return OPRT_OK on success; on live reopen failure the channel is left closed while
@@ -739,12 +710,12 @@ STATIC OPERATE_RET cam_mipi_set_output(UINT8_T channel_id, UINT16_T width, UINT1
     OPERATE_RET ret;
     uint8_t isp_chn_id;
 
-    if (channel_id != TUYA_CAMERA_MIPI_CHANNEL_MP &&
-        channel_id != TUYA_CAMERA_MIPI_CHANNEL_SP) {
+    if (channel_id != TUYA_MIPI_CSI_CHANNEL_PRIMARY &&
+        channel_id != TUYA_MIPI_CSI_CHANNEL_SECONDARY) {
         return OPRT_INVALID_PARM;
     }
 
-    if (channel_id == TUYA_CAMERA_MIPI_CHANNEL_SP && s_cam_ctx.cfg.sp_enable != TRUE) {
+    if (channel_id == TUYA_MIPI_CSI_CHANNEL_SECONDARY && s_cam_ctx.cfg.sp_enable != TRUE) {
         tkl_log_output("set_output SP rejected: SP not enabled\r\n");
         return OPRT_NOT_SUPPORTED;
     }
@@ -755,7 +726,7 @@ STATIC OPERATE_RET cam_mipi_set_output(UINT8_T channel_id, UINT16_T width, UINT1
     }
 
     /* record target geometry */
-    if (channel_id == TUYA_CAMERA_MIPI_CHANNEL_MP) {
+    if (channel_id == TUYA_MIPI_CSI_CHANNEL_PRIMARY) {
         s_cam_ctx.cfg.output_width = width;
         s_cam_ctx.cfg.output_height = height;
     } else {
@@ -774,7 +745,7 @@ STATIC OPERATE_RET cam_mipi_set_output(UINT8_T channel_id, UINT16_T width, UINT1
      * cheap path below. This branch rebuilds SP too when it is open; that is the point,
      * not a side effect.
      */
-    if (channel_id == TUYA_CAMERA_MIPI_CHANNEL_MP) {
+    if (channel_id == TUYA_MIPI_CSI_CHANNEL_PRIMARY) {
         tkl_log_output("set_output MP restart, %ux%u\r\n", width, height);
         ret = cam_mipi_stop();
         if (ret != OPRT_OK) {
@@ -910,11 +881,6 @@ STATIC OPERATE_RET cam_mipi_start(void)
         goto err_start;
     }
 
-    ret = cam_mipi_apply_skip_frames();
-    if (ret != OPRT_OK) {
-        goto err_start;
-    }
-
     ret = cam_mipi_open_mp_channel();
     if (ret != OPRT_OK) {
         goto err_start;
@@ -964,7 +930,7 @@ STATIC OPERATE_RET cam_mipi_stop(void)
      * rounds of xrecog before surfacing as "alloc failed". Report, never force:
      * business may still hold the pointer. */
     {
-        UINT32_T held = tkl_media_buf_inflight(TKL_MEDIA_BUF_OWNER_CAMERA_FRAME);
+        UINT32_T held = tkl_media_buf_inflight(TUYA_MEDIA_BUF_OWNER_CAMERA_FRAME);
 
         if (held != 0U) {
             tkl_log_output("camera stop: %u pulled frame(s) never released - "
@@ -986,8 +952,6 @@ STATIC OPERATE_RET cam_mipi_stop(void)
  * @param[in] dst_size buffer capacity
  * @param[in] timeout_ms read timeout
  * @param[out] out_len packed bytes written
- * @param[out] y_stride packed Y/RGB row stride
- * @param[out] uv_stride packed UV row stride (0 if N/A)
  * @return OPRT_OK on success
  * @note Dequeue is owned by cam_thread (same path as arm_probe). Flexa is rejected by caller.
  */
@@ -998,45 +962,33 @@ STATIC OPERATE_RET cam_mipi_pop_copy_frame(UINT8_T chn_id,
                                                     UINT8_T *dst,
                                                     UINT32_T dst_size,
                                                     UINT32_T timeout_ms,
-                                                    UINT32_T *out_len,
-                                                    UINT32_T *y_stride,
-                                                    UINT32_T *uv_stride)
+                                                    UINT32_T *out_len)
 {
     avdk_err_t read_ret;
     UINT32_T need_size;
-    UINT32_T packed_y_stride = 0U;
-    UINT32_T packed_uv_stride = 0U;
 
     if (dst == NULL || dst_size == 0U || width == 0U || height == 0U ||
-        out_len == NULL || y_stride == NULL || uv_stride == NULL ||
+        out_len == NULL ||
         (chn_id != ISP_MP_CHN_ID && chn_id != ISP_SP_CHN_ID)) {
         return OPRT_INVALID_PARM;
     }
 
     *out_len = 0U;
-    *y_stride = 0U;
-    *uv_stride = 0U;
 
     if (format == (UINT32_T)BK_PIXEL_FORMAT_NV12) {
         if (((width & 1U) != 0U) || ((height & 1U) != 0U)) {
             return OPRT_INVALID_PARM;
         }
         need_size = (UINT32_T)width * (UINT32_T)height * 3U / 2U;
-        packed_y_stride = (UINT32_T)width;
-        packed_uv_stride = (UINT32_T)width;
     } else if (format == (UINT32_T)BK_PIXEL_FORMAT_RGB888 ||
                format == (UINT32_T)BK_PIXEL_FORMAT_BGR888) {
         /* ISP outputs RGB888/BGR888 as RGBX (4 bytes/pixel). */
         need_size = (UINT32_T)width * (UINT32_T)height * 4U;
-        packed_y_stride = (UINT32_T)width * 4U;
-        packed_uv_stride = 0U;
     } else {
         need_size = bk_image_size_get(width, height, (bk_pixel_format_t)format);
         if (need_size == 0U || (need_size % (UINT32_T)height) != 0U) {
             return OPRT_NOT_SUPPORTED;
         }
-        packed_y_stride = need_size / (UINT32_T)height;
-        packed_uv_stride = 0U;
     }
 
     if (dst_size < need_size) {
@@ -1057,8 +1009,6 @@ STATIC OPERATE_RET cam_mipi_pop_copy_frame(UINT8_T chn_id,
     }
 
     *out_len = need_size;
-    *y_stride = packed_y_stride;
-    *uv_stride = packed_uv_stride;
     return OPRT_OK;
 }
 
@@ -1066,7 +1016,7 @@ STATIC OPERATE_RET cam_mipi_pop_copy_frame(UINT8_T chn_id,
 /**
  * @brief Work out the pull geometry for a channel, shared by both get_frame forms.
  *
- * @param[in]  channel_id  TUYA_CAMERA_MIPI_CHANNEL_MP / _SP
+ * @param[in]  channel_id  TUYA_MIPI_CSI_CHANNEL_PRIMARY / _SP
  * @param[out] isp_chn     ISP_MP_CHN_ID / ISP_SP_CHN_ID
  * @param[out] width       channel output width
  * @param[out] height      channel output height
@@ -1084,7 +1034,7 @@ STATIC OPERATE_RET cam_mipi_pull_geometry(UINT8_T channel_id,
                                                    UINT32_T *format,
                                                    UINT32_T *size)
 {
-    if (channel_id == TUYA_CAMERA_MIPI_CHANNEL_SP) {
+    if (channel_id == TUYA_MIPI_CSI_CHANNEL_SECONDARY) {
         if (s_cam_ctx.cfg.sp_enable != TRUE) {
             return OPRT_RESOURCE_NOT_READY;
         }
@@ -1101,7 +1051,7 @@ STATIC OPERATE_RET cam_mipi_pull_geometry(UINT8_T channel_id,
         *height = s_cam_ctx.cfg.sp_height;
         *format = s_cam_ctx.cfg.sp_format;
         *size = cam_mipi_sp_frame_size_get();
-    } else if (channel_id == TUYA_CAMERA_MIPI_CHANNEL_MP) {
+    } else if (channel_id == TUYA_MIPI_CSI_CHANNEL_PRIMARY) {
         if (s_cam_ctx.cfg.enable_flexa != FALSE || s_cam_ctx.cfg.work_mode != 0U) {
             tkl_log_output(
                     "get_frame is not supported in MP flexa mode, current enable_flexa=%u work_mode=%u, use gpu/flexa path or reopen camera in frame mode\r\n",
@@ -1122,7 +1072,7 @@ STATIC OPERATE_RET cam_mipi_pull_geometry(UINT8_T channel_id,
     return (*size != 0U) ? OPRT_OK : OPRT_NOT_SUPPORTED;
 }
 
-OPERATE_RET tkl_camera_mipi_get_frame(TKL_MEDIA_BUF_T *out, UINT8_T chn, UINT32_T timeout_ms)
+OPERATE_RET tkl_mipi_csi_get_frame(TUYA_MEDIA_BUF_T *out, UINT8_T chn, UINT32_T timeout_ms)
 {
     OPERATE_RET op_ret;
     UINT8_T isp_channel_id = 0U;
@@ -1131,8 +1081,6 @@ OPERATE_RET tkl_camera_mipi_get_frame(TKL_MEDIA_BUF_T *out, UINT8_T chn, UINT32_
     UINT32_T format = 0U;
     UINT32_T size = 0U;
     UINT32_T out_len = 0U;
-    UINT32_T y_stride = 0U;
-    UINT32_T uv_stride = 0U;
     UINT32_T wait_ms;
     UINT8_T *data;
 
@@ -1156,7 +1104,7 @@ OPERATE_RET tkl_camera_mipi_get_frame(TKL_MEDIA_BUF_T *out, UINT8_T chn, UINT32_
      * slab heaps carry the same non-cacheable MPU attribute. It keeps a 1.4 MB
      * pixel frame out of the bitstream budget. */
     data = (UINT8_T *)tkl_media_buf_alloc(TKL_BUF_USE_PIXEL, size,
-                                          TKL_MEDIA_BUF_OWNER_CAMERA_FRAME);
+                                          TUYA_MEDIA_BUF_OWNER_CAMERA_FRAME);
     if (data == NULL) {
         return OPRT_MALLOC_FAILED;
     }
@@ -1167,10 +1115,9 @@ OPERATE_RET tkl_camera_mipi_get_frame(TKL_MEDIA_BUF_T *out, UINT8_T chn, UINT32_
     }
 
     op_ret = cam_mipi_pop_copy_frame(isp_channel_id, format, width, height,
-                                              data, size, wait_ms,
-                                              &out_len, &y_stride, &uv_stride);
+                                              data, size, wait_ms, &out_len);
     if (op_ret != OPRT_OK) {
-        tkl_media_buf_free(TKL_MEDIA_BUF_OWNER_CAMERA_FRAME, data);
+        tkl_media_buf_free(TUYA_MEDIA_BUF_OWNER_CAMERA_FRAME, data);
         return op_ret;
     }
 
@@ -1178,19 +1125,16 @@ OPERATE_RET tkl_camera_mipi_get_frame(TKL_MEDIA_BUF_T *out, UINT8_T chn, UINT32_
     out->data = data;
     out->size = out_len;
     /* the whole point: business releases through this and never learns the pool */
-    out->free_cb = tkl_media_buf_free_cb(TKL_MEDIA_BUF_OWNER_CAMERA_FRAME);
-    out->kind = (UINT8_T)TKL_MEDIA_BUF_PIXEL;
+    out->free_cb = tkl_media_buf_free_cb(TUYA_MEDIA_BUF_OWNER_CAMERA_FRAME);
     out->pts = (UINT64_T)tkl_system_get_millisecond();
     out->width = width;
     out->height = height;
     out->format = tkl_media_fmt_from_bk(format);
-    out->y_stride = y_stride;
-    out->uv_stride = uv_stride;
 
     return OPRT_OK;
 }
 
-OPERATE_RET tkl_camera_mipi_set_mirror_flip(UINT8_T hmirror, UINT8_T vflip)
+OPERATE_RET tkl_mipi_csi_set_mirror_flip(UINT8_T hmirror, UINT8_T vflip)
 {
     if (s_cam_ctx.initialized != TRUE) {
         return OPRT_RESOURCE_NOT_READY;
@@ -1206,7 +1150,7 @@ OPERATE_RET tkl_camera_mipi_set_mirror_flip(UINT8_T hmirror, UINT8_T vflip)
     return cam_mipi_apply_mirror();
 }
 
-OPERATE_RET tkl_camera_mipi_get_mirror_flip(UINT8_T *hmirror, UINT8_T *vflip)
+OPERATE_RET tkl_mipi_csi_get_mirror_flip(UINT8_T *hmirror, UINT8_T *vflip)
 {
     if (s_cam_ctx.initialized != TRUE) {
         return OPRT_RESOURCE_NOT_READY;
@@ -1227,7 +1171,7 @@ OPERATE_RET tkl_camera_mipi_get_mirror_flip(UINT8_T *hmirror, UINT8_T *vflip)
  * @param[out] luminance (meanLum * 1e6) / (exposure[0] * 39)
  * @return OPRT_OK on success
  */
-OPERATE_RET tkl_camera_mipi_get_exposure_luminance(UINT32_T *luminance)
+OPERATE_RET tkl_mipi_csi_get_exposure_luminance(UINT32_T *luminance)
 {
     avdk_err_t ret;
     uint32_t lum = 0U;
@@ -1253,29 +1197,12 @@ OPERATE_RET tkl_camera_mipi_get_exposure_luminance(UINT32_T *luminance)
 }
 
 /**
- * @brief Copy BK CPROC attr to TKL public snapshot
- * @param[in] src BK CPROC attributes
- * @param[out] dst TKL CPROC snapshot
- * @return none
- */
-STATIC VOID_T cam_mipi_cproc_export(CONST bk_isp_cproc_attr_t *src, TKL_CAMERA_MIPI_CPROC_T *dst)
-{
-    os_memset(dst, 0, sizeof(*dst));
-    dst->enable = src->enable ? 1U : 0U;
-    dst->op_type = (src->op_type != 0U) ? 1U : 0U;
-    dst->brightness = src->manual.brightness;
-    dst->contrast = src->manual.contrast;
-    dst->saturation = src->manual.saturation;
-    dst->hue = src->manual.hue;
-}
-
-/**
  * @brief Switch ISP output between gray and color via CPROC saturation
  * @param[in] enable TRUE=gray (saturation 0, manual), FALSE=restore sensor default CPROC
  * @return OPRT_OK on success
  * @note Requires camera started. Gray keeps brightness/contrast/hue of the current CPROC.
  */
-OPERATE_RET tkl_camera_mipi_set_color_to_gray(BOOL_T enable)
+OPERATE_RET tkl_mipi_csi_set_color_to_gray(BOOL_T enable)
 {
     avdk_err_t ret;
     bk_isp_cproc_attr_t cproc = {0};
@@ -1325,7 +1252,7 @@ OPERATE_RET tkl_camera_mipi_set_color_to_gray(BOOL_T enable)
  * @return OPRT_OK on success
  * @note Requires camera started. Night curve fields are left for product fill-in.
  */
-OPERATE_RET tkl_camera_mipi_set_night_gamma(BOOL_T enable)
+OPERATE_RET tkl_mipi_csi_set_night_gamma(BOOL_T enable)
 {
     int ret;
     isp_control_t *isp = NULL;
@@ -1383,38 +1310,7 @@ OPERATE_RET tkl_camera_mipi_set_night_gamma(BOOL_T enable)
     return OPRT_OK;
 }
 
-/**
- * @brief Get current ISP CPROC attributes
- * @param[out] cproc CPROC snapshot (manual fields only)
- * @return OPRT_OK on success
- * @note Requires camera started. Wraps BK_CAM_IOCTL_GET_CPROC.
- */
-OPERATE_RET tkl_camera_mipi_get_cproc(TKL_CAMERA_MIPI_CPROC_T *cproc)
-{
-    avdk_err_t ret;
-    bk_isp_cproc_attr_t attr = {0};
-
-    if (cproc == NULL) {
-        return OPRT_INVALID_PARM;
-    }
-
-    if (s_cam_ctx.started != TRUE || s_cam_ctx.camera_ctlr_handle == NULL) {
-        return OPRT_RESOURCE_NOT_READY;
-    }
-
-    ret = bk_isp_camera_ctlr_ioctl(s_cam_ctx.camera_ctlr_handle,
-                                   BK_CAM_IOCTL_GET_CPROC,
-                                   &attr);
-    if (ret != AVDK_ERR_OK) {
-        tkl_log_output("get cproc failed: %d\r\n", ret);
-        return OPRT_COM_ERROR;
-    }
-
-    cam_mipi_cproc_export(&attr, cproc);
-    return OPRT_OK;
-}
-
-STATIC OPERATE_RET cam_mipi_get_flexa_source(TUYA_CAMERA_MIPI_FLEXA_SOURCE_T *source)
+STATIC OPERATE_RET cam_mipi_get_flexa_source(TUYA_MIPI_CSI_FLEXA_SOURCE_T *source)
 {
     isp_control_t *isp = NULL;
 
@@ -1447,16 +1343,16 @@ STATIC OPERATE_RET cam_mipi_get_flexa_source(TUYA_CAMERA_MIPI_FLEXA_SOURCE_T *so
 
 
 
-#define TKL_CAM_OUT_FLEXA_LINES     16U
-#define TKL_CAM_OUT_BUF_CNT         3U
-#define TKL_CAM_OUT_SP_BUF_CNT      2U
-#define TKL_CAM_OUT_READ_TIMEOUT_MS 1000U
-#define TKL_CAM_OUT_DRAIN_MS        200U
+#define TUYA_MIPI_CSI_FLEXA_LINES     16U
+#define TUYA_MIPI_CSI_BUF_CNT         3U
+#define TUYA_MIPI_CSI_SP_BUF_CNT      2U
+#define TUYA_MIPI_CSI_READ_TIMEOUT_MS 1000U
+#define TUYA_MIPI_CSI_DRAIN_MS        200U
 /* the frame the panel is still scanning out when the camera stops - see the
- * drain call in tkl_camera_mipi_deinit() */
-#define TKL_CAM_OUT_DISPLAY_RESIDUAL 1U
+ * drain call in tkl_mipi_csi_deinit() */
+#define TUYA_MIPI_CSI_OUTPUT_PIXEL_RESIDUAL 1U
 
-#define TKL_CAM_OUT_MS()            ((UINT32_T)tkl_system_get_millisecond())
+#define TUYA_MIPI_CSI_MS()            ((UINT32_T)tkl_system_get_millisecond())
 
 /**
  * Facade lifecycle. INIT means the sensor is powered and probed but nothing is
@@ -1473,7 +1369,7 @@ typedef enum {
 
 typedef struct {
     tkl_cam_state_e state;
-    TKL_CAMERA_MIPI_CFG_T cfg;
+    TUYA_MIPI_CSI_CFG_T cfg;
 
     /* which channel carries which sink */
     /* No display_chn/encode_chn here on purpose: both consumers can only ever
@@ -1512,7 +1408,7 @@ STATIC OPERATE_RET tkl_cam_out_consumers_open(VOID_T);
 STATIC VOID *tkl_cam_out_display_alloc(UINT32_T size, VOID *arg)
 {
     (void)arg;
-    return tkl_media_buf_alloc(TKL_BUF_USE_PIXEL_WT, size, TKL_MEDIA_BUF_OWNER_CAMERA_DISPLAY);
+    return tkl_media_buf_alloc(TKL_BUF_USE_PIXEL_WT, size, TUYA_MEDIA_BUF_OWNER_CAMERA_DISPLAY);
 }
 
 STATIC OPERATE_RET tkl_cam_out_display_free(VOID *ptr, VOID *arg)
@@ -1523,7 +1419,7 @@ STATIC OPERATE_RET tkl_cam_out_display_free(VOID *ptr, VOID *arg)
         return OPRT_INVALID_PARM;
     }
 
-    tkl_media_buf_free(TKL_MEDIA_BUF_OWNER_CAMERA_DISPLAY, ptr);
+    tkl_media_buf_free(TUYA_MEDIA_BUF_OWNER_CAMERA_DISPLAY, ptr);
     return OPRT_OK;
 }
 
@@ -1536,12 +1432,12 @@ STATIC OPERATE_RET tkl_cam_out_display_free(VOID *ptr, VOID *arg)
  *
  * @note Runs on the GPU's flexa worker thread, concurrently with the encoder
  *       thread that drives tkl_cam_out_stream_cb(). Ownership passes to
- *       business through TKL_MEDIA_BUF_T::free_cb; if business does not release
+ *       business through TUYA_MEDIA_BUF_T::free_cb; if business does not release
  *       it, the pool drains and the pipeline stalls rather than corrupting.
  */
 STATIC VOID tkl_cam_out_display_done(VOID *frame, UINT32_T frame_size, VOID *arg)
 {
-    TKL_MEDIA_BUF_T buf;
+    TUYA_MEDIA_BUF_T buf;
 
     (void)arg;
 
@@ -1549,28 +1445,27 @@ STATIC VOID tkl_cam_out_display_done(VOID *frame, UINT32_T frame_size, VOID *arg
         return;
     }
 
-    if (s_cam_out.cfg.display_cb == NULL) {
-        tkl_media_buf_free(TKL_MEDIA_BUF_OWNER_CAMERA_DISPLAY, frame);
+    if (s_cam_out.cfg.pixel_cb == NULL) {
+        tkl_media_buf_free(TUYA_MEDIA_BUF_OWNER_CAMERA_DISPLAY, frame);
         return;
     }
 
     os_memset(&buf, 0, sizeof(buf));
     buf.data = (UINT8_T *)frame;
     buf.size = frame_size;
-    buf.free_cb = tkl_media_buf_free_cb(TKL_MEDIA_BUF_OWNER_CAMERA_DISPLAY);
-    buf.kind = (UINT8_T)TKL_MEDIA_BUF_PIXEL;
+    buf.free_cb = tkl_media_buf_free_cb(TUYA_MEDIA_BUF_OWNER_CAMERA_DISPLAY);
     buf.pts = (UINT64_T)tkl_system_get_millisecond();
-    buf.width = s_cam_out.cfg.display.dst_w;
-    buf.height = s_cam_out.cfg.display.dst_h;
-    buf.format = s_cam_out.cfg.display.format;
+    buf.width = s_cam_out.cfg.pixel.target_width;
+    buf.height = s_cam_out.cfg.pixel.target_height;
+    buf.format = s_cam_out.cfg.pixel.format;
 
-    s_cam_out.cfg.display_cb(&buf, s_cam_out.cfg.display_arg);
+    s_cam_out.cfg.pixel_cb(&buf, s_cam_out.cfg.pixel_arg);
 }
 
 STATIC VOID *tkl_cam_out_stream_alloc(UINT32_T size, VOID *arg)
 {
     (void)arg;
-    return tkl_media_buf_alloc(TKL_BUF_USE_STREAM, size, TKL_MEDIA_BUF_OWNER_CAMERA_STREAM);
+    return tkl_media_buf_alloc(TKL_BUF_USE_STREAM, size, TUYA_MEDIA_BUF_OWNER_CAMERA_STREAM);
 }
 
 STATIC OPERATE_RET tkl_cam_out_stream_free(VOID *ptr, VOID *arg)
@@ -1581,7 +1476,7 @@ STATIC OPERATE_RET tkl_cam_out_stream_free(VOID *ptr, VOID *arg)
         return OPRT_INVALID_PARM;
     }
 
-    tkl_media_buf_free(TKL_MEDIA_BUF_OWNER_CAMERA_STREAM, ptr);
+    tkl_media_buf_free(TUYA_MEDIA_BUF_OWNER_CAMERA_STREAM, ptr);
     return OPRT_OK;
 }
 
@@ -1590,21 +1485,21 @@ STATIC OPERATE_RET tkl_cam_out_stream_free(VOID *ptr, VOID *arg)
  * @param[in]  stream vendor stream descriptor
  * @param[out] buf    receives codec and frame_type
  */
-STATIC VOID tkl_cam_out_stream_meta(CONST TUYA_VCODEC_STREAM_T *stream, TKL_MEDIA_BUF_T *buf)
+STATIC VOID tkl_cam_out_stream_meta(CONST TUYA_VCODEC_STREAM_T *stream, TUYA_MEDIA_BUF_T *buf)
 {
-    buf->codec = (stream->codec == (UINT32_T)TUYA_VCODEC_TYPE_H264)
-                     ? (UINT32_T)TKL_MEDIA_CODEC_H264
-                     : (UINT32_T)TKL_MEDIA_CODEC_JPEG;
+    buf->format = (stream->codec == (UINT32_T)TUYA_VCODEC_TYPE_H264)
+                      ? TUYA_FRAME_FMT_H264
+                      : TUYA_FRAME_FMT_JPEG;
 
     switch (stream->frame_type) {
     case TUYA_VCODEC_FRAME_I:
-        buf->frame_type = (UINT32_T)TKL_MEDIA_FRAME_I;
+        buf->frame_type = (UINT32_T)TUYA_VIDEO_FRAME_I;
         break;
     case TUYA_VCODEC_FRAME_P:
-        buf->frame_type = (UINT32_T)TKL_MEDIA_FRAME_P;
+        buf->frame_type = (UINT32_T)TUYA_VIDEO_FRAME_P;
         break;
     default:
-        buf->frame_type = (UINT32_T)TKL_MEDIA_FRAME_UNKNOWN;
+        buf->frame_type = (UINT32_T)TUYA_VIDEO_FRAME_UNKNOWN;
         break;
     }
 }
@@ -1621,7 +1516,7 @@ STATIC VOID tkl_cam_out_stream_meta(CONST TUYA_VCODEC_STREAM_T *stream, TKL_MEDI
  */
 STATIC VOID tkl_cam_out_stream_cb(CONST TUYA_VCODEC_STREAM_T *stream, VOID *arg)
 {
-    TKL_MEDIA_BUF_T buf;
+    TUYA_MEDIA_BUF_T buf;
 
     (void)arg;
 
@@ -1633,7 +1528,6 @@ STATIC VOID tkl_cam_out_stream_cb(CONST TUYA_VCODEC_STREAM_T *stream, VOID *arg)
     buf.data = stream->data;
     buf.size = stream->size;
     buf.free_cb = NULL;             /* borrowed for the duration of this call */
-    buf.kind = (UINT8_T)TKL_MEDIA_BUF_STREAM;
     buf.pts = stream->pts;
     buf.width = s_cam_out.src_width;
     buf.height = s_cam_out.src_height;
@@ -1652,18 +1546,18 @@ STATIC VOID tkl_cam_out_stream_cb(CONST TUYA_VCODEC_STREAM_T *stream, VOID *arg)
  * @param[out] old receives the legacy config
  * @return OPRT_OK on success
  */
-STATIC OPERATE_RET tkl_cam_out_build_camera_cfg(CONST TKL_CAMERA_MIPI_CFG_T *cfg,
-                                                TUYA_CAMERA_MIPI_CFG_T *old)
+STATIC OPERATE_RET tkl_cam_out_build_camera_cfg(CONST TUYA_MIPI_CSI_CFG_T *cfg,
+                                                TUYA_MIPI_CSI_HW_CFG_T *old)
 {
     BOOL_T mp_flexa;
 
     os_memset(old, 0, sizeof(*old));
-    old->pin_scl = cfg->pin_scl;
-    old->pin_sda = cfg->pin_sda;
-    old->i2c_id = cfg->i2c_id;
-    old->pin_reset = cfg->pin_reset;
-    old->pin_pwdn = cfg->pin_pwdn;
-    old->pin_xclk = cfg->pin_xclk;
+    old->pin_scl = cfg->board.pin_scl;
+    old->pin_sda = cfg->board.pin_sda;
+    old->i2c_id = cfg->board.i2c_id;
+    old->pin_reset = cfg->board.pin_reset;
+    old->pin_pwdn = cfg->board.pin_pwdn;
+    old->pin_xclk = cfg->board.pin_xclk;
 
     old->sensor_width = cfg->sensor_width;
     old->sensor_height = cfg->sensor_height;
@@ -1672,33 +1566,34 @@ STATIC OPERATE_RET tkl_cam_out_build_camera_cfg(CONST TKL_CAMERA_MIPI_CFG_T *cfg
     old->sensor_input_format = (cfg->sensor_input_format != 0U)
                                    ? tkl_media_fmt_to_bk(cfg->sensor_input_format)
                                    : 0U;
-    old->hmirror = cfg->hmirror;
-    old->vflip = cfg->vflip;
-    old->skip_frames = cfg->skip_frames;
-    old->read_timeout_ms = TKL_CAM_OUT_READ_TIMEOUT_MS;
+    old->hmirror = 0U;
+    old->vflip = 0U;
+    old->read_timeout_ms = TUYA_MIPI_CSI_READ_TIMEOUT_MS;
 
     /* DISPLAY and H264 are both bond consumers: they read the ISP line by line,
      * which is what flexa mode means. A pulled frame is the opposite. Only MP
-     * can be in flexa mode at all - see tkl_camera_mipi_init() for why. */
-    mp_flexa = ((cfg->mp_out_kinds & (TKL_CAM_OUT_DISPLAY | TKL_CAM_OUT_H264)) != 0U) ? TRUE : FALSE;
+     * can be in flexa mode at all - see tkl_mipi_csi_init() for why. */
+    mp_flexa = ((cfg->primary.output_kinds & (TUYA_MIPI_CSI_OUTPUT_PIXEL | TUYA_MIPI_CSI_OUTPUT_STREAM)) != 0U) ? TRUE : FALSE;
 
-    old->output_width = cfg->mp_width;
-    old->output_height = cfg->mp_height;
-    old->output_format = (UINT32_T)BK_PIXEL_FORMAT_NV12;
-    old->output_buf_cnt = TKL_CAM_OUT_BUF_CNT;
+    old->output_width = cfg->primary.width;
+    old->output_height = cfg->primary.height;
+    old->output_format = (cfg->primary.format != 0U)
+                              ? tkl_media_fmt_to_bk(cfg->primary.format)
+                              : (UINT32_T)BK_PIXEL_FORMAT_NV12;
+    old->output_buf_cnt = TUYA_MIPI_CSI_BUF_CNT;
     old->enable_flexa = mp_flexa;
     old->work_mode = (mp_flexa == TRUE) ? 1U : 0U;
 
-    if (cfg->sp_out_kinds != TKL_CAM_OUT_NONE) {
+    if (cfg->secondary.output_kinds != TUYA_MIPI_CSI_OUTPUT_NONE) {
         old->sp_enable = TRUE;
-        old->sp_width = cfg->sp_width;
-        old->sp_height = cfg->sp_height;
+        old->sp_width = cfg->secondary.width;
+        old->sp_height = cfg->secondary.height;
         /* the caller's choice, not a constant: NV12 to encode or transform the
          * frame, RGB888 to feed the face model directly */
-        old->sp_format = (cfg->sp_format != 0U)
-                             ? tkl_media_fmt_to_bk(cfg->sp_format)
+        old->sp_format = (cfg->secondary.format != 0U)
+                             ? tkl_media_fmt_to_bk(cfg->secondary.format)
                              : (UINT32_T)BK_PIXEL_FORMAT_NV12;
-        old->sp_buf_cnt = TKL_CAM_OUT_SP_BUF_CNT;
+        old->sp_buf_cnt = TUYA_MIPI_CSI_SP_BUF_CNT;
         /* always frame mode - SP has no bond to be in flexa for */
         old->sp_enable_flexa = FALSE;
         old->sp_work_mode = 0U;
@@ -1712,7 +1607,7 @@ STATIC OPERATE_RET tkl_cam_out_build_camera_cfg(CONST TKL_CAMERA_MIPI_CFG_T *cfg
  * @param[in] flexa ISP flexa source of the channel that carries DISPLAY
  * @return OPRT_OK on success
  */
-STATIC OPERATE_RET tkl_cam_out_display_open(CONST TUYA_CAMERA_MIPI_FLEXA_SOURCE_T *flexa)
+STATIC OPERATE_RET tkl_cam_out_display_open(CONST TUYA_MIPI_CSI_FLEXA_SOURCE_T *flexa)
 {
     TUYA_GPU_CFG_T gpu_cfg;
     TUYA_GPU_SINK_T sink;
@@ -1720,15 +1615,15 @@ STATIC OPERATE_RET tkl_cam_out_display_open(CONST TUYA_CAMERA_MIPI_FLEXA_SOURCE_
     OPERATE_RET ret;
 
     os_memset(&gpu_cfg, 0, sizeof(gpu_cfg));
-    gpu_cfg.dst_width = s_cam_out.cfg.display.dst_w;
-    gpu_cfg.dst_height = s_cam_out.cfg.display.dst_h;
-    gpu_cfg.rotate_degree = s_cam_out.cfg.display.rotate;
-    gpu_cfg.dst_format = tkl_media_fmt_to_bk(s_cam_out.cfg.display.format);
+    gpu_cfg.dst_width = s_cam_out.cfg.pixel.target_width;
+    gpu_cfg.dst_height = s_cam_out.cfg.pixel.target_height;
+    gpu_cfg.rotate_degree = s_cam_out.cfg.pixel.rotate;
+    gpu_cfg.dst_format = tkl_media_fmt_to_bk(s_cam_out.cfg.pixel.format);
     gpu_cfg.scale = TRUE;
     /* always compressed: a display frame goes straight to the DPU, which
      * decompresses. Exposing this as a choice only invites getting it wrong. */
     gpu_cfg.dst_compress = TRUE;
-    gpu_cfg.flexa_lines = TKL_CAM_OUT_FLEXA_LINES;
+    gpu_cfg.flexa_lines = TUYA_MIPI_CSI_FLEXA_LINES;
 
     ret = tkl_gpu_init(&gpu_cfg, &s_cam_out.gpu);
     if (ret != OPRT_OK) {
@@ -1774,7 +1669,7 @@ err:
  * @param[in] flexa ISP flexa source of the channel that carries H264
  * @return OPRT_OK on success
  */
-STATIC OPERATE_RET tkl_cam_out_encode_open(CONST TUYA_CAMERA_MIPI_FLEXA_SOURCE_T *flexa)
+STATIC OPERATE_RET tkl_cam_out_encode_open(CONST TUYA_MIPI_CSI_FLEXA_SOURCE_T *flexa)
 {
     TUYA_VENC_CFG_T venc_cfg;
     TUYA_VENC_SINK_T sink;
@@ -1785,9 +1680,9 @@ STATIC OPERATE_RET tkl_cam_out_encode_open(CONST TUYA_CAMERA_MIPI_FLEXA_SOURCE_T
     os_memset(&venc_cfg, 0, sizeof(venc_cfg));
     venc_cfg.width = flexa->width;
     venc_cfg.height = flexa->height;
-    venc_cfg.fps = (s_cam_out.cfg.encode.fps != 0U) ? s_cam_out.cfg.encode.fps
+    venc_cfg.fps = (s_cam_out.cfg.encoder.fps != 0U) ? s_cam_out.cfg.encoder.fps
                                                     : s_cam_out.cfg.sensor_fps;
-    venc_cfg.gop = s_cam_out.cfg.encode.gop;
+    venc_cfg.gop = s_cam_out.cfg.encoder.gop;
     venc_cfg.codec = (UINT32_T)TUYA_VCODEC_TYPE_H264;
     venc_cfg.input_format = flexa->format;
 
@@ -1797,9 +1692,9 @@ STATIC OPERATE_RET tkl_cam_out_encode_open(CONST TUYA_CAMERA_MIPI_FLEXA_SOURCE_T
         return ret;
     }
 
-    if (s_cam_out.cfg.encode.bitrate != 0U) {
+    if (s_cam_out.cfg.encoder.bitrate != 0U) {
         os_memset(&rc, 0, sizeof(rc));
-        rc.bitrate = s_cam_out.cfg.encode.bitrate;
+        rc.bitrate = s_cam_out.cfg.encoder.bitrate;
         (void)tkl_venc_set_rate_ctrl(s_cam_out.venc, &rc);
     }
 
@@ -1840,34 +1735,9 @@ err:
     return ret;
 }
 
-/**
- * @brief Resolve display.osd_rotate into the angle the OSD engine takes.
- *
- * @return 0, 90 or 270
- *
- * @note The overlay is composited into the already-rotated frame, so matching
- *       the picture is what puts text upright on the panel - but a caller may
- *       want it fixed to the frame instead. FOLLOW is the zero value so a zeroed
- *       config gets the upright result; ZERO spells the literal 0.
- */
-STATIC UINT16_T tkl_cam_out_osd_rotate_resolve(VOID_T)
-{
-    UINT16_T want = s_cam_out.cfg.display.osd_rotate;
-
-    if (want == TKL_CAM_OSD_ROTATE_FOLLOW) {
-        return s_cam_out.cfg.display.rotate;
-    }
-    if (want == TKL_CAM_OSD_ROTATE_ZERO) {
-        return 0U;
-    }
-
-    return want;
-}
-
-/**
- * @brief Bind the display overlay compositor once the GPU is running.
- * @return OPRT_OK on success
- */
+/* ---------------------------------------------------------------------------
+ * Display OSD backend
+ * ------------------------------------------------------------------------- */
 STATIC OPERATE_RET tkl_cam_out_osd_display_open(VOID_T)
 {
     TKL_OSD_ENGINE_CFG_T cfg;
@@ -1880,11 +1750,10 @@ STATIC OPERATE_RET tkl_cam_out_osd_display_open(VOID_T)
     }
 
     os_memset(&cfg, 0, sizeof(cfg));
-    cfg.target_w = s_cam_out.cfg.display.dst_w;
-    cfg.target_h = s_cam_out.cfg.display.dst_h;
-    cfg.rotate = tkl_cam_out_osd_rotate_resolve();
-    /* the compositor writes ARGB8888; the compressed display path reads ABGR */
-    cfg.src_format = (UINT32_T)BK_PIXEL_FORMAT_ABGR8888;
+    cfg.target_w = s_cam_out.cfg.pixel.target_width;
+    cfg.target_h = s_cam_out.cfg.pixel.target_height;
+    /* the caller supplies the rotation per overlay request */
+    cfg.src_format = (UINT32_T)BK_PIXEL_FORMAT_ARGB8888;
 
     return tkl_osd_engine_open(TKL_OSD_BACKEND_GPU, gpu_raw, &cfg, &s_cam_out.osd_display);
 }
@@ -1893,9 +1762,80 @@ STATIC OPERATE_RET tkl_cam_out_osd_display_open(VOID_T)
  * Public API
  * ------------------------------------------------------------------------- */
 
-OPERATE_RET tkl_camera_mipi_init(CONST TKL_CAMERA_MIPI_CFG_T *cfg)
+static BOOL_T tkl_mipi_csi_is_bayer_input(TUYA_FRAME_FMT_E format)
 {
-    TUYA_CAMERA_MIPI_CFG_T dev_cfg;
+    switch (format) {
+    case TUYA_FRAME_FMT_BGGR10:
+    case TUYA_FRAME_FMT_GBRG10:
+    case TUYA_FRAME_FMT_GRBG10:
+    case TUYA_FRAME_FMT_RGGB10:
+        return TRUE;
+    default:
+        return FALSE;
+    }
+}
+
+static OPERATE_RET tkl_mipi_csi_validate_formats(CONST TUYA_MIPI_CSI_CFG_T *cfg)
+{
+    if (cfg->sensor_input_format != 0U &&
+        (!tkl_mipi_csi_is_bayer_input(cfg->sensor_input_format) ||
+         tkl_media_fmt_to_bk(cfg->sensor_input_format) == (UINT32_T)BK_PIXEL_FORMAT_INVALID)) {
+        return OPRT_INVALID_PARM;
+    }
+
+    if (cfg->primary.format != 0U &&
+        tkl_media_fmt_to_bk(cfg->primary.format) == (UINT32_T)BK_PIXEL_FORMAT_INVALID) {
+        return OPRT_NOT_SUPPORTED;
+    }
+
+    if (cfg->secondary.format != 0U &&
+        tkl_media_fmt_to_bk(cfg->secondary.format) == (UINT32_T)BK_PIXEL_FORMAT_INVALID) {
+        return OPRT_NOT_SUPPORTED;
+    }
+
+    if ((cfg->primary.output_kinds & TUYA_MIPI_CSI_OUTPUT_PIXEL) != 0U &&
+        (cfg->pixel.format == 0U ||
+         tkl_media_fmt_to_bk(cfg->pixel.format) == (UINT32_T)BK_PIXEL_FORMAT_INVALID)) {
+        return OPRT_NOT_SUPPORTED;
+    }
+
+    return OPRT_OK;
+}
+
+static OPERATE_RET tkl_mipi_csi_validate_output_kinds(CONST TUYA_MIPI_CSI_CFG_T *cfg)
+{
+    const UINT32_T allowed = (UINT32_T)TUYA_MIPI_CSI_OUTPUT_FRAME |
+                             (UINT32_T)TUYA_MIPI_CSI_OUTPUT_PIXEL |
+                             (UINT32_T)TUYA_MIPI_CSI_OUTPUT_STREAM;
+    UINT32_T primary;
+    UINT32_T secondary;
+
+    primary = (UINT32_T)cfg->primary.output_kinds;
+    secondary = (UINT32_T)cfg->secondary.output_kinds;
+
+    if ((primary & ~allowed) != 0U || (secondary & ~allowed) != 0U) {
+        return OPRT_INVALID_PARM;
+    }
+
+    /* A pulled frame and a line-by-line bond require different ISP modes. */
+    if ((primary & (UINT32_T)TUYA_MIPI_CSI_OUTPUT_FRAME) != 0U &&
+        (primary & ((UINT32_T)TUYA_MIPI_CSI_OUTPUT_PIXEL |
+                    (UINT32_T)TUYA_MIPI_CSI_OUTPUT_STREAM)) != 0U) {
+        return OPRT_NOT_SUPPORTED;
+    }
+
+    /* T9's GPU and encoder bonds are attached to primary/MP only. */
+    if ((secondary & ((UINT32_T)TUYA_MIPI_CSI_OUTPUT_PIXEL |
+                     (UINT32_T)TUYA_MIPI_CSI_OUTPUT_STREAM)) != 0U) {
+        return OPRT_NOT_SUPPORTED;
+    }
+
+    return OPRT_OK;
+}
+
+OPERATE_RET tkl_mipi_csi_init(CONST TUYA_MIPI_CSI_CFG_T *cfg)
+{
+    TUYA_MIPI_CSI_HW_CFG_T dev_cfg;
     UINT32_T t;
     UINT32_T ms_power;
     OPERATE_RET ret;
@@ -1908,42 +1848,40 @@ OPERATE_RET tkl_camera_mipi_init(CONST TKL_CAMERA_MIPI_CFG_T *cfg)
         return OPRT_RESOURCE_NOT_READY;
     }
 
-    if (cfg->mp_out_kinds == TKL_CAM_OUT_NONE && cfg->sp_out_kinds == TKL_CAM_OUT_NONE) {
+    if (cfg->primary.output_kinds == TUYA_MIPI_CSI_OUTPUT_NONE && cfg->secondary.output_kinds == TUYA_MIPI_CSI_OUTPUT_NONE) {
         return OPRT_INVALID_PARM;
     }
 
-    /* Display and encode live on MP, always. Every vendor ISP bond hardcodes
-     * ISP_MP_CHN_ID - bk_flexa_isp_gpu_bond.c rejects any other channel on the
-     * spot, and the h264/jpeg bonds configure MP's SBI without looking at what
-     * they were asked for. cam_mipi_get_flexa_source() reports MP for the
-     * same reason. Accepting these on SP would mean opening SP in flexa mode,
-     * bonding the consumer to MP anyway, and encoding the wrong picture at the
-     * wrong geometry - silently. Refuse instead. */
-    if ((cfg->sp_out_kinds & (TKL_CAM_OUT_DISPLAY | TKL_CAM_OUT_H264)) != 0U) {
-        tkl_log_output("tkl_cam_out: SP carries frames only, display/h264 must be on MP\r\n");
-        return OPRT_NOT_SUPPORTED;
+    ret = tkl_mipi_csi_validate_output_kinds(cfg);
+    if (ret != OPRT_OK) {
+        return ret;
     }
 
-    if ((cfg->mp_out_kinds & TKL_CAM_OUT_DISPLAY) != 0U &&
-        (cfg->display.dst_w == 0U || cfg->display.dst_h == 0U)) {
+    ret = tkl_mipi_csi_validate_formats(cfg);
+    if (ret != OPRT_OK) {
+        return ret;
+    }
+
+    if ((cfg->primary.output_kinds & TUYA_MIPI_CSI_OUTPUT_PIXEL) != 0U &&
+        (cfg->pixel.target_width == 0U || cfg->pixel.target_height == 0U)) {
         return OPRT_INVALID_PARM;
     }
 
     os_memset(&s_cam_out, 0, sizeof(s_cam_out));
     os_memcpy(&s_cam_out.cfg, cfg, sizeof(s_cam_out.cfg));
 
-    if ((cfg->mp_out_kinds & TKL_CAM_OUT_DISPLAY) != 0U) {
+    if ((cfg->primary.output_kinds & TUYA_MIPI_CSI_OUTPUT_PIXEL) != 0U) {
         s_cam_out.want_display = TRUE;
     }
-    if ((cfg->mp_out_kinds & TKL_CAM_OUT_H264) != 0U) {
+    if ((cfg->primary.output_kinds & TUYA_MIPI_CSI_OUTPUT_STREAM) != 0U) {
         s_cam_out.want_encode = TRUE;
     }
 
     (void)tkl_cam_out_build_camera_cfg(cfg, &dev_cfg);
 
-    t = TKL_CAM_OUT_MS();
+    t = TUYA_MIPI_CSI_MS();
     ret = cam_mipi_init(&dev_cfg);
-    ms_power = TKL_CAM_OUT_MS() - t;
+    ms_power = TUYA_MIPI_CSI_MS() - t;
     if (ret != OPRT_OK) {
         tkl_log_output("tkl_cam_out: camera init failed: %d\r\n", ret);
         os_memset(&s_cam_out, 0, sizeof(s_cam_out));
@@ -1956,7 +1894,7 @@ OPERATE_RET tkl_camera_mipi_init(CONST TKL_CAMERA_MIPI_CFG_T *cfg)
     return OPRT_OK;
 }
 
-OPERATE_RET tkl_camera_mipi_start(VOID_T)
+OPERATE_RET tkl_mipi_csi_start(VOID_T)
 {
     UINT32_T t;
     UINT32_T ms_sensor;
@@ -1971,21 +1909,30 @@ OPERATE_RET tkl_camera_mipi_start(VOID_T)
     }
 
     /* --- producer first: the flexa source is only valid once it streams --- */
-    t = TKL_CAM_OUT_MS();
+    t = TUYA_MIPI_CSI_MS();
     ret = cam_mipi_start();
-    ms_sensor = TKL_CAM_OUT_MS() - t;
+    ms_sensor = TUYA_MIPI_CSI_MS() - t;
     if (ret != OPRT_OK) {
         tkl_log_output("tkl_cam_out: camera start failed: %d\r\n", ret);
         return ret;
     }
 
-    s_cam_out.src_width = s_cam_out.cfg.mp_width;
-    s_cam_out.src_height = s_cam_out.cfg.mp_height;
+    /* cam_mipi_start() applies zero-dimension path defaults. Keep the facade
+     * geometry in sync so stream metadata and later set_output() use the
+     * actual ISP dimensions rather than the caller's shorthand zeros. */
+    s_cam_out.cfg.primary.width = s_cam_ctx.cfg.output_width;
+    s_cam_out.cfg.primary.height = s_cam_ctx.cfg.output_height;
+    if (s_cam_ctx.cfg.sp_enable == TRUE) {
+        s_cam_out.cfg.secondary.width = s_cam_ctx.cfg.sp_width;
+        s_cam_out.cfg.secondary.height = s_cam_ctx.cfg.sp_height;
+    }
+    s_cam_out.src_width = s_cam_ctx.cfg.output_width;
+    s_cam_out.src_height = s_cam_ctx.cfg.output_height;
 
     /* --- consumers: backends, then bonds, then overlays --- */
-    t = TKL_CAM_OUT_MS();
+    t = TUYA_MIPI_CSI_MS();
     ret = tkl_cam_out_consumers_open();
-    ms_consumer = TKL_CAM_OUT_MS() - t;
+    ms_consumer = TUYA_MIPI_CSI_MS() - t;
     if (ret != OPRT_OK) {
         (void)cam_mipi_stop();
         return ret;
@@ -2001,7 +1948,7 @@ OPERATE_RET tkl_camera_mipi_start(VOID_T)
     return OPRT_OK;
 }
 
-OPERATE_RET tkl_camera_mipi_stop(VOID_T)
+OPERATE_RET tkl_mipi_csi_stop(VOID_T)
 {
     UINT32_T t;
     UINT32_T ms_consumer;
@@ -2016,32 +1963,32 @@ OPERATE_RET tkl_camera_mipi_stop(VOID_T)
      * stop your own puller first, as the xmipi cam CLI does. */
     s_cam_out.state = TKL_CAM_ST_INIT;
 
-    t = TKL_CAM_OUT_MS();
+    t = TUYA_MIPI_CSI_MS();
 
     /* 1-3. overlays, then all bonds, then the backends. tkl_venc_stop() and
      *      tkl_gpu_stop() each stop their own bond and close only their own
      *      backend, so calling them back to back keeps the rule that no backend
      *      is touched while any bond is still live. */
     tkl_cam_out_consumers_close();
-    ms_consumer = TKL_CAM_OUT_MS() - t;
-    t = TKL_CAM_OUT_MS();
+    ms_consumer = TUYA_MIPI_CSI_MS() - t;
+    t = TUYA_MIPI_CSI_MS();
 
     /* 4. producer last */
     (void)cam_mipi_stop();
-    ms_camera = TKL_CAM_OUT_MS() - t;
+    ms_camera = TUYA_MIPI_CSI_MS() - t;
 
     /* Deliberately NOT draining tkl_media_buf here. Business is allowed to hold
      * a frame across a stop/start; the pool survives and is simply one buffer
-     * short until it comes back. Waiting would add up to TKL_CAM_OUT_DRAIN_MS
+     * short until it comes back. Waiting would add up to TUYA_MIPI_CSI_DRAIN_MS
      * per owner to every pause - three of them - which is most of what this API
-     * split exists to remove. tkl_camera_mipi_deinit() does the waiting. */
+     * split exists to remove. tkl_mipi_csi_deinit() does the waiting. */
     tkl_log_output("tkl_cam_out: stop took %u ms (consumer %u, camera %u)\r\n",
                    (unsigned)(ms_consumer + ms_camera),
                    (unsigned)ms_consumer, (unsigned)ms_camera);
     return OPRT_OK;
 }
 
-OPERATE_RET tkl_camera_mipi_deinit(VOID_T)
+OPERATE_RET tkl_mipi_csi_deinit(VOID_T)
 {
     UINT32_T t;
     UINT32_T ms_camera;
@@ -2051,25 +1998,25 @@ OPERATE_RET tkl_camera_mipi_deinit(VOID_T)
         return OPRT_OK;
     }
 
-    (void)tkl_camera_mipi_stop();
+    (void)tkl_mipi_csi_stop();
 
-    t = TKL_CAM_OUT_MS();
+    t = TUYA_MIPI_CSI_MS();
     (void)cam_mipi_deinit();
-    ms_camera = TKL_CAM_OUT_MS() - t;
-    t = TKL_CAM_OUT_MS();
+    ms_camera = TUYA_MIPI_CSI_MS() - t;
+    t = TUYA_MIPI_CSI_MS();
 
     /* Frames already handed to business are still out there; wait briefly so a
      * leak shows up here rather than as pool exhaustion later. Never force a
      * release - business may still hold the pointer. Display tolerates one: the
      * panel is still scanning the last frame and nothing will replace it. A
      * bitstream has no such holder, so stream must reach zero. */
-    (void)tkl_media_buf_drain(TKL_MEDIA_BUF_OWNER_CAMERA_DISPLAY,
-                              TKL_CAM_OUT_DISPLAY_RESIDUAL, TKL_CAM_OUT_DRAIN_MS);
-    (void)tkl_media_buf_drain(TKL_MEDIA_BUF_OWNER_CAMERA_STREAM, 0U, TKL_CAM_OUT_DRAIN_MS);
+    (void)tkl_media_buf_drain(TUYA_MEDIA_BUF_OWNER_CAMERA_DISPLAY,
+                              TUYA_MIPI_CSI_OUTPUT_PIXEL_RESIDUAL, TUYA_MIPI_CSI_DRAIN_MS);
+    (void)tkl_media_buf_drain(TUYA_MEDIA_BUF_OWNER_CAMERA_STREAM, 0U, TUYA_MIPI_CSI_DRAIN_MS);
     /* Pulled frames have no such holder either: business asked for each one and
      * is expected to have released it before deinit. */
-    (void)tkl_media_buf_drain(TKL_MEDIA_BUF_OWNER_CAMERA_FRAME, 0U, TKL_CAM_OUT_DRAIN_MS);
-    ms_drain = TKL_CAM_OUT_MS() - t;
+    (void)tkl_media_buf_drain(TUYA_MEDIA_BUF_OWNER_CAMERA_FRAME, 0U, TUYA_MIPI_CSI_DRAIN_MS);
+    ms_drain = TUYA_MIPI_CSI_MS() - t;
 
     tkl_log_output("tkl_cam_out: deinit took %u ms (camera %u, drain %u)\r\n",
                    (unsigned)(ms_camera + ms_drain),
@@ -2082,7 +2029,7 @@ OPERATE_RET tkl_camera_mipi_deinit(VOID_T)
 /**
  * @brief Tear down every consumer, leaving the camera running.
  *
- * @note Same order as tkl_camera_mipi_stop() minus the producer: overlays,
+ * @note Same order as tkl_mipi_csi_stop() minus the producer: overlays,
  *       then all bonds, then the backends.
  */
 STATIC VOID_T tkl_cam_out_consumers_close(VOID_T)
@@ -2125,7 +2072,7 @@ STATIC VOID_T tkl_cam_out_consumers_close(VOID_T)
  */
 STATIC OPERATE_RET tkl_cam_out_consumers_open(VOID_T)
 {
-    TUYA_CAMERA_MIPI_FLEXA_SOURCE_T flexa;
+    TUYA_MIPI_CSI_FLEXA_SOURCE_T flexa;
     OPERATE_RET ret;
 
     if (s_cam_out.want_display != TRUE && s_cam_out.want_encode != TRUE) {
@@ -2168,7 +2115,10 @@ STATIC OPERATE_RET tkl_cam_out_consumers_open(VOID_T)
     }
 
     if (s_cam_out.want_display == TRUE) {
-        (void)tkl_cam_out_osd_display_open();
+        ret = tkl_cam_out_osd_display_open();
+        if (ret != OPRT_OK) {
+            goto err_gpu_started;
+        }
     }
 
     return OPRT_OK;
@@ -2190,9 +2140,9 @@ err_display:
     return ret;
 }
 
-OPERATE_RET tkl_camera_mipi_set_output(UINT8_T channel_id, UINT16_T width, UINT16_T height)
+OPERATE_RET tkl_mipi_csi_set_output(UINT8_T channel_id, UINT16_T width, UINT16_T height)
 {
-    TUYA_CAMERA_MIPI_FLEXA_SOURCE_T flexa;
+    TUYA_MIPI_CSI_FLEXA_SOURCE_T flexa;
     UINT16_T old_w;
     UINT16_T old_h;
     OPERATE_RET ret;
@@ -2204,18 +2154,23 @@ OPERATE_RET tkl_camera_mipi_set_output(UINT8_T channel_id, UINT16_T width, UINT1
         return OPRT_INVALID_PARM;
     }
 
+    if (channel_id != TUYA_MIPI_CSI_CHANNEL_PRIMARY &&
+        channel_id != TUYA_MIPI_CSI_CHANNEL_SECONDARY) {
+        return OPRT_INVALID_PARM;
+    }
+
     /* Switching output geometry restarts the ISP and rebuilds every consumer,
      * so there has to be a running pipeline to switch. */
     if (s_cam_out.state != TKL_CAM_ST_STARTED) {
         return OPRT_RESOURCE_NOT_READY;
     }
 
-    if (channel_id == TUYA_CAMERA_MIPI_CHANNEL_MP) {
-        old_w = s_cam_out.cfg.mp_width;
-        old_h = s_cam_out.cfg.mp_height;
+    if (channel_id == TUYA_MIPI_CSI_CHANNEL_PRIMARY) {
+        old_w = s_cam_out.cfg.primary.width;
+        old_h = s_cam_out.cfg.primary.height;
     } else {
-        old_w = s_cam_out.cfg.sp_width;
-        old_h = s_cam_out.cfg.sp_height;
+        old_w = s_cam_out.cfg.secondary.width;
+        old_h = s_cam_out.cfg.secondary.height;
     }
 
     if (old_w == width && old_h == height) {
@@ -2235,7 +2190,7 @@ OPERATE_RET tkl_camera_mipi_set_output(UINT8_T channel_id, UINT16_T width, UINT1
      *
      * Verified rather than trusted: isp_handle and the MP flexa buffer are
      * snapshotted and re-checked below. */
-    rebuild = (channel_id == TUYA_CAMERA_MIPI_CHANNEL_MP) ? TRUE : FALSE;
+    rebuild = (channel_id == TUYA_MIPI_CSI_CHANNEL_PRIMARY) ? TRUE : FALSE;
 
     if (rebuild == TRUE) {
         tkl_cam_out_consumers_close();
@@ -2260,18 +2215,15 @@ OPERATE_RET tkl_camera_mipi_set_output(UINT8_T channel_id, UINT16_T width, UINT1
         return ret;
     }
 
-    if (channel_id == TUYA_CAMERA_MIPI_CHANNEL_MP) {
-        s_cam_out.cfg.mp_width = width;
-        s_cam_out.cfg.mp_height = height;
+    if (channel_id == TUYA_MIPI_CSI_CHANNEL_PRIMARY) {
+        s_cam_out.cfg.primary.width = width;
+        s_cam_out.cfg.primary.height = height;
         s_cam_out.src_width = width;
         s_cam_out.src_height = height;
-        /* display always sits on MP, so its destination follows MP's geometry */
-        s_cam_out.cfg.display.dst_w = width;
-        s_cam_out.cfg.display.dst_h = height;
     } else {
         /* SP feeds nobody downstream - resizing it rebuilds nothing */
-        s_cam_out.cfg.sp_width = width;
-        s_cam_out.cfg.sp_height = height;
+        s_cam_out.cfg.secondary.width = width;
+        s_cam_out.cfg.secondary.height = height;
     }
 
     if (rebuild != TRUE) {
@@ -2303,16 +2255,14 @@ OPERATE_RET tkl_camera_mipi_set_output(UINT8_T channel_id, UINT16_T width, UINT1
                        ret, old_w, old_h);
 
         if (cam_mipi_set_output(channel_id, old_w, old_h) == OPRT_OK) {
-            if (channel_id == TUYA_CAMERA_MIPI_CHANNEL_MP) {
-                s_cam_out.cfg.mp_width = old_w;
-                s_cam_out.cfg.mp_height = old_h;
+            if (channel_id == TUYA_MIPI_CSI_CHANNEL_PRIMARY) {
+                s_cam_out.cfg.primary.width = old_w;
+                s_cam_out.cfg.primary.height = old_h;
                 s_cam_out.src_width = old_w;
                 s_cam_out.src_height = old_h;
-                s_cam_out.cfg.display.dst_w = old_w;
-                s_cam_out.cfg.display.dst_h = old_h;
             } else {
-                s_cam_out.cfg.sp_width = old_w;
-                s_cam_out.cfg.sp_height = old_h;
+                s_cam_out.cfg.secondary.width = old_w;
+                s_cam_out.cfg.secondary.height = old_h;
             }
             (void)tkl_cam_out_consumers_open();
         }
@@ -2324,7 +2274,7 @@ OPERATE_RET tkl_camera_mipi_set_output(UINT8_T channel_id, UINT16_T width, UINT1
     return OPRT_OK;
 }
 
-OPERATE_RET tkl_camera_mipi_set_encode(CONST TKL_MEDIA_ENC_CTRL_T *ctrl)
+OPERATE_RET tkl_mipi_csi_set_encode(CONST TUYA_MEDIA_ENC_CTRL_T *ctrl)
 {
     TUYA_VENC_RATE_CTRL_T rc;
     OPERATE_RET ret = OPRT_OK;
@@ -2344,7 +2294,7 @@ OPERATE_RET tkl_camera_mipi_set_encode(CONST TKL_MEDIA_ENC_CTRL_T *ctrl)
         os_memset(&rc, 0, sizeof(rc));
         rc.bitrate = ctrl->bitrate;
         rc.force_idr = ctrl->force_idr;
-        s_cam_out.cfg.encode.bitrate = ctrl->bitrate;
+        s_cam_out.cfg.encoder.bitrate = ctrl->bitrate;
         return tkl_venc_set_rate_ctrl(s_cam_out.venc, &rc);
     }
 
@@ -2355,62 +2305,30 @@ OPERATE_RET tkl_camera_mipi_set_encode(CONST TKL_MEDIA_ENC_CTRL_T *ctrl)
     return ret;
 }
 
-OPERATE_RET tkl_camera_mipi_set_osd(TKL_CAM_CHN_E chn, CONST TKL_OSD_T *osd)
+OPERATE_RET tkl_mipi_csi_set_osd(TUYA_MIPI_CSI_OSD_CHANNEL_E chn, CONST TUYA_OSD_T *osd)
 {
     if (osd == NULL) {
         return OPRT_INVALID_PARM;
     }
 
-    /* Same reasoning as tkl_camera_mipi_set_encode(): the OSD engine belongs to
-     * the running pipeline, so it is refused while stopped rather than queued. */
     if (s_cam_out.state != TKL_CAM_ST_STARTED) {
         return OPRT_RESOURCE_NOT_READY;
     }
 
-    if (chn == TKL_CAM_CHN_DISPLAY) {
-        TKL_OSD_T local;
-
+    if (chn == TUYA_MIPI_CSI_OSD_PIXEL) {
         if (s_cam_out.osd_display == NULL) {
             return OPRT_NOT_SUPPORTED;
         }
-
-        /* The compositor rejects a slot whose angle differs from the channel's,
-         * and the channel's angle is something this module resolved. Making the
-         * caller repeat a value it has to guess buys nothing but mismatches, so
-         * fill it in here. */
-        local = *osd;
-        local.rotate = tkl_cam_out_osd_rotate_resolve();
-        return tkl_osd_engine_submit(s_cam_out.osd_display, &local);
+        return tkl_osd_engine_submit(s_cam_out.osd_display, osd);
     }
 
-    if (s_cam_out.venc == NULL) {
-        return OPRT_NOT_SUPPORTED;
-    }
-
-    /* the encode overlay lives inside tkl_venc, bound when the encoder started */
-    return tkl_venc_set_osd(s_cam_out.venc, osd);
-}
-
-OPERATE_RET tkl_camera_mipi_get_osd_caps(TKL_CAM_CHN_E chn, TKL_OSD_CAPS_T *caps)
-{
-    if (caps == NULL) {
+    if (chn != TUYA_MIPI_CSI_OSD_STREAM) {
         return OPRT_INVALID_PARM;
     }
 
-    if (s_cam_out.state != TKL_CAM_ST_STARTED) {
-        return OPRT_RESOURCE_NOT_READY;
-    }
-
-    if (chn == TKL_CAM_CHN_DISPLAY) {
-        if (s_cam_out.osd_display == NULL) {
-            return OPRT_NOT_SUPPORTED;
-        }
-        return tkl_osd_engine_caps(s_cam_out.osd_display, caps);
-    }
-
     if (s_cam_out.venc == NULL) {
         return OPRT_NOT_SUPPORTED;
     }
 
-    return tkl_venc_get_osd_caps(s_cam_out.venc, caps);
+    return tkl_venc_set_osd(s_cam_out.venc, osd);
 }

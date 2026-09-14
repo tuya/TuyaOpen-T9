@@ -40,7 +40,7 @@ typedef struct {
      * eleven built-in quantisation tables running coarse (0) to all-ones (10).
      * qLevel N is the same table libjpeg produces at quality N*10, so 10 means
      * quantisation off. Default 2, i.e. libjpeg quality ~30. Ignored for H264.
-     * Note this is NOT the 1..100 scale TKL_IMAGE_ENC_PARAM_T uses. */
+     * Note this is NOT the 1..100 scale TUYA_IMAGE_CODEC_ENC_PARAM_T uses. */
     UINT8_T quality;
 } TUYA_VENC_CFG_T;
 
@@ -92,24 +92,15 @@ OPERATE_RET tkl_venc_stop(TUYA_VENC_HANDLE handle);
 OPERATE_RET tkl_venc_set_rate_ctrl(TUYA_VENC_HANDLE handle, const TUYA_VENC_RATE_CTRL_T *rate_ctrl);
 OPERATE_RET tkl_venc_request_idr(TUYA_VENC_HANDLE handle);
 /**
- * @brief Set one encode-path OSD overlay slot
+ * @brief Set or clear one encode-path pre-composed ARGB8888 overlay.
  * @param[in] handle venc handle
- * @param[in] osd slot contents; count==0 or elems==NULL clears the slot
- * @return OPRT_OK on success, OPRT_NOT_SUPPORTED for JPEG / non-H264
- * @note Only H264/VCENC, and only while started. TKL composes and rasterizes;
- *       the caller supplies elements, not pixels. Coordinates are in un-rotated
- *       encoded-frame space - the display channel uses a different one.
- *       Max 8 slots; regions must not share a 64x16 CTB. Effective next frame.
+ * @param[in] osd bitmap in un-rotated encoded-frame coordinates
+ * @return OPRT_OK on success, OPRT_NOT_SUPPORTED for JPEG/non-H264, no slot,
+ *         or non-zero rotation
+ * @note The caller owns the bitmap data. Same coordinates update one of the
+ *       eight backend slots; NULL data clears that coordinate.
  */
-OPERATE_RET tkl_venc_set_osd(TUYA_VENC_HANDLE handle, CONST TKL_OSD_T *osd);
-
-/**
- * @brief Report the encode-path OSD capabilities
- * @param[in] handle venc handle
- * @param[out] caps receives the capabilities
- * @return OPRT_OK on success, OPRT_NOT_SUPPORTED for JPEG / non-H264
- */
-OPERATE_RET tkl_venc_get_osd_caps(TUYA_VENC_HANDLE handle, TKL_OSD_CAPS_T *caps);
+OPERATE_RET tkl_venc_set_osd(TUYA_VENC_HANDLE handle, CONST TUYA_OSD_T *osd);
 OPERATE_RET tkl_venc_get_handle(TUYA_VENC_HANDLE handle, VOID **backend_handle);
 
 /* JPEG still-image encode and the NV12->YUYV helper moved to tkl_image.h:

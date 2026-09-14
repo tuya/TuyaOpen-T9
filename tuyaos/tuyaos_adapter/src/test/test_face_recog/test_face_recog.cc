@@ -23,7 +23,7 @@ extern "C" {
 #include <common/avdk_pixel_types.h>
 
 #include "cli_tuya_test.h"
-#include "tkl_camera_mipi.h"
+#include "tkl_mipi_csi.h"
 #include "tkl_media_fmt.h"
 #include "tkl_fs.h"
 #include "tuya_cloud_types.h"
@@ -170,7 +170,7 @@ static uint32_t recog_parse_u32(const char *str, uint32_t fallback)
  * @param[out] frame receives the frame on success; untouched on failure
  * @return BK_OK on success
  */
-static bk_err_t recog_read_sp_frame(TKL_MEDIA_BUF_T *frame)
+static bk_err_t recog_read_sp_frame(TUYA_MEDIA_BUF_T *frame)
 {
     OPERATE_RET ret;
 
@@ -179,7 +179,7 @@ static bk_err_t recog_read_sp_frame(TKL_MEDIA_BUF_T *frame)
     }
 
     /* The camera owns the buffer and lends it; nothing to size or allocate here. */
-    ret = tkl_camera_mipi_get_frame(frame, TUYA_CAMERA_MIPI_CHANNEL_SP, 1000U);
+    ret = tkl_mipi_csi_get_frame(frame, TUYA_MIPI_CSI_CHANNEL_SECONDARY, 1000U);
     if (ret != OPRT_OK) {
         bk_printf("[xrecog] get SP frame failed, ret=%d\r\n", ret);
         return BK_FAIL;
@@ -206,7 +206,7 @@ static bk_err_t recog_read_sp_frame(TKL_MEDIA_BUF_T *frame)
  */
 static bk_err_t recog_dump_sp_ppm(const char *path)
 {
-    TKL_MEDIA_BUF_T frame;
+    TUYA_MEDIA_BUF_T frame;
     TUYA_FILE f = NULL;
     char header[48];
     int n;
@@ -318,7 +318,7 @@ static bk_err_t recog_model_prepare(void)
 
 static void recog_task(void *arg)
 {
-    TKL_MEDIA_BUF_T frame;
+    TUYA_MEDIA_BUF_T frame;
     uint32_t rounds = s_recog_rounds;
     uint32_t delay_ms = s_recog_delay_ms;
     recog_mode_t mode = s_recog_mode;

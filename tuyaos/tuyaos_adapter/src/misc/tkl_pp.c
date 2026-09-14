@@ -66,8 +66,14 @@ UINT32_T tkl_pp_output_size(UINT32_T format, UINT16_T width, UINT16_T height)
         return 0U;
     }
 
-    /* mirrors pp_ctlr_process(): NV12 stores an even number of rows, RGB rounds
-     * up to a 16-row block */
+    /* mirrors pp_ctlr_process(): NV12 stores a height that keeps both planes on
+     * whole 16-row DMA segments, RGB rounds up to a 16-row block. The NV12 half
+     * is subtle: the UV plane is height/2 rows, so height itself must be a
+     * multiple of 32 - 320x240 (UV = 120 rows = 7.5 segments) is NOT enough and
+     * the PP DMA overruns the tail of the buffer (board-verified: DATA_TAIL slab
+     * assert on free). 320x256/288 with UV = 128/144 rows pass. The vendor's own
+     * bk_decode_pp_output_size() check accepts the smaller number, so sizing
+     * right is the adapter's job. */
     switch (format) {
     case BK_PIXEL_FORMAT_RGB565:
         stored_h = ((UINT32_T)height + 15U) & ~15U;
@@ -79,7 +85,7 @@ UINT32_T tkl_pp_output_size(UINT32_T format, UINT16_T width, UINT16_T height)
         return (UINT32_T)width * stored_h * 4U;
 
     case BK_PIXEL_FORMAT_NV12:
-        stored_h = ((UINT32_T)height + 1U) & ~1U;
+        stored_h = ((UINT32_T)height + 31U) & ~31U;
         return (UINT32_T)width * stored_h * 3U / 2U;
 
     default:
