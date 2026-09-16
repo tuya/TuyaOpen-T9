@@ -47,3 +47,5 @@ xx*.sh
 /t9_os/projects/tuya_app/config/bk7259/usr_gpio_cfg.h
 /t9_os/projects/tuya_app/config/temp_dir/
 /t9_os/.bk7259_config.save
+
+/toolchain/arm-gnu-toolchain-14.3.rel1-x86_64-arm-none-eabi.tar
