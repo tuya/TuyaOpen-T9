@@ -3,6 +3,7 @@ set(incs
     src/test
     src/misc
     src/misc/mf_test
+    tuyaopen
     src/test/test_lvgl
     src/test/test_ringbuffer
     # src/test/test_face_recognize
@@ -49,10 +50,19 @@ set(incs
     $ENV{ARMINO_PATH}/../../tuyaos/tuyaos_adapter/include/jpeg_codec
     $ENV{ARMINO_PATH}/../../tuyaos/tuyaos_adapter/include/audio
     $ENV{ARMINO_PATH}/../../tuyaos/tuyaos_adapter/include/tal_mtd/include
-    $ENV{TUYA_PROJECT_DIR}/include/base/include
     # $ENV{ARMINO_PATH}/../../tuyaos/tuyaos_adapter/include/asr
     # $ENV{ARMINO_PATH}/../../tuyaos/tuyaos_adapter/include/vad
 )
+
+# TuyaOpen: OPEN_HEADER_DIR from build_param.json. TuyaOS: scan project include/.
+if(DEFINED ENV{TUYA_HEADER_DIR} AND NOT "$ENV{TUYA_HEADER_DIR}" STREQUAL "")
+    string(REPLACE " " ";" TUYA_HEADER_DIR_LIST "$ENV{TUYA_HEADER_DIR}")
+    foreach(head ${TUYA_HEADER_DIR_LIST})
+        list(APPEND incs ${head})
+    endforeach()
+else()
+    list(APPEND incs "$ENV{TUYA_PROJECT_DIR}/include/base/include")
+endif()
 
 set(srcs
     src/system/tkl_memory.c
@@ -99,6 +109,7 @@ else()
         src/driver/tkl_pwm.c
         src/driver/tkl_uart.c
         src/driver/tkl_flash.c
+        tuyaopen/tuyaopen_license.c
         # src/driver/tkl_rtc.c
         src/driver/tkl_spi.c
         src/driver/tkl_qspi.c
@@ -295,19 +306,19 @@ function(FIND_INCLUDE_DIR_WITH_IGNORE result curdir)
     set(${result} ${filteredDirs} PARENT_SCOPE)
 endfunction()
 
-#查找include目录下的所有*.h头文件
-FIND_INCLUDE_DIR_WITH_IGNORE("INCLUDE_DIR_LIST_SDK" "$ENV{TUYA_PROJECT_DIR}/include")
-list(APPEND incs "${INCLUDE_DIR_LIST_SDK}")
+if(NOT (DEFINED ENV{TUYA_HEADER_DIR} AND NOT "$ENV{TUYA_HEADER_DIR}" STREQUAL ""))
+    # TuyaOS: 查找 include 目录下的所有 *.h 头文件
+    FIND_INCLUDE_DIR_WITH_IGNORE("INCLUDE_DIR_LIST_SDK" "$ENV{TUYA_PROJECT_DIR}/include")
+    list(APPEND incs "${INCLUDE_DIR_LIST_SDK}")
 
-# add mbedtls dir
-set(ext_include_path $ENV{TUYA_PROJECT_DIR}/include)
-execute_process(
-    COMMAND sh -c "find ${ext_include_path} -name lib_tls -type d"
-    OUTPUT_VARIABLE OUTPUT_VAR
-    OUTPUT_STRIP_TRAILING_WHITESPACE
-    )
-#message("Output from shell command: ${OUTPUT_VAR}")
-list(APPEND incs "${OUTPUT_VAR}/include")
+    set(ext_include_path $ENV{TUYA_PROJECT_DIR}/include)
+    execute_process(
+        COMMAND sh -c "find ${ext_include_path} -name lib_tls -type d"
+        OUTPUT_VARIABLE OUTPUT_VAR
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        )
+    list(APPEND incs "${OUTPUT_VAR}/include")
+endif()
 
 set(lwip_select $ENV{TUYA_LWIP_STACK_USED})
 if (lwip_select STREQUAL "lwip_bk")
@@ -341,8 +352,16 @@ if(TARGET "${COMPONENT_LIB}")
 endif()
 
 if ("${CONFIG_CPU_INDEX}" STREQUAL "1")
-# 搜索指定目录下所有.a文件
-file(GLOB LIB_FILES "$ENV{TUYA_PROJECT_DIR}/libs/*.a")
-target_link_libraries(${COMPONENT_LIB} INTERFACE ${LIB_FILES})
-
+    if(DEFINED ENV{TUYA_LIBS} AND NOT "$ENV{TUYA_LIBS}" STREQUAL "")
+        set(tuya_libs "$ENV{TUYA_LIBS}")
+        string(REPLACE " " ";" tuya_libs "${tuya_libs}")
+        foreach(lib ${tuya_libs})
+            set(lib_name "lib${lib}.a")
+            add_prebuilt_library(${lib_name} "$ENV{TUYA_LIBS_DIR}/${lib_name}")
+            target_link_libraries(${COMPONENT_LIB} INTERFACE ${lib_name})
+        endforeach()
+    else()
+        file(GLOB LIB_FILES "$ENV{TUYA_PROJECT_DIR}/libs/*.a")
+        target_link_libraries(${COMPONENT_LIB} INTERFACE ${LIB_FILES})
+    endif()
 endif()

@@ -17,7 +17,7 @@
     extern "C" {
 #endif
 
-typedef VOID_T* TKL_SYMMETRY_HANDLE;
+typedef void* TKL_SYMMETRY_HANDLE;
 
 /**
 * @brief This function Create&initializes a aes context.
@@ -55,8 +55,8 @@ OPERATE_RET  tkl_aes_free( TKL_SYMMETRY_HANDLE ctx );
 *
 * @return OPRT_OK on success. Others on error, please refer to tuya_error_code.h
 */
-OPERATE_RET  tkl_aes_setkey_enc( TKL_SYMMETRY_HANDLE ctx, const UINT8_T *key,
-                    UINT32_T keybits );
+OPERATE_RET  tkl_aes_setkey_enc( TKL_SYMMETRY_HANDLE ctx, const uint8_t *key,
+                    uint32_t keybits );
 
 /**
 * @brief This function sets the decryption key.
@@ -73,8 +73,8 @@ OPERATE_RET  tkl_aes_setkey_enc( TKL_SYMMETRY_HANDLE ctx, const UINT8_T *key,
 *
 * @return OPRT_OK on success. Others on error, please refer to tuya_error_code.h
 */
-OPERATE_RET  tkl_aes_setkey_dec( TKL_SYMMETRY_HANDLE ctx, const UINT8_T *key,
-                    UINT32_T keybits );
+OPERATE_RET  tkl_aes_setkey_dec( TKL_SYMMETRY_HANDLE ctx, const uint8_t *key,
+                    uint32_t keybits );
 
 /**
 * @brief This function performs an AES encryption or decryption operation.
@@ -94,10 +94,10 @@ OPERATE_RET  tkl_aes_setkey_dec( TKL_SYMMETRY_HANDLE ctx, const UINT8_T *key,
 * @return OPRT_OK on success. Others on error, please refer to tuya_error_code.h
 */
 OPERATE_RET  tkl_aes_crypt_ecb( TKL_SYMMETRY_HANDLE ctx,
-                    INT32_T mode,
+                    int32_t mode,
                     size_t length,
-                    const UINT8_T *input,
-                    UINT8_T *output );
+                    const uint8_t *input,
+                    uint8_t *output );
 
 /**
 * @brief This function performs an AES-CBC encryption or decryption operation
@@ -135,11 +135,11 @@ OPERATE_RET  tkl_aes_crypt_ecb( TKL_SYMMETRY_HANDLE ctx,
 * @return OPRT_OK on success. Others on error, please refer to tuya_error_code.h
 */
 OPERATE_RET  tkl_aes_crypt_cbc( TKL_SYMMETRY_HANDLE ctx,
-                    INT32_T mode,
+                    int32_t mode,
                     size_t length,
-                    UINT8_T iv[16],
-                    const UINT8_T *input,
-                    UINT8_T *output );
+                    uint8_t iv[16],
+                    const uint8_t *input,
+                    uint8_t *output );
 
 #ifdef __cplusplus
 }

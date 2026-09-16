@@ -176,7 +176,7 @@ int tkl_net_fd_zero(TUYA_FD_SET_T *fds)
  * @return  0: success  <0: fail
  */
 int tkl_net_select(const int maxfd, TUYA_FD_SET_T *readfds, TUYA_FD_SET_T *writefds, TUYA_FD_SET_T *errorfds,
-                             const unsigned int ms_timeout)
+                             const UINT_T ms_timeout)
 {
     if (maxfd <= 0) {
         return -3000 + maxfd;
@@ -386,7 +386,7 @@ TUYA_ERRNO tkl_net_accept(const int fd, TUYA_IP_ADDR_T *addr, unsigned short *po
  * @param[in]      nbytes
  * @return  nbytes has sended
 */
-TUYA_ERRNO tkl_net_send(const int fd, const void *buf, const unsigned int nbytes)
+TUYA_ERRNO tkl_net_send(const int fd, const void *buf, const UINT_T nbytes)
 {
     if ((fd < 0) || (buf == NULL) || (nbytes == 0)) {
         return -3000 + fd;
@@ -404,7 +404,7 @@ TUYA_ERRNO tkl_net_send(const int fd, const void *buf, const unsigned int nbytes
  * @param[in]      port
  * @return  nbytes has sended
 */
-TUYA_ERRNO tkl_net_send_to(const int fd, const void *buf, const unsigned int nbytes, \
+TUYA_ERRNO tkl_net_send_to(const int fd, const void *buf, const UINT_T nbytes, \
                               const TUYA_IP_ADDR_T addr, const unsigned short port)
 {
     if ((fd < 0) || (buf == NULL) || (nbytes == 0)) {
@@ -429,7 +429,7 @@ TUYA_ERRNO tkl_net_send_to(const int fd, const void *buf, const unsigned int nby
  * @param[in]         nbytes
  * @return  nbytes has received
  */
-TUYA_ERRNO tkl_net_recv(const int fd, void *buf, const unsigned int nbytes)
+TUYA_ERRNO tkl_net_recv(const int fd, void *buf, const UINT_T nbytes)
 {
     if ((fd < 0) || (buf == NULL) || (nbytes == 0)) {
         return -3000 + fd;
@@ -472,8 +472,8 @@ TUYA_ERRNO tkl_net_recv(const int fd, void *buf, const unsigned int nbytes)
 */
 INT_T tkl_net_recv_nd_size(const int fd, \
                                    void *buf, \
-                                   const unsigned int buf_size, \
-                                   const unsigned int nd_size)
+                                   const UINT_T buf_size, \
+                                   const UINT_T nd_size)
 {
     if ((fd < 0) || (NULL == buf) || (buf_size == 0) || \
             (nd_size == 0) || (buf_size < nd_size)) {
@@ -520,7 +520,7 @@ INT_T tkl_net_recv_nd_size(const int fd, \
  */
 TUYA_ERRNO tkl_net_recvfrom(const int fd, \
                                void *buf, \
-                               const unsigned int nbytes, \
+                               const UINT_T nbytes, \
                                TUYA_IP_ADDR_T *addr, \
                                unsigned short *port)
 {
@@ -721,8 +721,8 @@ int tkl_net_set_boardcast(const int fd)
  * @param[in]            cnt-keep alive packets fail times to close the connection
  * @return  0: success  <0: fail
  */
-int tkl_net_set_keepalive(int fd, const bool_t alive, const unsigned int idle, const unsigned int intr,
-                                    const unsigned int cnt)
+int tkl_net_set_keepalive(int fd, const BOOL_T alive, const UINT_T idle, const UINT_T intr,
+                                    const UINT_T cnt)
 {
     if (fd < 0) {
         return -3000 + fd;

@@ -166,9 +166,12 @@ class TuyaPackager:
         else:
             _bl2_rel = f"build/{self.platform}/tuya_app/{self.platform}/bl2.bin"
 
-        # 设置输出路径 - 从环境变量读取CI_PACKAGE_PATH
+        # TuyaOpen: 优先使用 TUYA_BIN_OUTPUT_DIR（由 build_example.py 传入）
+        tuyaopen_output = os.environ.get('TUYA_BIN_OUTPUT_DIR', '').strip()
         ci_path = os.environ.get('CI_PACKAGE_PATH', '').strip()
-        if ci_path:
+        if tuyaopen_output:
+            self.output_path = tuyaopen_output
+        elif ci_path:
             self.output_path = ci_path
             print_info(f"使用CI打包路径: {ci_path}")
         else:
