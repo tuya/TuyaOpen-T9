@@ -8,8 +8,8 @@
  *
  *   hardware layer (static)  sensor power, ISP channel open/close, frame pop,
  *                            live resolution switch
- *   facade (public)          open / close / switch / set_encode / set_osd, plus
- *                            get_frame_buf and the image-quality calls
+ *   facade (public)          open / close / switch / set_bitrate / force_idr /
+ *                            set_osd, plus get_frame and the image-quality calls
  *
  * Start / stop order follows the vendor's own dual-bond product code:
  *
@@ -103,6 +103,15 @@ typedef struct {
     UINT32_T v_addr;
 } TUYA_MIPI_CSI_FLEXA_SOURCE_T;
 
+/* The public interface no longer names ISP channels - callers choose FRAME vs
+ * PIXEL/STREAM and the facade derives the two legs from the enable bits. The
+ * driver still has two legs underneath (frame leg = SP, flexa leg = MP), so
+ * the internal routing helpers keep private selectors. */
+typedef enum {
+    CAM_CHN_MP = 0,    /* primary: flexa leg, feeds the pixel/stream consumers */
+    CAM_CHN_SP = 1,    /* secondary: frame leg, serves get_frame() */
+} CAM_CHN_T;
+
 /* ---------------------------------------------------------------------------
  * Hardware layer - internal only. The facade below is the only caller.
  * ------------------------------------------------------------------------- */
@@ -137,6 +146,48 @@ typedef struct {
 static tkl_mipi_csi_ctx_t s_cam_ctx;
 static ISP_GAMMA_OUT_ATTR_S s_gamma_out_backup;
 static BOOL_T s_gamma_out_backup_valid = FALSE;
+
+/**
+ * Facade lifecycle. INIT means the sensor is powered and probed but nothing is
+ * streaming; it is what makes start() after stop() cheaper than a fresh open.
+ * The saving here is smaller than UVC's - 30 ms of the 99 ms cycle without SP -
+ * because the ISP bring-up cannot move out of start(). See the design spec
+ * §12.6 for the numbers and why.
+ */
+typedef enum {
+    TKL_CAM_ST_IDLE = 0,    /**< nothing built */
+    TKL_CAM_ST_INIT,        /**< sensor powered and probed, not streaming */
+    TKL_CAM_ST_STARTED,     /**< streaming */
+} tkl_cam_state_e;
+
+typedef struct {
+    tkl_cam_state_e state;
+    TUYA_MIPI_CSI_CFG_T cfg;
+
+    /* which channel carries which sink */
+    /* No display_chn/encode_chn here on purpose: both consumers can only ever
+     * be on MP, so a field able to hold SP would be state that never takes its
+     * other value and would read as if the choice existed. */
+    BOOL_T  want_display;
+    BOOL_T  want_encode;
+
+    /* a set_pp() while stopped records here; start() applies it */
+    BOOL_T pp_pending;
+    TUYA_CAMERA_OUTPUT_TYPE_E pp_type;
+    UINT16_T pp_width;
+    UINT16_T pp_height;
+
+    TKL_GPU_HANDLE gpu;
+    TUYA_VENC_HANDLE venc;
+    TKL_OSD_ENGINE_HANDLE osd_display;
+    TKL_OSD_ENGINE_HANDLE osd_encode;
+
+    UINT16_T src_width;         /* ISP output feeding the consumers */
+    UINT16_T src_height;
+
+} tkl_cam_out_ctx_t;
+
+STATIC tkl_cam_out_ctx_t s_cam_out;
 
 static VOID_T cam_mipi_gpio_bank_ldo_enable(VOID_T)
 {
@@ -689,7 +740,7 @@ static OPERATE_RET cam_mipi_output_validate(UINT16_T width, UINT16_T height)
 
 /**
  * @brief Set ISP output resolution of the given channel
- * @param[in] channel_id TUYA_MIPI_CSI_CHANNEL_PRIMARY or TUYA_MIPI_CSI_CHANNEL_SECONDARY
+ * @param[in] channel_id CAM_CHN_MP or CAM_CHN_SP
  * @param[in] width new output width in pixels
  * @param[in] height new output height in pixels
  * @return OPRT_OK on success; on live reopen failure the channel is left closed while
@@ -710,12 +761,12 @@ STATIC OPERATE_RET cam_mipi_set_output(UINT8_T channel_id, UINT16_T width, UINT1
     OPERATE_RET ret;
     uint8_t isp_chn_id;
 
-    if (channel_id != TUYA_MIPI_CSI_CHANNEL_PRIMARY &&
-        channel_id != TUYA_MIPI_CSI_CHANNEL_SECONDARY) {
+    if (channel_id != CAM_CHN_MP &&
+        channel_id != CAM_CHN_SP) {
         return OPRT_INVALID_PARM;
     }
 
-    if (channel_id == TUYA_MIPI_CSI_CHANNEL_SECONDARY && s_cam_ctx.cfg.sp_enable != TRUE) {
+    if (channel_id == CAM_CHN_SP && s_cam_ctx.cfg.sp_enable != TRUE) {
         tkl_log_output("set_output SP rejected: SP not enabled\r\n");
         return OPRT_NOT_SUPPORTED;
     }
@@ -726,7 +777,7 @@ STATIC OPERATE_RET cam_mipi_set_output(UINT8_T channel_id, UINT16_T width, UINT1
     }
 
     /* record target geometry */
-    if (channel_id == TUYA_MIPI_CSI_CHANNEL_PRIMARY) {
+    if (channel_id == CAM_CHN_MP) {
         s_cam_ctx.cfg.output_width = width;
         s_cam_ctx.cfg.output_height = height;
     } else {
@@ -745,7 +796,7 @@ STATIC OPERATE_RET cam_mipi_set_output(UINT8_T channel_id, UINT16_T width, UINT1
      * cheap path below. This branch rebuilds SP too when it is open; that is the point,
      * not a side effect.
      */
-    if (channel_id == TUYA_MIPI_CSI_CHANNEL_PRIMARY) {
+    if (channel_id == CAM_CHN_MP) {
         tkl_log_output("set_output MP restart, %ux%u\r\n", width, height);
         ret = cam_mipi_stop();
         if (ret != OPRT_OK) {
@@ -1016,7 +1067,7 @@ STATIC OPERATE_RET cam_mipi_pop_copy_frame(UINT8_T chn_id,
 /**
  * @brief Work out the pull geometry for a channel, shared by both get_frame forms.
  *
- * @param[in]  channel_id  TUYA_MIPI_CSI_CHANNEL_PRIMARY / _SP
+ * @param[in]  channel_id  CAM_CHN_MP / CAM_CHN_SP
  * @param[out] isp_chn     ISP_MP_CHN_ID / ISP_SP_CHN_ID
  * @param[out] width       channel output width
  * @param[out] height      channel output height
@@ -1034,7 +1085,7 @@ STATIC OPERATE_RET cam_mipi_pull_geometry(UINT8_T channel_id,
                                                    UINT32_T *format,
                                                    UINT32_T *size)
 {
-    if (channel_id == TUYA_MIPI_CSI_CHANNEL_SECONDARY) {
+    if (channel_id == CAM_CHN_SP) {
         if (s_cam_ctx.cfg.sp_enable != TRUE) {
             return OPRT_RESOURCE_NOT_READY;
         }
@@ -1051,7 +1102,7 @@ STATIC OPERATE_RET cam_mipi_pull_geometry(UINT8_T channel_id,
         *height = s_cam_ctx.cfg.sp_height;
         *format = s_cam_ctx.cfg.sp_format;
         *size = cam_mipi_sp_frame_size_get();
-    } else if (channel_id == TUYA_MIPI_CSI_CHANNEL_PRIMARY) {
+    } else if (channel_id == CAM_CHN_MP) {
         if (s_cam_ctx.cfg.enable_flexa != FALSE || s_cam_ctx.cfg.work_mode != 0U) {
             tkl_log_output(
                     "get_frame is not supported in MP flexa mode, current enable_flexa=%u work_mode=%u, use gpu/flexa path or reopen camera in frame mode\r\n",
@@ -1072,8 +1123,25 @@ STATIC OPERATE_RET cam_mipi_pull_geometry(UINT8_T channel_id,
     return (*size != 0U) ? OPRT_OK : OPRT_NOT_SUPPORTED;
 }
 
-OPERATE_RET tkl_mipi_csi_get_frame(TUYA_MEDIA_BUF_T *out, UINT8_T chn, UINT32_T timeout_ms)
+/*
+ * The returned buf struct and its frame come out of one slab block: the frame
+ * data sits right behind the struct, so the release walks back to the block
+ * base and frees both with it. The caller only ever calls free_cb.
+ */
+STATIC VOID_T tkl_mipi_csi_frame_free(VOID_T *data)
 {
+    TUYA_MEDIA_BUF_T *buf;
+
+    if (data == NULL) {
+        return;
+    }
+    buf = (TUYA_MEDIA_BUF_T *)((UINT8_T *)data - sizeof(TUYA_MEDIA_BUF_T));
+    tkl_media_buf_free(TUYA_MEDIA_BUF_OWNER_CAMERA_FRAME, (UINT8_T *)buf);
+}
+
+OPERATE_RET tkl_mipi_csi_get_frame(TUYA_MEDIA_BUF_T **out, UINT32_T timeout_ms)
+{
+    TUYA_MEDIA_BUF_T *buf;
     OPERATE_RET op_ret;
     UINT8_T isp_channel_id = 0U;
     UINT16_T width = 0U;
@@ -1088,12 +1156,18 @@ OPERATE_RET tkl_mipi_csi_get_frame(TUYA_MEDIA_BUF_T *out, UINT8_T chn, UINT32_T 
         return OPRT_INVALID_PARM;
     }
 
+    if (s_cam_out.cfg.frame.enable != TRUE) {
+        return OPRT_RESOURCE_NOT_READY;
+    }
+
     if (s_cam_ctx.started != TRUE || s_cam_ctx.camera_ctlr_handle == NULL) {
         return OPRT_RESOURCE_NOT_READY;
     }
 
-    op_ret = cam_mipi_pull_geometry(chn, &isp_channel_id, &width, &height,
-                                             &format, &size);
+    /* SP only this version; cam_mipi_pull_geometry() still knows how to serve
+     * MP frame mode, so a channel argument can come back if MP pull ships. */
+    op_ret = cam_mipi_pull_geometry(CAM_CHN_SP, &isp_channel_id,
+                                             &width, &height, &format, &size);
     if (op_ret != OPRT_OK) {
         return op_ret;
     }
@@ -1102,12 +1176,15 @@ OPERATE_RET tkl_mipi_csi_get_frame(TUYA_MEDIA_BUF_T *out, UINT8_T chn, UINT32_T 
      * qr_demo, motion_detect) and like the ISP's own frame_buffer[] - the source
      * of the copy is in this same heap. It is not a cacheability choice: both
      * slab heaps carry the same non-cacheable MPU attribute. It keeps a 1.4 MB
-     * pixel frame out of the bitstream budget. */
-    data = (UINT8_T *)tkl_media_buf_alloc(TKL_BUF_USE_PIXEL, size,
-                                          TUYA_MEDIA_BUF_OWNER_CAMERA_FRAME);
-    if (data == NULL) {
+     * pixel frame out of the bitstream budget. One block carries the struct
+     * and the frame, so a single free returns both. */
+    buf = (TUYA_MEDIA_BUF_T *)tkl_media_buf_alloc(TKL_BUF_USE_PIXEL,
+                    (UINT32_T)sizeof(TUYA_MEDIA_BUF_T) + size,
+                    TUYA_MEDIA_BUF_OWNER_CAMERA_FRAME);
+    if (buf == NULL) {
         return OPRT_MALLOC_FAILED;
     }
+    data = (UINT8_T *)(buf + 1);
 
     wait_ms = (timeout_ms != 0U) ? timeout_ms : s_cam_ctx.cfg.read_timeout_ms;
     if (wait_ms == 0U) {
@@ -1117,31 +1194,32 @@ OPERATE_RET tkl_mipi_csi_get_frame(TUYA_MEDIA_BUF_T *out, UINT8_T chn, UINT32_T 
     op_ret = cam_mipi_pop_copy_frame(isp_channel_id, format, width, height,
                                               data, size, wait_ms, &out_len);
     if (op_ret != OPRT_OK) {
-        tkl_media_buf_free(TUYA_MEDIA_BUF_OWNER_CAMERA_FRAME, data);
+        tkl_media_buf_free(TUYA_MEDIA_BUF_OWNER_CAMERA_FRAME, (UINT8_T *)buf);
         return op_ret;
     }
 
-    os_memset(out, 0, sizeof(*out));
-    out->data = data;
-    out->size = out_len;
+    os_memset(buf, 0, sizeof(*buf));
+    buf->data = data;
+    buf->size = out_len;
     /* the whole point: business releases through this and never learns the pool */
-    out->free_cb = tkl_media_buf_free_cb(TUYA_MEDIA_BUF_OWNER_CAMERA_FRAME);
-    out->pts = (UINT64_T)tkl_system_get_millisecond();
-    out->width = width;
-    out->height = height;
-    out->format = tkl_media_fmt_from_bk(format);
+    buf->free_cb = tkl_mipi_csi_frame_free;
+    buf->timestamp = (UINT64_T)tkl_system_get_millisecond();
+    buf->width = width;
+    buf->height = height;
+    buf->format = tkl_media_fmt_from_bk(format);
 
+    *out = buf;
     return OPRT_OK;
 }
 
-OPERATE_RET tkl_mipi_csi_set_mirror_flip(UINT8_T hmirror, UINT8_T vflip)
+OPERATE_RET tkl_mipi_csi_set_mirror_flip(BOOL_T hmirror, BOOL_T vflip)
 {
     if (s_cam_ctx.initialized != TRUE) {
         return OPRT_RESOURCE_NOT_READY;
     }
 
-    s_cam_ctx.cfg.hmirror = (hmirror != 0U) ? 1U : 0U;
-    s_cam_ctx.cfg.vflip = (vflip != 0U) ? 1U : 0U;
+    s_cam_ctx.cfg.hmirror = (hmirror == TRUE) ? 1U : 0U;
+    s_cam_ctx.cfg.vflip = (vflip == TRUE) ? 1U : 0U;
 
     if (s_cam_ctx.started != TRUE || s_cam_ctx.sensor_handle == NULL) {
         return OPRT_OK;
@@ -1150,17 +1228,17 @@ OPERATE_RET tkl_mipi_csi_set_mirror_flip(UINT8_T hmirror, UINT8_T vflip)
     return cam_mipi_apply_mirror();
 }
 
-OPERATE_RET tkl_mipi_csi_get_mirror_flip(UINT8_T *hmirror, UINT8_T *vflip)
+OPERATE_RET tkl_mipi_csi_get_mirror_flip(BOOL_T *hmirror, BOOL_T *vflip)
 {
     if (s_cam_ctx.initialized != TRUE) {
         return OPRT_RESOURCE_NOT_READY;
     }
 
     if (hmirror != NULL) {
-        *hmirror = s_cam_ctx.cfg.hmirror;
+        *hmirror = (s_cam_ctx.cfg.hmirror != 0U) ? TRUE : FALSE;
     }
     if (vflip != NULL) {
-        *vflip = s_cam_ctx.cfg.vflip;
+        *vflip = (s_cam_ctx.cfg.vflip != 0U) ? TRUE : FALSE;
     }
 
     return OPRT_OK;
@@ -1354,41 +1432,6 @@ STATIC OPERATE_RET cam_mipi_get_flexa_source(TUYA_MIPI_CSI_FLEXA_SOURCE_T *sourc
 
 #define TUYA_MIPI_CSI_MS()            ((UINT32_T)tkl_system_get_millisecond())
 
-/**
- * Facade lifecycle. INIT means the sensor is powered and probed but nothing is
- * streaming; it is what makes start() after stop() cheaper than a fresh open.
- * The saving here is smaller than UVC's - 30 ms of the 99 ms cycle without SP -
- * because the ISP bring-up cannot move out of start(). See the design spec
- * §12.6 for the numbers and why.
- */
-typedef enum {
-    TKL_CAM_ST_IDLE = 0,    /**< nothing built */
-    TKL_CAM_ST_INIT,        /**< sensor powered and probed, not streaming */
-    TKL_CAM_ST_STARTED,     /**< streaming */
-} tkl_cam_state_e;
-
-typedef struct {
-    tkl_cam_state_e state;
-    TUYA_MIPI_CSI_CFG_T cfg;
-
-    /* which channel carries which sink */
-    /* No display_chn/encode_chn here on purpose: both consumers can only ever
-     * be on MP, so a field able to hold SP would be state that never takes its
-     * other value and would read as if the choice existed. */
-    BOOL_T  want_display;
-    BOOL_T  want_encode;
-
-    TKL_GPU_HANDLE gpu;
-    TUYA_VENC_HANDLE venc;
-    TKL_OSD_ENGINE_HANDLE osd_display;
-    TKL_OSD_ENGINE_HANDLE osd_encode;
-
-    UINT16_T src_width;         /* ISP output feeding the consumers */
-    UINT16_T src_height;
-
-} tkl_cam_out_ctx_t;
-
-STATIC tkl_cam_out_ctx_t s_cam_out;
 
 /* Shared by close() and switch(): both need the exact same teardown, and the
  * order inside it is the part that must not drift. */
@@ -1445,7 +1488,7 @@ STATIC VOID tkl_cam_out_display_done(VOID *frame, UINT32_T frame_size, VOID *arg
         return;
     }
 
-    if (s_cam_out.cfg.pixel_cb == NULL) {
+    if (s_cam_out.cfg.pixel.pixel_cb == NULL) {
         tkl_media_buf_free(TUYA_MEDIA_BUF_OWNER_CAMERA_DISPLAY, frame);
         return;
     }
@@ -1454,12 +1497,13 @@ STATIC VOID tkl_cam_out_display_done(VOID *frame, UINT32_T frame_size, VOID *arg
     buf.data = (UINT8_T *)frame;
     buf.size = frame_size;
     buf.free_cb = tkl_media_buf_free_cb(TUYA_MEDIA_BUF_OWNER_CAMERA_DISPLAY);
-    buf.pts = (UINT64_T)tkl_system_get_millisecond();
-    buf.width = s_cam_out.cfg.pixel.target_width;
-    buf.height = s_cam_out.cfg.pixel.target_height;
+    buf.timestamp = (UINT64_T)tkl_system_get_millisecond();
+    buf.width = s_cam_out.cfg.pixel.width;
+    buf.height = s_cam_out.cfg.pixel.height;
     buf.format = s_cam_out.cfg.pixel.format;
+    buf.user_args = s_cam_out.cfg.pixel.pixel_arg;
 
-    s_cam_out.cfg.pixel_cb(&buf, s_cam_out.cfg.pixel_arg);
+    s_cam_out.cfg.pixel.pixel_cb(&buf);
 }
 
 STATIC VOID *tkl_cam_out_stream_alloc(UINT32_T size, VOID *arg)
@@ -1481,25 +1525,28 @@ STATIC OPERATE_RET tkl_cam_out_stream_free(VOID *ptr, VOID *arg)
 }
 
 /**
- * @brief Map the internal codec/frame-type enums onto the public ones.
+ * @brief Map the vendor stream descriptor onto the public format.
  * @param[in]  stream vendor stream descriptor
- * @param[out] buf    receives codec and frame_type
+ * @param[out] buf    receives the format; for H264 the frame type rides in it
+ *                    (H264_I / H264_P, bare H264 when the vendor gives no
+ *                    usable type)
  */
 STATIC VOID tkl_cam_out_stream_meta(CONST TUYA_VCODEC_STREAM_T *stream, TUYA_MEDIA_BUF_T *buf)
 {
-    buf->format = (stream->codec == (UINT32_T)TUYA_VCODEC_TYPE_H264)
-                      ? TUYA_FRAME_FMT_H264
-                      : TUYA_FRAME_FMT_JPEG;
+    if (stream->codec != (UINT32_T)TUYA_VCODEC_TYPE_H264) {
+        buf->format = TUYA_FRAME_FMT_JPEG;
+        return;
+    }
 
     switch (stream->frame_type) {
     case TUYA_VCODEC_FRAME_I:
-        buf->frame_type = (UINT32_T)TUYA_VIDEO_FRAME_I;
+        buf->format = TUYA_FRAME_FMT_H264_I;
         break;
     case TUYA_VCODEC_FRAME_P:
-        buf->frame_type = (UINT32_T)TUYA_VIDEO_FRAME_P;
+        buf->format = TUYA_FRAME_FMT_H264_P;
         break;
     default:
-        buf->frame_type = (UINT32_T)TUYA_VIDEO_FRAME_UNKNOWN;
+        buf->format = TUYA_FRAME_FMT_H264;
         break;
     }
 }
@@ -1520,7 +1567,7 @@ STATIC VOID tkl_cam_out_stream_cb(CONST TUYA_VCODEC_STREAM_T *stream, VOID *arg)
 
     (void)arg;
 
-    if (stream == NULL || stream->data == NULL || s_cam_out.cfg.stream_cb == NULL) {
+    if (stream == NULL || stream->data == NULL || s_cam_out.cfg.stream.stream_cb == NULL) {
         return;
     }
 
@@ -1528,12 +1575,13 @@ STATIC VOID tkl_cam_out_stream_cb(CONST TUYA_VCODEC_STREAM_T *stream, VOID *arg)
     buf.data = stream->data;
     buf.size = stream->size;
     buf.free_cb = NULL;             /* borrowed for the duration of this call */
-    buf.pts = stream->pts;
+    buf.timestamp = stream->pts;
     buf.width = s_cam_out.src_width;
     buf.height = s_cam_out.src_height;
     tkl_cam_out_stream_meta(stream, &buf);
+    buf.user_args = s_cam_out.cfg.stream.stream_arg;
 
-    s_cam_out.cfg.stream_cb(&buf, s_cam_out.cfg.stream_arg);
+    s_cam_out.cfg.stream.stream_cb(&buf);
 }
 
 /* ---------------------------------------------------------------------------
@@ -1549,49 +1597,63 @@ STATIC VOID tkl_cam_out_stream_cb(CONST TUYA_VCODEC_STREAM_T *stream, VOID *arg)
 STATIC OPERATE_RET tkl_cam_out_build_camera_cfg(CONST TUYA_MIPI_CSI_CFG_T *cfg,
                                                 TUYA_MIPI_CSI_HW_CFG_T *old)
 {
-    BOOL_T mp_flexa;
+    BOOL_T mp_wanted;
+    BOOL_T sp_wanted;
 
     os_memset(old, 0, sizeof(*old));
-    old->pin_scl = cfg->board.pin_scl;
-    old->pin_sda = cfg->board.pin_sda;
-    old->i2c_id = cfg->board.i2c_id;
-    old->pin_reset = cfg->board.pin_reset;
-    old->pin_pwdn = cfg->board.pin_pwdn;
-    old->pin_xclk = cfg->board.pin_xclk;
+    /* board: the facade takes typed GPIO config, the hardware layer keeps its
+     * INT_T pins with -1 = not wired. TUYA_GPIO_NUM_MAX maps to that sentinel.
+     * Vendor sensor drivers drive reset/pwdn active-high; a low-active request
+     * is rejected in tkl_mipi_csi_validate_formats(). */
+    old->i2c_id   = (UINT8_T)cfg->board_cfg.port;
+    old->pin_scl  = (cfg->board_cfg.scl  == TUYA_GPIO_NUM_MAX) ? -1 : (INT_T)cfg->board_cfg.scl;
+    old->pin_sda  = (cfg->board_cfg.sda  == TUYA_GPIO_NUM_MAX) ? -1 : (INT_T)cfg->board_cfg.sda;
+    old->pin_xclk = (cfg->board_cfg.clk  == TUYA_GPIO_NUM_MAX) ? -1 : (INT_T)cfg->board_cfg.clk;
+    old->pin_reset = (cfg->board_cfg.reset.pin      == TUYA_GPIO_NUM_MAX) ? -1 : (INT_T)cfg->board_cfg.reset.pin;
+    old->pin_pwdn  = (cfg->board_cfg.power_ctrl.pin == TUYA_GPIO_NUM_MAX) ? -1 : (INT_T)cfg->board_cfg.power_ctrl.pin;
 
-    old->sensor_width = cfg->sensor_width;
-    old->sensor_height = cfg->sensor_height;
-    old->sensor_fps = cfg->sensor_fps;
-    /* 0 stays 0 so the driver applies its own default */
-    old->sensor_input_format = (cfg->sensor_input_format != 0U)
-                                   ? tkl_media_fmt_to_bk(cfg->sensor_input_format)
-                                   : 0U;
+    old->sensor_width  = cfg->sensor_cfg.width;
+    old->sensor_height = cfg->sensor_cfg.height;
+    old->sensor_fps    = cfg->sensor_cfg.fps;
+    /* UNKNOWN stays 0 so the driver applies its own default */
+    old->sensor_input_format =
+        (cfg->sensor_cfg.format != TUYA_FRAME_FMT_UNKNOWN)
+            ? tkl_media_fmt_to_bk(cfg->sensor_cfg.format) : 0U;
     old->hmirror = 0U;
     old->vflip = 0U;
     old->read_timeout_ms = TUYA_MIPI_CSI_READ_TIMEOUT_MS;
 
-    /* DISPLAY and H264 are both bond consumers: they read the ISP line by line,
-     * which is what flexa mode means. A pulled frame is the opposite. Only MP
-     * can be in flexa mode at all - see tkl_mipi_csi_init() for why. */
-    mp_flexa = ((cfg->primary.output_kinds & (TUYA_MIPI_CSI_OUTPUT_PIXEL | TUYA_MIPI_CSI_OUTPUT_STREAM)) != 0U) ? TRUE : FALSE;
+    /* The routing derives from the enables alone: frame pulls its raw frames
+     * from SP, pixel/stream bond the shared MP line-by-line. The two groups
+     * sit on different channels, so no combination needs rejecting.
+     *
+     * MP is a fixed FLEXA feed in NV12 - the GPU and the encoder take it from
+     * there. Its resolution follows stream when both are enabled: the VPU has
+     * no scaler while the GPU does, so the stream side is the one that cannot
+     * move. pixel-only runs at pixel's geometry. */
+    sp_wanted = (cfg->frame.enable == TRUE);
+    mp_wanted = (cfg->pixel.enable == TRUE || cfg->stream.enable == TRUE);
 
-    old->output_width = cfg->primary.width;
-    old->output_height = cfg->primary.height;
-    old->output_format = (cfg->primary.format != 0U)
-                              ? tkl_media_fmt_to_bk(cfg->primary.format)
-                              : (UINT32_T)BK_PIXEL_FORMAT_NV12;
+    if (cfg->stream.enable == TRUE) {
+        old->output_width = cfg->stream.width;
+        old->output_height = cfg->stream.height;
+    } else {
+        old->output_width = cfg->pixel.width;
+        old->output_height = cfg->pixel.height;
+    }
+    old->output_format = (UINT32_T)BK_PIXEL_FORMAT_NV12;
     old->output_buf_cnt = TUYA_MIPI_CSI_BUF_CNT;
-    old->enable_flexa = mp_flexa;
-    old->work_mode = (mp_flexa == TRUE) ? 1U : 0U;
+    old->enable_flexa = mp_wanted;
+    old->work_mode = (mp_wanted == TRUE) ? 1U : 0U;
 
-    if (cfg->secondary.output_kinds != TUYA_MIPI_CSI_OUTPUT_NONE) {
+    if (sp_wanted) {
         old->sp_enable = TRUE;
-        old->sp_width = cfg->secondary.width;
-        old->sp_height = cfg->secondary.height;
+        old->sp_width = cfg->frame.width;
+        old->sp_height = cfg->frame.height;
         /* the caller's choice, not a constant: NV12 to encode or transform the
          * frame, RGB888 to feed the face model directly */
-        old->sp_format = (cfg->secondary.format != 0U)
-                             ? tkl_media_fmt_to_bk(cfg->secondary.format)
+        old->sp_format = (cfg->frame.format != TUYA_FRAME_FMT_UNKNOWN)
+                             ? tkl_media_fmt_to_bk(cfg->frame.format)
                              : (UINT32_T)BK_PIXEL_FORMAT_NV12;
         old->sp_buf_cnt = TUYA_MIPI_CSI_SP_BUF_CNT;
         /* always frame mode - SP has no bond to be in flexa for */
@@ -1615,8 +1677,8 @@ STATIC OPERATE_RET tkl_cam_out_display_open(CONST TUYA_MIPI_CSI_FLEXA_SOURCE_T *
     OPERATE_RET ret;
 
     os_memset(&gpu_cfg, 0, sizeof(gpu_cfg));
-    gpu_cfg.dst_width = s_cam_out.cfg.pixel.target_width;
-    gpu_cfg.dst_height = s_cam_out.cfg.pixel.target_height;
+    gpu_cfg.dst_width = s_cam_out.cfg.pixel.width;
+    gpu_cfg.dst_height = s_cam_out.cfg.pixel.height;
     gpu_cfg.rotate_degree = s_cam_out.cfg.pixel.rotate;
     gpu_cfg.dst_format = tkl_media_fmt_to_bk(s_cam_out.cfg.pixel.format);
     gpu_cfg.scale = TRUE;
@@ -1680,9 +1742,12 @@ STATIC OPERATE_RET tkl_cam_out_encode_open(CONST TUYA_MIPI_CSI_FLEXA_SOURCE_T *f
     os_memset(&venc_cfg, 0, sizeof(venc_cfg));
     venc_cfg.width = flexa->width;
     venc_cfg.height = flexa->height;
-    venc_cfg.fps = (s_cam_out.cfg.encoder.fps != 0U) ? s_cam_out.cfg.encoder.fps
-                                                    : s_cam_out.cfg.sensor_fps;
-    venc_cfg.gop = s_cam_out.cfg.encoder.gop;
+    venc_cfg.fps = (s_cam_out.cfg.stream.fps != 0U) ? s_cam_out.cfg.stream.fps
+                                                    : s_cam_out.cfg.sensor_cfg.fps;
+    venc_cfg.gop = s_cam_out.cfg.stream.gop;
+    /* stream.format is the encoded output format (reviewed semantics). This
+     * platform has no H265 encoder backend - init rejects that request - so
+     * the codec is always H264 here. */
     venc_cfg.codec = (UINT32_T)TUYA_VCODEC_TYPE_H264;
     venc_cfg.input_format = flexa->format;
 
@@ -1692,9 +1757,9 @@ STATIC OPERATE_RET tkl_cam_out_encode_open(CONST TUYA_MIPI_CSI_FLEXA_SOURCE_T *f
         return ret;
     }
 
-    if (s_cam_out.cfg.encoder.bitrate != 0U) {
+    if (s_cam_out.cfg.stream.bitrate != 0U) {
         os_memset(&rc, 0, sizeof(rc));
-        rc.bitrate = s_cam_out.cfg.encoder.bitrate;
+        rc.bitrate = s_cam_out.cfg.stream.bitrate;
         (void)tkl_venc_set_rate_ctrl(s_cam_out.venc, &rc);
     }
 
@@ -1750,8 +1815,8 @@ STATIC OPERATE_RET tkl_cam_out_osd_display_open(VOID_T)
     }
 
     os_memset(&cfg, 0, sizeof(cfg));
-    cfg.target_w = s_cam_out.cfg.pixel.target_width;
-    cfg.target_h = s_cam_out.cfg.pixel.target_height;
+    cfg.target_w = s_cam_out.cfg.pixel.width;
+    cfg.target_h = s_cam_out.cfg.pixel.height;
     /* the caller supplies the rotation per overlay request */
     cfg.src_format = (UINT32_T)BK_PIXEL_FORMAT_ARGB8888;
 
@@ -1777,56 +1842,53 @@ static BOOL_T tkl_mipi_csi_is_bayer_input(TUYA_FRAME_FMT_E format)
 
 static OPERATE_RET tkl_mipi_csi_validate_formats(CONST TUYA_MIPI_CSI_CFG_T *cfg)
 {
-    if (cfg->sensor_input_format != 0U &&
-        (!tkl_mipi_csi_is_bayer_input(cfg->sensor_input_format) ||
-         tkl_media_fmt_to_bk(cfg->sensor_input_format) == (UINT32_T)BK_PIXEL_FORMAT_INVALID)) {
+    if (cfg->sensor_cfg.format != TUYA_FRAME_FMT_UNKNOWN &&
+        (!tkl_mipi_csi_is_bayer_input(cfg->sensor_cfg.format) ||
+         tkl_media_fmt_to_bk(cfg->sensor_cfg.format) == (UINT32_T)BK_PIXEL_FORMAT_INVALID)) {
         return OPRT_INVALID_PARM;
     }
 
-    if (cfg->primary.format != 0U &&
-        tkl_media_fmt_to_bk(cfg->primary.format) == (UINT32_T)BK_PIXEL_FORMAT_INVALID) {
+    /* geometry: every enabled output needs its pixels sized */
+    if ((cfg->frame.enable == TRUE &&
+         (cfg->frame.width == 0U || cfg->frame.height == 0U)) ||
+        (cfg->pixel.enable == TRUE &&
+         (cfg->pixel.width == 0U || cfg->pixel.height == 0U)) ||
+        (cfg->stream.enable == TRUE &&
+         (cfg->stream.width == 0U || cfg->stream.height == 0U))) {
+        return OPRT_INVALID_PARM;
+    }
+
+    /* SP carries the caller's pixel format; MP is NV12 by construction. */
+    if (cfg->frame.enable == TRUE &&
+        cfg->frame.format != TUYA_FRAME_FMT_UNKNOWN &&
+        tkl_media_fmt_to_bk(cfg->frame.format) == (UINT32_T)BK_PIXEL_FORMAT_INVALID) {
         return OPRT_NOT_SUPPORTED;
     }
 
-    if (cfg->secondary.format != 0U &&
-        tkl_media_fmt_to_bk(cfg->secondary.format) == (UINT32_T)BK_PIXEL_FORMAT_INVALID) {
-        return OPRT_NOT_SUPPORTED;
-    }
-
-    if ((cfg->primary.output_kinds & TUYA_MIPI_CSI_OUTPUT_PIXEL) != 0U &&
-        (cfg->pixel.format == 0U ||
+    if (cfg->pixel.enable == TRUE &&
+        (cfg->pixel.format == TUYA_FRAME_FMT_UNKNOWN ||
          tkl_media_fmt_to_bk(cfg->pixel.format) == (UINT32_T)BK_PIXEL_FORMAT_INVALID)) {
         return OPRT_NOT_SUPPORTED;
     }
 
-    return OPRT_OK;
-}
-
-static OPERATE_RET tkl_mipi_csi_validate_output_kinds(CONST TUYA_MIPI_CSI_CFG_T *cfg)
-{
-    const UINT32_T allowed = (UINT32_T)TUYA_MIPI_CSI_OUTPUT_FRAME |
-                             (UINT32_T)TUYA_MIPI_CSI_OUTPUT_PIXEL |
-                             (UINT32_T)TUYA_MIPI_CSI_OUTPUT_STREAM;
-    UINT32_T primary;
-    UINT32_T secondary;
-
-    primary = (UINT32_T)cfg->primary.output_kinds;
-    secondary = (UINT32_T)cfg->secondary.output_kinds;
-
-    if ((primary & ~allowed) != 0U || (secondary & ~allowed) != 0U) {
-        return OPRT_INVALID_PARM;
-    }
-
-    /* A pulled frame and a line-by-line bond require different ISP modes. */
-    if ((primary & (UINT32_T)TUYA_MIPI_CSI_OUTPUT_FRAME) != 0U &&
-        (primary & ((UINT32_T)TUYA_MIPI_CSI_OUTPUT_PIXEL |
-                    (UINT32_T)TUYA_MIPI_CSI_OUTPUT_STREAM)) != 0U) {
+    /* stream.format is the encoded output format; the only encoder backend on
+     * this platform is H264 (an H265 request lands here too). */
+    if (cfg->stream.enable == TRUE &&
+        cfg->stream.format != TUYA_FRAME_FMT_UNKNOWN &&
+        cfg->stream.format != TUYA_FRAME_FMT_H264) {
+        tkl_log_output("tkl_mipi_csi: stream.format 0x%x not supported "
+                       "(H264-only encoder)\r\n", (unsigned)cfg->stream.format);
         return OPRT_NOT_SUPPORTED;
     }
 
-    /* T9's GPU and encoder bonds are attached to primary/MP only. */
-    if ((secondary & ((UINT32_T)TUYA_MIPI_CSI_OUTPUT_PIXEL |
-                     (UINT32_T)TUYA_MIPI_CSI_OUTPUT_STREAM)) != 0U) {
+    /* The vendor sensor drivers toggle reset/pwdn active-high (and use 0xFF for
+     * "not wired"), so a low-active request cannot be honored end to end. */
+    if ((cfg->board_cfg.reset.pin != TUYA_GPIO_NUM_MAX &&
+         cfg->board_cfg.reset.active_level != TUYA_GPIO_LEVEL_HIGH) ||
+        (cfg->board_cfg.power_ctrl.pin != TUYA_GPIO_NUM_MAX &&
+         cfg->board_cfg.power_ctrl.active_level != TUYA_GPIO_LEVEL_HIGH)) {
+        tkl_log_output("tkl_mipi_csi: reset/power active_level must be HIGH "
+                       "(vendor sensor drivers drive active-high)\r\n");
         return OPRT_NOT_SUPPORTED;
     }
 
@@ -1848,13 +1910,9 @@ OPERATE_RET tkl_mipi_csi_init(CONST TUYA_MIPI_CSI_CFG_T *cfg)
         return OPRT_RESOURCE_NOT_READY;
     }
 
-    if (cfg->primary.output_kinds == TUYA_MIPI_CSI_OUTPUT_NONE && cfg->secondary.output_kinds == TUYA_MIPI_CSI_OUTPUT_NONE) {
+    if (cfg->frame.enable != TRUE && cfg->pixel.enable != TRUE &&
+        cfg->stream.enable != TRUE) {
         return OPRT_INVALID_PARM;
-    }
-
-    ret = tkl_mipi_csi_validate_output_kinds(cfg);
-    if (ret != OPRT_OK) {
-        return ret;
     }
 
     ret = tkl_mipi_csi_validate_formats(cfg);
@@ -1862,18 +1920,13 @@ OPERATE_RET tkl_mipi_csi_init(CONST TUYA_MIPI_CSI_CFG_T *cfg)
         return ret;
     }
 
-    if ((cfg->primary.output_kinds & TUYA_MIPI_CSI_OUTPUT_PIXEL) != 0U &&
-        (cfg->pixel.target_width == 0U || cfg->pixel.target_height == 0U)) {
-        return OPRT_INVALID_PARM;
-    }
-
     os_memset(&s_cam_out, 0, sizeof(s_cam_out));
     os_memcpy(&s_cam_out.cfg, cfg, sizeof(s_cam_out.cfg));
 
-    if ((cfg->primary.output_kinds & TUYA_MIPI_CSI_OUTPUT_PIXEL) != 0U) {
+    if (cfg->pixel.enable == TRUE) {
         s_cam_out.want_display = TRUE;
     }
-    if ((cfg->primary.output_kinds & TUYA_MIPI_CSI_OUTPUT_STREAM) != 0U) {
+    if (cfg->stream.enable == TRUE) {
         s_cam_out.want_encode = TRUE;
     }
 
@@ -1917,14 +1970,28 @@ OPERATE_RET tkl_mipi_csi_start(VOID_T)
         return ret;
     }
 
+    /* A set_pp() while stopped only recorded its value - apply it now that
+     * the channels exist. On failure the started geometry stays and says so. */
+    if (s_cam_out.pp_pending == TRUE) {
+        ret = cam_mipi_set_output(
+            (s_cam_out.pp_type == TUYA_CAMERA_OUTPUT_FRAME)
+                ? CAM_CHN_SP : CAM_CHN_MP,
+            s_cam_out.pp_width, s_cam_out.pp_height);
+        if (ret != OPRT_OK) {
+            tkl_log_output("tkl_cam_out: recorded set_pp %ux%u failed: %d\r\n",
+                           s_cam_out.pp_width, s_cam_out.pp_height, ret);
+        }
+        s_cam_out.pp_pending = FALSE;
+    }
+
     /* cam_mipi_start() applies zero-dimension path defaults. Keep the facade
-     * geometry in sync so stream metadata and later set_output() use the
+     * geometry in sync so stream metadata and later set_pp() use the
      * actual ISP dimensions rather than the caller's shorthand zeros. */
-    s_cam_out.cfg.primary.width = s_cam_ctx.cfg.output_width;
-    s_cam_out.cfg.primary.height = s_cam_ctx.cfg.output_height;
+    s_cam_out.cfg.stream.width = s_cam_ctx.cfg.output_width;
+    s_cam_out.cfg.stream.height = s_cam_ctx.cfg.output_height;
     if (s_cam_ctx.cfg.sp_enable == TRUE) {
-        s_cam_out.cfg.secondary.width = s_cam_ctx.cfg.sp_width;
-        s_cam_out.cfg.secondary.height = s_cam_ctx.cfg.sp_height;
+        s_cam_out.cfg.frame.width = s_cam_ctx.cfg.sp_width;
+        s_cam_out.cfg.frame.height = s_cam_ctx.cfg.sp_height;
     }
     s_cam_out.src_width = s_cam_ctx.cfg.output_width;
     s_cam_out.src_height = s_cam_ctx.cfg.output_height;
@@ -2140,13 +2207,15 @@ err_display:
     return ret;
 }
 
-OPERATE_RET tkl_mipi_csi_set_output(UINT8_T channel_id, UINT16_T width, UINT16_T height)
+OPERATE_RET tkl_mipi_csi_set_pp(TUYA_CAMERA_OUTPUT_TYPE_E type, UINT16_T width, UINT16_T height)
 {
     TUYA_MIPI_CSI_FLEXA_SOURCE_T flexa;
     UINT16_T old_w;
     UINT16_T old_h;
     OPERATE_RET ret;
     BOOL_T rebuild;
+    BOOL_T want_frame;
+    UINT8_T chn_id;
     VOID *isp_before = NULL;
     UINT8_T *src_before = NULL;
 
@@ -2154,9 +2223,25 @@ OPERATE_RET tkl_mipi_csi_set_output(UINT8_T channel_id, UINT16_T width, UINT16_T
         return OPRT_INVALID_PARM;
     }
 
-    if (channel_id != TUYA_MIPI_CSI_CHANNEL_PRIMARY &&
-        channel_id != TUYA_MIPI_CSI_CHANNEL_SECONDARY) {
+    if (type != TUYA_CAMERA_OUTPUT_FRAME &&
+        type != TUYA_CAMERA_OUTPUT_PIXEL &&
+        type != TUYA_CAMERA_OUTPUT_STREAM) {
         return OPRT_INVALID_PARM;
+    }
+
+    /* PIXEL and STREAM are the same request: both address the shared MP, whose
+     * authoritative resolution lives in cfg.stream. FRAME addresses the SP. */
+    want_frame = (type == TUYA_CAMERA_OUTPUT_FRAME) ? TRUE : FALSE;
+    chn_id = (want_frame == TRUE) ? CAM_CHN_SP
+                                  : CAM_CHN_MP;
+
+    if (s_cam_out.state == TKL_CAM_ST_INIT) {
+        /* not streaming yet - record the value, start() applies it */
+        s_cam_out.pp_pending = TRUE;
+        s_cam_out.pp_type = type;
+        s_cam_out.pp_width = width;
+        s_cam_out.pp_height = height;
+        return OPRT_OK;
     }
 
     /* Switching output geometry restarts the ISP and rebuilds every consumer,
@@ -2165,12 +2250,18 @@ OPERATE_RET tkl_mipi_csi_set_output(UINT8_T channel_id, UINT16_T width, UINT16_T
         return OPRT_RESOURCE_NOT_READY;
     }
 
-    if (channel_id == TUYA_MIPI_CSI_CHANNEL_PRIMARY) {
-        old_w = s_cam_out.cfg.primary.width;
-        old_h = s_cam_out.cfg.primary.height;
+    if (want_frame == TRUE) {
+        if (s_cam_ctx.cfg.sp_enable != TRUE) {
+            return OPRT_RESOURCE_NOT_READY;     /* no SP was built */
+        }
+        old_w = s_cam_out.cfg.frame.width;
+        old_h = s_cam_out.cfg.frame.height;
     } else {
-        old_w = s_cam_out.cfg.secondary.width;
-        old_h = s_cam_out.cfg.secondary.height;
+        if (s_cam_ctx.cfg.enable_flexa != TRUE) {
+            return OPRT_RESOURCE_NOT_READY;     /* no MP was built */
+        }
+        old_w = s_cam_out.cfg.stream.width;
+        old_h = s_cam_out.cfg.stream.height;
     }
 
     if (old_w == width && old_h == height) {
@@ -2190,7 +2281,7 @@ OPERATE_RET tkl_mipi_csi_set_output(UINT8_T channel_id, UINT16_T width, UINT16_T
      *
      * Verified rather than trusted: isp_handle and the MP flexa buffer are
      * snapshotted and re-checked below. */
-    rebuild = (channel_id == TUYA_MIPI_CSI_CHANNEL_PRIMARY) ? TRUE : FALSE;
+    rebuild = (chn_id == CAM_CHN_MP) ? TRUE : FALSE;
 
     if (rebuild == TRUE) {
         tkl_cam_out_consumers_close();
@@ -2202,7 +2293,7 @@ OPERATE_RET tkl_mipi_csi_set_output(UINT8_T channel_id, UINT16_T width, UINT16_T
         }
     }
 
-    ret = cam_mipi_set_output(channel_id, width, height);
+    ret = cam_mipi_set_output(chn_id, width, height);
     if (ret != OPRT_OK) {
         tkl_log_output("tkl_cam_out: set_output %ux%u failed: %d, restoring\r\n",
                        width, height, ret);
@@ -2215,15 +2306,15 @@ OPERATE_RET tkl_mipi_csi_set_output(UINT8_T channel_id, UINT16_T width, UINT16_T
         return ret;
     }
 
-    if (channel_id == TUYA_MIPI_CSI_CHANNEL_PRIMARY) {
-        s_cam_out.cfg.primary.width = width;
-        s_cam_out.cfg.primary.height = height;
+    if (chn_id == CAM_CHN_MP) {
+        s_cam_out.cfg.stream.width = width;
+        s_cam_out.cfg.stream.height = height;
         s_cam_out.src_width = width;
         s_cam_out.src_height = height;
     } else {
         /* SP feeds nobody downstream - resizing it rebuilds nothing */
-        s_cam_out.cfg.secondary.width = width;
-        s_cam_out.cfg.secondary.height = height;
+        s_cam_out.cfg.frame.width = width;
+        s_cam_out.cfg.frame.height = height;
     }
 
     if (rebuild != TRUE) {
@@ -2245,7 +2336,7 @@ OPERATE_RET tkl_mipi_csi_set_output(UINT8_T channel_id, UINT16_T width, UINT16_T
 
     if (rebuild != TRUE) {
         tkl_log_output("tkl_cam_out: chn%u switched %ux%u -> %ux%u (MP consumers kept)\r\n",
-                       (unsigned int)channel_id, old_w, old_h, width, height);
+                       (unsigned int)chn_id, old_w, old_h, width, height);
         return OPRT_OK;
     }
 
@@ -2254,15 +2345,15 @@ OPERATE_RET tkl_mipi_csi_set_output(UINT8_T channel_id, UINT16_T width, UINT16_T
         tkl_log_output("tkl_cam_out: rebuild after switch failed: %d, reverting to %ux%u\r\n",
                        ret, old_w, old_h);
 
-        if (cam_mipi_set_output(channel_id, old_w, old_h) == OPRT_OK) {
-            if (channel_id == TUYA_MIPI_CSI_CHANNEL_PRIMARY) {
-                s_cam_out.cfg.primary.width = old_w;
-                s_cam_out.cfg.primary.height = old_h;
+        if (cam_mipi_set_output(chn_id, old_w, old_h) == OPRT_OK) {
+            if (chn_id == CAM_CHN_MP) {
+                s_cam_out.cfg.stream.width = old_w;
+                s_cam_out.cfg.stream.height = old_h;
                 s_cam_out.src_width = old_w;
                 s_cam_out.src_height = old_h;
             } else {
-                s_cam_out.cfg.secondary.width = old_w;
-                s_cam_out.cfg.secondary.height = old_h;
+                s_cam_out.cfg.frame.width = old_w;
+                s_cam_out.cfg.frame.height = old_h;
             }
             (void)tkl_cam_out_consumers_open();
         }
@@ -2270,16 +2361,15 @@ OPERATE_RET tkl_mipi_csi_set_output(UINT8_T channel_id, UINT16_T width, UINT16_T
     }
 
     tkl_log_output("tkl_cam_out: chn%u switched %ux%u -> %ux%u\r\n",
-                   (unsigned int)channel_id, old_w, old_h, width, height);
+                   (unsigned int)chn_id, old_w, old_h, width, height);
     return OPRT_OK;
 }
 
-OPERATE_RET tkl_mipi_csi_set_encode(CONST TUYA_MEDIA_ENC_CTRL_T *ctrl)
+OPERATE_RET tkl_mipi_csi_set_bitrate(UINT32_T bitrate)
 {
     TUYA_VENC_RATE_CTRL_T rc;
-    OPERATE_RET ret = OPRT_OK;
 
-    if (ctrl == NULL) {
+    if (bitrate == 0U) {
         return OPRT_INVALID_PARM;
     }
 
@@ -2290,22 +2380,22 @@ OPERATE_RET tkl_mipi_csi_set_encode(CONST TUYA_MEDIA_ENC_CTRL_T *ctrl)
         return OPRT_RESOURCE_NOT_READY;
     }
 
-    if (ctrl->bitrate != 0U) {
-        os_memset(&rc, 0, sizeof(rc));
-        rc.bitrate = ctrl->bitrate;
-        rc.force_idr = ctrl->force_idr;
-        s_cam_out.cfg.encoder.bitrate = ctrl->bitrate;
-        return tkl_venc_set_rate_ctrl(s_cam_out.venc, &rc);
-    }
-
-    if (ctrl->force_idr == TRUE) {
-        ret = tkl_venc_request_idr(s_cam_out.venc);
-    }
-
-    return ret;
+    os_memset(&rc, 0, sizeof(rc));
+    rc.bitrate = bitrate;
+    s_cam_out.cfg.stream.bitrate = bitrate;
+    return tkl_venc_set_rate_ctrl(s_cam_out.venc, &rc);
 }
 
-OPERATE_RET tkl_mipi_csi_set_osd(TUYA_MIPI_CSI_OSD_CHANNEL_E chn, CONST TUYA_OSD_T *osd)
+OPERATE_RET tkl_mipi_csi_force_idr(VOID_T)
+{
+    if (s_cam_out.state != TKL_CAM_ST_STARTED || s_cam_out.venc == NULL) {
+        return OPRT_RESOURCE_NOT_READY;
+    }
+
+    return tkl_venc_request_idr(s_cam_out.venc);
+}
+
+OPERATE_RET tkl_mipi_csi_set_osd(TUYA_CAMERA_OUTPUT_TYPE_E type, CONST TUYA_OSD_T *osd)
 {
     if (osd == NULL) {
         return OPRT_INVALID_PARM;
@@ -2315,14 +2405,14 @@ OPERATE_RET tkl_mipi_csi_set_osd(TUYA_MIPI_CSI_OSD_CHANNEL_E chn, CONST TUYA_OSD
         return OPRT_RESOURCE_NOT_READY;
     }
 
-    if (chn == TUYA_MIPI_CSI_OSD_PIXEL) {
+    if (type == TUYA_CAMERA_OUTPUT_PIXEL) {
         if (s_cam_out.osd_display == NULL) {
             return OPRT_NOT_SUPPORTED;
         }
         return tkl_osd_engine_submit(s_cam_out.osd_display, osd);
     }
 
-    if (chn != TUYA_MIPI_CSI_OSD_STREAM) {
+    if (type != TUYA_CAMERA_OUTPUT_STREAM) {
         return OPRT_INVALID_PARM;
     }
 

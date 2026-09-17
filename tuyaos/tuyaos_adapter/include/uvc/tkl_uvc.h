@@ -18,74 +18,72 @@ extern "C" {
 /** Device plug/unplug notification. Runs on a vendor USB thread. */
 typedef VOID (*TUYA_UVC_STATE_CB)(BOOL_T connected, VOID_T *arg);
 
-/** Output sinks produced from one selected UVC input stream. */
-typedef enum {
-    TUYA_UVC_OUTPUT_NONE   = 0U,
-    TUYA_UVC_OUTPUT_FRAME  = (1U << 0), /**< original complete UVC frame */
-    TUYA_UVC_OUTPUT_PIXEL  = (1U << 1), /**< decoded and processed pixels */
-    TUYA_UVC_OUTPUT_STREAM = (1U << 2), /**< re-encoded H.264 stream */
-} TUYA_UVC_OUTPUT_KIND_E;
-
-/** Which output an OSD or encoder setting applies to. */
-typedef enum {
-    TUYA_UVC_OSD_PIXEL  = 0U, /**< pixel output coordinates */
-    TUYA_UVC_OSD_STREAM = 1U, /**< encoded stream coordinates */
-} TUYA_UVC_OSD_CHANNEL_E;
-
-/** Pixel output geometry and delivered pixel format. */
+/** One (width,height) frame descriptor and its advertised frame rates. */
 typedef struct {
-    UINT16_T         rotate;
-    UINT16_T         target_width;
-    UINT16_T         target_height;
-    TUYA_FRAME_FMT_E format;
-} TUYA_UVC_PIXEL_CFG_T;
+    UINT16_T width;
+    UINT16_T height;
+    UINT8_T  fps_num;                /* valid entries in fps[] */
+    UINT16_T fps[8];                 /* devices listing more are truncated to 8 */
+} TUYA_UVC_FRAME_INFO_T;
 
-/** Encoder initialization controls; zero values use backend defaults. */
+/** One streaming format and its frame list, as advertised by the device. */
 typedef struct {
-    UINT8_T  fps;
-    UINT32_T gop;
-    UINT32_T bitrate;
-} TUYA_UVC_ENCODER_CFG_T;
+    TUYA_FRAME_FMT_E format;         /* MJPEG / H264, mapped from the UVC GUID */
+    UINT8_T  frame_num;              /* valid entries in frames[] */
+    TUYA_UVC_FRAME_INFO_T frames[8];
+} TUYA_UVC_FORMAT_INFO_T;
 
 /**
- * @brief One UVC input stream and its requested TKL outputs.
+ * @brief USB enumeration snapshot, read with tkl_uvc_get_info() before init().
+ *
+ * Filled from the USB device/config descriptors and the UVC class descriptors
+ * (format + frame lists) during one enumeration; no stream is opened. String
+ * descriptors are read over control transfers; unavailable ones come back as
+ * "".
+ */
+typedef struct {
+    /* USB device */
+    UINT16_T vid;                    /* idVendor */
+    UINT16_T pid;                    /* idProduct */
+    UINT16_T bcd_usb;                /* USB spec in BCD, e.g. 0x0210 */
+    UINT16_T bcd_device;             /* device release number in BCD */
+    UINT8_T  speed;                  /* 0=LS 1=FS 2=HS 3=SS */
+    CHAR_T   manufacturer[64];       /* string descriptors; "" when unavailable */
+    CHAR_T   product[64];
+    CHAR_T   serial[64];
+    /* USB transport */
+    UINT8_T  ctrl_intf;              /* VideoControl interface number */
+    UINT8_T  data_intf;              /* VideoStreaming interface number */
+    BOOL_T   is_bulk;                /* FALSE = ISO IN, TRUE = Bulk IN */
+    UINT16_T ep_mps;                 /* streaming endpoint max packet size */
+    /* UVC */
+    UINT16_T bcd_uvc;                /* UVC spec (bcdVDC) */
+    UINT8_T  format_num;             /* valid entries in formats[] */
+    TUYA_UVC_FORMAT_INFO_T formats[3];
+} TUYA_UVC_INFO_T;
+
+/**
+ * @brief One UVC input stream and its requested outputs.
  *
  * @note This version intentionally models one input stream. Dual-stream UVC
  *       devices are not part of this API yet.
  */
 typedef struct {
-    UINT8_T  port;   /**< USB hub port; 0 means the adapter default */
-    UINT16_T width;
-    UINT16_T height;
-    UINT8_T  fps;    /**< 0 means the adapter default */
+    UINT8_T  port;                   /* USB hub port; 0 = adapter default */
+    TUYA_CAMERA_FRAME_CFG_T uvc_cfg; /* input frame: w/h/fps/format (MJPEG/H264) */
 
-    /** Format delivered by the UVC device, not a decoder selection. */
-    TUYA_FRAME_FMT_E input_format; /**< 0 uses the adapter default (JPEG) */
+    TUYA_FRAME_OUTPUT_CFG_T frame;   /* raw frames via tkl_uvc_get_frame();
+                                         MJPEG sources only this version */
 
-    /** Independent output requests; FRAME, PIXEL and STREAM may be combined. */
-    UINT32_T output_kinds;
+    /** Applies to TUYA_CAMERA_OUTPUT_PIXEL. */
+    TUYA_PIXEL_OUTPUT_CFG_T pixel;
 
-    /** Applies to TUYA_UVC_OUTPUT_PIXEL. */
-    TUYA_UVC_PIXEL_CFG_T pixel;
-
-    /** Applies to TUYA_UVC_OUTPUT_STREAM. */
-    TUYA_UVC_ENCODER_CFG_T encoder;
-
-    /** Original complete UVC frame, e.g. JPEG/MJPEG or H.264. */
-    TUYA_MEDIA_BUF_CB frame_cb;
-    VOID_T          *frame_arg;
-
-    /** Decoded, scaled and rotated pixel output. */
-    TUYA_MEDIA_BUF_CB pixel_cb;
-    VOID_T          *pixel_arg;
-
-    /** TKL-generated H.264 output. */
-    TUYA_MEDIA_BUF_CB stream_cb;
-    VOID_T          *stream_arg;
+    /** Applies to TUYA_CAMERA_OUTPUT_STREAM. */
+    TUYA_STREAM_OUTPUT_CFG_T stream;
 
     /** Plug/unplug notification; runs on a vendor USB thread. */
-    TUYA_UVC_STATE_CB state_cb;
-    VOID_T           *state_arg;
+    TUYA_UVC_STATE_CB connect_state_cb;
+    VOID_T           *connect_state_arg;
 } TUYA_UVC_CFG_T;
 
 /** Enumerate the camera and allocate adapter resources; no stream yet. */
@@ -100,16 +98,33 @@ OPERATE_RET tkl_uvc_stop(VOID_T);
 /** Stop and release all camera resources. */
 OPERATE_RET tkl_uvc_deinit(VOID_T);
 
-/**
- * @brief Adjust encoder bitrate and/or request an IDR while streaming.
- *
- * @note STREAM output must be configured and running; otherwise the encoder
- *       does not exist and the call fails with OPRT_RESOURCE_NOT_READY.
- */
-OPERATE_RET tkl_uvc_set_encode(CONST TUYA_MEDIA_ENC_CTRL_T *ctrl);
-
 /** Submit or clear one business-composed ARGB8888 overlay bitmap. */
-OPERATE_RET tkl_uvc_set_osd(TUYA_UVC_OSD_CHANNEL_E channel, CONST TUYA_OSD_T *osd);
+OPERATE_RET tkl_uvc_set_osd(TUYA_CAMERA_OUTPUT_TYPE_E type, CONST TUYA_OSD_T *osd);
+
+/**
+ * @brief Read the USB/UVC enumeration snapshot before tkl_uvc_init().
+ *
+ * Enumerates the bus once (no stream, no pipelines) and fills @p info. Safe
+ * to call repeatedly; the device must be plugged in.
+ *
+ * @return OPRT_OK on success; OPRT_RESOURCE_NOT_READY when no camera is
+ *         present on @c port
+ */
+OPERATE_RET tkl_uvc_get_info(TUYA_UVC_INFO_T *info);
+
+/** Pull one raw frame; requires cfg.frame.enable. Caller releases via the
+ *  returned buf's free_cb - it returns both the frame and the buf struct. */
+OPERATE_RET tkl_uvc_get_frame(TUYA_MEDIA_BUF_T **out, UINT32_T timeout_ms);
+
+/**
+ * @brief Adjust the encoder bitrate while streaming.
+ * @note STREAM output (MJPEG source, internal transcoder) must be configured
+ *       and running; otherwise OPRT_RESOURCE_NOT_READY.
+ */
+OPERATE_RET tkl_uvc_set_bitrate(UINT32_T bitrate);
+
+/** Force an IDR frame; requires STREAM (MJPEG source) to be running. */
+OPERATE_RET tkl_uvc_force_idr(VOID_T);
 
 #ifdef __cplusplus
 }

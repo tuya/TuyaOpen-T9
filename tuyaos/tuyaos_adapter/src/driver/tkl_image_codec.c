@@ -104,7 +104,8 @@ STATIC OPERATE_RET tkl_image_codec_map_err(avdk_err_t ret)
  * @note Not width*height*bpp: NV12 rows round to even, RGB rows to a multiple
  *       of 16, and the hardware RGB888 is 4 bytes/pixel. This is the module's
  *       only authoritative size rule - convert() validates the caller's
- *       destination against it, and get_info() uses it for the native size.
+ *       destination against it, and decode_pixels() sizes its intermediates
+ *       with it.
  *
  * @return required byte count, 0 for an unsupported format or zero geometry
  */
@@ -146,23 +147,23 @@ STATIC UINT32_T tkl_image_codec_jpeg_sampling_to_fmt(bk_jpeg_decode_img_fmt_t fm
 }
 
 /*
- * The probe result travels in TUYA_IMAGE_CODEC_BUF_T itself: tkl_image_codec_get_info()
- * fills width/height/format/size and leaves data NULL. decode_pixels() reads the
- * same fields to pick the direct-decode path; it never touches info.size.
+ * The probe itself - reading the JPEG header - is shared: the public
+ * tkl_image_codec_get_info() wraps it for callers, and decode_pixels() calls
+ * it directly before picking the direct-decode path.
  */
-
-OPERATE_RET tkl_image_codec_get_info(CONST TUYA_IMAGE_CODEC_STREAM_T *in, TUYA_IMAGE_CODEC_BUF_T *out)
+STATIC OPERATE_RET tkl_image_codec_probe(CONST UINT8_T *stream, UINT32_T length,
+                                   TUYA_IMAGE_INFO_T *info)
 {
     bk_jpeg_decode_img_info_t img_info;
     avdk_err_t ret;
 
-    if (in == NULL || out == NULL || in->data == NULL || in->size == 0U) {
+    if (stream == NULL || length == 0U || info == NULL) {
         return OPRT_INVALID_PARM;
     }
 
     os_memset(&img_info, 0, sizeof(img_info));
-    img_info.input_stream = in->data;
-    img_info.input_stream_length = in->size;
+    img_info.input_stream = stream;
+    img_info.input_stream_length = length;
 
     ret = bk_jpeg_decode_get_img_info(&img_info);
     if (ret != AVDK_ERR_OK) {
@@ -174,18 +175,18 @@ OPERATE_RET tkl_image_codec_get_info(CONST TUYA_IMAGE_CODEC_STREAM_T *in, TUYA_I
         return OPRT_COM_ERROR;
     }
 
-    os_memset(out, 0, sizeof(*out));
-    out->width = (UINT16_T)img_info.width;
-    out->height = (UINT16_T)img_info.height;
-    out->format = tkl_image_codec_jpeg_sampling_to_fmt(img_info.format);
-    /* The size of the native picture as NV12 - what a straight decode of this
-     * stream wants, whatever its actual sampling is (422 goes through the
-     * two-step path and still lands in NV12). data stays NULL on purpose:
-     * nothing is allocated here, the caller allocates per size - so the struct
-     * never claims format = NV12 while data still points at the JPEG. */
-    out->size = tkl_image_codec_need_size((UINT32_T)TUYA_FRAME_FMT_NV12,
-                                    out->width, out->height);
+    info->format = tkl_image_codec_jpeg_sampling_to_fmt(img_info.format);
+    info->width = (UINT16_T)img_info.width;
+    info->height = (UINT16_T)img_info.height;
     return OPRT_OK;
+}
+
+OPERATE_RET tkl_image_codec_get_info(CONST TUYA_IMAGE_BUF_T *in, TUYA_IMAGE_INFO_T *info)
+{
+    if (in == NULL) {
+        return OPRT_INVALID_PARM;
+    }
+    return tkl_image_codec_probe(in->buffer, in->length, info);
 }
 
 /* ---------------------------------------------------------------------------
@@ -225,10 +226,10 @@ STATIC OPERATE_RET tkl_image_codec_decode_one(CONST TUYA_IMAGE_CODEC_BUF_T *in, 
     cfg.out_format = bk_fmt;
 
     os_memset(&input, 0, sizeof(input));
-    input.stream = in->data;
-    input.stream_len = in->size;
-    input.out_buffer = out->data;
-    input.out_buffer_size = out->size;
+    input.stream = in->buffer;
+    input.stream_len = in->length;
+    input.out_buffer = out->buffer;
+    input.out_buffer_size = out->length;
 
     ret = bk_jpeg_decode_frame_ctlr_new(&handle, &cfg);
     if (ret == AVDK_ERR_OK) {
@@ -249,7 +250,7 @@ STATIC OPERATE_RET tkl_image_codec_decode_one(CONST TUYA_IMAGE_CODEC_BUF_T *in, 
         return tkl_image_codec_map_err(ret);
     }
 
-    out->size = need_size;
+    out->length = need_size;
     return OPRT_OK;
 }
 
@@ -349,15 +350,14 @@ STATIC OPERATE_RET tkl_image_codec_nv16_to_yuyv(UINT16_T width,
  *
  * @param[in]     in  JPEG stream
  * @param[in,out] out pixel destination; width/height/format/capacity filled by
- *                    the caller, size receives the bytes actually produced
+ *                    the caller, length receives the bytes actually produced
  *
  * @return OPRT_OK on success
  */
 STATIC OPERATE_RET tkl_image_codec_decode_pixels(CONST TUYA_IMAGE_CODEC_BUF_T *in,
                                            TUYA_IMAGE_CODEC_BUF_T *out)
 {
-    TUYA_IMAGE_CODEC_BUF_T info;
-    TUYA_IMAGE_CODEC_STREAM_T stream;
+    TUYA_IMAGE_INFO_T info;
     TUYA_IMAGE_CODEC_BUF_T native;
     UINT8_T *tmp = NULL;
     UINT8_T *tmp_nv12 = NULL;
@@ -366,8 +366,8 @@ STATIC OPERATE_RET tkl_image_codec_decode_pixels(CONST TUYA_IMAGE_CODEC_BUF_T *i
     BOOL_T yuv_src;
     OPERATE_RET ret;
 
-    if (in == NULL || out == NULL || in->data == NULL || in->size == 0U ||
-        out->data == NULL || out->size == 0U) {
+    if (in == NULL || out == NULL || in->buffer == NULL || in->length == 0U ||
+        out->buffer == NULL || out->length == 0U) {
         return OPRT_INVALID_PARM;
     }
 
@@ -390,17 +390,15 @@ STATIC OPERATE_RET tkl_image_codec_decode_pixels(CONST TUYA_IMAGE_CODEC_BUF_T *i
     }
 
     need_size = tkl_image_codec_need_size(out->format, out->width, out->height);
-    if (need_size == 0U || out->size < need_size) {
+    if (need_size == 0U || out->length < need_size) {
         tkl_log_output("tkl_image: decode out buffer %u < %u needed for %ux%u fmt=%u\r\n",
-                       (unsigned int)out->size, (unsigned int)need_size,
+                       (unsigned int)out->length, (unsigned int)need_size,
                        (unsigned int)out->width, (unsigned int)out->height,
                        (unsigned int)out->format);
         return OPRT_INVALID_PARM;
     }
 
-    stream.data = in->data;
-    stream.size = in->size;
-    ret = tkl_image_codec_get_info(&stream, &info);
+    ret = tkl_image_codec_probe(in->buffer, in->length, &info);
     if (ret != OPRT_OK) {
         return ret;
     }
@@ -448,8 +446,8 @@ STATIC OPERATE_RET tkl_image_codec_decode_pixels(CONST TUYA_IMAGE_CODEC_BUF_T *i
     }
 
     os_memset(&native, 0, sizeof(native));
-    native.data = tmp;
-    native.size = tmp_size;
+    native.buffer = tmp;
+    native.length = tmp_size;
     native.width = info.width;
     native.height = info.height;
     native.format = (yuv_src == TRUE) ? (UINT32_T)TUYA_FRAME_FMT_YUYV
@@ -481,9 +479,9 @@ STATIC OPERATE_RET tkl_image_codec_decode_pixels(CONST TUYA_IMAGE_CODEC_BUF_T *i
             return OPRT_NOT_SUPPORTED;
         }
         ret = tkl_image_codec_nv16_to_yuyv(info.width, info.height,
-                                     native.data, out->data);
+                                     native.buffer, out->buffer);
         if (ret == OPRT_OK) {
-            out->size = need_size;
+            out->length = need_size;
         }
         tkl_media_buf_free(TUYA_MEDIA_BUF_OWNER_IMAGE, tmp);
         return ret;
@@ -491,9 +489,9 @@ STATIC OPERATE_RET tkl_image_codec_decode_pixels(CONST TUYA_IMAGE_CODEC_BUF_T *i
     if (out->format == (UINT32_T)TUYA_FRAME_FMT_NV12 &&
         out->width == info.width && out->height == info.height) {
         ret = tkl_image_codec_nv16_to_nv12(info.width, info.height,
-                                     native.data, out->data);
+                                     native.buffer, out->buffer);
         if (ret == OPRT_OK) {
-            out->size = need_size;
+            out->length = need_size;
         }
         tkl_media_buf_free(TUYA_MEDIA_BUF_OWNER_IMAGE, tmp);
         return ret;
@@ -512,11 +510,11 @@ STATIC OPERATE_RET tkl_image_codec_decode_pixels(CONST TUYA_IMAGE_CODEC_BUF_T *i
     }
 
     ret = tkl_image_codec_nv16_to_nv12(info.width, info.height,
-                                 native.data, tmp_nv12);
+                                 native.buffer, tmp_nv12);
     if (ret == OPRT_OK) {
         os_memset(&native, 0, sizeof(native));
-        native.data = tmp_nv12;
-        native.size = tmp_size;
+        native.buffer = tmp_nv12;
+        native.length = tmp_size;
         native.width = info.width;
         native.height = info.height;
         native.format = (UINT32_T)TUYA_FRAME_FMT_NV12;
@@ -716,7 +714,7 @@ STATIC UINT8_T tkl_image_codec_quality_to_qlevel(UINT8_T quality)
  *                     luma otherwise
  * @param[in]  quality public quality, 1..100; converted per backend here, the
  *                     two encoders read the field on different scales
- * @param[out] out     destination buffer; @c size receives the encoded length
+ * @param[out] out     destination buffer; @c length receives the encoded length
  *
  * @return OPRT_OK on success
  */
@@ -734,8 +732,8 @@ STATIC OPERATE_RET tkl_image_codec_jpeg_encode_run(BOOL_T use_sw,
 
     os_memset(&input, 0, sizeof(input));
     input.pic_buf = (UINT32_T)(uintptr_t)src;
-    input.out_buf = (UINT32_T)(uintptr_t)out->data;
-    input.out_size = out->size;
+    input.out_buf = (UINT32_T)(uintptr_t)out->buffer;
+    input.out_size = out->length;
 
     if (use_sw == TRUE) {
         bk_jpeg_encode_sw_frame_config_t cfg;
@@ -782,11 +780,11 @@ STATIC OPERATE_RET tkl_image_codec_jpeg_encode_run(BOOL_T use_sw,
     if (ret != AVDK_ERR_OK || encoded == 0U) {
         tkl_log_output("tkl_image: jpeg %s encode failed ret=%d size=%u\r\n",
                        (use_sw == TRUE) ? "sw" : "hw", (INT_T)ret, (unsigned int)encoded);
-        out->size = 0U;
+        out->length = 0U;
         return (ret != AVDK_ERR_OK) ? tkl_image_codec_map_err(ret) : OPRT_COM_ERROR;
     }
 
-    out->size = encoded;
+    out->length = encoded;
     return OPRT_OK;
 }
 
@@ -813,8 +811,8 @@ STATIC OPERATE_RET tkl_image_codec_encode_jpeg(CONST TUYA_IMAGE_CODEC_BUF_T *in,
     UINT8_T quality;
     OPERATE_RET ret;
 
-    if (in == NULL || out == NULL || in->data == NULL || in->size == 0U ||
-        out->data == NULL || out->size == 0U) {
+    if (in == NULL || out == NULL || in->buffer == NULL || in->length == 0U ||
+        out->buffer == NULL || out->length == 0U) {
         return OPRT_INVALID_PARM;
     }
 
@@ -827,7 +825,7 @@ STATIC OPERATE_RET tkl_image_codec_encode_jpeg(CONST TUYA_IMAGE_CODEC_BUF_T *in,
     y_plane_size = (UINT32_T)in->width * in->height;
 
     if (in->format == (UINT32_T)TUYA_FRAME_FMT_YUYV) {
-        if (in->size < (y_plane_size * 2U)) {
+        if (in->length < (y_plane_size * 2U)) {
             return OPRT_INVALID_PARM;
         }
         /* The software encoder is the only backend that takes YUYV, and it
@@ -842,7 +840,7 @@ STATIC OPERATE_RET tkl_image_codec_encode_jpeg(CONST TUYA_IMAGE_CODEC_BUF_T *in,
                            (unsigned int)(y_plane_size * 2U));
             return OPRT_MALLOC_FAILED;
         }
-        ret = tkl_image_codec_yuyv_to_yvyu(in->width, in->height, in->data, packed);
+        ret = tkl_image_codec_yuyv_to_yvyu(in->width, in->height, in->buffer, packed);
         if (ret == OPRT_OK) {
             ret = tkl_image_codec_jpeg_encode_run(TRUE, in->width, in->height,
                                             packed, quality, out);
@@ -855,12 +853,12 @@ STATIC OPERATE_RET tkl_image_codec_encode_jpeg(CONST TUYA_IMAGE_CODEC_BUF_T *in,
         return OPRT_NOT_SUPPORTED;
     }
 
-    if (in->size < (y_plane_size + (y_plane_size / 2U))) {
+    if (in->length < (y_plane_size + (y_plane_size / 2U))) {
         return OPRT_INVALID_PARM;
     }
 
     return tkl_image_codec_jpeg_encode_run(FALSE, in->width, in->height,
-                                     in->data, quality, out);
+                                     in->buffer, quality, out);
 }
 
 /* ---------------------------------------------------------------------------
@@ -892,8 +890,8 @@ STATIC OPERATE_RET tkl_image_codec_scale_convert(CONST TUYA_IMAGE_CODEC_BUF_T *i
     OPERATE_RET ret;
 
     if (in == NULL || out == NULL ||
-        in->data == NULL || in->size == 0U ||
-        out->data == NULL || out->size == 0U) {
+        in->buffer == NULL || in->length == 0U ||
+        out->buffer == NULL || out->length == 0U) {
         return OPRT_INVALID_PARM;
     }
 
@@ -909,7 +907,7 @@ STATIC OPERATE_RET tkl_image_codec_scale_convert(CONST TUYA_IMAGE_CODEC_BUF_T *i
     }
 
     y_plane_size = (UINT32_T)in->width * in->height;
-    if (in->size < (y_plane_size + (y_plane_size / 2U))) {
+    if (in->length < (y_plane_size + (y_plane_size / 2U))) {
         return OPRT_INVALID_PARM;
     }
 
@@ -919,9 +917,9 @@ STATIC OPERATE_RET tkl_image_codec_scale_convert(CONST TUYA_IMAGE_CODEC_BUF_T *i
                        (unsigned int)out->format);
         return OPRT_NOT_SUPPORTED;
     }
-    if (out->size < need_size) {
+    if (out->length < need_size) {
         tkl_log_output("tkl_image: out buffer %u < %u needed\r\n",
-                       (unsigned int)out->size, (unsigned int)need_size);
+                       (unsigned int)out->length, (unsigned int)need_size);
         return OPRT_INVALID_PARM;
     }
 
@@ -933,7 +931,7 @@ STATIC OPERATE_RET tkl_image_codec_scale_convert(CONST TUYA_IMAGE_CODEC_BUF_T *i
         }
 
         ret = tkl_image_codec_nv12_to_yuyv(in->width, in->height,
-                                     in->data, in->data + y_plane_size, out->data);
+                                     in->buffer, in->buffer + y_plane_size, out->buffer);
         if (ret != OPRT_OK) {
             return ret;
         }
@@ -944,14 +942,14 @@ STATIC OPERATE_RET tkl_image_codec_scale_convert(CONST TUYA_IMAGE_CODEC_BUF_T *i
         }
 
         os_memset(&pp_in, 0, sizeof(pp_in));
-        pp_in.y = in->data;
-        pp_in.uv = in->data + y_plane_size;
+        pp_in.y = in->buffer;
+        pp_in.uv = in->buffer + y_plane_size;
         pp_in.width = in->width;
         pp_in.height = in->height;
 
         os_memset(&pp_out, 0, sizeof(pp_out));
-        pp_out.buffer = out->data;
-        pp_out.size = out->size;
+        pp_out.buffer = out->buffer;
+        pp_out.size = out->length;
         pp_out.width = out->width;
         pp_out.height = out->height;
         pp_out.format = tkl_media_fmt_to_bk(out->format);
@@ -963,7 +961,7 @@ STATIC OPERATE_RET tkl_image_codec_scale_convert(CONST TUYA_IMAGE_CODEC_BUF_T *i
         }
     }
 
-    out->size = need_size;
+    out->length = need_size;
     return OPRT_OK;
 }
 
@@ -974,8 +972,8 @@ STATIC OPERATE_RET tkl_image_codec_scale_convert(CONST TUYA_IMAGE_CODEC_BUF_T *i
 
 OPERATE_RET tkl_image_codec_convert(CONST TUYA_IMAGE_CODEC_BUF_T *in, TUYA_IMAGE_CODEC_BUF_T *out)
 {
-    if (in == NULL || out == NULL || in->data == NULL || in->size == 0U ||
-        out->data == NULL || out->size == 0U) {
+    if (in == NULL || out == NULL || in->buffer == NULL || in->length == 0U ||
+        out->buffer == NULL || out->length == 0U) {
         return OPRT_INVALID_PARM;
     }
 
@@ -1021,6 +1019,11 @@ typedef struct {
 /**
  * Validate one memcpy operand and resolve its window into plane views.
  *
+ * @param[in]    f      the operand's image buffer
+ * @param[in]    region the window to move on @p f; an all-zero region means
+ *                      the whole frame
+ * @param[out]   v      resolved plane views
+ *
  * OPRT_NOT_SUPPORTED for anything but the pixel formats; OPRT_INVALID_PARM
  * for a NULL/empty payload, a half-specified or out-of-range window (never
  * clipped), a window misaligned for the format, a stride smaller than the
@@ -1028,6 +1031,7 @@ typedef struct {
  * geometry. Everything else fills @p v and returns OPRT_OK.
  */
 STATIC OPERATE_RET tkl_image_codec_copy_view(CONST TUYA_IMAGE_CODEC_BUF_T *f,
+                                       CONST TUYA_IMAGE_CODEC_REGION_T *region,
                                        TUYA_IMAGE_CODEC_COPY_VIEW_T *v)
 {
     UINT32_T y_bpp;
@@ -1050,14 +1054,14 @@ STATIC OPERATE_RET tkl_image_codec_copy_view(CONST TUYA_IMAGE_CODEC_BUF_T *f,
         return OPRT_NOT_SUPPORTED;      /* coded formats are not memcpy-able */
     }
 
-    if (f->data == NULL || f->width == 0U || f->height == 0U) {
+    if (f->buffer == NULL || f->width == 0U || f->height == 0U) {
         return OPRT_INVALID_PARM;
     }
 
     /* an all-zero region is the whole frame; a half-zero one is a mistake */
-    if (f->region.width == 0U || f->region.height == 0U) {
-        if (f->region.width != 0U || f->region.height != 0U ||
-            f->region.x != 0U || f->region.y != 0U) {
+    if (region->width == 0U || region->height == 0U) {
+        if (region->width != 0U || region->height != 0U ||
+            region->x != 0U || region->y != 0U) {
             return OPRT_INVALID_PARM;
         }
         rx = 0U;
@@ -1065,10 +1069,10 @@ STATIC OPERATE_RET tkl_image_codec_copy_view(CONST TUYA_IMAGE_CODEC_BUF_T *f,
         rw = f->width;
         rh = f->height;
     } else {
-        rx = f->region.x;
-        ry = f->region.y;
-        rw = f->region.width;
-        rh = f->region.height;
+        rx = region->x;
+        ry = region->y;
+        rw = region->width;
+        rh = region->height;
         if (rx + rw > (UINT32_T)f->width || ry + rh > (UINT32_T)f->height) {
             return OPRT_INVALID_PARM;
         }
@@ -1093,7 +1097,7 @@ STATIC OPERATE_RET tkl_image_codec_copy_view(CONST TUYA_IMAGE_CODEC_BUF_T *f,
         /* the chroma row is rw/2 interleaved Cb/Cr pairs = rw bytes */
         uvs = (UINT32_T)f->width;
         need += uvs * (UINT32_T)(f->height / 2U);
-        v->uv.base = f->data + ys * (UINT32_T)f->height +
+        v->uv.base = f->buffer + ys * (UINT32_T)f->height +
                      (ry / 2U) * uvs + rx;
         v->uv.pitch = uvs;
         v->uv.row_bytes = rw;
@@ -1101,11 +1105,11 @@ STATIC OPERATE_RET tkl_image_codec_copy_view(CONST TUYA_IMAGE_CODEC_BUF_T *f,
     }
 
     /* the buffer must hold its own geometry before any window is discussed */
-    if (need > f->size) {
+    if (need > f->length) {
         return OPRT_INVALID_PARM;
     }
 
-    v->y.base = f->data + ry * ys + rx * y_bpp;
+    v->y.base = f->buffer + ry * ys + rx * y_bpp;
     v->y.pitch = ys;
     v->y.row_bytes = rw * y_bpp;
     v->y.rows = rh;
@@ -1536,7 +1540,7 @@ exit:
 
 #endif /* CONFIG_GENERAL_DMA_LINK_MODE */
 
-OPERATE_RET tkl_image_codec_memcpy(CONST TUYA_IMAGE_CODEC_BUF_T *src, CONST TUYA_IMAGE_CODEC_BUF_T *dst)
+OPERATE_RET tkl_image_codec_memcpy(CONST TUYA_IMAGE_CODEC_COPY_BUF_T *src, CONST TUYA_IMAGE_CODEC_COPY_BUF_T *dst)
 {
     TUYA_IMAGE_CODEC_COPY_VIEW_T sv;
     TUYA_IMAGE_CODEC_COPY_VIEW_T dv;
@@ -1547,15 +1551,15 @@ OPERATE_RET tkl_image_codec_memcpy(CONST TUYA_IMAGE_CODEC_BUF_T *src, CONST TUYA
     if (src == NULL || dst == NULL) {
         return OPRT_INVALID_PARM;
     }
-    if (src->format != dst->format) {
+    if (src->buf.format != dst->buf.format) {
         return OPRT_NOT_SUPPORTED;      /* converting is convert()'s job */
     }
 
-    ret = tkl_image_codec_copy_view(src, &sv);
+    ret = tkl_image_codec_copy_view(&src->buf, &src->region, &sv);
     if (ret != OPRT_OK) {
         return ret;
     }
-    ret = tkl_image_codec_copy_view(dst, &dv);
+    ret = tkl_image_codec_copy_view(&dst->buf, &dst->region, &dv);
     if (ret != OPRT_OK) {
         return ret;
     }
@@ -1566,7 +1570,7 @@ OPERATE_RET tkl_image_codec_memcpy(CONST TUYA_IMAGE_CODEC_BUF_T *src, CONST TUYA
     }
 
     /* one buffer overlapping itself: far side first, memmove within a row */
-    overlap = (src->data == dst->data) ? TRUE : FALSE;
+    overlap = (src->buf.buffer == dst->buf.buffer) ? TRUE : FALSE;
     descend = (overlap == TRUE && dv.y.base > sv.y.base) ? TRUE : FALSE;
 
 #if CONFIG_GENERAL_DMA_LINK_MODE

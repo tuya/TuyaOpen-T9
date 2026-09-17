@@ -29,61 +29,99 @@ extern "C" {
  * use the same field. The business layer interprets the format it receives.
  * --------------------------------------------------------------------------- */
 
-/** Encoded video frame classification, meaningful when the payload has one. */
-typedef enum {
-    TUYA_VIDEO_FRAME_UNKNOWN = 0,
-    TUYA_VIDEO_FRAME_I,
-    TUYA_VIDEO_FRAME_P,
-} TUYA_VIDEO_FRAME_TYPE_E;
-
 /**
  * @brief One media buffer, plus everything needed to release it.
  *
  * @note **The release function travels with the buffer.** Frames come from
  *       different pools and only the producing peripheral knows which, so call
  *       @ref free_cb rather than freeing, and pass the whole struct on to keep
- *       the pairing intact.
+ *       the pairing intact. For buffers the peripheral allocated as one block
+ *       (struct + frame), free_cb releases both - the caller only ever calls
+ *       free_cb, never free().
  * @note @ref free_cb may be NULL for a buffer the caller already owns, such as
  *       the destination of tkl_image_codec_decode().
  * @note @ref format describes the content in @ref data. For pixel formats,
- *       width/height describe the image layout. For coded
- *       video formats, @ref frame_type may classify the encoded frame.
+ *       width/height describe the image layout. For coded H.264, format tells
+ *       the frame type directly: TUYA_FRAME_FMT_H264_I / H264_P / H264_B.
  */
 typedef struct {
     UINT8_T  *data;
     UINT32_T  size;         /**< bytes of valid content */
-    VOID_T  (*free_cb)(UINT8_T *buffer);  /**< release @ref data; NULL = caller owns it */
+    VOID_T  (*free_cb)(void *data);  /**< release @ref data (and the buffer
+                                          itself when TKL owns it); NULL = caller owns it */
 
     TUYA_FRAME_FMT_E format; /**< content pixel layout or coded format */
-    UINT64_T  pts;          /**< milliseconds since boot */
+    UINT64_T  timestamp;          /**< milliseconds since boot */
 
     /* pixel formats */
     UINT16_T  width;
     UINT16_T  height;
 
-    /* stream formats (JPEG/H264) */
-    TUYA_VIDEO_FRAME_TYPE_E frame_type;
+    VOID_T *priv;           /**< peripheral-private; never touch */
+    VOID_T *user_args;      /**< the arg registered with the callback that
+                                 delivered this buffer */
 } TUYA_MEDIA_BUF_T;
 
 /**
  * @brief Delivery callback for a produced buffer.
  * @param[in] buf produced buffer; valid only for the duration of the call
- *                unless the callee takes ownership via buf->free_cb
- * @param[in] arg caller context registered with the peripheral
+ *                unless the callee takes ownership via buf->free_cb. The
+ *                context registered with this callback arrives in
+ *                buf->user_args.
  */
-typedef VOID_T (*TUYA_MEDIA_BUF_CB)(CONST TUYA_MEDIA_BUF_T *buf, VOID_T *arg);
+typedef VOID_T (*TUYA_MEDIA_BUF_CB)(CONST TUYA_MEDIA_BUF_T *buf);
 
-/**
- * @brief Runtime encoder controls.
- *
- * @note Shared by every peripheral that can encode; it was born inside
- *       tkl_mipi_csi.h, which is why the name is TUYA_MEDIA_ rather than
- *       TKL_CAM_.
- */
+/** Outputs requested from a camera (MIPI CSI / DVP / UVC). Stable bit flags:
+ *  0, 1, 2, 4. Also used as the type selector on set_pp()/set_osd(). */
+typedef enum {
+    TUYA_CAMERA_OUTPUT_NONE   = 0U,
+    TUYA_CAMERA_OUTPUT_FRAME  = (1U << 0),
+    TUYA_CAMERA_OUTPUT_PIXEL  = (1U << 1),
+    TUYA_CAMERA_OUTPUT_STREAM = (1U << 2),
+} TUYA_CAMERA_OUTPUT_TYPE_E;
+
+/** Camera input frame: sensor (MIPI CSI) or USB device (UVC) geometry. */
 typedef struct {
-    UINT32_T bitrate;   /**< target bps; 0 leaves it unchanged */
-    BOOL_T   force_idr; /**< request an IDR frame */
-} TUYA_MEDIA_ENC_CTRL_T;
+    UINT16_T         width;
+    UINT16_T         height;
+    UINT8_T          fps;
+    TUYA_FRAME_FMT_E format;
+} TUYA_CAMERA_FRAME_CFG_T;
+
+/** Raw frame output (SP on T9): enable pulls frames via get_frame(). */
+typedef struct {
+    BOOL_T         enable;
+    UINT16_T         width;
+    UINT16_T         height;
+    TUYA_FRAME_FMT_E format;
+} TUYA_FRAME_OUTPUT_CFG_T;
+
+/** Pixel output: enable routes the decoded/scaled/rotated result to pixel_cb. */
+typedef struct {
+    BOOL_T         enable;
+    UINT16_T         rotate;
+    UINT16_T         width;
+    UINT16_T         height;
+    TUYA_FRAME_FMT_E format;
+    TUYA_MEDIA_BUF_CB pixel_cb;       /** Decoded, scaled and rotated pixel output. */
+    VOID_T          *pixel_arg;
+} TUYA_PIXEL_OUTPUT_CFG_T;
+
+/** Encoded stream output; zero values use backend defaults. rotate is not
+ *  implemented yet (TODO). width/height is the encoder input geometry and the
+ *  authoritative MP resolution when both pixel and stream are enabled. */
+typedef struct {
+    BOOL_T          enable;
+    UINT16_T         rotate; // TODO: 添加旋转角度
+    UINT8_T         fps;
+    UINT32_T        gop;
+    UINT32_T        bitrate;
+    UINT16_T         width;
+    UINT16_T         height;
+    TUYA_FRAME_FMT_E format;
+    TUYA_MEDIA_BUF_CB stream_cb;    /** TKL-generated H.264/H.265 output. */
+    VOID_T          *stream_arg;
+} TUYA_STREAM_OUTPUT_CFG_T;
 
 /* ---------------------------------------------------------------------------
  * OSD overlay

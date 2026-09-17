@@ -147,7 +147,7 @@ static OPERATE_RET test_image_capture_nv12(UINT8_T **buf,
                                            UINT16_T *height,
                                            UINT32_T *size)
 {
-    TUYA_MEDIA_BUF_T frame;
+    TUYA_MEDIA_BUF_T *frame = NULL;
     UINT16_T sp_w = 0U;
     UINT16_T sp_h = 0U;
     UINT32_T sp_fmt = 0U;
@@ -182,25 +182,24 @@ static OPERATE_RET test_image_capture_nv12(UINT8_T **buf,
         return OPRT_MALLOC_FAILED;
     }
 
-    /* Channel must be SP explicitly: MP carries display and/or h264, i.e. flexa,
-     * and a flexa channel has no frame queue to pull from.
+    /* get_frame() serves the SP frame path only - MP carries display and/or
+     * h264, i.e. flexa, and a flexa channel has no frame queue to pull from.
      *
-     * The camera lends this buffer - it must go back through frame.free_cb, and
+     * The camera lends this buffer - it must go back through frame->free_cb, and
      * the pool is only two deep - so copy into our own block and release
      * straight away. */
-    os_memset(&frame, 0, sizeof(frame));
-    ret = tkl_mipi_csi_get_frame(&frame, TUYA_MIPI_CSI_CHANNEL_SECONDARY, timeout);
+    ret = tkl_mipi_csi_get_frame(&frame, timeout);
     if (ret != OPRT_OK) {
         test_image_buf_free(nv12);
         tkl_log_output("ximg: capture failed: %d\r\n", ret);
         return ret;
     }
 
-    copy_size = (frame.size < alloc_size) ? frame.size : alloc_size;
-    os_memcpy(nv12, frame.data, copy_size);
-    *width = frame.width;
-    *height = frame.height;
-    frame.free_cb(frame.data);
+    copy_size = (frame->size < alloc_size) ? frame->size : alloc_size;
+    os_memcpy(nv12, frame->data, copy_size);
+    *width = frame->width;
+    *height = frame->height;
+    frame->free_cb(frame->data);
 
     *buf = nv12;
     *size = copy_size;
@@ -279,8 +278,8 @@ static OPERATE_RET test_image_read_file(const char *path, UINT8_T **buf, UINT32_
  */
 static OPERATE_RET test_image_get_info_file(const char *path)
 {
-    TUYA_IMAGE_CODEC_STREAM_T bit;
-    TUYA_IMAGE_CODEC_BUF_T probe;
+    TUYA_IMAGE_BUF_T bit;
+    TUYA_IMAGE_INFO_T probe;
     UINT8_T *stream = NULL;
     UINT32_T len = 0U;
     OPERATE_RET ret;
@@ -290,15 +289,14 @@ static OPERATE_RET test_image_get_info_file(const char *path)
         return ret;
     }
 
-    bit.data = stream;
-    bit.size = len;
+    bit.buffer = stream;
+    bit.length = len;
 
     ret = tkl_image_codec_get_info(&bit, &probe);
     if (ret == OPRT_OK) {
-        tkl_log_output("ximg get_info: %ux%u sampling=%s nv12 size=%u\r\n",
+        tkl_log_output("ximg get_info: %ux%u sampling=%s\r\n",
                        probe.width, probe.height,
-                       test_image_fmt_name(probe.format),
-                       (unsigned int)probe.size);
+                       test_image_fmt_name((UINT32_T)probe.format));
     } else {
         tkl_log_output("ximg get_info failed: %d\r\n", ret);
     }
@@ -402,8 +400,8 @@ static OPERATE_RET test_image_decode_file(const char *path, UINT32_T fmt,
 {
     TUYA_IMAGE_CODEC_BUF_T in;
     TUYA_IMAGE_CODEC_BUF_T out;
-    TUYA_IMAGE_CODEC_BUF_T probe;
-    TUYA_IMAGE_CODEC_STREAM_T bit;
+    TUYA_IMAGE_INFO_T probe;
+    TUYA_IMAGE_BUF_T bit;
     UINT8_T *stream = NULL;
     UINT8_T *pixel = NULL;
     UINT32_T len = 0U;
@@ -431,12 +429,12 @@ static OPERATE_RET test_image_decode_file(const char *path, UINT32_T fmt,
     }
 
     os_memset(&in, 0, sizeof(in));
-    in.data = stream;
-    in.size = len;
+    in.buffer = stream;
+    in.length = len;
     in.format = (UINT32_T)TUYA_FRAME_FMT_JPEG;
 
-    bit.data = stream;
-    bit.size = len;
+    bit.buffer = stream;
+    bit.length = len;
 
     ret = tkl_image_codec_get_info(&bit, &probe);
     if (ret != OPRT_OK) {
@@ -467,8 +465,8 @@ static OPERATE_RET test_image_decode_file(const char *path, UINT32_T fmt,
     }
 
     os_memset(&out, 0, sizeof(out));
-    out.data = pixel;
-    out.size = need;
+    out.buffer = pixel;
+    out.length = need;
     out.width = dst_w;
     out.height = dst_h;
     out.format = fmt;
@@ -483,9 +481,9 @@ static OPERATE_RET test_image_decode_file(const char *path, UINT32_T fmt,
         tkl_log_output("ximg decode: %s (%u bytes, %ux%u %s jpeg) -> %ux%u %s, "
                        "%u bytes, %ums\r\n",
                        path, (unsigned int)len,
-                       probe.width, probe.height, test_image_fmt_name(probe.format),
+                       probe.width, probe.height, test_image_fmt_name((UINT32_T)probe.format),
                        dst_w, dst_h, test_image_fmt_name(fmt),
-                       (unsigned int)out.size, (unsigned int)t_dec);
+                       (unsigned int)out.length, (unsigned int)t_dec);
 
         ff = test_image_ffplay_fmt(fmt);
         if (ff != NULL) {
@@ -503,7 +501,7 @@ static OPERATE_RET test_image_decode_file(const char *path, UINT32_T fmt,
             }
         }
 
-        ret = test_image_write_file(out_path, out.data, out.size);
+        ret = test_image_write_file(out_path, out.buffer, out.length);
     } else {
         tkl_log_output("ximg decode failed: %d\r\n", ret);
     }
@@ -551,15 +549,15 @@ static OPERATE_RET test_image_encode(BOOL_T use_sw, const char *path)
     }
 
     os_memset(&in, 0, sizeof(in));
-    in.data = nv12;
-    in.size = nv12_size;
+    in.buffer = nv12;
+    in.length = nv12_size;
     in.width = width;
     in.height = height;
     in.format = (UINT32_T)TUYA_FRAME_FMT_NV12;
 
     os_memset(&out, 0, sizeof(out));
-    out.data = jpeg;
-    out.size = jpeg_cap;
+    out.buffer = jpeg;
+    out.length = jpeg_cap;
     out.format = (UINT32_T)TUYA_FRAME_FMT_JPEG;
 
     /* timed around the convert(s) only - capture and file write are excluded.
@@ -569,18 +567,18 @@ static OPERATE_RET test_image_encode(BOOL_T use_sw, const char *path)
 
     if (use_sw == TRUE) {
         os_memset(&yuyv, 0, sizeof(yuyv));
-        yuyv.data = test_image_pixel_alloc(test_image_pixel_bytes(
+        yuyv.buffer = test_image_pixel_alloc(test_image_pixel_bytes(
                         (UINT32_T)TUYA_FRAME_FMT_YUYV, width, height));
-        if (yuyv.data == NULL) {
+        if (yuyv.buffer == NULL) {
             test_image_buf_free(jpeg);
             test_image_buf_free(nv12);
             return OPRT_MALLOC_FAILED;
         }
-        yuyv.size = test_image_pixel_bytes((UINT32_T)TUYA_FRAME_FMT_YUYV, width, height);
+        yuyv.length = test_image_pixel_bytes((UINT32_T)TUYA_FRAME_FMT_YUYV, width, height);
         yuyv.width = width;
         yuyv.height = height;
         yuyv.format = (UINT32_T)TUYA_FRAME_FMT_YUYV;
-        yuyv_buf = yuyv.data;
+        yuyv_buf = yuyv.buffer;
 
         /* 1. NV12 -> YUYV, the CPU fallback leg of the pixel convert */
         ret = tkl_image_codec_convert(&in, &yuyv);
@@ -597,12 +595,12 @@ static OPERATE_RET test_image_encode(BOOL_T use_sw, const char *path)
         UINT32_T px = (UINT32_T)width * height;
 
         tkl_log_output("ximg encode: %ux%u nv12 -> jpeg %u bytes (%s) %ums, %u.%02u bpp\r\n",
-                       width, height, (unsigned int)out.size,
+                       width, height, (unsigned int)out.length,
                        (use_sw == TRUE) ? "sw" : "hw",
                        (unsigned int)t_enc,
-                       (unsigned int)((out.size * 8U) / px),
-                       (unsigned int)(((out.size * 800U) / px) % 100U));
-        ret = test_image_write_file(path, out.data, out.size);
+                       (unsigned int)((out.length * 8U) / px),
+                       (unsigned int)(((out.length * 800U) / px) % 100U));
+        ret = test_image_write_file(path, out.buffer, out.length);
     } else {
         tkl_log_output("ximg encode failed: %d\r\n", ret);
     }
@@ -660,15 +658,15 @@ static OPERATE_RET test_image_dump_sp(const char *prefix)
     }
 
     os_memset(&in, 0, sizeof(in));
-    in.data = nv12;
-    in.size = nv12_size;
+    in.buffer = nv12;
+    in.length = nv12_size;
     in.width = width;
     in.height = height;
     in.format = (UINT32_T)TUYA_FRAME_FMT_NV12;
 
     os_memset(&out, 0, sizeof(out));
-    out.data = yuyv;
-    out.size = yuyv_size;
+    out.buffer = yuyv;
+    out.length = yuyv_size;
     out.width = width;
     out.height = height;
     out.format = (UINT32_T)TUYA_FRAME_FMT_YUYV;
@@ -686,7 +684,7 @@ static OPERATE_RET test_image_dump_sp(const char *prefix)
     }
 
     snprintf(path, sizeof(path), "%s/%s.yuyv", TEST_SDCARD_MOUNT_POINT, prefix);
-    ret = test_image_write_file(path, yuyv, out.size);
+    ret = test_image_write_file(path, yuyv, out.length);
     if (ret != OPRT_OK) {
         goto done;
     }
@@ -701,7 +699,7 @@ static OPERATE_RET test_image_dump_sp(const char *prefix)
                         "ffplay -f rawvideo -pixel_format nv12 -video_size %ux%u %s.nv12\n"
                         "ffplay -f rawvideo -pixel_format yuyv422 -video_size %ux%u %s.yuyv\n",
                         (unsigned int)width, (unsigned int)height,
-                        (unsigned int)nv12_size, (unsigned int)out.size,
+                        (unsigned int)nv12_size, (unsigned int)out.length,
                         (unsigned int)width, (unsigned int)height, prefix,
                         (unsigned int)width, (unsigned int)height, prefix);
     if (info_len > 0) {
@@ -710,7 +708,7 @@ static OPERATE_RET test_image_dump_sp(const char *prefix)
     }
 
     tkl_log_output("ximg dump_sp ok: %ux%u nv12=%u yuyv=%u -> %s/%s.{nv12,yuyv,txt}\r\n",
-                   width, height, (unsigned int)nv12_size, (unsigned int)out.size,
+                   width, height, (unsigned int)nv12_size, (unsigned int)out.length,
                    TEST_SDCARD_MOUNT_POINT, prefix);
 
 done:
@@ -767,15 +765,15 @@ static OPERATE_RET test_image_transform(UINT16_T dst_w, UINT16_T dst_h,
     }
 
     os_memset(&in, 0, sizeof(in));
-    in.data = nv12;
-    in.size = nv12_size;
+    in.buffer = nv12;
+    in.length = nv12_size;
     in.width = width;
     in.height = height;
     in.format = (UINT32_T)TUYA_FRAME_FMT_NV12;
 
     os_memset(&out, 0, sizeof(out));
-    out.data = dst;
-    out.size = dst_size;
+    out.buffer = dst;
+    out.length = dst_size;
     out.width = dst_w;
     out.height = dst_h;
     out.format = fmt;
@@ -784,8 +782,8 @@ static OPERATE_RET test_image_transform(UINT16_T dst_w, UINT16_T dst_h,
     if (ret == OPRT_OK) {
         tkl_log_output("ximg transform: %ux%u nv12 -> %ux%u %s (%u bytes)\r\n",
                        width, height, dst_w, dst_h,
-                       test_image_fmt_name(fmt), (unsigned int)out.size);
-        ret = test_image_write_file(path, out.data, out.size);
+                       test_image_fmt_name(fmt), (unsigned int)out.length);
+        ret = test_image_write_file(path, out.buffer, out.length);
     } else {
         tkl_log_output("ximg transform failed: %d\r\n", ret);
     }
@@ -816,18 +814,20 @@ static void test_image_pattern_fill(UINT8_T *buf, UINT32_T len)
     }
 }
 
-static void test_image_frame_init(TUYA_IMAGE_CODEC_BUF_T *f, UINT8_T *data, UINT32_T size,
+/* Memcpy operands are TUYA_IMAGE_CODEC_COPY_BUF_T: the buffer plus the window
+ * it moves. An all-zero region means the whole frame. */
+static void test_image_frame_init(TUYA_IMAGE_CODEC_COPY_BUF_T *f, UINT8_T *data, UINT32_T size,
                                   UINT32_T fmt, UINT16_T w, UINT16_T h)
 {
     os_memset(f, 0, sizeof(*f));
-    f->data = data;
-    f->size = size;
-    f->format = fmt;
-    f->width = w;
-    f->height = h;
+    f->buf.buffer = data;
+    f->buf.length = size;
+    f->buf.format = (TUYA_FRAME_FMT_E)fmt;
+    f->buf.width = w;
+    f->buf.height = h;
 }
 
-static void test_image_region_set(TUYA_IMAGE_CODEC_BUF_T *f, UINT16_T x, UINT16_T y,
+static void test_image_region_set(TUYA_IMAGE_CODEC_COPY_BUF_T *f, UINT16_T x, UINT16_T y,
                                   UINT16_T w, UINT16_T h)
 {
     f->region.x = x;
@@ -884,8 +884,8 @@ static OPERATE_RET test_image_memcpy_suite(void)
         UINT8_T *src = test_image_pixel_alloc(sz);
         UINT8_T *dst = test_image_pixel_alloc(sz);
         UINT8_T *ref = test_image_pixel_alloc(sz);
-        TUYA_IMAGE_CODEC_BUF_T s;
-        TUYA_IMAGE_CODEC_BUF_T d;
+        TUYA_IMAGE_CODEC_COPY_BUF_T s;
+        TUYA_IMAGE_CODEC_COPY_BUF_T d;
         BOOL_T ok = FALSE;
 
         if (src != NULL && dst != NULL && ref != NULL) {
@@ -911,8 +911,8 @@ static OPERATE_RET test_image_memcpy_suite(void)
         UINT8_T *src = test_image_pixel_alloc(sz);
         UINT8_T *dst = test_image_pixel_alloc(sz);
         UINT8_T *ref = test_image_pixel_alloc(sz);
-        TUYA_IMAGE_CODEC_BUF_T s;
-        TUYA_IMAGE_CODEC_BUF_T d;
+        TUYA_IMAGE_CODEC_COPY_BUF_T s;
+        TUYA_IMAGE_CODEC_COPY_BUF_T d;
         BOOL_T ok = FALSE;
 
         if (src != NULL && dst != NULL && ref != NULL) {
@@ -940,8 +940,8 @@ static OPERATE_RET test_image_memcpy_suite(void)
         UINT8_T *src = test_image_pixel_alloc(src_sz);
         UINT8_T *dst = test_image_pixel_alloc(dst_sz);
         UINT8_T *ref = test_image_pixel_alloc(dst_sz);
-        TUYA_IMAGE_CODEC_BUF_T s;
-        TUYA_IMAGE_CODEC_BUF_T d;
+        TUYA_IMAGE_CODEC_COPY_BUF_T s;
+        TUYA_IMAGE_CODEC_COPY_BUF_T d;
         UINT32_T y;
         BOOL_T ok = FALSE;
 
@@ -978,8 +978,8 @@ static OPERATE_RET test_image_memcpy_suite(void)
         UINT8_T *a = test_image_pixel_alloc(sz);
         UINT8_T *b = test_image_pixel_alloc(sz);
         UINT8_T *ref = test_image_pixel_alloc(sz);
-        TUYA_IMAGE_CODEC_BUF_T s;
-        TUYA_IMAGE_CODEC_BUF_T d;
+        TUYA_IMAGE_CODEC_COPY_BUF_T s;
+        TUYA_IMAGE_CODEC_COPY_BUF_T d;
         UINT32_T y;
         BOOL_T ok = FALSE;
 
@@ -1018,10 +1018,10 @@ static OPERATE_RET test_image_memcpy_suite(void)
         UINT8_T *dst = test_image_pixel_alloc(sz);
         UINT8_T *srcn = test_image_pixel_alloc(nsz);
         UINT8_T *dstn = test_image_pixel_alloc(nsz);
-        TUYA_IMAGE_CODEC_BUF_T s;
-        TUYA_IMAGE_CODEC_BUF_T d;
-        TUYA_IMAGE_CODEC_BUF_T sn;
-        TUYA_IMAGE_CODEC_BUF_T dn;
+        TUYA_IMAGE_CODEC_COPY_BUF_T s;
+        TUYA_IMAGE_CODEC_COPY_BUF_T d;
+        TUYA_IMAGE_CODEC_COPY_BUF_T sn;
+        TUYA_IMAGE_CODEC_COPY_BUF_T dn;
 
         if (src != NULL && dst != NULL && srcn != NULL && dstn != NULL) {
             test_image_pattern_fill(src, sz);
@@ -1035,9 +1035,9 @@ static OPERATE_RET test_image_memcpy_suite(void)
             test_image_frame_init(&dn, dstn, nsz, (UINT32_T)TUYA_FRAME_FMT_NV12,
                                   128U, 96U);
 
-            d.format = (UINT32_T)TUYA_FRAME_FMT_RGB565;
+            d.buf.format = (UINT32_T)TUYA_FRAME_FMT_RGB565;
             ret = tkl_image_codec_memcpy(&s, &d);
-            d.format = (UINT32_T)TUYA_FRAME_FMT_YUYV;
+            d.buf.format = (UINT32_T)TUYA_FRAME_FMT_YUYV;
             test_image_mc_case("rej_cross_format", (ret == OPRT_NOT_SUPPORTED));
 
             test_image_region_set(&s, 120U, 0U, 16U, 96U);   /* 120+16 > 128 */
@@ -1072,9 +1072,9 @@ static OPERATE_RET test_image_memcpy_suite(void)
             test_image_region_set(&s, 0U, 0U, 0U, 0U);
             test_image_region_set(&d, 0U, 0U, 0U, 0U);
 
-            d.size = sz / 2U;                                /* undersized dst */
+            d.buf.length = sz / 2U;                          /* undersized dst */
             ret = tkl_image_codec_memcpy(&s, &d);
-            d.size = sz;
+            d.buf.length = sz;
             test_image_mc_case("rej_dst_small", (ret == OPRT_INVALID_PARM));
         } else {
             test_image_mc_case("rej_alloc", FALSE);
@@ -1117,8 +1117,8 @@ static OPERATE_RET test_image_memcpy_bench(void)
         CONST UINT32_T sz = (UINT32_T)k_sizes[idx].w * k_sizes[idx].h * 2U;
         UINT8_T *src = test_image_pixel_alloc(sz);
         UINT8_T *dst = test_image_pixel_alloc(sz);
-        TUYA_IMAGE_CODEC_BUF_T s;
-        TUYA_IMAGE_CODEC_BUF_T d;
+        TUYA_IMAGE_CODEC_COPY_BUF_T s;
+        TUYA_IMAGE_CODEC_COPY_BUF_T d;
         UINT32_T reps;
         UINT32_T t0;
         UINT32_T t_ref;

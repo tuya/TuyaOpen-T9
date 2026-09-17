@@ -15,7 +15,7 @@
  *
  * All three speak TUYA_IMAGE_CODEC_BUF_T: a buffer the caller owns before and after
  * the call. It is TUYA_MEDIA_BUF_T minus the fields that only matter while a
- * frame travels between peripherals (free_cb / pts / frame_type) - nothing
+ * frame travels between peripherals (free_cb / timestamp / priv) - nothing
  * here is ever released or kept by TKL. See tkl_media_types.h for the
  * streaming counterpart; a camera frame is handed to these ops by copying
  * its five payload fields over.
@@ -56,27 +56,37 @@ typedef struct {
  * TUYA_MEDIA_BUF_T, whose frames cross peripheral boundaries and carry their
  * own free_cb; to run such a frame through these ops, copy the payload
  * fields over and leave free_cb with the media buffer.
- *
- * @note @ref region is read only by tkl_image_codec_memcpy(). Zero it otherwise;
- *       a zeroed buffer is also a valid full-frame memcpy request.
  */
 typedef struct {
-    UINT8_T           *data;     /**< pixel / bitstream base address */
-    UINT32_T           size;     /**< in: capacity; out: bytes produced */
+    UINT8_T           *buffer;     /**< pixel / bitstream base address */
+    UINT32_T           length;     /**< in: capacity; out: bytes produced */
     TUYA_FRAME_FMT_E   format;   /**< content pixel layout or coded format */
     UINT16_T           width;
     UINT16_T           height;
+} TUYA_IMAGE_CODEC_BUF_T;
+
+/** One tkl_image_codec_memcpy() operand: an image buffer plus the rectangle
+ *  it moves. @ref region is the read window on the src operand and the paste
+ *  window on the dst operand; an all-zero region means the whole frame. */
+typedef struct {
+    TUYA_IMAGE_CODEC_BUF_T buf;
     TUYA_IMAGE_CODEC_REGION_T region;    /**< memcpy only: src = read window,
                                        dst = paste window */
-} TUYA_IMAGE_CODEC_BUF_T;
+} TUYA_IMAGE_CODEC_COPY_BUF_T;
 
 /** The bitstream tkl_image_codec_get_info() probes: pointer and length, nothing
  *  else. A raw pixel buffer has no header to read - its geometry lives with
  *  whoever produced it - so probing only makes sense for coded streams. */
 typedef struct {
-    UINT8_T  *data;    /**< bitstream base address */
-    UINT32_T  size;    /**< bitstream length, bytes */
-} TUYA_IMAGE_CODEC_STREAM_T;
+    UINT8_T  *buffer;    /**< buffer base address */
+    UINT32_T  length;    /**< buffer length, bytes */
+} TUYA_IMAGE_BUF_T;
+
+typedef struct {
+    TUYA_FRAME_FMT_E   format;   /**< content pixel layout or coded format */
+    UINT16_T           width;
+    UINT16_T           height;
+} TUYA_IMAGE_INFO_T;
 
 /**
  * @brief Read a bitstream's header without decoding it.
@@ -85,15 +95,13 @@ typedef struct {
  *                  purpose - the probe is JPEG-only by construction, so a
  *                  caller that does not know the format just hands the bytes
  *                  over and lets it try
- * @param[out] out  filled in as the decode request for this stream:
- *                  - width / height: the stream's own geometry
+ * @param[out] info  filled in from the stream's own header:
+ *                  - width / height: the stream's geometry
  *                  - format: the stream's chroma sampling (NV12 for YUV420,
- *                    YUYV for YUV422) - informational
- *                  - size: the buffer to allocate for a native decode
- *                    (width x ((height+1) & ~1) x 3/2 as NV12)
- *                  - data stays NULL: nothing is allocated here - allocate
- *                    per size and fill it in before tkl_image_codec_convert()
- *                  - strides 0: a decoded picture is tightly packed
+ *                    YUYV for YUV422) - informational. Size the native decode
+ *                    buffer yourself from these: width x ((height+1) & ~1)
+ *                    x 3/2 as NV12, and hand it to tkl_image_codec_convert()
+ *                    via out.buffer / out.length
  *
  * @note JPEG only, by construction: a raw pixel buffer has no header (its
  *       geometry is the producer's knowledge, not something this call can
@@ -102,7 +110,7 @@ typedef struct {
  *
  * @return OPRT_OK on success. Others on error, please refer to tuya_error_code.h
  */
-OPERATE_RET tkl_image_codec_get_info(CONST TUYA_IMAGE_CODEC_STREAM_T *in, TUYA_IMAGE_CODEC_BUF_T *out);
+OPERATE_RET tkl_image_codec_get_info(CONST TUYA_IMAGE_BUF_T *in, TUYA_IMAGE_INFO_T *info);
 
 /**
  * @brief One-shot image operation: decode, encode or scale, chosen by the
@@ -130,10 +138,10 @@ OPERATE_RET tkl_image_codec_get_info(CONST TUYA_IMAGE_CODEC_STREAM_T *in, TUYA_I
  *       - pixel outputs: NV12 rows round to even and RGB rows to a multiple of
  *         16, and the hardware RGB888 is 4 bytes/pixel - see the formulas in
  *         the API doc. For a native-size NV12 decode, tkl_image_codec_get_info()
- *         returns the exact size in @ref TUYA_IMAGE_CODEC_BUF_T::size - pass that
- *         straight back as the capacity and no sizing formula reaches you;
- *         convert recomputes the requirement itself and checks what you hand
- *         it.
+ *         returns the geometry in @ref TUYA_IMAGE_INFO_T - size the buffer from
+ *         it and pass that back as the capacity and no sizing formula reaches
+ *         you; convert recomputes the requirement itself and checks what you
+ *         hand it.
  *       - JPEG output: no exact formula; budget about 4.5 bits/pixel.
  *       An undersized buffer returns OPRT_INVALID_PARM.
  * @note Encode: geometry comes from @p in (must be even), @c out->width /
@@ -178,7 +186,7 @@ OPERATE_RET tkl_image_codec_convert(CONST TUYA_IMAGE_CODEC_BUF_T *in, TUYA_IMAGE
  *         format mismatch or a non-pixel format. Others on error, please
  *         refer to tuya_error_code.h
  */
-OPERATE_RET tkl_image_codec_memcpy(CONST TUYA_IMAGE_CODEC_BUF_T *src, CONST TUYA_IMAGE_CODEC_BUF_T *dst);
+OPERATE_RET tkl_image_codec_memcpy(CONST TUYA_IMAGE_CODEC_COPY_BUF_T *src, CONST TUYA_IMAGE_CODEC_COPY_BUF_T *dst);
 
 #ifdef __cplusplus
 }

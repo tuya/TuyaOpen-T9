@@ -794,8 +794,8 @@ static OPERATE_RET test_mipi_paste_mid(uint16_t win_w, uint16_t win_h)
     uint32_t t1;
     uint16_t x;
     uint16_t y;
-    TUYA_IMAGE_CODEC_BUF_T s;
-    TUYA_IMAGE_CODEC_BUF_T d;
+    TUYA_IMAGE_CODEC_COPY_BUF_T s;
+    TUYA_IMAGE_CODEC_COPY_BUF_T d;
 
     if (s_mipi_lcd_opened != true) {
         tkl_log_output("mipi lcd is not open\r\n");
@@ -845,22 +845,22 @@ static OPERATE_RET test_mipi_paste_mid(uint16_t win_w, uint16_t win_h)
      * the picture-in-picture shape tkl_image_codec_memcpy() exists for - the caller
      * owns both buffers and the geometry stays in the caller's hands. */
     os_memset(&s, 0, sizeof(s));
-    s.data = s_mipi_frames[0];
-    s.size = (UINT32_T)s_mipi_frame_size;
-    s.format = (UINT32_T)TUYA_FRAME_FMT_RGB565;
-    s.width = s_mipi_width;
-    s.height = s_mipi_height;
+    s.buf.buffer = s_mipi_frames[0];
+    s.buf.length = (UINT32_T)s_mipi_frame_size;
+    s.buf.format = TUYA_FRAME_FMT_RGB565;
+    s.buf.width = s_mipi_width;
+    s.buf.height = s_mipi_height;
     s.region.x = x;
     s.region.y = y;
     s.region.width = win_w;
     s.region.height = win_h;
 
     os_memset(&d, 0, sizeof(d));
-    d.data = s_mipi_frames[1];
-    d.size = (UINT32_T)s_mipi_frame_size;
-    d.format = (UINT32_T)TUYA_FRAME_FMT_RGB565;
-    d.width = s_mipi_width;
-    d.height = s_mipi_height;
+    d.buf.buffer = s_mipi_frames[1];
+    d.buf.length = (UINT32_T)s_mipi_frame_size;
+    d.buf.format = TUYA_FRAME_FMT_RGB565;
+    d.buf.width = s_mipi_width;
+    d.buf.height = s_mipi_height;
     /* same window size on purpose: no scaling in this interface */
     d.region.x = x;
     d.region.y = y;

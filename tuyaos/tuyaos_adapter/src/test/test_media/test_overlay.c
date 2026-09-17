@@ -11,20 +11,11 @@
 #include "tkl_mipi_csi.h"
 #include "tkl_uvc.h"
 
-/* The channel index is the peripheral's own channel value, passed straight
- * through - see test_overlay_clock_start(). That only works while both public
- * enums number display 0 and encode 1, so say it out loud: a reordered enum
- * would otherwise index the wrong slot silently, and nothing would fail until
- * someone noticed the clock on the wrong output. */
-#define TEST_OVERLAY_CH_DISPLAY 0U
-#define TEST_OVERLAY_CH_ENCODE  1U
-#define TEST_OVERLAY_CH_MAX     2U
-
-typedef char test_overlay_ch_numbering_check[
-    ((INT_T)TUYA_MIPI_CSI_OSD_PIXEL == (INT_T)TEST_OVERLAY_CH_DISPLAY &&
-     (INT_T)TUYA_MIPI_CSI_OSD_STREAM  == (INT_T)TEST_OVERLAY_CH_ENCODE  &&
-     (INT_T)TUYA_UVC_OSD_PIXEL == (INT_T)TEST_OVERLAY_CH_DISPLAY &&
-     (INT_T)TUYA_UVC_OSD_STREAM == (INT_T)TEST_OVERLAY_CH_ENCODE) ? 1 : -1];
+/* The caller keys the overlay by output type - PIXEL feeds the ISP display
+ * path, STREAM feeds the encode path. Both map onto two fixed slots through
+ * test_overlay_ctx_get(), so a renumbered enum cannot silently index the
+ * wrong slot: an unknown type is rejected, not misrouted. */
+#define TEST_OVERLAY_SLOT_MAX 2U
 
 #define TEST_OVERLAY_TIME_TEXT_LEN 16U
 
@@ -37,7 +28,7 @@ typedef char test_overlay_ch_numbering_check[
 #define TEST_OVERLAY_POLL_MS      20U
 
 /**
- * @brief Push one clock string to a channel's overlay.
+ * @brief Push one clock string to an output's overlay.
  * @param[in] text HH:MM:SS
  * @param[in] arg  caller context handed to test_overlay_clock_start()
  * @return OPRT_OK when the overlay was accepted
@@ -53,11 +44,23 @@ typedef struct {
     CHAR_T last_text[TEST_OVERLAY_TIME_TEXT_LEN];
 } test_overlay_ctx_t;
 
-static test_overlay_ctx_t s_overlay[TEST_OVERLAY_CH_MAX];
+static test_overlay_ctx_t s_overlay[TEST_OVERLAY_SLOT_MAX];
 
-static const char *test_overlay_ch_name(UINT8_T ch)
+static test_overlay_ctx_t *test_overlay_ctx_get(TUYA_CAMERA_OUTPUT_TYPE_E type)
 {
-    return (ch == TEST_OVERLAY_CH_ENCODE) ? "encode" : "display";
+    switch (type) {
+    case TUYA_CAMERA_OUTPUT_PIXEL:
+        return &s_overlay[0];
+    case TUYA_CAMERA_OUTPUT_STREAM:
+        return &s_overlay[1];
+    default:
+        return NULL;
+    }
+}
+
+static const char *test_overlay_type_name(TUYA_CAMERA_OUTPUT_TYPE_E type)
+{
+    return (type == TUYA_CAMERA_OUTPUT_STREAM) ? "stream" : "pixel";
 }
 
 STATIC VOID_T test_overlay_format_time(CHAR_T *text, UINT32_T text_len)
@@ -118,18 +121,23 @@ static void test_overlay_task(void *arg)
     tkl_thread_release(self);
 }
 
-OPERATE_RET test_overlay_clock_start(UINT8_T ch, TEST_OVERLAY_SUBMIT_CB cb, VOID_T *arg)
+OPERATE_RET test_overlay_clock_start(TUYA_CAMERA_OUTPUT_TYPE_E type,
+                                     TEST_OVERLAY_SUBMIT_CB cb, VOID_T *arg)
 {
     test_overlay_ctx_t *ctx;
     CHAR_T text[TEST_OVERLAY_TIME_TEXT_LEN];
     OPERATE_RET ret;
 
-    if (ch >= TEST_OVERLAY_CH_MAX || cb == NULL) {
+    if (cb == NULL) {
         return OPRT_INVALID_PARM;
     }
 
-    ctx = &s_overlay[ch];
-    test_overlay_clock_stop(ch);
+    ctx = test_overlay_ctx_get(type);
+    if (ctx == NULL) {
+        return OPRT_INVALID_PARM;
+    }
+
+    test_overlay_clock_stop(type);
 
     ctx->cb = cb;
     ctx->arg = arg;
@@ -139,7 +147,8 @@ OPERATE_RET test_overlay_clock_start(UINT8_T ch, TEST_OVERLAY_SUBMIT_CB cb, VOID
     test_overlay_format_time(text, sizeof(text));
     ret = cb(text, arg);
     if (ret != OPRT_OK) {
-        tkl_log_output("overlay %s: first submit failed: %d\r\n", test_overlay_ch_name(ch), ret);
+        tkl_log_output("overlay %s: first submit failed: %d\r\n",
+                       test_overlay_type_name(type), ret);
         return ret;
     }
 
@@ -149,7 +158,7 @@ OPERATE_RET test_overlay_clock_start(UINT8_T ch, TEST_OVERLAY_SUBMIT_CB cb, VOID
     ctx->running = TRUE;
 
     ret = tkl_thread_create(&ctx->task,
-                            (ch == TEST_OVERLAY_CH_ENCODE) ? "osd_enc" : "osd_disp",
+                            (type == TUYA_CAMERA_OUTPUT_STREAM) ? "osd_enc" : "osd_disp",
                             TEST_OVERLAY_STACK,
                             TKL_THREAD_PRI_NORMAL,
                             test_overlay_task,
@@ -160,20 +169,21 @@ OPERATE_RET test_overlay_clock_start(UINT8_T ch, TEST_OVERLAY_SUBMIT_CB cb, VOID
         return ret;
     }
 
-    tkl_log_output("overlay %s: clock started at %s\r\n", test_overlay_ch_name(ch), text);
+    tkl_log_output("overlay %s: clock started at %s\r\n",
+                   test_overlay_type_name(type), text);
     return OPRT_OK;
 }
 
-VOID_T test_overlay_clock_stop(UINT8_T ch)
+VOID_T test_overlay_clock_stop(TUYA_CAMERA_OUTPUT_TYPE_E type)
 {
     test_overlay_ctx_t *ctx;
     UINT32_T waited_ms = 0U;
 
-    if (ch >= TEST_OVERLAY_CH_MAX) {
+    ctx = test_overlay_ctx_get(type);
+    if (ctx == NULL) {
         return;
     }
 
-    ctx = &s_overlay[ch];
     if (ctx->running != TRUE && ctx->task == NULL) {
         return;
     }
@@ -190,11 +200,13 @@ VOID_T test_overlay_clock_stop(UINT8_T ch)
     ctx->last_text[0] = '\0';
 }
 
-STATIC BOOL_T test_overlay_clock_running(UINT8_T ch)
+STATIC BOOL_T test_overlay_clock_running(TUYA_CAMERA_OUTPUT_TYPE_E type)
 {
-    if (ch >= TEST_OVERLAY_CH_MAX) {
+    test_overlay_ctx_t *ctx = test_overlay_ctx_get(type);
+
+    if (ctx == NULL) {
         return FALSE;
     }
 
-    return s_overlay[ch].running;
+    return ctx->running;
 }

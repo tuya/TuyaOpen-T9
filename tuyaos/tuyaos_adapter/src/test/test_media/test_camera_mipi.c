@@ -32,6 +32,20 @@
 #include "tkl_system.h"
 #include "tkl_thread.h"
 
+typedef OPERATE_RET (*TEST_CAM_OVERLAY_SUBMIT_CB)(CONST CHAR_T *text, VOID_T *arg);
+
+/* shared helpers; declarations live here because the test files have no
+ * common header (same pattern as test_uvc.c) */
+extern VOID_T test_record_feed(CONST UINT8_T *data, UINT32_T size);
+extern OPERATE_RET test_record_start(CONST CHAR_T *tag, CONST CHAR_T *path,
+                                     UINT32_T sec, UINT32_T ring_bytes);
+extern VOID_T test_record_stop(VOID_T);
+extern VOID_T test_record_status_dump(VOID_T);
+extern OPERATE_RET test_overlay_clock_start(TUYA_CAMERA_OUTPUT_TYPE_E type,
+                                            TEST_CAM_OVERLAY_SUBMIT_CB cb,
+                                            VOID_T *arg);
+extern VOID_T test_overlay_clock_stop(TUYA_CAMERA_OUTPUT_TYPE_E type);
+
 #define CAM_TEST_SENSOR_W      2304U
 #define CAM_TEST_SENSOR_H      1296U
 #define CAM_TEST_SENSOR_FPS    20U
@@ -63,7 +77,7 @@
 /* One definition, used both for "no arguments" and for "unknown subcommand". */
 #define XCAM_USAGE \
     "Usage: xmipi cam <open <mp_kinds> [w] [h] [sp_fmt] [spw] [sph]|close|\r\n" \
-    "             stop|start|reopen [n]|restart [n]|frame [mp|sp]|\r\n" \
+    "             stop|start|reopen [n]|restart [n]|frame|\r\n" \
     "             switch <w> <h> [mp|sp]|stress [loops]|bitrate <bps>|idr|\r\n" \
     "             osd <display|encode> <time [off|0|90|270]|wifi <0..4|off>|clear>|\r\n" \
     "             rotate [0|90|180|270]|\r\n" \
@@ -87,14 +101,16 @@
 /* Same pins the xmipi camera command uses. */
 /* Board wiring for the sc3336p on this module. Keep these identical to
  * MIPI_TEST_CAMERA_PIN_* in test_mipi.c - that set is board-proven, and an
- * invented value fails in two different ways: pin_xclk < 0 is rejected outright
- * by tkl_mipi_csi_cfg_validate(), and a wrong scl/sda/i2c_id gets past
+ * invented value fails in two different ways: an out-of-range clk pin is rejected outright
+ * by tkl_mipi_csi_cfg_validate(), and a wrong scl/sda/port gets past
  * validation only to fail later at sensor detect. */
 #define CAM_TEST_PIN_SCL       GPIO_65
 #define CAM_TEST_PIN_SDA       GPIO_64
 #define CAM_TEST_I2C_ID        1U
 #define CAM_TEST_PIN_RESET     GPIO_60
-#define CAM_TEST_PIN_PWDN      (-1)
+/* PWDN is not wired on this module; the vendor sensor drives reset/pwdn
+ * active-high and the adapter validates active_level == HIGH, so both
+ * control pins are declared with TUYA_GPIO_LEVEL_HIGH below. */
 #define CAM_TEST_PIN_XCLK      GPIO_59
 
 #define CAM_QUALITY_FRAME_TIMEOUT_MS      1000U
@@ -203,18 +219,15 @@ extern BOOL_T test_mipi_lcd_is_open(void);
  * @brief Display sink: push the composed picture to the panel.
  *
  * @param[in] buf composed frame; ownership arrives with it
- * @param[in] arg unused
  *
  * @note Runs on the GPU worker thread. Handing buf->free_cb straight to the DSI
  *       layer is the whole point of carrying the release function inside the
  *       frame - this callback never has to know which pool the frame came from.
  */
-static VOID_T test_cam_display_cb(CONST TUYA_MEDIA_BUF_T *buf, VOID_T *arg)
+static VOID_T test_cam_display_cb(CONST TUYA_MEDIA_BUF_T *buf)
 {
     tkl_mipi_dsi_flush_frame_t flush;
     OPERATE_RET ret;
-
-    (void)arg;
 
     if (buf == NULL || buf->data == NULL) {
         return;
@@ -265,7 +278,7 @@ static OPERATE_RET test_cam_record(uint32_t sec, const char *path)
         tkl_log_output("xmipi cam is not open\r\n");
         return OPRT_RESOURCE_NOT_READY;
     }
-    if ((s_cam.out_kinds & TUYA_MIPI_CSI_OUTPUT_STREAM) == 0U) {
+    if ((s_cam.out_kinds & TUYA_CAMERA_OUTPUT_STREAM) == 0U) {
         tkl_log_output("xmipi cam record: no h264 output; open with 'h264' or 'display+h264'\r\n");
         return OPRT_NOT_SUPPORTED;
     }
@@ -276,12 +289,9 @@ static OPERATE_RET test_cam_record(uint32_t sec, const char *path)
 /**
  * @brief Encode sink: count the bitstream.
  * @param[in] buf encoded frame, borrowed for the call only
- * @param[in] arg unused
  */
-static VOID_T test_cam_stream_cb(CONST TUYA_MEDIA_BUF_T *buf, VOID_T *arg)
+static VOID_T test_cam_stream_cb(CONST TUYA_MEDIA_BUF_T *buf)
 {
-    (void)arg;
-
     if (buf == NULL || buf->data == NULL) {
         return;
     }
@@ -294,17 +304,17 @@ static VOID_T test_cam_stream_cb(CONST TUYA_MEDIA_BUF_T *buf, VOID_T *arg)
 
     if (s_cam_idr_trace > 0U) {
         s_cam_idr_trace--;
-        tkl_log_output("xmipi cam idr trace[%u]: %s size=%u frame_type=%u\r\n",
+        tkl_log_output("xmipi cam idr trace[%u]: %s size=%u format=%u\r\n",
                        (unsigned int)s_cam.stream_frames,
-                       (buf->frame_type == (UINT32_T)TUYA_VIDEO_FRAME_I) ? "I" : "P",
+                       (buf->format == TUYA_FRAME_FMT_H264_I) ? "I" : "P",
                        (unsigned int)buf->size,
-                       (unsigned int)buf->frame_type);
+                       (unsigned int)buf->format);
     }
 
     if ((s_cam.stream_frames % 30U) == 0U) {
         tkl_log_output("xmipi cam stream[%u]: %s size=%u total=%llu\r\n",
                        (unsigned int)s_cam.stream_frames,
-                       (buf->frame_type == (UINT32_T)TUYA_VIDEO_FRAME_I) ? "I" : "P",
+                       (buf->format == TUYA_FRAME_FMT_H264_I) ? "I" : "P",
                        (unsigned int)buf->size,
                        (unsigned long long)s_cam.stream_bytes);
     }
@@ -313,26 +323,27 @@ static VOID_T test_cam_stream_cb(CONST TUYA_MEDIA_BUF_T *buf, VOID_T *arg)
 /**
  * @brief Parse the output selection word.
  * @param[in] name frame / display / h264 / display+h264
- * @return TUYA_MIPI_CSI_OUTPUT_* bitmask, TUYA_MIPI_CSI_OUTPUT_NONE when unrecognised
+ * @return TUYA_CAMERA_OUTPUT_* bitmask, TUYA_CAMERA_OUTPUT_NONE when
+ *         unrecognised
  */
 static uint32_t test_cam_kinds_parse(const char *name)
 {
     if (name == NULL) {
-        return TUYA_MIPI_CSI_OUTPUT_NONE;
+        return TUYA_CAMERA_OUTPUT_NONE;
     }
     if (os_strcmp(name, "frame") == 0) {
-        return TUYA_MIPI_CSI_OUTPUT_FRAME;
+        return TUYA_CAMERA_OUTPUT_FRAME;
     }
     if (os_strcmp(name, "display") == 0) {
-        return TUYA_MIPI_CSI_OUTPUT_PIXEL;
+        return TUYA_CAMERA_OUTPUT_PIXEL;
     }
     if (os_strcmp(name, "h264") == 0) {
-        return TUYA_MIPI_CSI_OUTPUT_STREAM;
+        return TUYA_CAMERA_OUTPUT_STREAM;
     }
     if (os_strcmp(name, "display+h264") == 0 || os_strcmp(name, "both") == 0) {
-        return TUYA_MIPI_CSI_OUTPUT_PIXEL | TUYA_MIPI_CSI_OUTPUT_STREAM;
+        return TUYA_CAMERA_OUTPUT_PIXEL | TUYA_CAMERA_OUTPUT_STREAM;
     }
-    return TUYA_MIPI_CSI_OUTPUT_NONE;
+    return TUYA_CAMERA_OUTPUT_NONE;
 }
 
 /**
@@ -345,7 +356,7 @@ static uint32_t test_cam_kinds_parse(const char *name)
  * there is to choose about it is the pixel format: NV12 to JPEG-encode or
  * transform what you pull, RGB888 to hand it straight to the face model.
  *
- * @param[in] mp_kinds TUYA_MIPI_CSI_OUTPUT_* bitmask for the main channel
+ * @param[in] mp_kinds TUYA_CAMERA_OUTPUT_* bitmask for the main channel
  * @param[in] mp_w     MP output width
  * @param[in] mp_h     MP output height
  * @param[in] sp_fmt   TUYA_FRAME_FMT_E for the sub channel; 0 leaves SP disabled
@@ -422,8 +433,6 @@ static OPERATE_RET test_cam_open(uint32_t mp_kinds, uint16_t mp_w, uint16_t mp_h
                                  uint32_t sp_fmt, uint16_t sp_w, uint16_t sp_h)
 {
     TUYA_MIPI_CSI_CFG_T cfg;
-    TUYA_MIPI_CSI_PIXEL_CFG_T pixel_cfg;
-    TUYA_MIPI_CSI_ENCODER_CFG_T encoder_cfg;
     OPERATE_RET ret;
 
     if (s_cam.opened == true) {
@@ -439,45 +448,60 @@ static OPERATE_RET test_cam_open(uint32_t mp_kinds, uint16_t mp_w, uint16_t mp_h
 
     os_memset(&s_cam, 0, sizeof(s_cam));
     os_memset(&cfg, 0, sizeof(cfg));
-    os_memset(&pixel_cfg, 0, sizeof(pixel_cfg));
-    os_memset(&encoder_cfg, 0, sizeof(encoder_cfg));
 
-    cfg.board.pin_scl = CAM_TEST_PIN_SCL;
-    cfg.board.pin_sda = CAM_TEST_PIN_SDA;
-    cfg.board.i2c_id = CAM_TEST_I2C_ID;
-    cfg.board.pin_reset = CAM_TEST_PIN_RESET;
-    cfg.board.pin_pwdn = CAM_TEST_PIN_PWDN;
-    cfg.board.pin_xclk = CAM_TEST_PIN_XCLK;
+    cfg.board_cfg.scl = (TUYA_GPIO_NUM_E)CAM_TEST_PIN_SCL;
+    cfg.board_cfg.sda = (TUYA_GPIO_NUM_E)CAM_TEST_PIN_SDA;
+    cfg.board_cfg.port = (TUYA_I2C_NUM_E)CAM_TEST_I2C_ID;
+    cfg.board_cfg.clk = (TUYA_GPIO_NUM_E)CAM_TEST_PIN_XCLK;
+    /* the vendor sensor drives its control pins active-high */
+    cfg.board_cfg.reset.pin = (TUYA_GPIO_NUM_E)CAM_TEST_PIN_RESET;
+    cfg.board_cfg.reset.active_level = TUYA_GPIO_LEVEL_HIGH;
+    /* PWDN is not wired; TUYA_GPIO_NUM_MAX means "not connected" */
+    cfg.board_cfg.power_ctrl.pin = TUYA_GPIO_NUM_MAX;
+    cfg.board_cfg.power_ctrl.active_level = TUYA_GPIO_LEVEL_HIGH;
 
-    cfg.sensor_width = CAM_TEST_SENSOR_W;
-    cfg.sensor_height = CAM_TEST_SENSOR_H;
-    cfg.sensor_fps = CAM_TEST_SENSOR_FPS;
-    cfg.sensor_input_format = CAM_TEST_SENSOR_IN_FMT;
+    cfg.sensor_cfg.width = CAM_TEST_SENSOR_W;
+    cfg.sensor_cfg.height = CAM_TEST_SENSOR_H;
+    cfg.sensor_cfg.fps = CAM_TEST_SENSOR_FPS;
+    cfg.sensor_cfg.format = (TUYA_FRAME_FMT_E)CAM_TEST_SENSOR_IN_FMT;
 
-    cfg.primary.output_kinds = (TUYA_MIPI_CSI_OUTPUT_KIND_E)mp_kinds;
-    cfg.primary.width = mp_w;
-    cfg.primary.height = mp_h;
-    cfg.primary.format = TUYA_FRAME_FMT_NV12;
+    /* One shared output selection: PIXEL/STREAM place the primary channel in
+     * flexa mode; FRAME is the pull-only secondary, turned on by an sp_fmt or
+     * the "frame" kind word. */
+    cfg.frame.enable = (((mp_kinds & TUYA_CAMERA_OUTPUT_FRAME) != 0U) ||
+                        (sp_fmt != 0U)) ? TRUE : FALSE;
+    cfg.pixel.enable = ((mp_kinds & TUYA_CAMERA_OUTPUT_PIXEL) != 0U) ? TRUE : FALSE;
+    cfg.stream.enable = ((mp_kinds & TUYA_CAMERA_OUTPUT_STREAM) != 0U) ? TRUE : FALSE;
 
-    /* SP is pull-only, so FRAME is the only kind it can carry */
-    cfg.secondary.output_kinds = (sp_fmt != 0U) ? TUYA_MIPI_CSI_OUTPUT_FRAME : TUYA_MIPI_CSI_OUTPUT_NONE;
-    cfg.secondary.width = sp_w;
-    cfg.secondary.height = sp_h;
-    cfg.secondary.format = (TUYA_FRAME_FMT_E)sp_fmt;
+    if (cfg.frame.enable == TRUE) {
+        /* "frame" without an sp_fmt: default SP geometry, NV12 so the pulled
+         * frame feeds JPEG encoding or a transform directly */
+        if (sp_fmt == 0U) {
+            sp_fmt = (uint32_t)TUYA_FRAME_FMT_NV12;
+            sp_w = CAM_TEST_SP_W;
+            sp_h = CAM_TEST_SP_H;
+        }
+        cfg.frame.width = sp_w;
+        cfg.frame.height = sp_h;
+        cfg.frame.format = (TUYA_FRAME_FMT_E)sp_fmt;
+    }
 
-    pixel_cfg.rotate = s_cam_rotate;
-    pixel_cfg.target_width = mp_w;
-    pixel_cfg.target_height = mp_h;
-    pixel_cfg.format = TUYA_FRAME_FMT_ARGB8888;
-    cfg.pixel = pixel_cfg;
+    if (cfg.pixel.enable == TRUE) {
+        cfg.pixel.rotate = s_cam_rotate;
+        cfg.pixel.width = mp_w;
+        cfg.pixel.height = mp_h;
+        cfg.pixel.format = TUYA_FRAME_FMT_ARGB8888;
+        cfg.pixel.pixel_cb = test_cam_display_cb;
+    }
 
-    encoder_cfg.fps = CAM_TEST_SENSOR_FPS;
-    encoder_cfg.gop = CAM_TEST_GOP;
-    encoder_cfg.bitrate = CAM_TEST_BITRATE;
-    cfg.encoder = encoder_cfg;
-
-    cfg.pixel_cb = test_cam_display_cb;
-    cfg.stream_cb = test_cam_stream_cb;
+    if (cfg.stream.enable == TRUE) {
+        cfg.stream.width = mp_w;
+        cfg.stream.height = mp_h;
+        cfg.stream.fps = CAM_TEST_SENSOR_FPS;
+        cfg.stream.gop = CAM_TEST_GOP;
+        cfg.stream.bitrate = CAM_TEST_BITRATE;
+        cfg.stream.stream_cb = test_cam_stream_cb;
+    }
 
     ret = tkl_mipi_csi_init(&cfg);
     if (ret == OPRT_OK) {
@@ -511,31 +535,29 @@ static OPERATE_RET test_cam_open(uint32_t mp_kinds, uint16_t mp_w, uint16_t mp_h
         tkl_log_output("xmipi cam open ok: mp=%ux%u kinds=0x%x, sp=%ux%u %s, display=%ux%u rot=%u\r\n",
                        mp_w, mp_h, (unsigned int)mp_kinds,
                        sp_w, sp_h, test_cam_fmt_name(sp_fmt),
-                       cfg.pixel.target_width, cfg.pixel.target_height, s_cam_rotate);
+                       cfg.pixel.width, cfg.pixel.height, s_cam_rotate);
     } else {
         tkl_log_output("xmipi cam open ok: mp=%ux%u kinds=0x%x, sp=off, display=%ux%u rot=%u\r\n",
                        mp_w, mp_h, (unsigned int)mp_kinds,
-                       cfg.pixel.target_width, cfg.pixel.target_height, s_cam_rotate);
+                       cfg.pixel.width, cfg.pixel.height, s_cam_rotate);
     }
     return OPRT_OK;
 }
 
 /**
- * @brief xmipi cam frame - pull one frame, the TUYA_MIPI_CSI_OUTPUT_FRAME path.
+ * @brief xmipi cam frame - pull one frame, the frame.enable path.
  *
  * @details
- * The only exercise for tkl_mipi_csi_get_frame(). A channel can only be
- * pulled from when it was opened WITHOUT display or h264: those run the channel
- * in flexa mode, where the ISP streams straight into the consumer and there is
- * nothing to pull.
+ * The only exercise for tkl_mipi_csi_get_frame(). The frame output maps to the
+ * camera's secondary channel; display/h264 run the primary channel in flexa
+ * mode, where the ISP streams straight into the consumer and there is nothing
+ * to pull.
  *
- * @param[in] chn TUYA_MIPI_CSI_CHANNEL_PRIMARY or _SP
  * @return OPRT_OK on success
  */
-static OPERATE_RET test_cam_frame(UINT8_T chn)
+static OPERATE_RET test_cam_frame(VOID_T)
 {
-    TUYA_MEDIA_BUF_T frame;
-    UINT32_T fmt;
+    TUYA_MEDIA_BUF_T *frame = NULL;
     OPERATE_RET ret;
 
     if (s_cam.opened != true) {
@@ -543,41 +565,27 @@ static OPERATE_RET test_cam_frame(UINT8_T chn)
         return OPRT_RESOURCE_NOT_READY;
     }
 
-    if (chn == TUYA_MIPI_CSI_CHANNEL_SECONDARY) {
-        if (s_cam.sp_on != true) {
-            tkl_log_output("xmipi cam frame: SP is off; re-open with an sp_fmt, "
-                           "e.g. xmipi cam open display+h264 640 1024 nv12 640 480\r\n");
-            return OPRT_RESOURCE_NOT_READY;
-        }
-        fmt = s_cam.sp_format;
-    } else {
-        /* MP carries display and/or h264, which means flexa: the ISP streams
-         * straight into the bond and there is no frame queue to read from. */
-        if ((s_cam.out_kinds & (TUYA_MIPI_CSI_OUTPUT_PIXEL | TUYA_MIPI_CSI_OUTPUT_STREAM)) != 0U) {
-            tkl_log_output("xmipi cam frame: MP is in flexa mode (kinds=0x%x), nothing to pull; "
-                           "SP is the pull channel\r\n",
-                           (unsigned int)s_cam.out_kinds);
-            return OPRT_NOT_SUPPORTED;
-        }
-        fmt = (UINT32_T)TUYA_FRAME_FMT_NV12; /* MP is always opened NV12 */
+    if (s_cam.sp_on != true) {
+        tkl_log_output("xmipi cam frame: FRAME output is off; re-open with an sp_fmt, "
+                       "e.g. xmipi cam open display+h264 640 1024 nv12 640 480\r\n");
+        return OPRT_RESOURCE_NOT_READY;
     }
 
-    /* No sizing, no pool choice, no allocation: the camera lends its own buffer
-     * and the release function travels inside the frame (TUYA_MEDIA_BUF_T). */
-    ret = tkl_mipi_csi_get_frame(&frame, chn, CAM_TEST_FRAME_TIMEOUT_MS);
+    /* No sizing, no pool choice, no allocation: the camera returns its own
+     * one-block buffer and the release function travels inside it. */
+    ret = tkl_mipi_csi_get_frame(&frame, CAM_TEST_FRAME_TIMEOUT_MS);
     if (ret != OPRT_OK) {
         tkl_log_output("xmipi cam frame failed: %d\r\n", ret);
         return ret;
     }
 
-    tkl_log_output("xmipi cam frame: chn=%u %ux%u asked=%s tkl_fmt=%u %u bytes\r\n",
-                   (unsigned int)chn,
-                   (unsigned int)frame.width, (unsigned int)frame.height,
-                   test_cam_fmt_name(fmt),
-                   (unsigned int)frame.format,
-                   (unsigned int)frame.size);
+    tkl_log_output("xmipi cam frame: %ux%u asked=%s tkl_fmt=%u %u bytes\r\n",
+                   (unsigned int)frame->width, (unsigned int)frame->height,
+                   test_cam_fmt_name(s_cam.sp_format),
+                   (unsigned int)frame->format,
+                   (unsigned int)frame->size);
 
-    frame.free_cb(frame.data);
+    frame->free_cb(frame->data);
     return OPRT_OK;
 }
 
@@ -591,8 +599,8 @@ static OPERATE_RET test_cam_close(void)
         return OPRT_OK;
     }
 
-    test_overlay_clock_stop((UINT8_T)TUYA_MIPI_CSI_OSD_PIXEL);
-    test_overlay_clock_stop((UINT8_T)TUYA_MIPI_CSI_OSD_STREAM);
+    test_overlay_clock_stop(TUYA_CAMERA_OUTPUT_PIXEL);
+    test_overlay_clock_stop(TUYA_CAMERA_OUTPUT_STREAM);
     test_cam_osd_clear_settle();
 
     ret = tkl_mipi_csi_deinit();
@@ -817,19 +825,19 @@ static OPERATE_RET test_cam_restart(uint32_t rounds)
 /**
  * @brief Push one clock string to a facade channel.
  * @param[in] text HH:MM:SS
- * @param[in] arg  the channel, cast from TUYA_MIPI_CSI_OSD_CHANNEL_E
+ * @param[in] arg  the output type, cast from TUYA_CAMERA_OUTPUT_TYPE_E
  * @return OPRT_OK on success
  */
 static OPERATE_RET test_cam_osd_submit(CONST CHAR_T *text, VOID_T *arg)
 {
-    TUYA_MIPI_CSI_OSD_CHANNEL_E chn = (TUYA_MIPI_CSI_OSD_CHANNEL_E)(uintptr_t)arg;
+    TUYA_CAMERA_OUTPUT_TYPE_E type = (TUYA_CAMERA_OUTPUT_TYPE_E)(uintptr_t)arg;
     TUYA_OSD_T osd;
 
     test_osd_set_clock(text);
 
     os_memset(&osd, 0, sizeof(osd));
 
-    if (chn == TUYA_MIPI_CSI_OSD_PIXEL) {
+    if (type == TUYA_CAMERA_OUTPUT_PIXEL) {
         osd.dst_x = TEST_OSD_CLOCK_DST_X;
         osd.dst_y = TEST_OSD_CLOCK_DST_Y;
     } else {
@@ -842,7 +850,7 @@ static OPERATE_RET test_cam_osd_submit(CONST CHAR_T *text, VOID_T *arg)
     osd.rotate = s_cam_osd_rotate;
     osd.data = test_osd_clock_bitmap(&osd.w, &osd.h);
 
-    return tkl_mipi_csi_set_osd(chn, &osd);
+    return tkl_mipi_csi_set_osd(type, &osd);
 }
 
 /**
@@ -856,12 +864,12 @@ static OPERATE_RET test_cam_osd_submit(CONST CHAR_T *text, VOID_T *arg)
  *
  * @return OPRT_OK on success. Others on error, please refer to tuya_error_code.h
  */
-static OPERATE_RET test_cam_osd_clock_clear(TUYA_MIPI_CSI_OSD_CHANNEL_E chn)
+static OPERATE_RET test_cam_osd_clock_clear(TUYA_CAMERA_OUTPUT_TYPE_E type)
 {
     TUYA_OSD_T osd;
 
     os_memset(&osd, 0, sizeof(osd));
-    if (chn == TUYA_MIPI_CSI_OSD_PIXEL) {
+    if (type == TUYA_CAMERA_OUTPUT_PIXEL) {
         osd.dst_x = TEST_OSD_CLOCK_DST_X;
         osd.dst_y = TEST_OSD_CLOCK_DST_Y;
     } else {
@@ -870,7 +878,7 @@ static OPERATE_RET test_cam_osd_clock_clear(TUYA_MIPI_CSI_OSD_CHANNEL_E chn)
     }
     osd.data = NULL;
 
-    return tkl_mipi_csi_set_osd(chn, &osd);
+    return tkl_mipi_csi_set_osd(type, &osd);
 }
 
 /**
@@ -888,18 +896,34 @@ static OPERATE_RET test_cam_osd_clock_clear(TUYA_MIPI_CSI_OSD_CHANNEL_E chn)
  *
  * @return OPRT_OK on success. Others on error, please refer to tuya_error_code.h
  */
-static OPERATE_RET test_cam_osd_wifi(TUYA_MIPI_CSI_OSD_CHANNEL_E chn, UINT8_T level, BOOL_T on)
+static OPERATE_RET test_cam_osd_wifi(TUYA_CAMERA_OUTPUT_TYPE_E type, UINT8_T level, BOOL_T on)
 {
     TUYA_OSD_T osd;
+
+    /* vcenc DMA cannot reach flash XIP: the const rssi bitmaps live in rodata,
+     * so stage the selected one in RAM before handing it to the encoder. The
+     * stage lives in the media slab, not .bss - the app heap budget is tight. */
+    static UINT8_T *s_wifi_osd_ram;
 
     os_memset(&osd, 0, sizeof(osd));
 
     if (on == TRUE) {
-        osd.data = test_osd_wifi_bitmap(level);
+        if (s_wifi_osd_ram == NULL) {
+            s_wifi_osd_ram = tkl_media_buf_alloc(TKL_BUF_USE_PIXEL,
+                    TEST_OSD_WIFI_BITMAP_W * TEST_OSD_WIFI_BITMAP_H * 4U,
+                    TUYA_MEDIA_BUF_OWNER_OSD);
+            if (s_wifi_osd_ram == NULL) {
+                tkl_log_output("xmipi cam osd wifi: no slab for RAM stage\r\n");
+                return OPRT_MALLOC_FAILED;
+            }
+        }
+        os_memcpy(s_wifi_osd_ram, test_osd_wifi_bitmap(level),
+                  TEST_OSD_WIFI_BITMAP_W * TEST_OSD_WIFI_BITMAP_H * 4U);
+        osd.data = s_wifi_osd_ram;
         osd.w = TEST_OSD_WIFI_BITMAP_W;
         osd.h = TEST_OSD_WIFI_BITMAP_H;
 
-        if (chn == TUYA_MIPI_CSI_OSD_PIXEL) {
+        if (type == TUYA_CAMERA_OUTPUT_PIXEL) {
             osd.dst_x = TEST_OSD_WIFI_DST_X;
             osd.dst_y = TEST_OSD_WIFI_DST_Y;
         } else {
@@ -907,7 +931,7 @@ static OPERATE_RET test_cam_osd_wifi(TUYA_MIPI_CSI_OSD_CHANNEL_E chn, UINT8_T le
             osd.dst_x = 2U;
             osd.dst_y = 72U;
         }
-    } else if (chn == TUYA_MIPI_CSI_OSD_PIXEL) {
+    } else if (type == TUYA_CAMERA_OUTPUT_PIXEL) {
         osd.dst_x = TEST_OSD_WIFI_DST_X;
         osd.dst_y = TEST_OSD_WIFI_DST_Y;
     } else {
@@ -916,7 +940,7 @@ static OPERATE_RET test_cam_osd_wifi(TUYA_MIPI_CSI_OSD_CHANNEL_E chn, UINT8_T le
     }
 
     osd.rotate = 0U;
-    return tkl_mipi_csi_set_osd(chn, &osd);
+    return tkl_mipi_csi_set_osd(type, &osd);
 }
 
 /**
@@ -936,14 +960,14 @@ STATIC VOID_T test_cam_osd_clear_settle(VOID_T)
     uint32_t t;
 
     /* stopped: set_osd refuses with -23, and no frame would repaint anyway */
-    if (s_cam.paused == true || (s_cam.out_kinds & TUYA_MIPI_CSI_OUTPUT_PIXEL) == 0U) {
+    if (s_cam.paused == true || (s_cam.out_kinds & TUYA_CAMERA_OUTPUT_PIXEL) == 0U) {
         return;
     }
 
-    (void)test_cam_osd_clock_clear(TUYA_MIPI_CSI_OSD_PIXEL);
-    (void)test_cam_osd_wifi(TUYA_MIPI_CSI_OSD_PIXEL, 0U, FALSE);
-    (void)test_cam_osd_clock_clear(TUYA_MIPI_CSI_OSD_STREAM);
-    (void)test_cam_osd_wifi(TUYA_MIPI_CSI_OSD_STREAM, 0U, FALSE);
+    (void)test_cam_osd_clock_clear(TUYA_CAMERA_OUTPUT_PIXEL);
+    (void)test_cam_osd_wifi(TUYA_CAMERA_OUTPUT_PIXEL, 0U, FALSE);
+    (void)test_cam_osd_clock_clear(TUYA_CAMERA_OUTPUT_STREAM);
+    (void)test_cam_osd_wifi(TUYA_CAMERA_OUTPUT_STREAM, 0U, FALSE);
 
     mark = s_cam.display_frames;
     t = (uint32_t)tkl_system_get_millisecond();
@@ -960,16 +984,16 @@ STATIC VOID_T test_cam_osd_clear_settle(VOID_T)
 
 /* What was last asked for. The sensor is the authority once it is running -
  * these only answer "what did you ask for" before the camera is up. */
-static UINT8_T s_cam_quality_hmirror;
-static UINT8_T s_cam_quality_vflip;
+static BOOL_T s_cam_quality_hmirror;
+static BOOL_T s_cam_quality_vflip;
 
 /**
  * @brief Set camera mirror/flip and sync local cfg
- * @param[in] hmirror 0=off, non-zero=on
- * @param[in] vflip 0=off, non-zero=on
+ * @param[in] hmirror FALSE=off, TRUE=on
+ * @param[in] vflip FALSE=off, TRUE=on
  * @return OPRT_OK on success
  */
-static OPERATE_RET cam_quality_set_mirror_flip(UINT8_T hmirror, UINT8_T vflip)
+static OPERATE_RET cam_quality_set_mirror_flip(BOOL_T hmirror, BOOL_T vflip)
 {
     OPERATE_RET ret;
 
@@ -984,8 +1008,8 @@ static OPERATE_RET cam_quality_set_mirror_flip(UINT8_T hmirror, UINT8_T vflip)
         return ret;
     }
 
-    s_cam_quality_hmirror = (hmirror != 0U) ? 1U : 0U;
-    s_cam_quality_vflip = (vflip != 0U) ? 1U : 0U;
+    s_cam_quality_hmirror = hmirror;
+    s_cam_quality_vflip = vflip;
     tkl_log_output("camera mirror set ok, hmirror=%u vflip=%u (started=%u)\r\n",
                    s_cam_quality_hmirror,
                    s_cam_quality_vflip,
@@ -999,11 +1023,11 @@ static OPERATE_RET cam_quality_set_mirror_flip(UINT8_T hmirror, UINT8_T vflip)
  * @param[out] vflip optional
  * @return OPRT_OK on success
  */
-static OPERATE_RET cam_quality_get_mirror_flip(UINT8_T *hmirror, UINT8_T *vflip)
+static OPERATE_RET cam_quality_get_mirror_flip(BOOL_T *hmirror, BOOL_T *vflip)
 {
     OPERATE_RET ret;
-    UINT8_T h = 0U;
-    UINT8_T v = 0U;
+    BOOL_T h = FALSE;
+    BOOL_T v = FALSE;
 
     if (test_camera_is_open() != TRUE) {
         tkl_log_output("mipi camera is not open\r\n");
@@ -1100,7 +1124,7 @@ static OPERATE_RET cam_quality_capture_mirror_sample(uint32_t *checksum,
                                                      uint32_t *left_edge,
                                                      uint32_t *right_edge)
 {
-    TUYA_MEDIA_BUF_T frame;
+    TUYA_MEDIA_BUF_T *frame = NULL;
     OPERATE_RET ret;
     UINT32_T i;
     UINT16_T edge_cols;
@@ -1114,27 +1138,25 @@ static OPERATE_RET cam_quality_capture_mirror_sample(uint32_t *checksum,
     }
 
     for (i = 0U; i <= CAM_QUALITY_MIRROR_SETTLE_FRAMES; i++) {
-        os_memset(&frame, 0, sizeof(frame));
-        ret = tkl_mipi_csi_get_frame(&frame, TUYA_MIPI_CSI_CHANNEL_SECONDARY,
-                                            CAM_QUALITY_FRAME_TIMEOUT_MS);
+        ret = tkl_mipi_csi_get_frame(&frame, CAM_QUALITY_FRAME_TIMEOUT_MS);
         if (ret != OPRT_OK) {
             return ret;
         }
         if (i < CAM_QUALITY_MIRROR_SETTLE_FRAMES) {
-            frame.free_cb(frame.data);
+            frame->free_cb(frame->data);
         }
     }
 
-    width = frame.width;
-    height = frame.height;
-    *checksum = cam_quality_frame_checksum(frame.data, frame.size);
+    width = frame->width;
+    height = frame->height;
+    *checksum = cam_quality_frame_checksum(frame->data, frame->size);
 
     y_stride = (UINT32_T)width;    /* camera frames are tightly packed */
     y_size = y_stride * (UINT32_T)height;
-    if (frame.format != (UINT32_T)TUYA_FRAME_FMT_NV12 || frame.size < y_size || width < 16U) {
+    if (frame->format != (UINT32_T)TUYA_FRAME_FMT_NV12 || frame->size < y_size || width < 16U) {
         *left_edge = 0U;
         *right_edge = 0U;
-        frame.free_cb(frame.data);
+        frame->free_cb(frame->data);
         return OPRT_OK;
     }
 
@@ -1146,11 +1168,11 @@ static OPERATE_RET cam_quality_capture_mirror_sample(uint32_t *checksum,
         edge_cols = 1U;
     }
 
-    *left_edge = cam_quality_y_strip_checksum(frame.data, width, height, y_stride,
+    *left_edge = cam_quality_y_strip_checksum(frame->data, width, height, y_stride,
                                               0U, edge_cols);
-    *right_edge = cam_quality_y_strip_checksum(frame.data, width, height, y_stride,
+    *right_edge = cam_quality_y_strip_checksum(frame->data, width, height, y_stride,
                                                (UINT16_T)(width - edge_cols), edge_cols);
-    frame.free_cb(frame.data);
+    frame->free_cb(frame->data);
     return OPRT_OK;
 }
 
@@ -1162,10 +1184,10 @@ static OPERATE_RET cam_quality_capture_mirror_sample(uint32_t *checksum,
 static OPERATE_RET cam_quality_mirror_test(void)
 {
     OPERATE_RET ret;
-    UINT8_T saved_h = 0U;
-    UINT8_T saved_v = 0U;
-    UINT8_T got_h = 0U;
-    UINT8_T got_v = 0U;
+    BOOL_T saved_h = FALSE;
+    BOOL_T saved_v = FALSE;
+    BOOL_T got_h = FALSE;
+    BOOL_T got_v = FALSE;
     uint32_t base_sum = 0U;
     uint32_t base_left = 0U;
     uint32_t base_right = 0U;
@@ -1197,12 +1219,12 @@ static OPERATE_RET cam_quality_mirror_test(void)
     }
 
     /* Baseline: no mirror/flip */
-    ret = cam_quality_set_mirror_flip(0U, 0U);
+    ret = cam_quality_set_mirror_flip(FALSE, FALSE);
     if (ret != OPRT_OK) {
         return ret;
     }
     ret = cam_quality_get_mirror_flip(&got_h, &got_v);
-    if (ret != OPRT_OK || got_h != 0U || got_v != 0U) {
+    if (ret != OPRT_OK || got_h != FALSE || got_v != FALSE) {
         tkl_log_output("mirror_test FAIL: get after set(0,0) h=%u v=%u ret=%d\r\n",
                        got_h, got_v, ret);
         pass = FALSE;
@@ -1217,13 +1239,13 @@ static OPERATE_RET cam_quality_mirror_test(void)
                    (unsigned int)base_sum, (unsigned int)base_left, (unsigned int)base_right);
 
     /* Horizontal mirror */
-    ret = cam_quality_set_mirror_flip(1U, 0U);
+    ret = cam_quality_set_mirror_flip(TRUE, FALSE);
     if (ret != OPRT_OK) {
         pass = FALSE;
         goto restore;
     }
     ret = cam_quality_get_mirror_flip(&got_h, &got_v);
-    if (ret != OPRT_OK || got_h != 1U || got_v != 0U) {
+    if (ret != OPRT_OK || got_h != TRUE || got_v != FALSE) {
         tkl_log_output("mirror_test FAIL: get after set(1,0) h=%u v=%u ret=%d\r\n",
                        got_h, got_v, ret);
         pass = FALSE;
@@ -1256,13 +1278,13 @@ static OPERATE_RET cam_quality_mirror_test(void)
     }
 
     /* Vertical flip */
-    ret = cam_quality_set_mirror_flip(0U, 1U);
+    ret = cam_quality_set_mirror_flip(FALSE, TRUE);
     if (ret != OPRT_OK) {
         pass = FALSE;
         goto restore;
     }
     ret = cam_quality_get_mirror_flip(&got_h, &got_v);
-    if (ret != OPRT_OK || got_h != 0U || got_v != 1U) {
+    if (ret != OPRT_OK || got_h != FALSE || got_v != TRUE) {
         tkl_log_output("mirror_test FAIL: get after set(0,1) h=%u v=%u ret=%d\r\n",
                        got_h, got_v, ret);
         pass = FALSE;
@@ -1283,13 +1305,13 @@ static OPERATE_RET cam_quality_mirror_test(void)
     }
 
     /* Both */
-    ret = cam_quality_set_mirror_flip(1U, 1U);
+    ret = cam_quality_set_mirror_flip(TRUE, TRUE);
     if (ret != OPRT_OK) {
         pass = FALSE;
         goto restore;
     }
     ret = cam_quality_get_mirror_flip(&got_h, &got_v);
-    if (ret != OPRT_OK || got_h != 1U || got_v != 1U) {
+    if (ret != OPRT_OK || got_h != TRUE || got_v != TRUE) {
         tkl_log_output("mirror_test FAIL: get after set(1,1) h=%u v=%u ret=%d\r\n",
                        got_h, got_v, ret);
         pass = FALSE;
@@ -1480,7 +1502,7 @@ void cli_tuya_mipi_cam_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, c
         }
 
         mp_kinds = test_cam_kinds_parse(argv[2]);
-        if (mp_kinds == TUYA_MIPI_CSI_OUTPUT_NONE) {
+        if (mp_kinds == TUYA_CAMERA_OUTPUT_NONE) {
             snprintf(pcWriteBuffer, xWriteBufferLen,
                      "xmipi cam: unknown output '%s'\r\n", argv[2]);
             return;
@@ -1509,15 +1531,9 @@ void cli_tuya_mipi_cam_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, c
                  (ret == OPRT_OK) ? "ok" : "failed", ret);
 
     } else if (os_strcmp(cmd, "frame") == 0) {
-        UINT8_T chn = TUYA_MIPI_CSI_CHANNEL_PRIMARY;
-
-        if (argc > 2 && os_strcmp(argv[2], "sp") == 0) {
-            chn = TUYA_MIPI_CSI_CHANNEL_SECONDARY;
-        }
-
-        ret = test_cam_frame(chn);
-        snprintf(pcWriteBuffer, xWriteBufferLen, "xmipi cam frame %s (%d), chn=%u\r\n",
-                 (ret == OPRT_OK) ? "ok" : "failed", ret, (unsigned int)chn);
+        ret = test_cam_frame();
+        snprintf(pcWriteBuffer, xWriteBufferLen, "xmipi cam frame %s (%d)\r\n",
+                 (ret == OPRT_OK) ? "ok" : "failed", ret);
 
     } else if (os_strcmp(cmd, "record") == 0) {
         uint32_t sec = 5U;
@@ -1540,12 +1556,12 @@ void cli_tuya_mipi_cam_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, c
                  (ret == OPRT_OK) ? "started" : "failed", ret);
 
     } else if (os_strcmp(cmd, "mirror") == 0) {
-        UINT8_T h = 0U;
-        UINT8_T v = 0U;
+        BOOL_T h = FALSE;
+        BOOL_T v = FALSE;
 
         if (argc > 3) {
-            h = (UINT8_T)os_strtoul(argv[2], NULL, 10);
-            v = (UINT8_T)os_strtoul(argv[3], NULL, 10);
+            h = (os_strtoul(argv[2], NULL, 10) != 0U) ? TRUE : FALSE;
+            v = (os_strtoul(argv[3], NULL, 10) != 0U) ? TRUE : FALSE;
             ret = tkl_mipi_csi_set_mirror_flip(h, v);
             snprintf(pcWriteBuffer, xWriteBufferLen,
                      "xmipi cam mirror %s (%d), hmirror=%u vflip=%u\r\n",
@@ -1641,10 +1657,10 @@ void cli_tuya_mipi_cam_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, c
         ret = test_cam_pause(&ms);
         /* the reply buffer is ~136 bytes; anything longer is silently cut, so
          * the guidance goes out through the log and only the verdict here */
-        tkl_log_output("xmipi cam stop: sensor stays powered; set_output/set_encode/"
+        tkl_log_output("xmipi cam stop: sensor stays powered; set_pp/set_bitrate/"
                        "set_osd must now return -23. Try 'xmipi cam "
                        "switch 800 480', 'xmipi cam osd display time'. get_frame "
-                       "needs SP - on a flexa-only MP the test layer rejects it "
+                       "needs FRAME - on a flexa-only MP the test layer rejects it "
                        "first with -4\r\n");
         snprintf(pcWriteBuffer, xWriteBufferLen, "xmipi cam stop %s (%d), %u ms\r\n",
                  (ret == OPRT_OK) ? "ok" : "failed", ret, (unsigned int)ms);
@@ -1675,7 +1691,7 @@ void cli_tuya_mipi_cam_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, c
                  (ret == OPRT_OK) ? "done" : "failed", ret);
 
     } else if (os_strcmp(cmd, "switch") == 0) {
-        UINT8_T chn = TUYA_MIPI_CSI_CHANNEL_PRIMARY;
+        TUYA_CAMERA_OUTPUT_TYPE_E type = TUYA_CAMERA_OUTPUT_STREAM;
         uint16_t w;
         uint16_t h;
 
@@ -1688,20 +1704,20 @@ void cli_tuya_mipi_cam_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, c
         w = (uint16_t)os_strtoul(argv[2], NULL, 10);
         h = (uint16_t)os_strtoul(argv[3], NULL, 10);
         if (argc > 4 && os_strcmp(argv[4], "sp") == 0) {
-            chn = TUYA_MIPI_CSI_CHANNEL_SECONDARY;
+            type = TUYA_CAMERA_OUTPUT_FRAME;
         }
 
-        ret = tkl_mipi_csi_set_output(chn, w, h);
-        if (ret == OPRT_OK && chn == TUYA_MIPI_CSI_CHANNEL_SECONDARY) {
-            /* keep the cached geometry in step, or the next 'xmipi cam frame sp'
-             * sizes its buffer from the pre-switch dimensions */
+        ret = tkl_mipi_csi_set_pp(type, w, h);
+        if (ret == OPRT_OK && type == TUYA_CAMERA_OUTPUT_FRAME) {
+            /* keep the cached geometry in step, or the next 'xmipi cam frame'
+             * reports the pre-switch dimensions */
             s_cam.sp_w = w;
             s_cam.sp_h = h;
         }
         snprintf(pcWriteBuffer, xWriteBufferLen,
-                 "xmipi cam switch %s (%d), chn=%u %ux%u\r\n",
+                 "xmipi cam switch %s (%d), type=%u %ux%u\r\n",
                  (ret == OPRT_OK) ? "ok" : "failed", ret,
-                 (unsigned int)chn, w, h);
+                 (unsigned int)type, w, h);
 
     } else if (os_strcmp(cmd, "stress") == 0) {
         uint32_t loops = 100U;
@@ -1718,7 +1734,7 @@ void cli_tuya_mipi_cam_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, c
             uint16_t w = ((i & 1U) != 0U) ? 640U : 480U;
             uint16_t h = ((i & 1U) != 0U) ? 1024U : 800U;
 
-            if (tkl_mipi_csi_set_output(TUYA_MIPI_CSI_CHANNEL_PRIMARY, w, h) != OPRT_OK) {
+            if (tkl_mipi_csi_set_pp(TUYA_CAMERA_OUTPUT_STREAM, w, h) != OPRT_OK) {
                 fails++;
             }
             tkl_system_sleep(50U);
@@ -1731,26 +1747,21 @@ void cli_tuya_mipi_cam_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, c
                  (unsigned int)loops, (unsigned int)fails);
 
     } else if (os_strcmp(cmd, "bitrate") == 0) {
-        TUYA_MEDIA_ENC_CTRL_T ctrl;
+        UINT32_T bitrate;
 
         if (argc < 3) {
             snprintf(pcWriteBuffer, xWriteBufferLen, "Usage: xmipi cam bitrate <bps>\r\n");
             return;
         }
 
-        os_memset(&ctrl, 0, sizeof(ctrl));
-        ctrl.bitrate = os_strtoul(argv[2], NULL, 10);
-        ret = tkl_mipi_csi_set_encode(&ctrl);
+        bitrate = os_strtoul(argv[2], NULL, 10);
+        ret = tkl_mipi_csi_set_bitrate(bitrate);
         snprintf(pcWriteBuffer, xWriteBufferLen, "xmipi cam bitrate %s (%d), %u bps\r\n",
-                 (ret == OPRT_OK) ? "ok" : "failed", ret, (unsigned int)ctrl.bitrate);
+                 (ret == OPRT_OK) ? "ok" : "failed", ret, (unsigned int)bitrate);
 
     } else if (os_strcmp(cmd, "idr") == 0) {
-        TUYA_MEDIA_ENC_CTRL_T ctrl;
-
-        os_memset(&ctrl, 0, sizeof(ctrl));
-        ctrl.force_idr = TRUE;
         s_cam_idr_trace = 5U;   /* arm before the call, so a fast IDR is not missed */
-        ret = tkl_mipi_csi_set_encode(&ctrl);
+        ret = tkl_mipi_csi_force_idr();
         if (ret != OPRT_OK) {
             /* nothing was requested, so disarm: left armed it would fire on the
              * next "xmipi cam start" and print an I frame that is just the
@@ -1761,7 +1772,7 @@ void cli_tuya_mipi_cam_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, c
                  (ret == OPRT_OK) ? "ok" : "failed", ret);
 
     } else if (os_strcmp(cmd, "osd") == 0) {
-        TUYA_MIPI_CSI_OSD_CHANNEL_E chn;
+        TUYA_CAMERA_OUTPUT_TYPE_E type;
         const char *act = (argc > 3) ? argv[3] : NULL;
         const char *sub = (argc > 4) ? argv[4] : NULL;
 
@@ -1770,20 +1781,20 @@ void cli_tuya_mipi_cam_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, c
             return;
         }
 
-        chn = (os_strcmp(argv[2], "encode") == 0) ? TUYA_MIPI_CSI_OSD_STREAM
-                                                  : TUYA_MIPI_CSI_OSD_PIXEL;
+        type = (os_strcmp(argv[2], "encode") == 0) ? TUYA_CAMERA_OUTPUT_STREAM
+                                                   : TUYA_CAMERA_OUTPUT_PIXEL;
 
         if (os_strcmp(act, "clear") == 0) {
-            test_overlay_clock_stop((UINT8_T)chn);
-            ret = test_cam_osd_clock_clear(chn);
+            test_overlay_clock_stop(type);
+            ret = test_cam_osd_clock_clear(type);
             /* the icon lives in its own slot and would survive otherwise */
-            (void)test_cam_osd_wifi(chn, 0U, FALSE);
+            (void)test_cam_osd_wifi(type, 0U, FALSE);
         } else if (os_strcmp(act, "time") == 0) {
             UINT16_T rotate = 0U;
 
             if (sub != NULL && os_strcmp(sub, "off") == 0) {
-                test_overlay_clock_stop((UINT8_T)chn);
-                ret = test_cam_osd_clock_clear(chn);
+                test_overlay_clock_stop(type);
+                ret = test_cam_osd_clock_clear(type);
             } else {
                 if (sub != NULL) {
                     rotate = (UINT16_T)os_strtoul(sub, NULL, 10);
@@ -1793,23 +1804,23 @@ void cli_tuya_mipi_cam_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, c
                              "Usage: %s\r\n", TEST_CAM_OSD_USAGE);
                     return;
                 }
-                if (chn != TUYA_MIPI_CSI_OSD_PIXEL && rotate != 0U) {
+                if (type != TUYA_CAMERA_OUTPUT_PIXEL && rotate != 0U) {
                     snprintf(pcWriteBuffer, xWriteBufferLen,
                              "xmipi cam osd encode time: rotate %u unsupported\r\n",
                              (unsigned int)rotate);
                     return;
                 }
                 s_cam_osd_rotate = rotate;
-                ret = test_overlay_clock_start((UINT8_T)chn, test_cam_osd_submit,
-                                               (VOID_T *)(uintptr_t)chn);
+                ret = test_overlay_clock_start(type, test_cam_osd_submit,
+                                               (VOID_T *)(uintptr_t)type);
             }
         } else if (os_strcmp(act, "wifi") == 0) {
             if (sub != NULL && os_strcmp(sub, "off") == 0) {
-                ret = test_cam_osd_wifi(chn, 0U, FALSE);
+                ret = test_cam_osd_wifi(type, 0U, FALSE);
             } else {
                 UINT8_T level = (sub != NULL) ? (UINT8_T)os_strtoul(sub, NULL, 10) : 4U;
 
-                ret = test_cam_osd_wifi(chn, level, TRUE);
+                ret = test_cam_osd_wifi(type, level, TRUE);
             }
         } else {
             snprintf(pcWriteBuffer, xWriteBufferLen, "Usage: %s\r\n", TEST_CAM_OSD_USAGE);

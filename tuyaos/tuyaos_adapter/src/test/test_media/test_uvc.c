@@ -17,15 +17,18 @@ extern OPERATE_RET test_record_start(CONST CHAR_T *tag, CONST CHAR_T *path,
 extern VOID_T test_record_stop(VOID_T);
 extern BOOL_T test_record_busy(VOID_T);
 extern VOID_T test_record_status_dump(VOID_T);
-extern OPERATE_RET test_overlay_clock_start(UINT8_T ch, TEST_UVC_OVERLAY_SUBMIT_CB cb,
-                                            VOID_T *arg);
-extern VOID_T test_overlay_clock_stop(UINT8_T ch);
 #include "cli_tuya_test.h"
 #include "tkl_media_buf.h"
 #include "tkl_mipi_dsi.h"
 #include "tkl_output.h"
 #include "tkl_system.h"
+#include "tkl_thread.h"
 #include "tkl_uvc.h"
+
+extern OPERATE_RET test_overlay_clock_start(TUYA_CAMERA_OUTPUT_TYPE_E type,
+                                            TEST_UVC_OVERLAY_SUBMIT_CB cb,
+                                            VOID_T *arg);
+extern VOID_T test_overlay_clock_stop(TUYA_CAMERA_OUTPUT_TYPE_E type);
 
 #define UVC_TEST_DEFAULT_WIDTH       640U
 #define UVC_TEST_DEFAULT_HEIGHT      480U
@@ -38,11 +41,12 @@ extern BOOL_T test_mipi_lcd_is_open(void);
 /* ===========================================================================
  * Peripheral-oriented facade (design spec P4a): xuvc open / close / stats
  *
- * Every output arrives through the adapter callbacks: frame_cb for the raw
- * FRAME (borrowed, copy inside the callback), pixel_cb for the composited
- * picture, stream_cb for the re-encoded H.264. The adapter owns the decode
- * task that feeds PIXEL/STREAM - this test owns nothing but the handlers,
- * the recorder and the CLI.
+ * PIXEL arrives through pixel_cb and STREAM through stream_cb, both borrowed
+ * - the adapter owns the decode task that feeds them. FRAME is pull-only now:
+ * the adapter parks delivered frames in a ready queue, and a small pump thread
+ * in this file drains tkl_uvc_get_frame() - it is the whole consumer in the
+ * FRAME-only mode and the "xuvc mjpeg" tee in a PIXEL/STREAM one. This test
+ * owns nothing but the pump, the handlers, the recorder and the CLI.
  * =========================================================================== */
 
 #define UVC_OUT_LOG_INTERVAL   30U
@@ -71,7 +75,7 @@ extern BOOL_T test_mipi_lcd_is_open(void);
 #define UVC_RESTART_SETTLE_MS     1500U
 
 /* Which stream "xuvc record" is writing. H264 comes off the encode callback;
- * MJPEG off frame_cb, which carries the device bitstream in every mode. */
+ * MJPEG off the frame pump, which drains the device bitstream in every mode. */
 typedef enum {
     UVC_REC_NONE = 0,
     UVC_REC_H264,
@@ -84,7 +88,7 @@ typedef struct {
      * and the pools still exist, but the adapter is not streaming. */
     bool paused;
     bool push;                  /* PIXEL / STREAM use the processing pipeline */
-    bool tee_mjpeg;             /* push mode: also keep the raw bitstream frame_cb carries */
+    bool tee_mjpeg;             /* push mode: also keep the raw bitstream the pump drains */
     uint8_t rec_kind;           /* uvc_rec_kind_t */
     uint32_t tee_frames;
     uint64_t tee_bytes;
@@ -92,7 +96,7 @@ typedef struct {
     uint32_t display_frames;    /* pixel_cb arrivals (GPU-composited frames) */
     uint32_t stream_frames;     /* stream_cb arrivals (H.264 frames) */
     uint64_t stream_bytes;
-    uint32_t frames;            /* frame_cb arrivals in the FRAME-only mode */
+    uint32_t frames;            /* pump arrivals in the FRAME-only mode */
     uint64_t bytes;
     uint32_t last_size;
     uint16_t last_w;
@@ -112,7 +116,7 @@ static test_uvc_out_ctx_t s_uvc_out_t;
 
 /* One delivered frame, for pacing and settle decisions: a composited pixel or
  * an encoded frame in a PIXEL/STREAM configuration (the two arrive in
- * parallel), a raw frame_cb frame in the FRAME-only one. */
+ * parallel), a raw pump frame in the FRAME-only one. */
 static uint32_t test_uvc_out_delivered(void)
 {
     return (s_uvc_out_t.push == true)
@@ -125,7 +129,7 @@ static uint32_t test_uvc_out_delivered(void)
 static uint32_t test_uvc_out_fps_base(void)
 {
     if (s_uvc_out_t.push == true &&
-        (s_uvc_out_t.kind & TUYA_UVC_OUTPUT_PIXEL) != 0U) {
+        (s_uvc_out_t.kind & TUYA_CAMERA_OUTPUT_PIXEL) != 0U) {
         return s_uvc_out_t.display_frames;
     }
     return s_uvc_out_t.frames;
@@ -154,12 +158,10 @@ static volatile uint8_t s_uvc_idr_trace;
  *       is done scanning it. Identical to test_camera.c's - which is the point,
  *       the two peripherals deliver the same contract.
  */
-static VOID_T test_uvc_out_pixel_cb(CONST TUYA_MEDIA_BUF_T *buf, VOID_T *arg)
+static VOID_T test_uvc_out_pixel_cb(CONST TUYA_MEDIA_BUF_T *buf)
 {
     tkl_mipi_dsi_flush_frame_t flush;
     OPERATE_RET ret;
-
-    (void)arg;
 
     if (buf == NULL || buf->data == NULL) {
         return;
@@ -205,10 +207,8 @@ static VOID_T test_uvc_out_pixel_cb(CONST TUYA_MEDIA_BUF_T *buf, VOID_T *arg)
 /**
  * @brief Transcoded H264. Runs on the encoder worker thread, borrowed buffer.
  */
-static VOID_T test_uvc_out_stream_cb(CONST TUYA_MEDIA_BUF_T *buf, VOID_T *arg)
+static VOID_T test_uvc_out_stream_cb(CONST TUYA_MEDIA_BUF_T *buf)
 {
-    (void)arg;
-
     if (buf == NULL || buf->data == NULL) {
         return;
     }
@@ -223,77 +223,116 @@ static VOID_T test_uvc_out_stream_cb(CONST TUYA_MEDIA_BUF_T *buf, VOID_T *arg)
 
     if (s_uvc_idr_trace > 0U) {
         s_uvc_idr_trace--;
-        tkl_log_output("xuvc idr trace[%u]: %s size=%u frame_type=%u\r\n",
+        tkl_log_output("xuvc idr trace[%u]: %s size=%u format=%u\r\n",
                 (unsigned int)s_uvc_out_t.stream_frames,
-                (buf->frame_type == (UINT32_T)TUYA_VIDEO_FRAME_I) ? "I" : "P",
+                (buf->format == TUYA_FRAME_FMT_H264_I) ? "I" : "P",
                 (unsigned int)buf->size,
-                (unsigned int)buf->frame_type);
+                (unsigned int)buf->format);
     }
 
     if ((s_uvc_out_t.stream_frames % UVC_OUT_LOG_INTERVAL) == 0U) {
         tkl_log_output("xuvc h264[%u]: %s size=%u total=%llu display=%u\r\n",
                 (unsigned int)s_uvc_out_t.stream_frames,
-                (buf->frame_type == (UINT32_T)TUYA_VIDEO_FRAME_I) ? "I" : "P",
+                (buf->format == TUYA_FRAME_FMT_H264_I) ? "I" : "P",
                 (unsigned int)buf->size,
                 (unsigned long long)s_uvc_out_t.stream_bytes,
                 (unsigned int)s_uvc_out_t.display_frames);
     }
 }
 
-/**
- * @brief The raw device frame - FRAME output, borrowed for the callback only.
- *
- * @note The vendor buffer is only valid inside this callback, so the copy into
- *       the recorder's ring has to happen here rather than being deferred. In
- *       the FRAME-only mode this callback is the whole delivery - frames, byte
- *       totals and pacing are measured here. In a PIXEL/STREAM configuration it
- *       is the tee: gated by tee_mjpeg, which the CLI flips.
- */
-static VOID_T test_uvc_out_frame_cb(CONST TUYA_MEDIA_BUF_T *buf, VOID_T *arg)
+/* The FRAME output is pull-only in this API: the adapter parks each delivered
+ * frame in an internal ready queue and tkl_uvc_get_frame() pops one. The old
+ * vendor mjpeg_cb that used to count frames here is gone, so a small pump
+ * thread drains the queue instead. In the FRAME-only mode it IS the consumer
+ * (counters and pacing live here); in a PIXEL/STREAM configuration it only
+ * serves the "xuvc mjpeg" tee and an mjpeg recording, both gated by tee_mjpeg.
+ * The returned buffer carries its own release function - hand the frame back
+ * through buf->free_cb(buf->data) and nothing leaks. */
+#define UVC_PUMP_TIMEOUT_MS 200U
+#define UVC_PUMP_STACK      (3U * 1024U)
+#define UVC_PUMP_STOP_WAIT_MS 1000U
+
+static TKL_THREAD_HANDLE s_uvc_pump_task;
+static volatile bool s_uvc_pump_stop;
+
+static void test_uvc_frame_pump(void *arg)
 {
+    TKL_THREAD_HANDLE self = NULL;
+
     (void)arg;
+    (void)tkl_thread_get_id(&self);
 
-    if (buf == NULL || buf->data == NULL) {
+    while (s_uvc_pump_stop != true) {
+        TUYA_MEDIA_BUF_T *buf = NULL;
+        OPERATE_RET ret = tkl_uvc_get_frame(&buf, UVC_PUMP_TIMEOUT_MS);
+
+        if (ret != OPRT_OK || buf == NULL) {
+            /* idle stretch: stopped, or the device has not delivered yet */
+            continue;
+        }
+
+        if (s_uvc_out_t.push == true) {
+            if (s_uvc_out_t.tee_mjpeg == true) {
+                s_uvc_out_t.tee_frames++;
+                s_uvc_out_t.tee_bytes += buf->size;
+
+                if (s_uvc_out_t.rec_kind == (uint8_t)UVC_REC_MJPEG) {
+                    /* copies and returns; the card is the writer thread's problem */
+                    test_record_feed(buf->data, buf->size);
+                }
+            }
+        } else {
+            /* FRAME-only mode: the pacing that used to live in the get_frame() loop. */
+            s_uvc_out_t.frames++;
+            s_uvc_out_t.bytes += buf->size;
+            s_uvc_out_t.last_size = buf->size;
+            s_uvc_out_t.last_w = buf->width;
+            s_uvc_out_t.last_h = buf->height;
+
+            if ((s_uvc_out_t.frames % UVC_OUT_LOG_INTERVAL) == 0U) {
+                uint32_t ms = (uint32_t)tkl_system_get_millisecond() - s_uvc_out_t.fps_mark_ms;
+                uint32_t f = s_uvc_out_t.frames - s_uvc_out_t.fps_mark_frames;
+
+                tkl_log_output("xuvc out: %u frames %ux%u %u bytes %u.%u fps\r\n",
+                        (unsigned int)s_uvc_out_t.frames,
+                        (unsigned int)buf->width,
+                        (unsigned int)buf->height,
+                        (unsigned int)buf->size,
+                        (unsigned int)((ms != 0U) ? (f * 1000U / ms) : 0U),
+                        (unsigned int)((ms != 0U) ? ((f * 10000U / ms) % 10U) : 0U));
+            }
+        }
+
+        buf->free_cb(buf->data);
+    }
+
+    s_uvc_pump_task = NULL;
+    tkl_thread_release(self);
+}
+
+static OPERATE_RET test_uvc_pump_start(void)
+{
+    s_uvc_pump_stop = false;
+    return tkl_thread_create(&s_uvc_pump_task, "uvc_pump", UVC_PUMP_STACK,
+                             TKL_THREAD_PRI_NORMAL, test_uvc_frame_pump, NULL);
+}
+
+static void test_uvc_pump_stop(void)
+{
+    uint32_t waited = 0U;
+
+    if (s_uvc_pump_task == NULL) {
         return;
     }
 
-    if (s_uvc_out_t.push == true && s_uvc_out_t.tee_mjpeg != true) {
-        return;
-    }
-
-    s_uvc_out_t.tee_frames++;
-    s_uvc_out_t.tee_bytes += buf->size;
-
-    if (s_uvc_out_t.rec_kind == (uint8_t)UVC_REC_MJPEG) {
-        test_record_feed(buf->data, buf->size);
-    }
-
-    if (s_uvc_out_t.push == true) {
-        return;
-    }
-
-    /* FRAME-only mode: the pacing that used to live in the get_frame() loop. */
-    s_uvc_out_t.frames++;
-    s_uvc_out_t.bytes += buf->size;
-    s_uvc_out_t.last_size = buf->size;
-    s_uvc_out_t.last_w = buf->width;
-    s_uvc_out_t.last_h = buf->height;
-
-    if ((s_uvc_out_t.frames % UVC_OUT_LOG_INTERVAL) == 0U) {
-        uint32_t ms = (uint32_t)tkl_system_get_millisecond() - s_uvc_out_t.fps_mark_ms;
-        uint32_t f = s_uvc_out_t.frames - s_uvc_out_t.fps_mark_frames;
-
-        tkl_log_output("xuvc out: %u frames %ux%u %u bytes %u.%u fps\r\n",
-                (unsigned int)s_uvc_out_t.frames,
-                (unsigned int)buf->width,
-                (unsigned int)buf->height,
-                (unsigned int)buf->size,
-                (unsigned int)((ms != 0U) ? (f * 1000U / ms) : 0U),
-                (unsigned int)((ms != 0U) ? ((f * 10000U / ms) % 10U) : 0U));
+    s_uvc_pump_stop = true;
+    while (s_uvc_pump_task != NULL && waited < UVC_PUMP_STOP_WAIT_MS) {
+        tkl_system_sleep(20U);
+        waited += 20U;
     }
 }
 
-static void test_uvc_out_state_cb(BOOL_T connected, VOID *arg)
+static void test_uvc_out_state_cb(BOOL_T connected, VOID_T *arg)
 {
     (void)arg;
     tkl_log_output("xuvc out: device %s\r\n", (connected == TRUE) ? "connected" : "gone");
@@ -306,14 +345,14 @@ static void test_uvc_out_state_cb(BOOL_T connected, VOID *arg)
  */
 static OPERATE_RET test_uvc_osd_submit(CONST CHAR_T *text, VOID_T *arg)
 {
-    TUYA_UVC_OSD_CHANNEL_E chn = (TUYA_UVC_OSD_CHANNEL_E)(uintptr_t)arg;
+    TUYA_CAMERA_OUTPUT_TYPE_E type = (TUYA_CAMERA_OUTPUT_TYPE_E)(uintptr_t)arg;
     TUYA_OSD_T osd;
 
     test_osd_set_clock(text);
 
     os_memset(&osd, 0, sizeof(osd));
 
-    if (chn == TUYA_UVC_OSD_PIXEL) {
+    if (type == TUYA_CAMERA_OUTPUT_PIXEL) {
         osd.dst_x = TEST_OSD_CLOCK_DST_X;
         osd.dst_y = TEST_OSD_CLOCK_DST_Y;
     } else {
@@ -324,7 +363,7 @@ static OPERATE_RET test_uvc_osd_submit(CONST CHAR_T *text, VOID_T *arg)
     osd.rotate = 0U;
     osd.data = test_osd_clock_bitmap(&osd.w, &osd.h);
 
-    return tkl_uvc_set_osd(chn, &osd);
+    return tkl_uvc_set_osd(type, &osd);
 }
 
 /**
@@ -338,12 +377,12 @@ static OPERATE_RET test_uvc_osd_submit(CONST CHAR_T *text, VOID_T *arg)
  *
  * @return OPRT_OK on success. Others on error, please refer to tuya_error_code.h
  */
-static OPERATE_RET test_uvc_osd_clock_clear(TUYA_UVC_OSD_CHANNEL_E chn)
+static OPERATE_RET test_uvc_osd_clock_clear(TUYA_CAMERA_OUTPUT_TYPE_E type)
 {
     TUYA_OSD_T osd;
 
     os_memset(&osd, 0, sizeof(osd));
-    if (chn == TUYA_UVC_OSD_PIXEL) {
+    if (type == TUYA_CAMERA_OUTPUT_PIXEL) {
         osd.dst_x = TEST_OSD_CLOCK_DST_X;
         osd.dst_y = TEST_OSD_CLOCK_DST_Y;
     } else {
@@ -352,7 +391,7 @@ static OPERATE_RET test_uvc_osd_clock_clear(TUYA_UVC_OSD_CHANNEL_E chn)
     }
     osd.data = NULL;
 
-    return tkl_uvc_set_osd(chn, &osd);
+    return tkl_uvc_set_osd(type, &osd);
 }
 
 /**
@@ -370,25 +409,41 @@ static OPERATE_RET test_uvc_osd_clock_clear(TUYA_UVC_OSD_CHANNEL_E chn)
  *
  * @return OPRT_OK on success. Others on error, please refer to tuya_error_code.h
  */
-static OPERATE_RET test_uvc_osd_wifi(TUYA_UVC_OSD_CHANNEL_E chn, UINT8_T level, BOOL_T on)
+static OPERATE_RET test_uvc_osd_wifi(TUYA_CAMERA_OUTPUT_TYPE_E type, UINT8_T level, BOOL_T on)
 {
     TUYA_OSD_T osd;
+
+    /* vcenc DMA cannot reach flash XIP: the const rssi bitmaps live in rodata,
+     * so stage the selected one in RAM before handing it to the encoder. The
+     * stage lives in the media slab, not .bss - the app heap budget is tight. */
+    static UINT8_T *s_wifi_osd_ram;
 
     os_memset(&osd, 0, sizeof(osd));
 
     if (on == TRUE) {
-        osd.data = test_osd_wifi_bitmap(level);
+        if (s_wifi_osd_ram == NULL) {
+            s_wifi_osd_ram = tkl_media_buf_alloc(TKL_BUF_USE_PIXEL,
+                    TEST_OSD_WIFI_BITMAP_W * TEST_OSD_WIFI_BITMAP_H * 4U,
+                    TUYA_MEDIA_BUF_OWNER_OSD);
+            if (s_wifi_osd_ram == NULL) {
+                tkl_log_output("xuvc osd wifi: no slab for RAM stage\r\n");
+                return OPRT_MALLOC_FAILED;
+            }
+        }
+        os_memcpy(s_wifi_osd_ram, test_osd_wifi_bitmap(level),
+                  TEST_OSD_WIFI_BITMAP_W * TEST_OSD_WIFI_BITMAP_H * 4U);
+        osd.data = s_wifi_osd_ram;
         osd.w = TEST_OSD_WIFI_BITMAP_W;
         osd.h = TEST_OSD_WIFI_BITMAP_H;
 
-        if (chn == TUYA_UVC_OSD_PIXEL) {
+        if (type == TUYA_CAMERA_OUTPUT_PIXEL) {
             osd.dst_x = TEST_OSD_WIFI_DST_X;
             osd.dst_y = TEST_OSD_WIFI_DST_Y;
         } else {
             osd.dst_x = 2U;
             osd.dst_y = 72U;
         }
-    } else if (chn == TUYA_UVC_OSD_PIXEL) {
+    } else if (type == TUYA_CAMERA_OUTPUT_PIXEL) {
         osd.dst_x = TEST_OSD_WIFI_DST_X;
         osd.dst_y = TEST_OSD_WIFI_DST_Y;
     } else {
@@ -397,7 +452,7 @@ static OPERATE_RET test_uvc_osd_wifi(TUYA_UVC_OSD_CHANNEL_E chn, UINT8_T level, 
     }
 
     osd.rotate = 0U;
-    return tkl_uvc_set_osd(chn, &osd);
+    return tkl_uvc_set_osd(type, &osd);
 }
 
 static OPERATE_RET test_uvc_out_open(uint32_t kind,
@@ -425,33 +480,33 @@ static OPERATE_RET test_uvc_out_open(uint32_t kind,
 
     os_memset(&cfg, 0, sizeof(cfg));
     cfg.port = port;
-    cfg.width = width;
-    cfg.height = height;
-    cfg.fps = fps;
-    cfg.input_format = (uint32_t)TUYA_FRAME_FMT_JPEG;
-    cfg.output_kinds = kind;
-    cfg.state_cb = test_uvc_out_state_cb;
+    cfg.uvc_cfg.width = width;
+    cfg.uvc_cfg.height = height;
+    cfg.uvc_cfg.fps = fps;
+    cfg.uvc_cfg.format = TUYA_FRAME_FMT_JPEG;
+    cfg.connect_state_cb = test_uvc_out_state_cb;
 
-    if ((kind & (TUYA_UVC_OUTPUT_PIXEL | TUYA_UVC_OUTPUT_STREAM)) != 0U) {
+    if ((kind & (TUYA_CAMERA_OUTPUT_PIXEL | TUYA_CAMERA_OUTPUT_STREAM)) != 0U) {
         s_uvc_out_t.push = true;
-        cfg.pixel_cb = test_uvc_out_pixel_cb;
-        cfg.stream_cb = test_uvc_out_stream_cb;
+        cfg.pixel.enable = TRUE;
+        cfg.pixel.pixel_cb = test_uvc_out_pixel_cb;
+        cfg.stream.enable = ((kind & TUYA_CAMERA_OUTPUT_STREAM) != 0U) ? TRUE : FALSE;
+        cfg.stream.stream_cb = test_uvc_out_stream_cb;
         /* The panel is the target, so the display geometry is the panel's, not
          * the camera's - rotate 90 to match how xmipi opens it. */
         cfg.pixel.rotate = UVC_OUT_DISPLAY_ROTATE;
-        cfg.pixel.target_width = UVC_OUT_DISPLAY_W;
-        cfg.pixel.target_height = UVC_OUT_DISPLAY_H;
-        cfg.pixel.format = (uint32_t)TUYA_FRAME_FMT_ARGB8888;
-        cfg.encoder.gop = UVC_OUT_ENCODE_GOP;
-
-        /* Ask for the raw frame alongside the pipeline: FRAME may combine with
-         * PIXEL/STREAM, and frame_cb is the tee "xuvc mjpeg on/off" gates. */
-        cfg.output_kinds |= TUYA_UVC_OUTPUT_FRAME;
+        cfg.pixel.width = UVC_OUT_DISPLAY_W;
+        cfg.pixel.height = UVC_OUT_DISPLAY_H;
+        cfg.pixel.format = TUYA_FRAME_FMT_ARGB8888;
+        cfg.stream.gop = UVC_OUT_ENCODE_GOP;
     }
 
-    /* frame_cb in every configuration: the tee in pipeline modes, the whole
-     * delivery in the FRAME-only one. */
-    cfg.frame_cb = test_uvc_out_frame_cb;
+    /* FRAME runs in every configuration: the pump consumes it directly in the
+     * FRAME-only mode and serves the "xuvc mjpeg" tee in a PIXEL/STREAM one. */
+    cfg.frame.enable = TRUE;
+    cfg.frame.width = width;
+    cfg.frame.height = height;
+    cfg.frame.format = TUYA_FRAME_FMT_JPEG;
 
     ret = tkl_uvc_init(&cfg);
     if (ret != OPRT_OK) {
@@ -459,6 +514,12 @@ static OPERATE_RET test_uvc_out_open(uint32_t kind,
     }
 
     ret = tkl_uvc_start();
+    if (ret != OPRT_OK) {
+        (void)tkl_uvc_deinit();
+        return ret;
+    }
+
+    ret = test_uvc_pump_start();
     if (ret != OPRT_OK) {
         (void)tkl_uvc_deinit();
         return ret;
@@ -501,10 +562,10 @@ static void test_uvc_out_osd_clear_settle(void)
         return;
     }
 
-    (void)test_uvc_osd_clock_clear(TUYA_UVC_OSD_PIXEL);
-    (void)test_uvc_osd_wifi(TUYA_UVC_OSD_PIXEL, 0U, FALSE);
-    (void)test_uvc_osd_clock_clear(TUYA_UVC_OSD_STREAM);
-    (void)test_uvc_osd_wifi(TUYA_UVC_OSD_STREAM, 0U, FALSE);
+    (void)test_uvc_osd_clock_clear(TUYA_CAMERA_OUTPUT_PIXEL);
+    (void)test_uvc_osd_wifi(TUYA_CAMERA_OUTPUT_PIXEL, 0U, FALSE);
+    (void)test_uvc_osd_clock_clear(TUYA_CAMERA_OUTPUT_STREAM);
+    (void)test_uvc_osd_wifi(TUYA_CAMERA_OUTPUT_STREAM, 0U, FALSE);
 
     mark = s_uvc_out_t.display_frames;
     t = (uint32_t)tkl_system_get_millisecond();
@@ -524,10 +585,14 @@ static OPERATE_RET test_uvc_out_close(void)
         return OPRT_OK;
     }
 
-    /* Overlay refreshers first: their threads must stop before the pipeline
+    /* The pump first: it blocks inside tkl_uvc_get_frame(), which has to be
+     * out of the adapter before deinit() retires the frame queue it reads. */
+    test_uvc_pump_stop();
+
+    /* Overlay refreshers next: their threads must stop before the pipeline
      * they submit to goes away. */
-    test_overlay_clock_stop((UINT8_T)TUYA_UVC_OSD_PIXEL);
-    test_overlay_clock_stop((UINT8_T)TUYA_UVC_OSD_STREAM);
+    test_overlay_clock_stop(TUYA_CAMERA_OUTPUT_PIXEL);
+    test_overlay_clock_stop(TUYA_CAMERA_OUTPUT_STREAM);
     /* the clock task only tests stop_req once per refresh period, so parking it
      * costs up to TEST_OVERLAY_REFRESH_MS - report it rather than let it hide
      * inside "close felt slow" */
@@ -541,10 +606,10 @@ static OPERATE_RET test_uvc_out_close(void)
      * the pools - every callback is quiet when it returns. */
     ret = tkl_uvc_deinit();
 
-    /* Only here are all three feeders certainly quiet: frame_cb runs on the
-     * vendor capture thread, pixel_cb/stream_cb on the vendor worker threads -
-     * all inside the pipeline deinit() just took down. It frees the ring, so
-     * the recorder must not race a test_record_feed() still in flight. */
+    /* Only here are all the feeders certainly quiet: the pump was joined
+     * above, and pixel_cb/stream_cb run on vendor worker threads inside the
+     * pipeline deinit() just took down. It frees the ring, so the recorder
+     * must not race a test_record_feed() still in flight. */
     s_uvc_out_t.rec_kind = (uint8_t)UVC_REC_NONE;
     test_record_stop();
 
@@ -581,8 +646,8 @@ static OPERATE_RET test_uvc_out_close(void)
  *       JPEGs back to back, which ffmpeg reads as `-f mjpeg`.
  *
  * @note MJPEG in a processing-pipeline configuration keeps the raw input via
- *       frame_cb; that callback is the only place the device bitstream remains
- *       available after the decoder consumes it.
+ *       the frame pump's tee; that pump is the only place the device bitstream
+ *       remains available after the decoder consumes it.
  *
  * @return OPRT_OK once capture has started
  */
@@ -600,14 +665,15 @@ static OPERATE_RET test_uvc_record(uvc_rec_kind_t kind, uint32_t sec, const char
     }
 
     if (kind == UVC_REC_H264) {
-        if ((s_uvc_out_t.kind & TUYA_UVC_OUTPUT_STREAM) == 0U) {
+        if ((s_uvc_out_t.kind & TUYA_CAMERA_OUTPUT_STREAM) == 0U) {
             tkl_log_output("xuvc record: no h264 output; open with 'h264' or 'display+h264'\r\n");
             return OPRT_NOT_SUPPORTED;
         }
     }
-    /* MJPEG needs no guard: frame_cb carries the device bitstream in every
-     * mode - pipeline configurations request FRAME alongside PIXEL/STREAM at
-     * open(), the FRAME-only one lives entirely on frame_cb. */
+    /* MJPEG needs no guard: the frame pump drains the device bitstream in
+     * every mode - pipeline configurations enable FRAME alongside PIXEL/STREAM
+     * at open(), the FRAME-only one lives entirely on the pump. In a push mode
+     * record() turns the tee flag on so the pump routes frames here. */
 
     /* Same ring as H264. MJPEG runs ~951 KB/s and still peaks at ~95 KB of it:
      * the ring absorbs card stalls, not steady-state backlog. */
@@ -638,8 +704,8 @@ static void test_uvc_out_status_dump(void)
     if (s_uvc_out_t.push == true) {
         tkl_log_output("xuvc out: kind=%s display=%u h264=%u %llu bytes in %u ms, "
                 "mjpeg tee %u(%llu B)\r\n",
-                (s_uvc_out_t.kind == (TUYA_UVC_OUTPUT_PIXEL | TUYA_UVC_OUTPUT_STREAM)) ? "display+h264"
-                    : ((s_uvc_out_t.kind == TUYA_UVC_OUTPUT_PIXEL) ? "display" : "h264"),
+                (s_uvc_out_t.kind == (TUYA_CAMERA_OUTPUT_PIXEL | TUYA_CAMERA_OUTPUT_STREAM)) ? "display+h264"
+                    : ((s_uvc_out_t.kind == TUYA_CAMERA_OUTPUT_PIXEL) ? "display" : "h264"),
                 (unsigned int)s_uvc_out_t.display_frames,
                 (unsigned int)s_uvc_out_t.stream_frames,
                 (unsigned long long)s_uvc_out_t.stream_bytes,
@@ -650,8 +716,7 @@ static void test_uvc_out_status_dump(void)
         return;
     }
 
-    tkl_log_output("xuvc out: kind=%s frames=%u %ux%u last=%u bytes\r\n",
-            (s_uvc_out_t.kind == TUYA_UVC_OUTPUT_FRAME) ? "frame" : "mjpeg",
+    tkl_log_output("xuvc out: kind=frame frames=%u %ux%u last=%u bytes\r\n",
             (unsigned int)s_uvc_out_t.frames,
             (unsigned int)s_uvc_out_t.last_w,
             (unsigned int)s_uvc_out_t.last_h,
@@ -899,7 +964,7 @@ void cli_tuya_uvc_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char *
     if (argc < 2) {
         snprintf(pcWriteBuffer, xWriteBufferLen,
                  "Usage: xuvc <open mjpeg|frame|display|h264|display+h264 [w] [h] [fps] [port]|"
-                 "close|stop|start|reopen [n]|restart [n]|stats|mjpeg on|off|bitrate <bps>|idr|osd <display|encode> <time [off]|wifi <0..4|off>|clear>|"
+                 "close|stop|start|reopen [n]|restart [n]|stats|info|mjpeg on|off|bitrate <bps>|idr|osd <display|encode> <time [off]|wifi <0..4|off>|clear>|"
                  "record [h264|mjpeg] [sec] [file]|record stop>");
         return;
     }
@@ -907,18 +972,19 @@ void cli_tuya_uvc_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char *
     cmd = argv[1];
 
     if (os_strcmp(cmd, "open") == 0) {
-        uint32_t kind = TUYA_UVC_OUTPUT_FRAME;
+        uint32_t kind = TUYA_CAMERA_OUTPUT_FRAME;
 
         if (argc >= 3) {
-            if (os_strcmp(argv[2], "frame") == 0) {
-                kind = TUYA_UVC_OUTPUT_FRAME;
+            if (os_strcmp(argv[2], "frame") == 0 ||
+                os_strcmp(argv[2], "mjpeg") == 0) {
+                kind = TUYA_CAMERA_OUTPUT_FRAME;
             } else if (os_strcmp(argv[2], "display") == 0) {
-                kind = TUYA_UVC_OUTPUT_PIXEL;
+                kind = TUYA_CAMERA_OUTPUT_PIXEL;
             } else if (os_strcmp(argv[2], "h264") == 0) {
-                kind = TUYA_UVC_OUTPUT_STREAM;
+                kind = TUYA_CAMERA_OUTPUT_STREAM;
             } else if (os_strcmp(argv[2], "display+h264") == 0) {
-                kind = TUYA_UVC_OUTPUT_PIXEL | TUYA_UVC_OUTPUT_STREAM;
-            } else if (os_strcmp(argv[2], "mjpeg") != 0) {
+                kind = TUYA_CAMERA_OUTPUT_PIXEL | TUYA_CAMERA_OUTPUT_STREAM;
+            } else {
                 snprintf(pcWriteBuffer, xWriteBufferLen,
                          "Usage: xuvc open <mjpeg|frame|display|h264|display+h264> "
                          "[w] [h] [fps] [port]");
@@ -997,7 +1063,7 @@ void cli_tuya_uvc_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char *
         ret = test_uvc_pause(&ms);
         /* the reply buffer is ~136 bytes; anything longer is silently cut, so
          * the guidance goes out through the log and only the verdict here */
-        tkl_log_output("xuvc stop: device stays enumerated; set_encode/set_osd/"
+        tkl_log_output("xuvc stop: device stays enumerated; set_bitrate/set_osd/"
                        "must now return -23. Try "
                        "'xuvc osd display time', 'xuvc bitrate 800000', 'xuvc idr'\r\n");
         snprintf(pcWriteBuffer, xWriteBufferLen, "xuvc stop %s (%d), %u ms\r\n",
@@ -1034,7 +1100,7 @@ void cli_tuya_uvc_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char *
         }
 
         /* h264 when the encoder is up, else the device bitstream */
-        rk = ((s_uvc_out_t.kind & TUYA_UVC_OUTPUT_STREAM) != 0U) ? UVC_REC_H264 : UVC_REC_MJPEG;
+        rk = ((s_uvc_out_t.kind & TUYA_CAMERA_OUTPUT_STREAM) != 0U) ? UVC_REC_H264 : UVC_REC_MJPEG;
         if (argc > 2 && os_strcmp(argv[2], "h264") == 0) {
             rk = UVC_REC_H264;
             ai = 3;
@@ -1069,30 +1135,24 @@ void cli_tuya_uvc_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char *
             return;
         }
 
-        /* let frame_cb keep the device bitstream, alongside display / h264 */
+        /* let the pump keep the device bitstream, alongside display / h264 */
         s_uvc_out_t.tee_mjpeg = on;
         snprintf(pcWriteBuffer, xWriteBufferLen,
                  "xuvc mjpeg tee %s (takes effect immediately, push modes only)\r\n",
                  s_uvc_out_t.tee_mjpeg ? "on" : "off");
 
     } else if (os_strcmp(cmd, "bitrate") == 0) {
-        TUYA_MEDIA_ENC_CTRL_T ctrl;
+        UINT32_T bitrate = (argc >= 3) ? (uint32_t)os_strtoul(argv[2], NULL, 10) : 1000000U;
 
-        os_memset(&ctrl, 0, sizeof(ctrl));
-        ctrl.bitrate = (argc >= 3) ? (uint32_t)os_strtoul(argv[2], NULL, 10) : 1000000U;
-        ret = tkl_uvc_set_encode(&ctrl);
+        ret = tkl_uvc_set_bitrate(bitrate);
         snprintf(pcWriteBuffer, xWriteBufferLen,
                  "xuvc bitrate %u %s (%d)\r\n",
-                 (unsigned int)ctrl.bitrate,
+                 (unsigned int)bitrate,
                  (ret == OPRT_OK) ? "ok" : "failed", ret);
 
     } else if (os_strcmp(cmd, "idr") == 0) {
-        TUYA_MEDIA_ENC_CTRL_T ctrl;
-
-        os_memset(&ctrl, 0, sizeof(ctrl));
-        ctrl.force_idr = TRUE;
         s_uvc_idr_trace = 5U;   /* arm before the call, so a fast IDR is not missed */
-        ret = tkl_uvc_set_encode(&ctrl);
+        ret = tkl_uvc_force_idr();
         if (ret != OPRT_OK) {
             /* nothing was requested, so disarm: left armed it would fire on the
              * next "xuvc start" and print an I frame that is just the encoder's
@@ -1103,7 +1163,7 @@ void cli_tuya_uvc_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char *
                  "xuvc idr %s (%d)\r\n", (ret == OPRT_OK) ? "ok" : "failed", ret);
 
     } else if (os_strcmp(cmd, "osd") == 0) {
-        TUYA_UVC_OSD_CHANNEL_E chn;
+        TUYA_CAMERA_OUTPUT_TYPE_E type;
         const char *act = (argc > 3) ? argv[3] : NULL;
         const char *sub = (argc > 4) ? argv[4] : NULL;
 
@@ -1112,29 +1172,29 @@ void cli_tuya_uvc_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char *
             return;
         }
 
-        chn = (os_strcmp(argv[2], "encode") == 0) ? TUYA_UVC_OSD_STREAM
-                                                  : TUYA_UVC_OSD_PIXEL;
+        type = (os_strcmp(argv[2], "encode") == 0) ? TUYA_CAMERA_OUTPUT_STREAM
+                                                   : TUYA_CAMERA_OUTPUT_PIXEL;
 
         if (os_strcmp(act, "clear") == 0) {
-            test_overlay_clock_stop((UINT8_T)chn);
-            ret = test_uvc_osd_clock_clear(chn);
+            test_overlay_clock_stop(type);
+            ret = test_uvc_osd_clock_clear(type);
             /* the icon lives in its own slot and would survive otherwise */
-            (void)test_uvc_osd_wifi(chn, 0U, FALSE);
+            (void)test_uvc_osd_wifi(type, 0U, FALSE);
         } else if (os_strcmp(act, "time") == 0) {
             if (sub != NULL && os_strcmp(sub, "off") == 0) {
-                test_overlay_clock_stop((UINT8_T)chn);
-                ret = test_uvc_osd_clock_clear(chn);
+                test_overlay_clock_stop(type);
+                ret = test_uvc_osd_clock_clear(type);
             } else {
-                ret = test_overlay_clock_start((UINT8_T)chn, test_uvc_osd_submit,
-                                               (VOID_T *)(uintptr_t)chn);
+                ret = test_overlay_clock_start(type, test_uvc_osd_submit,
+                                               (VOID_T *)(uintptr_t)type);
             }
         } else if (os_strcmp(act, "wifi") == 0) {
             if (sub != NULL && os_strcmp(sub, "off") == 0) {
-                ret = test_uvc_osd_wifi(chn, 0U, FALSE);
+                ret = test_uvc_osd_wifi(type, 0U, FALSE);
             } else {
                 UINT8_T level = (sub != NULL) ? (UINT8_T)os_strtoul(sub, NULL, 10) : 4U;
 
-                ret = test_uvc_osd_wifi(chn, level, TRUE);
+                ret = test_uvc_osd_wifi(type, level, TRUE);
             }
         } else {
             snprintf(pcWriteBuffer, xWriteBufferLen, "Usage: %s\r\n", TEST_UVC_OSD_USAGE);
@@ -1145,6 +1205,44 @@ void cli_tuya_uvc_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char *
                  argv[2], act, (sub != NULL) ? " " : "", (sub != NULL) ? sub : "",
                  (ret == OPRT_OK) ? "ok" : "failed", ret);
 
+    } else if (os_strcmp(cmd, "info") == 0) {
+        /* Enumeration snapshot, init() not required: one power-on probe of what
+         * is plugged into the port right now. */
+        TUYA_UVC_INFO_T info;
+
+        os_memset(&info, 0, sizeof(info));
+        ret = tkl_uvc_get_info(&info);
+        if (ret != OPRT_OK) {
+            snprintf(pcWriteBuffer, xWriteBufferLen,
+                     "xuvc info: no UVC device ready (%d)\r\n", ret);
+        } else {
+            UINT8_T fi;
+
+            tkl_log_output("xuvc info: vid=0x%04x pid=0x%04x usb=0x%04x dev=0x%04x "
+                           "speed=%u bulk=%u mps=%u bcd_uvc=0x%04x\r\n",
+                    (unsigned int)info.vid, (unsigned int)info.pid,
+                    (unsigned int)info.bcd_usb, (unsigned int)info.bcd_device,
+                    (unsigned int)info.speed, (unsigned int)info.is_bulk,
+                    (unsigned int)info.ep_mps, (unsigned int)info.bcd_uvc);
+            tkl_log_output("xuvc info: %s %s s/n %s, intf c=%u d=%u\r\n",
+                    info.manufacturer, info.product, info.serial,
+                    (unsigned int)info.ctrl_intf, (unsigned int)info.data_intf);
+            for (fi = 0U; fi < info.format_num; fi++) {
+                UINT8_T fr;
+
+                tkl_log_output("xuvc info: format %u: %s, %u frame size(s)\r\n",
+                        (unsigned int)fi,
+                        (info.formats[fi].format == TUYA_FRAME_FMT_H264) ? "h264" : "mjpeg",
+                        (unsigned int)info.formats[fi].frame_num);
+                for (fr = 0U; fr < info.formats[fi].frame_num; fr++) {
+                    tkl_log_output("xuvc info:   %ux%u\r\n",
+                            (unsigned int)info.formats[fi].frames[fr].width,
+                            (unsigned int)info.formats[fi].frames[fr].height);
+                }
+            }
+            snprintf(pcWriteBuffer, xWriteBufferLen, "xuvc info ok, see logs\r\n");
+        }
+
     } else if (os_strcmp(cmd, "stats") == 0) {
         test_uvc_out_status_dump();
         snprintf(pcWriteBuffer, xWriteBufferLen,
@@ -1152,7 +1250,7 @@ void cli_tuya_uvc_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char *
     } else {
         snprintf(pcWriteBuffer, xWriteBufferLen,
                  "Usage: xuvc <open mjpeg|frame|display|h264|display+h264 [w] [h] [fps] [port]|"
-                 "close|stop|start|reopen [n]|restart [n]|stats|mjpeg on|off|bitrate <bps>|idr|osd <display|encode> <time [off]|wifi <0..4|off>|clear>|"
+                 "close|stop|start|reopen [n]|restart [n]|stats|info|mjpeg on|off|bitrate <bps>|idr|osd <display|encode> <time [off]|wifi <0..4|off>|clear>|"
                  "record [h264|mjpeg] [sec] [file]|record stop>");
     }
 }

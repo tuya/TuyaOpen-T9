@@ -20,7 +20,7 @@ typedef struct {
     UINT8_T *buffer;
     /** Release function for @ref buffer; travels with the frame, so frames from
      *  different sources may be interleaved on the same panel. */
-    void (*free_cb)(UINT8_T *frame_buff);
+    void (*free_cb)(void *frame_buff);
 } tkl_mipi_dsi_flush_frame_t;
 
 OPERATE_RET tkl_mipi_dsi_set_input_mode(BOOL_T decompress);
