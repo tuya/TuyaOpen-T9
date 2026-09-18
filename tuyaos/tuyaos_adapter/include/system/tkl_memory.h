@@ -148,7 +148,7 @@ INT_T tkl_system_hsram_get_free_heap_size(VOID_T);
 *
 * @param[in] size: memory size
 *
-* @note ENABLE_EXT_RAM neeed define in tuyaos_kernel.config.
+* @note ENABLE_EXT_RAM needs to be defined in boards/T9/TKL_Kconfig.
 *
 * @return the memory address malloced
 */
@@ -159,7 +159,7 @@ VOID_T *tkl_system_psram_malloc(SIZE_T size);
 *
 * @param[in] ptr: memory point
 *
-* @note ENABLE_EXT_RAM neeed define in tuyaos_kernel.config.
+* @note ENABLE_EXT_RAM needs to be defined in boards/T9/TKL_Kconfig.
 *
 * @return VOID_T
 */
