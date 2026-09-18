@@ -195,8 +195,11 @@ def check_toolchain_package(toolchain_root, package_info) -> bool:
 def unzip_toolchain_package(toolchain_root, package_info) -> bool:
     name = package_info["name"]
     package = os.path.join(toolchain_root, name)
+    dest = toolchain_root
+    if name.endswith(".zip"):
+        dest = os.path.join(toolchain_root, package_info["folder"])
     print(f"[Extracting toolchain package]: {package}")
-    return extract_archive(package, toolchain_root)
+    return extract_archive(package, dest)
 
 
 def cleanup_toolchain_cache(toolchain_root, package_info, remove_folder=False) -> bool:

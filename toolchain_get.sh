@@ -201,7 +201,8 @@ extract_toolchain_package() {
             return 1
         }
     elif [ "$FILE_EXTENSION" = "zip" ]; then
-        unzip "$TOOLCHAIN_FILE" || {
+        mkdir -p "$TOOLCHAIN_NAME"
+        unzip -o "$TOOLCHAIN_FILE" -d "$TOOLCHAIN_NAME" || {
             echo "Toolchain extract failed"
             cleanup_toolchain_artifacts
             return 1
