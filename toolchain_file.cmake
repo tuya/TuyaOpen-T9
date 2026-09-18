@@ -1,3 +1,10 @@
+# CMAKE_HOST_SYSTEM_PROCESSOR is uname -m; map to arm64 like get_system_processor.py.
+if(NOT OPEN_SYSTEM_PROCESSOR)
+    if(CMAKE_HOST_SYSTEM_PROCESSOR MATCHES "aarch64|ARM64|arm64")
+        set(OPEN_SYSTEM_PROCESSOR "arm64")
+    endif()
+endif()
+
 set(TOOLCHAIN_DIR "${PLATFORM_PATH}/../tools/arm-gnu-toolchain-14.3.rel1-x86_64-arm-none-eabi")
 IF(APPLE)
     IF(OPEN_SYSTEM_PROCESSOR MATCHES "arm64")
