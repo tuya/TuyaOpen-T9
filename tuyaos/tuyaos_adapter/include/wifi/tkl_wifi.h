@@ -193,6 +193,22 @@ typedef struct {
     WF_STA_INFO_S  *array;
     UINT_T          num;
 } WF_STA_LIST_S;
+
+/* tuya sdk definition of wifi band */
+typedef enum {
+    WF_BAND_ALL = 0,    ///< both 2.4GHz and 5GHz band (all supported channels, default)
+    WF_BAND_2_4G,       ///< only 2.4GHz band
+    WF_BAND_5G,         ///< only 5GHz band
+    WF_BAND_MAX,        ///< invalid band
+} WF_BAND_E;
+
+/* tuya sdk definition of unified wifi scan parameter */
+typedef struct {
+    CONST SCHAR_T *ssid;    ///< the specific ssid, NULL means scan all ap
+    WF_BAND_E      band;    ///< the band to scan, see WF_BAND_E
+    UCHAR_T        channel; ///< the specific channel, 0 means scan all channels in the band scope
+} WF_SCAN_PARAM_T;
+
 /**
  * @brief callback function: SNIFFER_CALLBACK
  *        when wifi sniffers package from air, notify tuyaos
@@ -244,19 +260,22 @@ OPERATE_RET tkl_wifi_init(WIFI_EVENT_CB cb);
 OPERATE_RET tkl_wifi_scan_ap(CONST SCHAR_T *ssid, AP_IF_S **ap_ary, UINT_T *num);
 
 /**
- * @brief Scan current environment and obtain the ap infos in specified channel
+ * @brief Scan current environment by a unified scan parameter, supports scan all /
+ *        single band (2.4GHz or 5GHz only) / single channel / specific ssid
  *
- * @param[in]       ssid        the specific ssid, null means scan all ap
- * @param[in]       channel     the specified channel, 0 means scan all channel
+ * @param[in]       param       the scan parameter, see WF_SCAN_PARAM_T
  * @param[out]      ap_ary      current ap info array, adapter allocates, caller frees via tkl_wifi_release_ap
- * @param[out]      num         the num of ar_ary
+ * @param[out]      num         the num of ap_ary
  *
  * @return OPRT_OK on success. Others on error, please refer to tuya_error_code.h
  *
- * @note if ssid == NULL means scan all ap, otherwise means scan the specific ssid
- * @note if channel == 0 means scan all channel, otherwise means scan the specified channel
+ * @note scanning scope priority: if channel != 0 only scan that channel and ignore band;
+ *       otherwise scan all channels of the band scope (WF_BAND_2_4G / WF_BAND_5G scan the
+ *       whole band, WF_BAND_ALL scans all supported channels).
+ * @note if the requested band or channel is not supported by current chip/country code,
+ *       adapter should return OPRT_NOT_SUPPORTED, please refer to tuya_error_code.h
  */
-OPERATE_RET tkl_wifi_scan_ap_channel(CONST SCHAR_T *ssid, CONST UCHAR_T channel, AP_IF_S **ap_ary, UINT_T *num);
+OPERATE_RET tkl_wifi_scan_ap_ex(CONST WF_SCAN_PARAM_T *param, AP_IF_S **ap_ary, UINT_T *num);
 
 /**
  * @brief release the memory malloced in <tkl_wifi_ap_scan>

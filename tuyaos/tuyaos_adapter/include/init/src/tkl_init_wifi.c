@@ -31,7 +31,7 @@ CONST TKL_WIFI_DESC_T TKL_WIFI = {
     .ioctl                          = tkl_wifi_ioctl,
 #ifndef TUYA_HOSTAPD_SUPPORT
     .scan_ap                        = tkl_wifi_scan_ap,
-    .scan_ap_channel                = tkl_wifi_scan_ap_channel,
+    .scan_ap_ex                     = tkl_wifi_scan_ap_ex,
     .start_ap                       = tkl_wifi_start_ap,
     .stop_ap                        = tkl_wifi_stop_ap,
     .release_ap                     = tkl_wifi_release_ap,

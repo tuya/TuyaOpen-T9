@@ -256,6 +256,7 @@ static void wifi_test_usage(void)
     bk_printf("xwifi help\r\n");
     bk_printf("xwifi init\r\n");
     bk_printf("xwifi scan [ssid]\r\n");
+    bk_printf("xwifi scanex <ssid|-> <all|2g|5g> [channel]\r\n");
     bk_printf("xwifi connect <ssid> [passwd]\r\n");
     bk_printf("xwifi connectburst <ssid> <passwd|-> <count> [interval_ms] [timeout_ms]\r\n");
     bk_printf("xwifi wait [timeout_ms]\r\n");
@@ -399,6 +400,72 @@ static void wifi_test_scan(const char *ssid)
     }
 
     bk_printf("[xwifi] scan ok num=%u\r\n", (unsigned int)num);
+    for (UINT_T i = 0; i < num; i++) {
+        AP_IF_S *ap = (AP_IF_S *)((uint8_t *)aps + (i * sizeof(AP_IF_S)));
+
+        bk_printf("[%u] ssid=%s rssi=%d chan=%u sec=%u bssid=%02x:%02x:%02x:%02x:%02x:%02x\r\n",
+                  (unsigned int)i,
+                  ap->ssid,
+                  ap->rssi,
+                  (unsigned int)ap->channel,
+                  (unsigned int)ap->security,
+                  ap->bssid[0], ap->bssid[1], ap->bssid[2],
+                  ap->bssid[3], ap->bssid[4], ap->bssid[5]);
+    }
+
+    tkl_wifi_release_ap(aps);
+}
+
+/**
+ * @brief Exercise tkl_wifi_scan_ap_ex with band / channel / ssid scope.
+ *
+ * Usage: xwifi scanex <ssid|-> <all|2g|5g> [channel]
+ *   - "-" means NULL ssid (scan all APs under the band/channel scope)
+ *   - band: all / 2g / 5g, maps to WF_BAND_ALL / WF_BAND_2_4G / WF_BAND_5G;
+ *     T9 does not support 5G scan, band=5g returns OPRT_NOT_SUPPORTED (ret=-4)
+ *   - channel: 0 or omitted means all channels in the band scope; the
+ *     channel is passed to firmware as-is (firmware owns channel validity,
+ *     an unsupported channel fails after the scan wait times out)
+ */
+static void wifi_test_scan_ex(const char *ssid, const char *band, const char *chan)
+{
+    WF_SCAN_PARAM_T param;
+    AP_IF_S *aps = NULL;
+    UINT_T num = 0;
+    uint32_t channel = 0;
+    OPERATE_RET ret;
+
+    memset(&param, 0, sizeof(param));
+    param.ssid = (CONST SCHAR_T *)wifi_test_null_if_dash(ssid);
+    param.band = WF_BAND_ALL;
+
+    if ((band == NULL) || (strcmp(band, "all") == 0)) {
+        param.band = WF_BAND_ALL;
+    } else if (strcmp(band, "2g") == 0) {
+        param.band = WF_BAND_2_4G;
+    } else if (strcmp(band, "5g") == 0) {
+        param.band = WF_BAND_5G;
+    } else {
+        bk_printf("[xwifi] scanex invalid band: %s (all|2g|5g)\r\n", band);
+        return;
+    }
+
+    if ((chan != NULL) && (wifi_test_parse_u32(chan, &channel) != 0)) {
+        bk_printf("[xwifi] invalid channel: %s\r\n", chan);
+        return;
+    }
+    param.channel = (UCHAR_T)channel;
+
+    ret = tkl_wifi_scan_ap_ex(&param, &aps, &num);
+    if (ret != OPRT_OK) {
+        bk_printf("[xwifi] scanex fail ret=%d band=%d chan=%u ssid=%s\r\n",
+                  ret, param.band, (unsigned int)param.channel,
+                  (param.ssid != NULL) ? param.ssid : "<all>");
+        return;
+    }
+
+    bk_printf("[xwifi] scanex ok num=%u band=%d chan=%u\r\n",
+              (unsigned int)num, param.band, (unsigned int)param.channel);
     for (UINT_T i = 0; i < num; i++) {
         AP_IF_S *ap = (AP_IF_S *)((uint8_t *)aps + (i * sizeof(AP_IF_S)));
 
@@ -910,6 +977,11 @@ void cli_wifi_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **arg
 
     if (strcmp(argv[1], "scan") == 0) {
         wifi_test_scan(argv[2]);
+        return;
+    }
+
+    if (strcmp(argv[1], "scanex") == 0) {
+        wifi_test_scan_ex(argv[2], argv[3], argv[4]);
         return;
     }
 

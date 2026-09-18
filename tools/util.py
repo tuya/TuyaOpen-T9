@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # coding=utf-8
 
+import datetime
 import os
 import platform
 import shutil
@@ -9,7 +10,35 @@ import tarfile
 import zipfile
 
 
+# Timezone fallback cache only. OPEN_COUNTRY_CODE is read on every get.
+COUNTRY_CODE = ""
+
 SYSTEM_NAME = ""
+
+
+def set_country_code():
+    global COUNTRY_CODE
+    if COUNTRY_CODE:
+        return COUNTRY_CODE
+
+    try:
+        offset = datetime.datetime.now().astimezone().utcoffset()
+        if offset is not None and int(offset.total_seconds()) == 8 * 3600:
+            COUNTRY_CODE = "China"
+        else:
+            COUNTRY_CODE = "Other"
+    except Exception as e:
+        print(f"country code error: {e}")
+        COUNTRY_CODE = "Other"
+
+    return COUNTRY_CODE
+
+
+def get_country_code():
+    env = os.environ.get("OPEN_COUNTRY_CODE", "").strip()
+    if env:
+        return env
+    return set_country_code()
 
 
 def set_system_name():
@@ -30,6 +59,33 @@ def get_system_name():
     if len(SYSTEM_NAME):
         return SYSTEM_NAME
     return set_system_name()
+
+
+def rm_rf(file_path):
+    if os.path.isfile(file_path):
+        os.remove(file_path)
+    elif os.path.isdir(file_path):
+        shutil.rmtree(file_path)
+    return True
+
+
+def calc_sha256(file_path: str) -> str:
+    sha256_hash = hashlib.sha256()
+
+    try:
+        with open(file_path, "rb") as f:
+            for byte_block in iter(lambda: f.read(4096), b""):
+                sha256_hash.update(byte_block)
+        return sha256_hash.hexdigest()
+    except FileNotFoundError:
+        print(f"Error: Not found {file_path}")
+        return ""
+    except PermissionError:
+        print(f"Error: Permission not support {file_path}.")
+        return ""
+    except Exception as e:
+        print(f"Exception: {str(e)}")
+        return ""
 
 
 def copy_file(source, target, force=True) -> bool:

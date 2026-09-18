@@ -11,9 +11,9 @@ import shutil
 from tools.util import (
     need_settarget, record_target, do_subprocess, get_system_name
 )
+from tools.download_toolchain import get_toolchain_package_info
 
 
-TOOLCHAIN_FOLDER = "arm-gnu-toolchain-14.3.rel1-x86_64-arm-none-eabi"
 TARGET = "bk7259"
 
 
@@ -145,7 +145,13 @@ def main():
     if not len(param_data):
         sys.exit(1)
 
-    toolchain_folder_path = os.path.join(root, "toolchain", TOOLCHAIN_FOLDER)
+    platform_root = os.path.abspath(os.path.join(root, ".."))
+    toolchain_root = os.path.join(platform_root, "tools")
+    toolchain_package_info = get_toolchain_package_info()
+    if not toolchain_package_info:
+        sys.exit(1)
+    toolchain_folder = toolchain_package_info["folder"]
+    toolchain_folder_path = os.path.join(toolchain_root, toolchain_folder)
 
     bash_path = ""
     if "windows" == get_system_name():

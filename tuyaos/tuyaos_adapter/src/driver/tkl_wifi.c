@@ -881,48 +881,51 @@ OPERATE_RET tkl_wifi_init(WIFI_EVENT_CB cb)
 }
 
 /**
+ * @brief Test whether a Beken scan entry passes the optional SSID filter.
+ * @param[in] ssid_filter optional exact-match SSID, NULL accepts everything
+ * @param[in] bk_ap Beken scan entry
+ * @return TRUE if the entry passes the filter
+ */
+STATIC BOOL_T __wifi_scan_ap_match(CONST SCHAR_T *ssid_filter, CONST wifi_scan_ap_info_t *bk_ap)
+{
+    UINT_T filter_len = 0;
+
+    if (ssid_filter == NULL) {
+        return TRUE;
+    }
+
+    filter_len = __wifi_strnlen(ssid_filter, WIFI_SSID_LEN + 1);
+    if (filter_len != __wifi_strnlen((CONST CHAR_T *)bk_ap->ssid, WIFI_SSID_STR_LEN)) {
+        return FALSE;
+    }
+
+    return (memcmp(ssid_filter, bk_ap->ssid, filter_len) == 0) ? TRUE : FALSE;
+}
+
+/**
  * @brief Trigger a blocking scan and copy the results into Tuya AP entries.
- * @param[in] ssid optional scan SSID
- * @param[out] ap_ary scan result array
+ * @param[in] scan_cfg Beken scan configuration, NULL scans all channels
+ * @param[in] ssid_filter optional exact-match SSID applied to the results
+ * @param[out] ap_ary scan result array, freed by tkl_wifi_release_ap()
  * @param[out] num result count
  * @return OPRT_OK on success, error code on failure
  */
-OPERATE_RET tkl_wifi_scan_ap(CONST SCHAR_T *ssid, AP_IF_S **ap_ary, UINT_T *num)
+STATIC OPERATE_RET __wifi_scan_blocking(CONST wifi_scan_config_t *scan_cfg, CONST SCHAR_T *ssid_filter, AP_IF_S **ap_ary, UINT_T *num)
 {
-    wifi_scan_config_t scan_cfg;
     wifi_scan_result_t scan_result;
     AP_IF_S *ap_list = NULL;
     UINT_T wait_ms = 0;
+    UINT_T match_num = 0;
+    UINT_T copy_index = 0;
     bk_err_t bk_ret = BK_OK;
     INT_T index = 0;
 
-    if ((ap_ary == NULL) || (num == NULL)) {
-        bk_printf("scan invalid param ap_ary=%d num=%d\r\n", ap_ary != NULL, num != NULL);
-        return OPRT_INVALID_PARM;
-    }
-
-    if (s_wifi.inited == FALSE) {
-        bk_printf("scan rejected: wifi not init\r\n");
-        return OPRT_RESOURCE_NOT_READY;
-    }
-
     *ap_ary = NULL;
     *num = 0;
-    memset(&scan_cfg, 0, sizeof(scan_cfg));
     memset(&scan_result, 0, sizeof(scan_result));
 
-    if (ssid != NULL) {
-        if (__wifi_strnlen(ssid, WIFI_SSID_LEN + 1) > WIFI_SSID_LEN) {
-            bk_printf("scan invalid ssid length ssid=%s\r\n", ssid);
-            return OPRT_INVALID_PARM;
-        }
-        __wifi_copy_str(scan_cfg.ssid, sizeof(scan_cfg.ssid), ssid);
-    }
-
-    bk_printf("scan start ssid=%s\r\n", (ssid != NULL) ? ssid : "<all>");
-
     s_wifi.scan_done = FALSE;
-    bk_ret = bk_wifi_scan_start((ssid != NULL) ? &scan_cfg : NULL);
+    bk_ret = bk_wifi_scan_start(scan_cfg);
     if (bk_ret != BK_OK) {
         bk_printf("scan start fail bk_ret=%d\r\n", bk_ret);
         return __wifi_map_ret(bk_ret, OPRT_OS_ADAPTER_AP_SCAN_FAILED);
@@ -951,20 +954,35 @@ OPERATE_RET tkl_wifi_scan_ap(CONST SCHAR_T *ssid, AP_IF_S **ap_ary, UINT_T *num)
         return OPRT_OS_ADAPTER_AP_NOT_FOUND;
     }
 
-    bk_printf("scan result ap_num=%d\r\n", scan_result.ap_num);
+    for (index = 0; index < scan_result.ap_num; index++) {
+        if (__wifi_scan_ap_match(ssid_filter, &scan_result.aps[index]) == TRUE) {
+            match_num++;
+        }
+    }
 
-    ap_list = os_malloc((UINT_T)scan_result.ap_num * TKL_WIFI_AP_ENTRY_SIZE);
+    if (match_num == 0) {
+        bk_printf("scan result filtered empty raw_num=%d\r\n", scan_result.ap_num);
+        bk_wifi_scan_free_result(&scan_result);
+        return OPRT_OS_ADAPTER_AP_NOT_FOUND;
+    }
+
+    ap_list = os_malloc((UINT_T)match_num * TKL_WIFI_AP_ENTRY_SIZE);
     if (ap_list == NULL) {
-        bk_printf("scan malloc fail ap_num=%d\r\n", scan_result.ap_num);
+        bk_printf("scan malloc fail match_num=%u\r\n", (unsigned int)match_num);
         bk_wifi_scan_free_result(&scan_result);
         return OPRT_MALLOC_FAILED;
     }
 
-    memset(ap_list, 0, (UINT_T)scan_result.ap_num * TKL_WIFI_AP_ENTRY_SIZE);
+    memset(ap_list, 0, (UINT_T)match_num * TKL_WIFI_AP_ENTRY_SIZE);
     for (index = 0; index < scan_result.ap_num; index++) {
-        AP_IF_S *ap = (AP_IF_S *)((UINT8_T *)ap_list + ((UINT_T)index * TKL_WIFI_AP_ENTRY_SIZE));
+        AP_IF_S *ap = NULL;
         wifi_scan_ap_info_t *bk_ap = &scan_result.aps[index];
 
+        if (__wifi_scan_ap_match(ssid_filter, bk_ap) != TRUE) {
+            continue;
+        }
+
+        ap = (AP_IF_S *)((UINT8_T *)ap_list + (copy_index * TKL_WIFI_AP_ENTRY_SIZE));
         ap->channel = bk_ap->channel;
         ap->rssi = (SCHAR_T)bk_ap->rssi;
         memcpy(ap->bssid, bk_ap->bssid, sizeof(ap->bssid));
@@ -972,27 +990,105 @@ OPERATE_RET tkl_wifi_scan_ap(CONST SCHAR_T *ssid, AP_IF_S **ap_ary, UINT_T *num)
         ap->s_len = (UCHAR_T)__wifi_strnlen((CONST CHAR_T *)ap->ssid, WIFI_SSID_LEN);
         ap->security = (UCHAR_T)__wifi_auth_bk_to_tuya(bk_ap->security);
         ap->data_len = 0;
+        copy_index++;
     }
 
     bk_wifi_scan_free_result(&scan_result);
     *ap_ary = ap_list;
-    *num = (UINT_T)scan_result.ap_num;
-    bk_printf("scan done copied_num=%u\r\n", (unsigned int)*num);
+    *num = copy_index;
+    bk_printf("scan done copied_num=%u raw_num=%d\r\n", (unsigned int)*num, scan_result.ap_num);
     return OPRT_OK;
 }
 
 /**
- * @brief Scan APs on a specified channel.
- *
- * @param[in]       ssid        the specific ssid, NULL means scan all ap
- * @param[in]       channel     the specified channel, 0 means scan all channel
- * @param[out]      ap_ary      ap info array
- * @param[out]      num         the num of ap_ary
- * @return OPRT_NOT_SUPPORTED until a per-channel scan is wired to the chip SDK.
+ * @brief Trigger a blocking scan and copy the results into Tuya AP entries.
+ * @param[in] ssid optional scan SSID
+ * @param[out] ap_ary scan result array, freed by tkl_wifi_release_ap()
+ * @param[out] num result count
+ * @return OPRT_OK on success, error code on failure
  */
-OPERATE_RET tkl_wifi_scan_ap_channel(CONST SCHAR_T *ssid, CONST UCHAR_T channel, AP_IF_S **ap_ary, UINT_T *num)
+OPERATE_RET tkl_wifi_scan_ap(CONST SCHAR_T *ssid, AP_IF_S **ap_ary, UINT_T *num)
 {
-    return OPRT_NOT_SUPPORTED;
+    wifi_scan_config_t scan_cfg;
+
+    if ((ap_ary == NULL) || (num == NULL)) {
+        bk_printf("scan invalid param ap_ary=%d num=%d\r\n", ap_ary != NULL, num != NULL);
+        return OPRT_INVALID_PARM;
+    }
+
+    if (s_wifi.inited == FALSE) {
+        bk_printf("scan rejected: wifi not init\r\n");
+        return OPRT_RESOURCE_NOT_READY;
+    }
+
+    memset(&scan_cfg, 0, sizeof(scan_cfg));
+    if (ssid != NULL) {
+        if (__wifi_strnlen(ssid, WIFI_SSID_LEN + 1) > WIFI_SSID_LEN) {
+            bk_printf("scan invalid ssid length ssid=%s\r\n", ssid);
+            return OPRT_INVALID_PARM;
+        }
+        __wifi_copy_str(scan_cfg.ssid, sizeof(scan_cfg.ssid), ssid);
+    }
+
+    bk_printf("scan start ssid=%s\r\n", (ssid != NULL) ? ssid : "<all>");
+    return __wifi_scan_blocking((ssid != NULL) ? &scan_cfg : NULL, ssid, ap_ary, num);
+}
+
+/**
+ * @brief Scan APs by a unified scan parameter, supports band / channel / ssid scope.
+ * @param[in] param scan parameter, see WF_SCAN_PARAM_T
+ * @param[out] ap_ary scan result array, freed by tkl_wifi_release_ap()
+ * @param[out] num result count
+ * @return OPRT_OK on success, OPRT_NOT_SUPPORTED on WF_BAND_5G,
+ *         error code on failure (an unsupported channel fails via the
+ *         firmware: the scan never completes and the wait times out)
+ */
+OPERATE_RET tkl_wifi_scan_ap_ex(CONST WF_SCAN_PARAM_T *param, AP_IF_S **ap_ary, UINT_T *num)
+{
+    wifi_scan_config_t scan_cfg;
+    CONST CHAR_T *band_name = "all";
+
+    if ((param == NULL) || (ap_ary == NULL) || (num == NULL)) {
+        bk_printf("scan_ex invalid param param=%d ap_ary=%d num=%d\r\n",
+                  param != NULL, ap_ary != NULL, num != NULL);
+        return OPRT_INVALID_PARM;
+    }
+
+    if (s_wifi.inited == FALSE) {
+        bk_printf("scan_ex rejected: wifi not init\r\n");
+        return OPRT_RESOURCE_NOT_READY;
+    }
+
+    if (param->band == WF_BAND_5G) {
+        bk_printf("scan_ex unsupported band=5g\r\n");
+        return OPRT_NOT_SUPPORTED;
+    }
+
+    if ((param->band != WF_BAND_ALL) && (param->band != WF_BAND_2_4G)) {
+        bk_printf("scan_ex invalid band=%d\r\n", param->band);
+        return OPRT_INVALID_PARM;
+    }
+
+    memset(&scan_cfg, 0, sizeof(scan_cfg));
+    if (param->ssid != NULL) {
+        if (__wifi_strnlen(param->ssid, WIFI_SSID_LEN + 1) > WIFI_SSID_LEN) {
+            bk_printf("scan_ex invalid ssid length\r\n");
+            return OPRT_INVALID_PARM;
+        }
+        __wifi_copy_str(scan_cfg.ssid, sizeof(scan_cfg.ssid), param->ssid);
+    }
+
+    if (param->channel != 0) {
+        scan_cfg.chan_nb[0] = param->channel;
+        scan_cfg.chan_cnt = 1;
+        band_name = "chan";
+    }
+
+    bk_printf("scan_ex start ssid=%s band=%s chan=%u\r\n",
+              (param->ssid != NULL) ? param->ssid : "<all>",
+              band_name, param->channel);
+
+    return __wifi_scan_blocking(&scan_cfg, param->ssid, ap_ary, num);
 }
 
 /**

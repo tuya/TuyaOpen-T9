@@ -1,5 +1,5 @@
-export TUYA_TOOLCHAIN_ZIP=../toolchain/arm-gnu-toolchain-14.3.rel1-x86_64-arm-none-eabi.tar
-export TUYA_TOOLCHAIN_PRE=../toolchain/arm-gnu-toolchain-14.3.rel1-x86_64-arm-none-eabi/bin/arm-none-eabi-
+export TUYA_TOOLCHAIN_ZIP=../../tools/arm-gnu-toolchain-14.3.rel1-x86_64-arm-none-eabi.tar.xz
+export TUYA_TOOLCHAIN_PRE=../../tools/arm-gnu-toolchain-14.3.rel1-x86_64-arm-none-eabi/bin/arm-none-eabi-
 
 export TUYA_APPS_BUILD_PATH=../t9_os/
 export TUYA_APPS_BUILD_CMD=build.sh

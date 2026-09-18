@@ -50,7 +50,7 @@ typedef struct {
 #endif
     OPERATE_RET (*set_lp_mode)                  (CONST BOOL_T en, CONST UCHAR_T dtim);
     BOOL_T      (*set_rf_calibrated)            (VOID_T);
-    OPERATE_RET (*scan_ap_channel)              (CONST SCHAR_T *ssid, CONST UCHAR_T channel, AP_IF_S **ap_ary, UINT_T *num);
+    OPERATE_RET (*scan_ap_ex)                   (CONST WF_SCAN_PARAM_T *param, AP_IF_S **ap_ary, UINT_T *num);
     OPERATE_RET (*station_fast_connect)         (CONST FAST_WF_CONNECTED_AP_INFO_T *fast_ap_info);
     OPERATE_RET (*station_connect)              (CONST SCHAR_T *ssid, CONST SCHAR_T *passwd);
     OPERATE_RET (*station_disconnect)           (VOID_T);
