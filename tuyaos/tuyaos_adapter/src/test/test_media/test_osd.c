@@ -16,15 +16,21 @@
 #define TEST_OSD_BPP                 4U
 #define TEST_OSD_CLOCK_ARGB         0xFFFFFF00U
 #define TEST_OSD_CLOCK_BUFFER_COUNT 2U
+#define TEST_OSD_CLOCK_BITMAP_BYTES \
+    (TEST_OSD_CLOCK_BITMAP_W * TEST_OSD_CLOCK_BITMAP_H * TEST_OSD_BPP)
 
-/* Static, aligned storage is used so the example does not hide an allocator
- * or lifetime policy. Compose into the inactive canvas and publish it only
- * after drawing, so the bitmap handed to the backend is not modified by the
- * next clock tick. The business must still keep both canvases valid until the
- * backend has retired them; TKL never frees either canvas. */
-static UINT8_T s_clock_bitmap[TEST_OSD_CLOCK_BUFFER_COUNT]
-                         [TEST_OSD_CLOCK_BITMAP_W * TEST_OSD_CLOCK_BITMAP_H * TEST_OSD_BPP]
-    __attribute__((aligned(64)));
+/* The two canvases live in SRAM's dynamic heap, not .bss: 2 * 220*44*4 = ~77KB
+ * of static storage would eat the application's RAM budget, and test assets do
+ * not belong there. SRAM is the one media memory where this CPU-writes ->
+ * HW-reads pattern needs no help: stores are non-cacheable and land directly,
+ * and the GPU reaches SRAM through its 0x28 alias (the GPU flexa ping-pong
+ * buffers prove the path). PSRAM would need a write-through channel for
+ * visibility, and those are 4 per PSRAM chip with the display frame rotation
+ * already holding two - the canvases exhaust that budget (board-verified:
+ * "write-through channel full" once per frame). Allocated once on first use
+ * and never freed, same lifetime policy as before, just a different home.
+ * Allocation failure keeps the last published canvas on display. */
+static UINT8_T *s_clock_bitmap[TEST_OSD_CLOCK_BUFFER_COUNT];
 static UINT8_T s_clock_active;
 static UINT8_T s_clock_building;
 
@@ -107,7 +113,17 @@ static UINT32_T test_osd_clock_text_width(CONST CHAR_T *text)
 
 static UINT8_T *test_osd_clock_canvas(void)
 {
-    return s_clock_bitmap[s_clock_building];
+    UINT8_T *canvas = s_clock_bitmap[s_clock_building];
+
+    /* Lazy allocation: first draw claims the block, later calls reuse it. */
+    if (canvas == NULL) {
+        canvas = (UINT8_T *)hsram_malloc(TEST_OSD_CLOCK_BITMAP_BYTES);
+        if (canvas != NULL) {
+            os_memset(canvas, 0, TEST_OSD_CLOCK_BITMAP_BYTES);
+            s_clock_bitmap[s_clock_building] = canvas;
+        }
+    }
+    return canvas;
 }
 
 static VOID_T test_osd_put_pixel(INT_T x, INT_T y, UINT32_T argb)
@@ -217,6 +233,10 @@ VOID_T test_osd_init(VOID_T)
 VOID_T test_osd_set_clock(CONST CHAR_T *text)
 {
     s_clock_building = (UINT8_T)(s_clock_active ^ 1U);
+    if (test_osd_clock_canvas() == NULL) {
+        /* No slab for the canvases: keep the last published one on display. */
+        return;
+    }
     test_osd_clear_clock();
     test_osd_draw_clock(text);
     s_clock_active = s_clock_building;

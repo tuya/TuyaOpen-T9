@@ -849,6 +849,9 @@ static OPERATE_RET test_cam_osd_submit(CONST CHAR_T *text, VOID_T *arg)
     osd.h = TEST_OSD_CLOCK_BITMAP_H;
     osd.rotate = s_cam_osd_rotate;
     osd.data = test_osd_clock_bitmap(&osd.w, &osd.h);
+    if (osd.data == NULL) {
+        return OPRT_MALLOC_FAILED;
+    }
 
     return tkl_mipi_csi_set_osd(type, &osd);
 }
@@ -902,18 +905,21 @@ static OPERATE_RET test_cam_osd_wifi(TUYA_CAMERA_OUTPUT_TYPE_E type, UINT8_T lev
 
     /* vcenc DMA cannot reach flash XIP: the const rssi bitmaps live in rodata,
      * so stage the selected one in RAM before handing it to the encoder. The
-     * stage lives in the media slab, not .bss - the app heap budget is tight. */
+     * stage lives in SRAM's dynamic heap: this is a CPU-writes -> HW-reads
+     * buffer, and PSRAM would need a write-through channel for that (only 4
+     * per PSRAM chip, the display frame rotation already holds two - the
+     * canvases exhausted it on the board). SRAM stores are non-cacheable and
+     * land directly, and both consumers reach SRAM (GPU 0x28 alias, vcenc). */
     static UINT8_T *s_wifi_osd_ram;
 
     os_memset(&osd, 0, sizeof(osd));
 
     if (on == TRUE) {
         if (s_wifi_osd_ram == NULL) {
-            s_wifi_osd_ram = tkl_media_buf_alloc(TKL_BUF_USE_PIXEL,
-                    TEST_OSD_WIFI_BITMAP_W * TEST_OSD_WIFI_BITMAP_H * 4U,
-                    TUYA_MEDIA_BUF_OWNER_OSD);
+            s_wifi_osd_ram = (UINT8_T *)hsram_malloc(
+                    TEST_OSD_WIFI_BITMAP_W * TEST_OSD_WIFI_BITMAP_H * 4U);
             if (s_wifi_osd_ram == NULL) {
-                tkl_log_output("xmipi cam osd wifi: no slab for RAM stage\r\n");
+                tkl_log_output("xmipi cam osd wifi: no SRAM for RAM stage\r\n");
                 return OPRT_MALLOC_FAILED;
             }
         }

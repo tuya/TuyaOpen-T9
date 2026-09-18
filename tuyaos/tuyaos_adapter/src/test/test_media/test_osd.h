@@ -35,7 +35,8 @@ VOID_T test_osd_init(VOID_T);
 /** Clear and redraw the clock canvas with HH:MM:SS text. */
 VOID_T test_osd_set_clock(CONST CHAR_T *text);
 
-/** Return the business-owned clock ARGB8888 canvas and dimensions. */
+/** Return the business-owned clock ARGB8888 canvas and dimensions. NULL when
+ *  the media slab has no room for the canvases - skip the submit then. */
 CONST UINT8_T *test_osd_clock_bitmap(UINT16_T *width, UINT16_T *height);
 
 /** Return an immutable ARGB8888 Wi-Fi asset selected by signal level. */
