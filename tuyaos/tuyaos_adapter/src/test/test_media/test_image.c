@@ -736,6 +736,7 @@ static OPERATE_RET test_image_transform(UINT16_T dst_w, UINT16_T dst_h,
     UINT16_T height = 0U;
     UINT32_T nv12_size = 0U;
     UINT32_T dst_size;
+    UINT32_T t_xfm;
     OPERATE_RET ret;
 
     ret = test_image_capture_nv12(&nv12, &width, &height, &nv12_size);
@@ -778,11 +779,15 @@ static OPERATE_RET test_image_transform(UINT16_T dst_w, UINT16_T dst_h,
     out.height = dst_h;
     out.format = fmt;
 
+    /* timed around the convert only, same convention as decode / encode */
+    t_xfm = (UINT32_T)tkl_system_get_millisecond();
     ret = tkl_image_codec_convert(&in, &out);
+    t_xfm = (UINT32_T)tkl_system_get_millisecond() - t_xfm;
     if (ret == OPRT_OK) {
-        tkl_log_output("ximg transform: %ux%u nv12 -> %ux%u %s (%u bytes)\r\n",
+        tkl_log_output("ximg transform: %ux%u nv12 -> %ux%u %s (%u bytes) %ums\r\n",
                        width, height, dst_w, dst_h,
-                       test_image_fmt_name(fmt), (unsigned int)out.length);
+                       test_image_fmt_name(fmt), (unsigned int)out.length,
+                       (unsigned int)t_xfm);
         ret = test_image_write_file(path, out.buffer, out.length);
     } else {
         tkl_log_output("ximg transform failed: %d\r\n", ret);

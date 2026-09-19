@@ -172,11 +172,26 @@ STATIC OPERATE_RET tkl_osd_submit_gpu(tkl_osd_engine_ctx_t *ctx,
                                       CONST TUYA_OSD_T *osd, UINT8_T slot)
 {
     bk_gpu_blit_config_t blit;
+    UINT32_T src_format;
     UINT16_T dst_x;
     UINT16_T dst_y;
     UINT16_T foot_w;
     UINT16_T foot_h;
     avdk_err_t ret;
+
+    /* The engine-open format (ARGB8888) stays the facade default; a sprite may
+     * override it per submit. The vendor blit consumes NV12 natively - the
+     * vendor PIP demo submits NV12 frames straight from its ISP pool - so a
+     * hardware-written frame needs no conversion before the overlay. Anything
+     * else is refused rather than silently reinterpreted as ARGB. */
+    src_format = ctx->src_format;
+    if (osd->format == (UINT32_T)TUYA_FRAME_FMT_NV12) {
+        src_format = (UINT32_T)BK_PIXEL_FORMAT_NV12;
+    } else if (osd->format == (UINT32_T)TUYA_FRAME_FMT_ARGB8888) {
+        src_format = (UINT32_T)BK_PIXEL_FORMAT_ARGB8888;
+    } else if (osd->format != 0U) {
+        return OPRT_NOT_SUPPORTED;
+    }
 
     ret = tkl_osd_gpu_geometry(ctx, osd, &dst_x, &dst_y, &foot_w, &foot_h);
     if (ret != OPRT_OK) {
@@ -190,7 +205,7 @@ STATIC OPERATE_RET tkl_osd_submit_gpu(tkl_osd_engine_ctx_t *ctx,
     blit.src_y = 0U;
     blit.src_width = osd->w;
     blit.src_height = osd->h;
-    blit.src_format = (bk_pixel_format_t)ctx->src_format;
+    blit.src_format = (bk_pixel_format_t)src_format;
     blit.dst_x = dst_x;
     blit.dst_y = dst_y;
     blit.rotate_degree = osd->rotate;

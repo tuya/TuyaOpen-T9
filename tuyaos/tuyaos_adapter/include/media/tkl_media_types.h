@@ -128,10 +128,16 @@ typedef struct {
  * --------------------------------------------------------------------------- */
 
 /**
- * @brief One pre-composed ARGB8888 overlay bitmap.
+ * @brief One pre-composed overlay bitmap.
  *
  * @note The caller composes text, icons and masks before submitting. @ref data
- *       is a contiguous bitmap with a row stride of @ref w * 4 bytes.
+ *       is a contiguous bitmap in @ref format with no stride padding (row
+ *       stride equals the packed row width of the format).
+ * @note @ref format carries a TUYA_FRAME_FMT_E value. 0 keeps the facade
+ *       default ARGB8888. The GPU path additionally accepts
+ *       TUYA_FRAME_FMT_NV12 - the vendor blit consumes NV12 natively (the
+ *       vendor PIP demo feeds it NV12 frames straight from the ISP pool).
+ *       The encode path stays ARGB8888 for now.
  * @note TKL neither allocates, copies nor releases @ref data. The buffer must
  *       remain hardware-readable for as long as the backend retains it.
  * @note A non-NULL @ref data updates the overlay identified by (@ref dst_x,
@@ -144,7 +150,8 @@ typedef struct {
     UINT16_T w;      /**< bitmap width in pixels */
     UINT16_T h;      /**< bitmap height in pixels */
     UINT16_T rotate; /**< GPU: 0/90/270; VCENC: 0 only */
-    CONST VOID *data; /**< contiguous ARGB8888 pixels, owned by the caller */
+    UINT32_T format; /**< TUYA_FRAME_FMT_E of @p data; 0 = default ARGB8888 */
+    CONST VOID *data; /**< contiguous pixels in @ref format, owned by the caller */
 } TUYA_OSD_T;
 
 #ifdef __cplusplus

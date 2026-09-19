@@ -74,6 +74,27 @@ extern VOID_T test_overlay_clock_stop(TUYA_CAMERA_OUTPUT_TYPE_E type);
 #define CAM_TEST_STATUS_MS     5000U
 #define CAM_TEST_FRAME_TIMEOUT_MS 1000U
 
+/* Picture-in-picture bench: the SP channel's NV12 frame is blitted onto the
+ * GPU display path as an overlay sprite, the vendor-PiP-demo shape (that demo
+ * hands blit NV12 frames straight from its ISP pool; here the SP frame goes
+ * through get_frame's CPU copy first). Window is centered in the on-screen
+ * view - the same view frame the clock constants use (blend.h OSD_VIEW_*),
+ * so the engine's rotate mapping places both by one rule. */
+#define CAM_TEST_PIP_SIZE       320U
+#define CAM_TEST_PIP_DST_X      ((OSD_VIEW_W - CAM_TEST_PIP_SIZE) / 2U)
+#define CAM_TEST_PIP_DST_Y      ((OSD_VIEW_H - CAM_TEST_PIP_SIZE) / 2U)
+/* Rotated submit origin. With rotate 90/270 the engine re-expresses (dst_x,
+ * dst_y) in the pre-rotation target frame (mapped_x = target_w - dst_y - h,
+ * tkl_osd_engine.c), so dst_y lives in the transposed 640-wide domain and the
+ * view-frame center (140,352) is out of range (-2). Solving the mapping for
+ * the SAME on-screen spot the unrotated submit lands on - target (140,352) -
+ * gives dst = (CAM_TEST_PIP_DST_Y, CAM_TEST_MP_W - CAM_TEST_PIP_DST_X - size)
+ * = (352, 180). Keep in sync with the submit/clear pair below. */
+#define CAM_TEST_PIP_DST_X_ROT  CAM_TEST_PIP_DST_Y
+#define CAM_TEST_PIP_DST_Y_ROT  (CAM_TEST_MP_W - CAM_TEST_PIP_DST_X - CAM_TEST_PIP_SIZE)
+#define CAM_TEST_PIP_STACK      (3U * 1024U)
+#define CAM_TEST_PIP_STOP_WAIT_MS 3000U
+
 /* One definition, used both for "no arguments" and for "unknown subcommand". */
 #define XCAM_USAGE \
     "Usage: xmipi cam <open <mp_kinds> [w] [h] [sp_fmt] [spw] [sph]|close|\r\n" \
@@ -92,7 +113,7 @@ extern VOID_T test_overlay_clock_stop(TUYA_CAMERA_OUTPUT_TYPE_E type);
 /* one grammar, shared by the two reject paths inside the osd branch - the same
  * shape as TEST_UVC_OSD_USAGE, so the two facades read alike on the wire */
 #define TEST_CAM_OSD_USAGE \
-    "xmipi cam osd <display|encode> <time [off|0|90|270]|wifi <0..4|off>|clear>"
+    "xmipi cam osd <display|encode> <time [off|0|90|270]|wifi <0..4|off>|pip <on [0|90|270]|off>|clear>"
 
 /* SP defaults when 'xmipi cam open ... sp' omits a size */
 #define CAM_TEST_SP_W          640U
@@ -138,6 +159,19 @@ typedef struct {
     uint32_t stream_frames;
     uint64_t stream_bytes;
     uint32_t mark_ms;
+    /* Callback-interval bench from the two sinks (see the callbacks): the
+     * interval between adjacent completions is the pipeline's frame period,
+     * an upper bound on the GPU/VPU cost of one frame. min==0 means no
+     * sample yet. */
+    uint32_t disp_mark;      /**< last display_cb arrival, ms */
+    uint32_t disp_int_last;
+    uint32_t disp_int_min;
+    uint32_t disp_int_max;
+    uint32_t strm_mark;      /**< last stream_cb arrival, ms */
+    uint32_t strm_int_last;
+    uint32_t strm_int_min;
+    uint32_t strm_int_max;
+    uint32_t strm_lat_last;  /**< stream_cb arrival minus the frame's pts */
 } test_cam_ctx_t;
 
 static test_cam_ctx_t s_cam;
@@ -227,12 +261,30 @@ extern BOOL_T test_mipi_lcd_is_open(void);
 static VOID_T test_cam_display_cb(CONST TUYA_MEDIA_BUF_T *buf)
 {
     tkl_mipi_dsi_flush_frame_t flush;
+    uint32_t now;
     OPERATE_RET ret;
 
     if (buf == NULL || buf->data == NULL) {
         return;
     }
 
+    /* Frame-period bench: the interval between adjacent completions is the
+     * display pipeline's period per frame - an upper bound on what the GPU
+     * flexa itself spends on one frame, tight only when the GPU is the
+     * slowest stage (raise resolution/fps to push it toward saturation). */
+    now = (uint32_t)tkl_system_get_millisecond();
+    if (s_cam.display_frames > 0U) {
+        uint32_t interval = now - s_cam.disp_mark;
+
+        s_cam.disp_int_last = interval;
+        if (s_cam.disp_int_min == 0U || interval < s_cam.disp_int_min) {
+            s_cam.disp_int_min = interval;
+        }
+        if (interval > s_cam.disp_int_max) {
+            s_cam.disp_int_max = interval;
+        }
+    }
+    s_cam.disp_mark = now;
     s_cam.display_frames++;
 
     if (test_mipi_lcd_is_open() != TRUE) {
@@ -292,9 +344,29 @@ static OPERATE_RET test_cam_record(uint32_t sec, const char *path)
  */
 static VOID_T test_cam_stream_cb(CONST TUYA_MEDIA_BUF_T *buf)
 {
+    uint32_t now;
+
     if (buf == NULL || buf->data == NULL) {
         return;
     }
+
+    /* Same frame-period bench as the display sink. The latency figure is
+     * arrival minus the frame's pts - capture-to-output delay when the
+     * vendor stamps pts at capture time (semantics to confirm on target). */
+    now = (uint32_t)tkl_system_get_millisecond();
+    if (s_cam.stream_frames > 0U) {
+        uint32_t interval = now - s_cam.strm_mark;
+
+        s_cam.strm_int_last = interval;
+        if (s_cam.strm_int_min == 0U || interval < s_cam.strm_int_min) {
+            s_cam.strm_int_min = interval;
+        }
+        if (interval > s_cam.strm_int_max) {
+            s_cam.strm_int_max = interval;
+        }
+    }
+    s_cam.strm_mark = now;
+    s_cam.strm_lat_last = now - (uint32_t)buf->timestamp;
 
     s_cam.stream_frames++;
     s_cam.stream_bytes += buf->size;
@@ -312,11 +384,16 @@ static VOID_T test_cam_stream_cb(CONST TUYA_MEDIA_BUF_T *buf)
     }
 
     if ((s_cam.stream_frames % 30U) == 0U) {
-        tkl_log_output("xmipi cam stream[%u]: %s size=%u total=%llu\r\n",
+        tkl_log_output("xmipi cam stream[%u]: %s size=%u total=%llu, "
+                       "interval %u/%u/%u ms, latency-to-pts %u ms\r\n",
                        (unsigned int)s_cam.stream_frames,
                        (buf->format == TUYA_FRAME_FMT_H264_I) ? "I" : "P",
                        (unsigned int)buf->size,
-                       (unsigned long long)s_cam.stream_bytes);
+                       (unsigned long long)s_cam.stream_bytes,
+                       (unsigned int)s_cam.strm_int_last,
+                       (unsigned int)s_cam.strm_int_min,
+                       (unsigned int)s_cam.strm_int_max,
+                       (unsigned int)s_cam.strm_lat_last);
     }
 }
 
@@ -589,6 +666,140 @@ static OPERATE_RET test_cam_frame(VOID_T)
     return OPRT_OK;
 }
 
+/* ---------------------------------------------------------------------------
+ * Picture-in-picture bench. The SP frame is already NV12, so the overlay
+ * passes the frame pointer + TUYA_OSD_T.format=NV12 through - no canvas, no
+ * WT channel, no format conversion. The frame buffer comes from get_frame's
+ * per-frame media-buf allocation, currently the PLAIN UNCODED heap by user
+ * decision ("先看普通 PSRAM 的效果"): CPU memcpy writes it and the GPU blit
+ * reads it, so stale write-combining data may show as a garbled PIP window -
+ * that is the thing under test. A second, deliberate race: free_cb returns
+ * the frame to the media-buf pool right after submit, so the next get_frame
+ * can memcpy into it while the GPU still renders the previous submit - at
+ * the SP frame pace (~50 ms) the window is small, and a garbled frame, if
+ * any, self-heals on the next one.
+ * ------------------------------------------------------------------------- */
+static struct {
+    volatile BOOL_T running;
+    volatile BOOL_T stop_req;
+    TKL_THREAD_HANDLE task;
+    UINT16_T rotate;   /**< sprite rotation, kept for the clear submit */
+    UINT16_T w;        /**< last submit geometry, kept for the clear submit */
+    UINT16_T h;
+} s_cam_pip = { FALSE, FALSE, NULL, 0U, 0U, 0U };
+
+static VOID_T test_cam_pip_clear(VOID_T)
+{
+    TUYA_OSD_T osd;
+
+    os_memset(&osd, 0, sizeof(osd));
+    /* Same coordinate (and rotate, so the engine's geometry mapping lands on
+     * the same slot) as the submit, NULL data clears that slot only. */
+    if (s_cam_pip.rotate == 0U) {
+        osd.dst_x = CAM_TEST_PIP_DST_X;
+        osd.dst_y = CAM_TEST_PIP_DST_Y;
+    } else {
+        osd.dst_x = CAM_TEST_PIP_DST_X_ROT;
+        osd.dst_y = CAM_TEST_PIP_DST_Y_ROT;
+    }
+    osd.w = s_cam_pip.w;
+    osd.h = s_cam_pip.h;
+    osd.rotate = s_cam_pip.rotate;
+    osd.data = NULL;
+
+    (void)tkl_mipi_csi_set_osd(TUYA_CAMERA_OUTPUT_PIXEL, &osd);
+    s_cam_pip.w = 0U;
+    s_cam_pip.h = 0U;
+}
+
+static VOID_T test_cam_pip_task(VOID_T *arg)
+{
+    TKL_THREAD_HANDLE self = NULL;
+    UINT32_T timeouts = 0U;
+
+    (void)arg;
+    (void)tkl_thread_get_id(&self);
+
+    while (s_cam_pip.stop_req != TRUE) {
+        TUYA_MEDIA_BUF_T *frame = NULL;
+        OPERATE_RET ret = tkl_mipi_csi_get_frame(&frame, CAM_TEST_FRAME_TIMEOUT_MS);
+        if (ret != OPRT_OK) {
+            /* SP stall or a stop request racing the wait - stay quiet, one
+             * summary line goes out when the task exits. */
+            timeouts++;
+            continue;
+        }
+
+        if (s_cam_pip.stop_req == TRUE) {
+            frame->free_cb(frame->data);
+            break;
+        }
+
+        {
+            TUYA_OSD_T osd;
+
+            os_memset(&osd, 0, sizeof(osd));
+            if (s_cam_pip.rotate == 0U) {
+                osd.dst_x = CAM_TEST_PIP_DST_X;
+                osd.dst_y = CAM_TEST_PIP_DST_Y;
+            } else {
+                osd.dst_x = CAM_TEST_PIP_DST_X_ROT;
+                osd.dst_y = CAM_TEST_PIP_DST_Y_ROT;
+            }
+            osd.w = frame->width;
+            osd.h = frame->height;
+            osd.rotate = s_cam_pip.rotate;
+            osd.format = (UINT32_T)TUYA_FRAME_FMT_NV12;
+            osd.data = frame->data;
+            ret = tkl_mipi_csi_set_osd(TUYA_CAMERA_OUTPUT_PIXEL, &osd);
+            if (ret != OPRT_OK) {
+                tkl_log_output("xmipi cam osd display pip: submit failed: %d\r\n",
+                               ret);
+            } else {
+                s_cam_pip.w = frame->width;
+                s_cam_pip.h = frame->height;
+            }
+        }
+
+        frame->free_cb(frame->data);
+    }
+
+    tkl_log_output("xmipi cam osd display pip: task exit, %u get_frame timeouts\r\n",
+                   (unsigned int)timeouts);
+    s_cam_pip.running = FALSE;
+    s_cam_pip.task = NULL;
+    tkl_thread_release(self);
+}
+
+/**
+ * @brief Stop the PIP refresh task and take its sprite off the display.
+ *
+ * @note stop_req + wait mirrors test_overlay_clock/wifi stop patterns: the
+ *       task may sit inside get_frame() up to the frame timeout, so stop
+ *       waits it out before the clear submit - otherwise a submit could land
+ *       after the clear.
+ * @note The clear submit reuses the last submit geometry: slot matching is by
+ *       coordinate, so a mismatched geometry would raise a second slot
+ *       instead of clearing the PIP one.
+ */
+static VOID_T test_cam_pip_stop(VOID_T)
+{
+    UINT32_T waited_ms = 0U;
+
+    if (s_cam_pip.running != TRUE && s_cam_pip.task == NULL) {
+        return;
+    }
+
+    s_cam_pip.stop_req = TRUE;
+    while (s_cam_pip.running == TRUE && waited_ms < CAM_TEST_PIP_STOP_WAIT_MS) {
+        tkl_system_sleep(20U);
+        waited_ms += 20U;
+    }
+
+    s_cam_pip.stop_req = FALSE;
+    test_cam_pip_clear();
+}
+
 STATIC VOID_T test_cam_osd_clear_settle(VOID_T);
 
 static OPERATE_RET test_cam_close(void)
@@ -601,6 +812,7 @@ static OPERATE_RET test_cam_close(void)
 
     test_overlay_clock_stop(TUYA_CAMERA_OUTPUT_PIXEL);
     test_overlay_clock_stop(TUYA_CAMERA_OUTPUT_STREAM);
+    test_cam_pip_stop();
     test_cam_osd_clear_settle();
 
     ret = tkl_mipi_csi_deinit();
@@ -1828,6 +2040,59 @@ void cli_tuya_mipi_cam_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, c
 
                 ret = test_cam_osd_wifi(type, level, TRUE);
             }
+        } else if (os_strcmp(act, "pip") == 0) {
+            if (type != TUYA_CAMERA_OUTPUT_PIXEL) {
+                snprintf(pcWriteBuffer, xWriteBufferLen,
+                         "xmipi cam osd encode pip: the encode path is ARGB-only\r\n");
+                return;
+            }
+            if (sub != NULL && os_strcmp(sub, "off") == 0) {
+                test_cam_pip_stop();
+                ret = OPRT_OK;
+            } else if (sub != NULL && os_strcmp(sub, "on") == 0) {
+                UINT16_T rotate = 0U;
+
+                if (argc > 5) {
+                    rotate = (UINT16_T)os_strtoul(argv[5], NULL, 10);
+                }
+                if (rotate != 0U && rotate != 90U && rotate != 270U) {
+                    snprintf(pcWriteBuffer, xWriteBufferLen,
+                             "Usage: %s\r\n", TEST_CAM_OSD_USAGE);
+                    return;
+                }
+                if (s_cam.opened != true || s_cam.sp_on != true) {
+                    snprintf(pcWriteBuffer, xWriteBufferLen,
+                             "xmipi cam osd display pip: FRAME output is off; re-open with an sp_fmt, e.g. xmipi cam open display+h264 640 1024 nv12 320 320\r\n");
+                    return;
+                }
+                if (s_cam.sp_format != (uint32_t)TUYA_FRAME_FMT_NV12) {
+                    snprintf(pcWriteBuffer, xWriteBufferLen,
+                             "xmipi cam osd display pip: SP format must be nv12 (open with: ... nv12 320 320)\r\n");
+                    return;
+                }
+                if (s_cam_pip.running == TRUE) {
+                    test_cam_pip_stop();
+                }
+                s_cam_pip.rotate = rotate;
+                s_cam_pip.w = 0U;
+                s_cam_pip.h = 0U;
+                s_cam_pip.stop_req = FALSE;
+                s_cam_pip.running = TRUE;
+                ret = tkl_thread_create(&s_cam_pip.task, "cam_pip", CAM_TEST_PIP_STACK, TKL_THREAD_PRI_NORMAL, test_cam_pip_task, NULL);
+                if (ret != OPRT_OK) {
+                    s_cam_pip.running = FALSE;
+                    tkl_log_output("xmipi cam osd display pip: thread create failed %d\r\n", ret);
+                    return;
+                }
+                tkl_log_output("xmipi cam osd display pip: on rot=%u, window %ux%u at (%u,%u)\r\n",
+                               (unsigned int)rotate,
+                               (unsigned int)s_cam.sp_w, (unsigned int)s_cam.sp_h,
+                               (unsigned int)CAM_TEST_PIP_DST_X,
+                               (unsigned int)CAM_TEST_PIP_DST_Y);
+            } else {
+                snprintf(pcWriteBuffer, xWriteBufferLen, "Usage: %s\r\n", TEST_CAM_OSD_USAGE);
+                return;
+            }
         } else {
             snprintf(pcWriteBuffer, xWriteBufferLen, "Usage: %s\r\n", TEST_CAM_OSD_USAGE);
             return;
@@ -1865,6 +2130,18 @@ void cli_tuya_mipi_cam_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, c
                  (unsigned int)s_cam.stream_frames,
                  (unsigned int)(s_cam.stream_frames * 1000U / elapsed),
                  (unsigned long long)s_cam.stream_bytes);
+        /* Callback-interval bench, from the two sinks. The average is the fps
+         * above inverted; these are the instantaneous value and the extremes. */
+        tkl_log_output("xmipi cam period ms: display last/min/max %u/%u/%u "
+                       "(GPU flexa, GPU cost <= this), stream last/min/max %u/%u/%u, "
+                       "latency-to-pts %u\r\n",
+                       (unsigned int)s_cam.disp_int_last,
+                       (unsigned int)s_cam.disp_int_min,
+                       (unsigned int)s_cam.disp_int_max,
+                       (unsigned int)s_cam.strm_int_last,
+                       (unsigned int)s_cam.strm_int_min,
+                       (unsigned int)s_cam.strm_int_max,
+                       (unsigned int)s_cam.strm_lat_last);
         test_record_status_dump();
 
     } else if (test_camera_quality_cmd(pcWriteBuffer, xWriteBufferLen, argc, argv) == TRUE) {

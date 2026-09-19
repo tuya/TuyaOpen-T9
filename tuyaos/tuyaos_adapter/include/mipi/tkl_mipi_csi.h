@@ -65,7 +65,9 @@ OPERATE_RET tkl_mipi_csi_set_bitrate(UINT32_T bitrate);
 /** Force an IDR frame; requires stream.enable. */
 OPERATE_RET tkl_mipi_csi_force_idr(VOID_T);
 
-/** Submit or clear one business-composed ARGB8888 overlay bitmap. PIXEL
+/** Submit or clear one business-composed overlay bitmap in osd->format
+ *  (0 keeps the default ARGB8888; the GPU path also takes NV12 - see
+ *  TUYA_OSD_T). PIXEL
  *  addresses the pixel (GPU) pipeline, STREAM the encoded stream. */
 OPERATE_RET tkl_mipi_csi_set_osd(TUYA_CAMERA_OUTPUT_TYPE_E type,
                                  CONST TUYA_OSD_T *osd);
