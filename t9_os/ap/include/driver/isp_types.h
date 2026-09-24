@@ -21,7 +21,8 @@ extern "C" {
 #include <driver/isp_base.h>
 #include <os/os.h>
 
-#define ISP_FRAME_CNT_MAX (2)
+#define ISP_FRAME_CNT_MAX (3)
+
 #define ISP_INPUT_SENSOR_NAME "GC2053_1080P_LINEAR"
 
 #include <modules/veri_isp/vsios_type.h>
@@ -96,12 +97,14 @@ typedef struct {
     uint32_t u_addr;
     uint32_t v_addr;
     uint32_t sequence;
+    uint32_t frame_port_sequence;
+    uint8_t frame_port_id;
     /* Number of upcoming MP-flexa frames to force-drop (report ok=0) so the GPU bond discards
      * the frames straddling a peer (SP) stream on/off. Arming or disarming SP pulses the global
      * MI_CFG_UPD latch, which reloads the live MP flexa shadow regs mid-frame and corrupts a few
-     * MP pixel lines with no line-count anomaly -- invisible to both the ISP integrity check and
-     * the GPU overrun check. Loaded with ISP_MP_FLICKER_FORCE_DROP_FRAMES at SP arm/disarm and
-     * decremented in the MP frame-end ISR. */
+     * MP pixel lines with no line-count anomaly -- so neither the ISP integrity check nor the
+     * GPU overrun check catches them. Loaded with ISP_MP_FLICKER_FORCE_DROP_FRAMES at SP
+     * arm/disarm and decremented in the MP frame-end ISR. */
     uint8_t force_drop_pending;
     uint8_t skip_frames_remaining; /**< Frames left to drop (AE warmup); no ISR callback to upper layer. */
     uint8_t skip_active;           /**< Current frame is being dropped. */
@@ -109,6 +112,8 @@ typedef struct {
     uint8_t *frame_buffer[ISP_FRAME_CNT_MAX];
     uint8_t malloc_flag;
 } isp_channel_config_t;
+
+typedef void (*isp_3a_done_cb_t)(uint8_t port_id, void *arg);
 
 typedef struct {
     uint8_t state;
@@ -124,7 +129,62 @@ typedef struct {
     uint8_t close_sbi;
     int (*pop_buf) (ISP_CHN chn, VIDEO_BUF_S *pBuf, uint32_t timeMs);
     int (*free_buf) (ISP_CHN chn, VIDEO_BUF_S *pBuf);
+    isp_3a_done_cb_t three_a_done_cb;
+    void *three_a_done_arg;
 } isp_control_t;
+
+typedef struct {
+    uint32_t exposure_time_us;
+    uint32_t analog_gain;
+    uint32_t digital_gain;
+    uint32_t composite_exposure;
+    uint32_t iso;
+    uint32_t mean_luminance;
+} bk_isp_exposure_info_t;
+
+/**
+ * @brief ISP module operating mode, values match VSI ISP_OP_TYPE_E.
+ */
+typedef enum {
+    BK_ISP_OP_TYPE_AUTO = 0,   /**< Auto, driven by the 3A algorithm */
+    BK_ISP_OP_TYPE_MANUAL = 1, /**< Manual, driven by the manual fields below */
+} bk_isp_op_type_t;
+
+/**
+ * @brief White balance gains, fixed point: 256 = 1.0x, valid range [256, 1023].
+ *
+ * Out-of-range values are clamped by the ISP firmware with a warning instead of
+ * being rejected, so read back after a set if the exact value matters.
+ */
+typedef struct {
+    uint16_t r_gain;  /**< Red channel gain */
+    uint16_t gr_gain; /**< Green channel gain on red lines */
+    uint16_t gb_gain; /**< Green channel gain on blue lines */
+    uint16_t b_gain;  /**< Blue channel gain */
+} bk_isp_wb_gain_t;
+
+/**
+ * @brief White balance attributes.
+ */
+typedef struct {
+    uint8_t enable;               /**< 0: bypass the WB module, 1: enable it */
+    uint32_t op_type;             /**< bk_isp_op_type_t */
+    bk_isp_wb_gain_t manual_gain; /**< Only applied when op_type is manual */
+} bk_isp_wb_attr_t;
+
+/**
+ * @brief Exposure attributes.
+ *
+ * The manual ranges depend on the sensor and are not queryable; use
+ * bk_isp_query_exposure_info() to read the current AE result as a baseline.
+ * Out-of-range values are clamped by the ISP firmware with a warning.
+ */
+typedef struct {
+    uint32_t op_type;  /**< bk_isp_op_type_t */
+    uint32_t int_time; /**< Manual exposure time in us */
+    uint32_t again;    /**< Manual analog gain */
+    uint32_t dgain;    /**< Manual digital gain */
+} bk_isp_exposure_attr_t;
 
 typedef void *isp_handle_t;
 

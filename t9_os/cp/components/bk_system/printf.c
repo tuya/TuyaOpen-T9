@@ -212,7 +212,7 @@ static void bk_printf_raw_port(int block_mode, int level, const char *fmt, va_li
 
 void bk_printf(const char *fmt, ...)
 {
-	int level = BK_LOG_WARN; // BK_LOG_INFO; 	// Modified by TUYA
+	int level = BK_LOG_DEBUG;
 	va_list args;
 
 	if(!printf_is_init())

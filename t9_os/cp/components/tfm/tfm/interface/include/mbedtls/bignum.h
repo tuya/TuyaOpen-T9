@@ -12,6 +12,7 @@
 #include "mbedtls/private_access.h"
 
 #include "mbedtls/build_info.h"
+#include "mbedtls/platform_util.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -236,11 +237,12 @@ typedef struct mbedtls_mpi {
      * unsigned short can store values larger than the minimum required by
      * the C language, which is 65535.
      */
-#if defined(ARM_CE_DUBHE_ACA)
-    mpi_handle *MBEDTLS_PRIVATE(mhandle);
-#endif
 #if MBEDTLS_MPI_MAX_LIMBS > 65535
 #error "MBEDTLS_MPI_MAX_LIMBS > 65535 is not supported"
+#endif
+
+#if defined(ARM_CE_DUBHE_ACA)
+    mpi_handle *MBEDTLS_PRIVATE(mhandle);
 #endif
 }
 mbedtls_mpi;
@@ -887,7 +889,7 @@ int mbedtls_mpi_mod_int(mbedtls_mpi_uint *r, const mbedtls_mpi *A,
                         mbedtls_mpi_sint b);
 
 /**
- * \brief          Perform a sliding-window exponentiation: X = A^E mod N
+ * \brief          Perform a modular exponentiation: X = A^E mod N
  *
  * \param X        The destination MPI. This must point to an initialized MPI.
  *                 This must not alias E or N.
@@ -918,14 +920,34 @@ int mbedtls_mpi_exp_mod(mbedtls_mpi *X, const mbedtls_mpi *A,
                         mbedtls_mpi *prec_RR);
 
 #if defined(ARM_CE_DUBHE_ACA)
-/* Beken Dubhe TrustEngine ACA hardware-accelerated MPI helpers. Implemented in
- * trustengine dubhe_lib/bignum.c and consumed across dubhe_lib. Upstream
- * mbedtls-3.6.0 does not declare them, so mirror the Beken-patched prototypes
- * here (this interface copy is on the include path before mbedtls-3.6.0). */
+/**
+ * \brief          Bitwise AND: X = A & B.
+ *
+ * \param X        Destination MPI.
+ * \param A        Left-hand MPI.
+ * \param B        Right-hand MPI.
+ *
+ * \return         \c 0 if successful.
+ * \return         #MBEDTLS_ERR_MPI_ALLOC_FAILED if memory allocation failed.
+ * \return         #MBEDTLS_ERR_MPI_BAD_INPUT_DATA if A or B is negative.
+ */
 int mbedtls_mpi_and_mpi(mbedtls_mpi *X,
                         const mbedtls_mpi *A,
                         const mbedtls_mpi *B);
 
+/**
+ * \brief          Modular multiplication: X = A * B mod N.
+ *
+ * \param X        Destination MPI.
+ * \param A        Left-hand MPI.
+ * \param B        Right-hand MPI.
+ * \param N        Modulus MPI.
+ *
+ * \return         \c 0 if successful.
+ * \return         #MBEDTLS_ERR_MPI_ALLOC_FAILED if memory allocation failed.
+ * \return         #MBEDTLS_ERR_MPI_DIVISION_BY_ZERO if N == 0.
+ * \return         #MBEDTLS_ERR_MPI_NEGATIVE_VALUE if N < 0.
+ */
 int mbedtls_mpi_mul_mod(mbedtls_mpi *X,
                         const mbedtls_mpi *A,
                         const mbedtls_mpi *B,
@@ -968,7 +990,7 @@ int mbedtls_mpi_jac2affine(mbedtls_mpi *Tx,
                            const mbedtls_mpi *P);
 
 void mbedtls_mpi_free_handle(mbedtls_mpi *X);
-#endif /* ARM_CE_DUBHE_ACA */
+#endif
 
 /**
  * \brief          Fill an MPI with a number of random bytes.
@@ -988,7 +1010,7 @@ void mbedtls_mpi_free_handle(mbedtls_mpi *X);
  *                 be relevant in applications like deterministic ECDSA.
  */
 int mbedtls_mpi_fill_random(mbedtls_mpi *X, size_t size,
-                            int (*f_rng)(void *, unsigned char *, size_t),
+                            mbedtls_f_rng_t *f_rng,
                             void *p_rng);
 
 /** Generate a random number uniformly in a range.
@@ -1026,13 +1048,14 @@ int mbedtls_mpi_fill_random(mbedtls_mpi *X, size_t size,
 int mbedtls_mpi_random(mbedtls_mpi *X,
                        mbedtls_mpi_sint min,
                        const mbedtls_mpi *N,
-                       int (*f_rng)(void *, unsigned char *, size_t),
+                       mbedtls_f_rng_t *f_rng,
                        void *p_rng);
 
 /**
  * \brief          Compute the greatest common divisor: G = gcd(A, B)
  *
  * \param G        The destination MPI. This must point to an initialized MPI.
+ *                 This will always be positive or 0.
  * \param A        The first operand. This must point to an initialized MPI.
  * \param B        The second operand. This must point to an initialized MPI.
  *
@@ -1047,10 +1070,12 @@ int mbedtls_mpi_gcd(mbedtls_mpi *G, const mbedtls_mpi *A,
  * \brief          Compute the modular inverse: X = A^-1 mod N
  *
  * \param X        The destination MPI. This must point to an initialized MPI.
+ *                 The value returned on success will be between [1, N-1].
  * \param A        The MPI to calculate the modular inverse of. This must point
- *                 to an initialized MPI.
+ *                 to an initialized MPI. This value can be negative, in which
+ *                 case a positive answer will still be returned in \p X.
  * \param N        The base of the modular inversion. This must point to an
- *                 initialized MPI.
+ *                 initialized MPI and be greater than one.
  *
  * \return         \c 0 if successful.
  * \return         #MBEDTLS_ERR_MPI_ALLOC_FAILED if a memory allocation failed.
@@ -1090,7 +1115,7 @@ int mbedtls_mpi_inv_mod(mbedtls_mpi *X, const mbedtls_mpi *A,
  * \return         Another negative error code on other kinds of failure.
  */
 int mbedtls_mpi_is_prime_ext(const mbedtls_mpi *X, int rounds,
-                             int (*f_rng)(void *, unsigned char *, size_t),
+                             mbedtls_f_rng_t *f_rng,
                              void *p_rng);
 /**
  * \brief Flags for mbedtls_mpi_gen_prime()
@@ -1123,7 +1148,7 @@ typedef enum {
  *                 \c 3 and #MBEDTLS_MPI_MAX_BITS.
  */
 int mbedtls_mpi_gen_prime(mbedtls_mpi *X, size_t nbits, int flags,
-                          int (*f_rng)(void *, unsigned char *, size_t),
+                          mbedtls_f_rng_t *f_rng,
                           void *p_rng);
 
 #if defined(MBEDTLS_SELF_TEST)

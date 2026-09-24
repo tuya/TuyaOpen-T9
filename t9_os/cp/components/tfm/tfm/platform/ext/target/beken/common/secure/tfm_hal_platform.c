@@ -16,6 +16,7 @@
 #include "security.h"
 #include "prro.h"
 #include "tfm_flash_partition.h"
+#include "ota_confirm.h"    /* bk_ota_confirm_clear_if_armed (compressed-overwrite) */
 #include "tfm_hal_ppc.h"
 #include "tfm_builtin_key_loader.h"
 #include "hal_hw_fih.h"
@@ -25,6 +26,9 @@
 #include "driver/uart.h"
 #include "driver/gpio.h"
 #include "device_cfg.h"
+#if CONFIG_SLEEP_RETENTION_NSC
+#include "tfm_sleep_context.h"
+#endif
 
 /* Hardware register base addresses */
 #define DMA0_BASE_ADDR             0x45020000
@@ -51,16 +55,16 @@
 #define PPRO_CONFIG_REG14_OFFSET  0x0E
 #define PPRO_CONFIG_REG15_OFFSET  0x0F
 
+
 #define TAG "platform"
 
 extern uint32_t sys_is_enable_fast_boot(void);
 extern uint32_t sys_is_running_from_deep_sleep(void);
 extern void tfm_deepsleep_fastboot_save_xip(void);
-int bk_flash_set_dbus_security_region(uint32_t id, uint32_t start, uint32_t end, bool secure);
-/* A/B trial confirm (boot_param_confirm.c): settle a TRIAL boot record to NORMAL
- * once the image has proven it can bring up the secure world. */
 extern int boot_param_confirm(void);
 extern uint32_t flash_get_excute_enable(void);
+
+int bk_flash_set_dbus_security_region(uint32_t id, uint32_t start, uint32_t end, bool secure);
 
 extern const struct memory_region_limits memory_regions;
 /*
@@ -83,16 +87,43 @@ int bk_flash_dbus_isolation_init(void)
 	uint32_t ps_offset = partition_get_phy_offset(PARTITION_SYS_PS);
 	uint32_t ps_size = partition_get_phy_size(PARTITION_SYS_PS);
 	uint32_t primary_offset = partition_get_phy_offset(PARTITION_PRIMARY_ALL);
+	uint32_t primary_size = partition_get_phy_size(PARTITION_PRIMARY_ALL);
+#if CONFIG_DIRECT_XIP
 	uint32_t secondary_offset = partition_get_phy_offset(PARTITION_SECONDARY_ALL);
+	uint32_t secondary_size = partition_get_phy_size(PARTITION_SECONDARY_ALL);
+#endif
+	uint32_t region0_end;
+	uint32_t region1_start;
+	uint32_t region1_end;
 
 	bk_fih_set_src(FIH_DATA_DBUS, 0xbb);
 	bk_sw_fih_set_data(FIH_SW_INDEX11);
-	bk_flash_set_dbus_security_region(0, 0, ps_offset + ps_size - 1, true);
+
+	/* Region 0: boot + ITS/PS (and anything before PS end) stays Secure on DBUS. */
+	region0_end = ps_offset + ps_size - 1u;
+	bk_flash_set_dbus_security_region(0, 0, region0_end, true);
 	bk_sw_fih_set_data(FIH_SW_INDEX12);
 
-	uint32_t active_offset = flash_get_excute_enable() ? secondary_offset : primary_offset;
-
-	bk_flash_set_dbus_security_region(1, active_offset, (active_offset + secondary_offset - primary_offset -1), true);
+#if CONFIG_DIRECT_XIP
+	/*
+	 * Region 1: protect the active Secure image window.
+	 * Dual-slot A/B: slot size = secondary_offset - primary_offset.
+	 * Single-slot (secondary_all absent): that formula underflows to
+	 * 0xFFFFFFFF and marks nearly all flash Secure, so NS flash-controller
+	 * reads (e.g. sys_rf) BusFault. Fall back to primary_tfm_s only.
+	 */
+	if ((secondary_offset == 0u) || (secondary_size == 0u)) {
+		region1_start = partition_get_phy_offset(PARTITION_PRIMARY_TFM_S);
+		region1_end = region1_start + partition_get_phy_size(PARTITION_PRIMARY_TFM_S) - 1u;
+	} else {
+		region1_start = flash_get_excute_enable() ? secondary_offset : primary_offset;
+		region1_end = region1_start + secondary_offset - primary_offset - 1u;
+	}
+#else
+	region1_start = primary_offset;
+	region1_end = region1_start + primary_size - 1u;	
+#endif
+	bk_flash_set_dbus_security_region(1, region1_start, region1_end, true);
 
 	bk_sw_fih_set_data(FIH_SW_INDEX13);
 	bk_fih_set_dst(FIH_DATA_DBUS, 0xbb);
@@ -157,6 +188,12 @@ FIH_RET_TYPE(enum tfm_hal_status_t) tfm_hal_platform_init(void)
         FIH_RET(fih_int_encode(TFM_HAL_ERROR_GENERIC));
     }
 
+#if CONFIG_SLEEP_RETENTION_NSC
+    if (tfm_sleep_context_build_snapshot() != 0) {
+        FIH_RET(fih_int_encode(TFM_HAL_ERROR_GENERIC));
+    }
+#endif
+
     /* Partition and flash map initialization - currently disabled
      * Enable when needed by uncommenting the code below
      */
@@ -174,10 +211,21 @@ FIH_RET_TYPE(enum tfm_hal_status_t) tfm_hal_platform_init(void)
     tfm_builtin_key_loader_init();
 #endif
 
+#if CONFIG_DIRECT_XIP
     tfm_deepsleep_fastboot_save_xip();
+#endif
 
-    /* Confirm the verified TRIAL image after secure-world initialization. */
+#if CONFIG_DIRECT_XIP
+    /* A/B trial confirm: image verified + secure world up, so adopt a TRIAL slot
+     * as the new NORMAL exec_slot. Idempotent: no-op for non-TRIAL/virgin. */
     (void)boot_param_confirm();
+#endif /* CONFIG_DIRECT_XIP */
+
+#if CONFIG_OTA_OVERWRITE
+    /* Confirm-on-successful-boot: drop OVERWRITE_CONFIRM and the resume journal
+     * only now that the installed image has reached the secure world. */
+    bk_ota_confirm_clear_if_armed();
+#endif
 
     FIH_RET(fih_int_encode(TFM_HAL_SUCCESS));
 }
@@ -218,28 +266,37 @@ uint32_t tfm_hal_is_ignore_data_shared(void)
 
 void tfm_hal_dma_init(void)
 {
-	/* DMA secure attributes only are configured at the SPE mode */
+	/* DMA0 lives in the CP domain (always powered here) and is configured at the
+	 * SPE->NSPE transition. DMA1 (AP HPDMA) lives in the AP power domain, which is
+	 * off at this point; it is configured by tfm_hal_ap_dma_init() from the AP
+	 * secure-prepare path after CP NS powers the AP up. */
 	volatile uint32_t *dma0_ctrl = (volatile uint32_t *)(DMA0_BASE_ADDR + DMA_CTRL_REG_OFFSET * 4);
 	volatile uint32_t *dma0_enable = (volatile uint32_t *)(DMA0_BASE_ADDR + DMA_ENABLE_REG_OFFSET * 4);
 	volatile uint32_t *dma0_mask = (volatile uint32_t *)(DMA0_BASE_ADDR + DMA_MASK_REG_OFFSET * 4);
 	volatile uint32_t *dma0_int_alloc = (volatile uint32_t *)(DMA0_BASE_ADDR + DMA0_INT_ALLOC_REG_OFFSET * 4);
-	
-	volatile uint32_t *dma1_ctrl = (volatile uint32_t *)(DMA1_BASE_ADDR + DMA_CTRL_REG_OFFSET * 4);
-	volatile uint32_t *dma1_enable = (volatile uint32_t *)(DMA1_BASE_ADDR + DMA_ENABLE_REG_OFFSET * 4);
-	volatile uint32_t *dma1_mask = (volatile uint32_t *)(DMA1_BASE_ADDR + DMA_MASK_REG_OFFSET * 4);
-	volatile uint32_t *dma1_int_alloc = (volatile uint32_t *)(DMA1_BASE_ADDR + DMA1_INT_ALLOC_REG_OFFSET * 4);
-	
+
 	/* Soft reset DMA0 module */
 	*dma0_ctrl = 0;
 	*dma0_ctrl = 1;
 	*dma0_mask = 0xFFF;
 	*dma0_enable = 0;
 	*dma0_int_alloc = DMA0_INT_ALLOC_VALUE;
+}
 
-	/* Soft reset DMA1 module */
+void tfm_hal_ap_dma_init(void)
+{
+	/* AP HPDMA (DMA1) controller-wide setup. The AP power domain must already be
+	 * up and clocked (driven by CP NS). The DMA1 control registers are Secure and
+	 * are written through the secure alias; the soft reset clears secure_attr to 0
+	 * so the NS AP can program the channels afterwards. */
+	volatile uint32_t *dma1_ctrl = (volatile uint32_t *)(DMA1_BASE_ADDR + DMA_CTRL_REG_OFFSET * 4);
+	volatile uint32_t *dma1_enable = (volatile uint32_t *)(DMA1_BASE_ADDR + DMA_ENABLE_REG_OFFSET * 4);
+	volatile uint32_t *dma1_mask = (volatile uint32_t *)(DMA1_BASE_ADDR + DMA_MASK_REG_OFFSET * 4);
+	volatile uint32_t *dma1_int_alloc = (volatile uint32_t *)(DMA1_BASE_ADDR + DMA1_INT_ALLOC_REG_OFFSET * 4);
+
 	*dma1_ctrl = 0;
 	*dma1_ctrl = 1;
-	*dma1_mask = 0xFFF;
+	*dma1_mask = 0;
 	*dma1_enable = 0;
 	*dma1_int_alloc = DMA1_INT_ALLOC_VALUE;
 }

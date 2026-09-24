@@ -359,7 +359,7 @@ static avdk_err_t h264_encode_ctlr_open(bk_h264_encode_ctlr_handle_t handle)
     control->enc_status = 1;
     control->enc_start_first = 1;
     bk_err_t ret = rtos_create_hsram_thread(&control->thread,
-                           BEKEN_DEFAULT_WORKER_PRIORITY,
+                           CONFIG_BK_ENCODER_H264_FRAME_TASK_PRIORITY,
                            "h264e_encoder",
                            (beken_thread_function_t)h264_encoder_entry,
                            CONFIG_BK_ENCODER_H264_TASK_SIZE,
@@ -546,6 +546,13 @@ static avdk_err_t h264_encode_ctlr_set_rate_ctrl(private_h264_encode_frame_ctlr_
         vcenc_rc.qp_max_pb = qp_p;
         vcenc_rc.qp_hdr = (int)qp_i;
         vcenc_rc.picture_rc = 0;
+        vcenc_rc.vbr = 0;
+        vcenc_rc.ctb_rc = H264_ENCODE_CTB_RC_DISABLE;
+        vcenc_rc.block_rc_size = 0;
+        vcenc_rc.cpb_max_rate = 0;
+        vcenc_rc.filler_data = 0;
+        vcenc_rc.hrd = 0;
+        vcenc_rc.hrd_cpb_size = 0;
         vcenc_rc.bit_per_second = 0;
     } else {
         vcenc_rc.qp_min_i = rate_ctrl->qp_min_i;
@@ -560,7 +567,16 @@ static avdk_err_t h264_encode_ctlr_set_rate_ctrl(private_h264_encode_frame_ctlr_
             return AVDK_ERR_INVAL;
         }
         vcenc_rc.qp_hdr = -1;
+        vcenc_rc.intra_qp_delta = H264_ENCODE_VBR_INTRA_QP_DELTA;
         vcenc_rc.picture_rc = 1;
+        vcenc_rc.vbr = 1;
+        vcenc_rc.ctb_rc = H264_ENCODE_CTB_RC_SUBJECTIVE;
+        vcenc_rc.block_rc_size = 0;
+        vcenc_rc.cpb_max_rate = 0;
+        vcenc_rc.filler_data = 0;
+        vcenc_rc.hrd = 0;
+        vcenc_rc.hrd_cpb_size = 0;
+        vcenc_rc.bitrate_window = h264_encode_vbr_bitrate_window_frames(&vcenc_rc);
         vcenc_rc.bit_per_second = rate_ctrl->bitrate;
     }
 
@@ -701,6 +717,41 @@ static avdk_err_t h264_encode_ctlr_ioctl(bk_h264_encode_ctlr_handle_t handle, ui
         }
         case BK_H264_ENCODE_IOCTL_SET_FRAME_READY: {
             rtos_set_semaphore(&control->enc_start_sem);
+            break;
+        }
+        case BK_H264_ENCODE_IOCTL_SET_INPUT_BUF: {
+            /*
+             * Frame-mode zero-copy: repoint the next encode at a new input
+             * frame. h264_encoder_entry latches config.input_buf into
+             * pending_in_buf right before each kick, so this simply updates the
+             * staged config; the next bk_h264_encode_start() picks it up.
+             */
+            bk_h264_encode_input_t *in = (bk_h264_encode_input_t *)arg;
+            if (in == NULL) {
+                LOGE("SET_INPUT_BUF arg is NULL\r\n");
+                return AVDK_ERR_INVAL;
+            }
+            control->config.input_buf = in->input_buf;
+            if (in->input_size != 0U) {
+                control->config.input_size = in->input_size;
+            }
+            break;
+        }
+        case BK_H264_ENCODE_IOCTL_GET_STREAM_INFO: {
+            bk_h264_encode_stream_info_t *si = (bk_h264_encode_stream_info_t *)arg;
+            if (si == NULL) {
+                LOGE("GET_STREAM_INFO arg is NULL\r\n");
+                return AVDK_ERR_INVAL;
+            }
+            if (!control->encoder_inited) {
+                si->intra_cu8_num = 0;
+                si->rd_cost = 0;
+                return AVDK_ERR_INVAL;
+            }
+            uint32_t intra = 0, rd = 0;
+            vcenc_h264_get_stream_info(&control->enc_param, &intra, &rd);
+            si->intra_cu8_num = intra;
+            si->rd_cost = rd;
             break;
         }
         default:

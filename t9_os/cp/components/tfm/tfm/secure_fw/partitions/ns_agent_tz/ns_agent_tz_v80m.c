@@ -14,13 +14,24 @@
 #include "tfm_arch.h"
 #include "tfm_hal_platform.h"
 #include "bk_tfm_ppc.h"
+#if CONFIG_SLEEP_RETENTION_NSC
+#include "tfm_sleep_context.h"
+#endif
 
 __used static void ns_init_hook(void)
 {
-    if (bk_ppc_apply_config_from_flash() != 0) {
+    /* Cold boot: cache both CP/AP configs while flash is still Secure, so the
+     * later AP-side PPHS apply reads from RAM (no flash access after CP marks
+     * flash Non-secure). */
+    if (bk_ppc_cache_load_from_flash() != 0 ||
+        bk_ppc_apply_cp_config_from_flash() != 0) {
         while (1) {
         }
     }
+    bk_ppc_set_ap_master_nsec();
+#if CONFIG_SLEEP_RETENTION_NSC
+    (void)tfm_sleep_context_refresh_ppro();
+#endif
 }
 
 __naked void ns_agent_tz_main(uint32_t c_entry)

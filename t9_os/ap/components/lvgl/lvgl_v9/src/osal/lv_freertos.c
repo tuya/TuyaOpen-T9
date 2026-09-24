@@ -12,7 +12,7 @@
 /*********************
  *      INCLUDES
  *********************/
-#include "lv_os.h"
+#include "lv_os_private.h"
 #if LV_USE_OS == LV_OS_FREERTOS
 
 #include "atomic.h"
@@ -59,19 +59,13 @@ static void prvTestAndDecrement(lv_thread_sync_t * pxCond,
  *  STATIC VARIABLES
  **********************/
 
-// Store critical section state for non-ISR version
-// Note: This implementation doesn't support nested critical sections
-// as the original code didn't save the return value
+/* Store critical section state for the Beken RTOS wrappers. */
 static uint32_t s_crit_state = 0;
 
 /**********************
  *      MACROS
  **********************/
 
-// Use rtos_enter_critical/rtos_exit_critical from rtos_pub_smp.c
-// These functions return/save interrupt state for proper nesting support
-// Note: The original implementation didn't save return value, so we use a static variable
-// to store the state. This may not support nested calls properly.
 #define _enter_critical()   do { \
     s_crit_state = rtos_enter_critical(); \
 } while(0)
@@ -93,14 +87,25 @@ lv_result_t lv_thread_init(lv_thread_t * pxThread,  const char * const name,
     pxThread->pTaskArg = xAttr;
     pxThread->pvStartRoutine = pvStartRoutine;
 
+    /* The thread ends by deleting itself in prvRunThread(). lv_thread_delete()
+     * joins on this semaphore instead of issuing a second vTaskDelete() on a
+     * handle the idle task may already have reaped. */
+    pxThread->xExitSem = xSemaphoreCreateBinary();
+    if(pxThread->xExitSem == NULL)
+    {
+        LV_LOG_ERROR("xSemaphoreCreateBinary failed!");
+        return LV_RESULT_INVALID;
+    }
+
 #if (CONFIG_SOC_SMP)
-    BaseType_t xTaskCreateStatus = rtos_create_hsram_thread(
-                                       (beken_thread_t *)&pxThread->xTaskHandle,
-                                       9 - tskIDLE_PRIORITY - xSchedPriority,
-                                       name,
-                                       prvRunThread,
-                                       (configSTACK_DEPTH_TYPE)(usStackSize / sizeof(StackType_t)),
-                                       (void *)pxThread);
+    /* rtos_create_hsram_thread() reports bk_err_t (kNoErr on success), not pdPASS. */
+    BaseType_t xTaskCreateStatus = (rtos_create_hsram_thread(
+                                        (beken_thread_t *)&pxThread->xTaskHandle,
+                                        9 - tskIDLE_PRIORITY - xSchedPriority,
+                                        name,
+                                        prvRunThread,
+                                        (configSTACK_DEPTH_TYPE)(usStackSize / sizeof(StackType_t)),
+                                        (void *)pxThread) == kNoErr) ? pdPASS : pdFAIL;
 #else
     BaseType_t xTaskCreateStatus = xTaskCreate(
                                        prvRunThread,
@@ -113,6 +118,8 @@ lv_result_t lv_thread_init(lv_thread_t * pxThread,  const char * const name,
 
     /* Ensure that the FreeRTOS task was successfully created. */
     if(xTaskCreateStatus != pdPASS) {
+        vSemaphoreDelete(pxThread->xExitSem);
+        pxThread->xExitSem = NULL;
         LV_LOG_ERROR("xTaskCreate failed!");
         return LV_RESULT_INVALID;
     }
@@ -122,7 +129,21 @@ lv_result_t lv_thread_init(lv_thread_t * pxThread,  const char * const name,
 
 lv_result_t lv_thread_delete(lv_thread_t * pxThread)
 {
-    vTaskDelete(pxThread->xTaskHandle);
+    if(pxThread->xExitSem == NULL)
+    {
+        LV_LOG_ERROR("thread not initialized or already deleted!");
+        return LV_RESULT_INVALID;
+    }
+
+    /* Wait for the thread to run off the end of its routine and delete itself.
+     * Deleting it from here as well would double-delete the task: on SMP the
+     * thread can finish on the other core and be reaped by the idle task
+     * before this call is reached, leaving xTaskHandle dangling. */
+    xSemaphoreTake(pxThread->xExitSem, portMAX_DELAY);
+
+    vSemaphoreDelete(pxThread->xExitSem);
+    pxThread->xExitSem = NULL;
+    pxThread->xTaskHandle = NULL;
 
     return LV_RESULT_OK;
 }
@@ -432,6 +453,11 @@ uint32_t lv_os_get_idle_percent(void)
     return pct;
 }
 
+void lv_sleep_ms(uint32_t ms)
+{
+    vTaskDelay(ms / portTICK_PERIOD_MS);
+}
+
 /**********************
  *   STATIC FUNCTIONS
  **********************/
@@ -442,6 +468,21 @@ static void prvRunThread(void * pxArg)
 
     /* Run the thread routine. */
     pxThread->pvStartRoutine((void *)pxThread->pTaskArg);
+
+    /* Hand ownership over to lv_thread_delete(). Nothing below this point may
+     * touch pxThread: the joiner is free to release the object containing it
+     * as soon as it wakes up, so latch the handle first. It is NULL only if
+     * lv_thread_init() failed after the task had already been started, in
+     * which case nobody is joining. */
+    SemaphoreHandle_t xExitSem = pxThread->xExitSem;
+
+    if(xExitSem != NULL)
+    {
+        xSemaphoreGive(xExitSem);
+    }else
+    {
+        LV_LOG_ERROR("xExitSem is NULL!");
+    }
 
     vTaskDelete(NULL);
 }

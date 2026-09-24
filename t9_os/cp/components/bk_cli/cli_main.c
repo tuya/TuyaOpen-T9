@@ -1436,7 +1436,10 @@ int bk_cli_init(void)
 
 #if CONFIG_CLI
 	if(pCli != NULL) {
-		// already initialized
+		/* driver_init may have triggered bk_cli_init before bk_event_init */
+#if (CLI_CFG_WIFI == 1)
+		BK_LOG_ON_ERR(cli_wifi_register_event_cbs());
+#endif
 		return kNoErr;
 	}
 
@@ -1489,6 +1492,10 @@ int bk_cli_init(void)
 #endif //CONFIG_DEBUG_VERSION
 
 /*----------------WIFI cli command init end----------------------*/
+#if CONFIG_QUICK_TRACK
+	cli_quicktrack_init();
+#endif
+
 #if (CLI_CFG_SCR == 1)
 	cli_scr_init();
 #endif

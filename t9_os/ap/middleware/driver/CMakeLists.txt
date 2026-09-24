@@ -21,7 +21,6 @@ set(incs
 	icu
 	i2c
 	ipi
-	sdcard
 	saradc
 	pmu
 	mailbox
@@ -162,7 +161,6 @@ if (CONFIG_I2S)
 
 	list(APPEND srcs
 		i2s/i2s_driver.c
-		i2s/i2s_multi_driver.c
 	)
 endif()
 
@@ -279,6 +277,7 @@ elseif (CONFIG_AUD_DRIVER_V2)
 	if (CONFIG_AUDIO_DAC)
 			list(APPEND srcs
 				"audio/aud/V2/aud_dac_driver.c"
+				"audio/aud/V2/aud_dac_drc_driver.c"
 				)
 	endif()
 endif() # CONFIG_AUD_DRIVER_V1 / V2
@@ -338,6 +337,7 @@ if (CONFIG_ETH)
 		eth/phy/micrel_ksz90x1.c
 		eth/phy/miiphyutil.c
 		eth/phy/realtek.c
+		eth/phy/jlsemi.c
 	)
 endif()
 

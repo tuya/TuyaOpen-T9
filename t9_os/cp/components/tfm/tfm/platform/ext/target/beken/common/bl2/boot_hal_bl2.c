@@ -20,6 +20,7 @@
 #include "driver/efuse.h"
 #include "driver/wdt.h"
 #include "hal_hw_fih.h"
+#include "bk_tfm_log.h"
 
 #define EFUSE_SECURBOOT_ADDR     0
 #define TAG "bl2_boot"
@@ -183,14 +184,6 @@ int32_t boot_platform_init(void)
 
 int32_t boot_platform_post_init(void)
 {
-    /* BK7259 bring-up: re-disable the AON watchdog right before the crypto
-     * (dubhe TE200) init. The bootrom arms the AON WDT (~1.024s) and the dubhe
-     * driver init (ACA/HASH/SCA/TRNG/OTP self-tests, plus the bring-up UART
-     * markers) can run long enough to trip it, which looked like a "crash" mid
-     * dubhe init (the reset point jittered between D2 and A0). Keep the WDT off
-     * here so the boot chain isn't reset under us. */
-    close_wdt();
-
 #ifdef CRYPTO_HW_ACCELERATOR
     int32_t result;
 
@@ -199,7 +192,7 @@ int32_t boot_platform_post_init(void)
         return 1;
     }
 
-    FIH_LOOP4(fih_delay_init());
+    fih_delay_init();
 #else
     dubhe_driver_init(0x42110000);
 #endif /* CRYPTO_HW_ACCELERATOR */
@@ -250,7 +243,7 @@ void boot_platform_quit(struct boot_arm_vector_table *vt)
 #endif /* FLASH_DEV_NAME_SCRATCH */
 
     vt_cpy = vt;
-    BK_LOGI(TAG, "Jump to tfm, msp=0x%x pc=0x%x\r\n", vt_cpy->msp, vt_cpy->reset);
+    BK_LOG_FORCE("[%s] Jump to tfm pc=0x%x\r\n", TAG, vt_cpy->reset);
 #if defined(__ARM_ARCH_8M_MAIN__) || defined(__ARM_ARCH_8M_BASE__) \
  || defined(__ARM_ARCH_8_1M_MAIN__)
     /* Restore the Main Stack Pointer Limit register's reset value

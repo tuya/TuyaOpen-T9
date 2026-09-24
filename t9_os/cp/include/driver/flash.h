@@ -105,24 +105,6 @@ bk_err_t bk_flash_write_enable(void);
 bk_err_t bk_flash_write_disable(void);
 
 /**
- * @brief     Set flash protect type
- *
- * @param type flash protect type
- *
- * @return
- *    - BK_OK: succeed
- *    - others: other errors.
- */
-bk_err_t bk_flash_set_protect_type(flash_protect_type_t type);
-
-/**
- * @brief     Get flash protect type
- *
- * @return the flash protect type
- */
-flash_protect_type_t bk_flash_get_protect_type(void);
-
-/**
  * @brief     Get flash status register value
  *
  * @return the flash status register value
@@ -225,6 +207,36 @@ bk_err_t bk_flash_write_bytes(uint32_t address, const uint8_t *user_buf, uint32_
  *    - others: other errors.
  */
 bk_err_t bk_flash_read_bytes(uint32_t address, uint8_t *user_buf, uint32_t size);
+
+#if !CONFIG_SPE
+typedef bk_err_t (*bk_flash_busy_cb_t)(void *arg);
+
+/**
+ * @brief     Read data from flash and run a callback while manual read is busy
+ *
+ * This API runs from IRAM. It starts a DBUS manual read and invokes
+ * @p busy_cb exactly once for the transfer. The callback runs inside the flash
+ * busy window when observed, otherwise right after the op completes (the busy
+ * pulse can be too short to sample); either way the manual read is always
+ * finished and its FIFO drained before returning. The callback must be short
+ * and IRAM-safe.
+ *
+ * @param address address to read
+ * @param user_buf the buffer to read the data
+ * @param size size to read
+ * @param busy_cb callback invoked once for the transfer; NULL to only read
+ * @param busy_arg argument passed to @p busy_cb
+ *
+ * @return
+ *    - BK_OK: succeed
+ *    - BK_ERR_FLASH_ADDR_OUT_OF_RANGE: flash address is out of range
+ *    - others: error returned by @p busy_cb (the read FIFO is still drained).
+ */
+bk_err_t bk_flash_read_bytes_with_busy_cb(uint32_t address, uint8_t *user_buf,
+					  uint32_t size,
+					  bk_flash_busy_cb_t busy_cb,
+					  void *busy_arg);
+#endif
 
 /**
  * @brief     Read data from flas
@@ -343,31 +355,58 @@ bk_err_t bk_flash_set_operate_status(flash_op_status_t status);
 __attribute__((section(".itcm_sec_code"))) flash_op_status_t bk_flash_get_operate_status(void);
 
 /**
- * @brief  register a callback to be called when flash is busy waiting.
- * @param wait_cb:If flash is writing/erasing, it will block all of other applications.
- *                But maybe the application can't be blocked when flash is writing/erasing.
- *                So the application should register this wait_cb to flash.
- *                When flash is writing/erasing, it will call this wait_cb
+ * @brief  Register a generic flash operation notify callback (array-based).
+ *
+ * Preferred registration path for peripherals that must be paused around
+ * flash erase/write. Every registered callback is invoked with busy=1 before
+ * the flash operation and busy=0 after it (see flash_op_notify_callback_t).
+ *
+ * Notes:
+ *   - The callback runs inside the flash operation path; it MUST NOT trigger
+ *     another flash erase/write, otherwise it will dead-lock.
+ *   - Registering the same callback again only updates its args.
+ *
+ * @param notify_cb the callback to register (must not be NULL).
+ * @param args opaque context passed back to the callback.
  *
  * @return
  *    - BK_OK: succeed
- *    - others: registered too many(>4) wait_cb to flash.
+ *    - BK_ERR_FLASH_WAIT_CB_FULL: no free slot left
+ *    - BK_ERR_PARAM: notify_cb is NULL
  */
-bk_err_t mb_flash_register_op_notify(void * notify_cb);
+bk_err_t mb_flash_register_op_notify_cb(flash_op_notify_callback_t notify_cb, void *args);
 
 /**
- * @brief  unregister the wait_cb from flash waiting.
+ * @brief  Unregister a generic flash operation notify callback.
  *
- * @param wait_cb:If flash is writing/erasing, it will block all of other applications.
- *                But maybe the application can't be blocked when flash is writing/erasing.
- *                So the application should register this wait_cb to flash.
- *                When flash is writing/erasing, it will call this wait_cb
+ * @param notify_cb the callback previously registered.
  *
  * @return
  *    - BK_OK: succeed
- *    - others: The wait_cb isn't registered to flash.
+ *    - BK_ERR_FLASH_WAIT_CB_NOT_REGISTER: notify_cb was not registered
  */
-bk_err_t mb_flash_unregister_op_notify(void * notify_cb);
+bk_err_t mb_flash_unregister_op_notify_cb(flash_op_notify_callback_t notify_cb);
+
+/**
+ * @brief  register a callback to be called before/after flash operation for onboard mic stream.
+ *
+ * @param notify_cb callback function.
+ * @param args callback argument.
+ *
+ * @return
+ *    - BK_OK: succeed
+ *    - others: other errors.
+ */
+bk_err_t mb_flash_register_op_onboard_mic_stream_notify(void *notify_cb, void *args);
+
+/**
+ * @brief  unregister onboard mic stream flash operation callback.
+ *
+ * @return
+ *    - BK_OK: succeed
+ *    - others: other errors.
+ */
+bk_err_t mb_flash_unregister_op_onboard_mic_stream_notify(void);
 
 /**
  * @brief  Get status if it is ready to erase flash, which means ble would sleep more than 56ms period.
@@ -436,5 +475,3 @@ bk_err_t bk_flash_power_saving_exit(void);
 #ifdef __cplusplus
 }
 #endif
-
-

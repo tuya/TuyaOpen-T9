@@ -287,7 +287,7 @@ static void phy_sys_drv_modem_clk_ctrl_on(void)
 
 static int bk_flash_read_bytes_wrapper(uint32_t address, uint8_t *user_buf, uint32_t size)
 {
-#if (CONFIG_OTP && CONFIG_PHY_RFCALI_TO_OTP)
+#if (CONFIG_OTP_V1 && CONFIG_PHY_RFCALI_TO_OTP)
     return BK_ERR_NOT_SUPPORT;
 #else
     return bk_flash_read_bytes(address, user_buf, size);
@@ -296,7 +296,7 @@ static int bk_flash_read_bytes_wrapper(uint32_t address, uint8_t *user_buf, uint
 
 static int bk_flash_erase_sector_wrapper(uint32_t address)
 {
-#if (CONFIG_OTP && CONFIG_PHY_RFCALI_TO_OTP)
+#if (CONFIG_OTP_V1 && CONFIG_PHY_RFCALI_TO_OTP)
     return BK_ERR_NOT_SUPPORT;
 #else
     return bk_flash_erase_sector(address);
@@ -305,7 +305,7 @@ static int bk_flash_erase_sector_wrapper(uint32_t address)
 
 static int bk_flash_write_bytes_wrapper(uint32_t address, const uint8_t *user_buf, uint32_t size)
 {
-#if (CONFIG_OTP && CONFIG_PHY_RFCALI_TO_OTP)
+#if (CONFIG_OTP_V1 && CONFIG_PHY_RFCALI_TO_OTP)
     return BK_ERR_NOT_SUPPORT;
 #else
     return bk_flash_write_bytes(address, user_buf, size);
@@ -314,7 +314,7 @@ static int bk_flash_write_bytes_wrapper(uint32_t address, const uint8_t *user_bu
 
 static uint32_t bk_flash_partition_get_rf_firmware_info(void)
 {
-#if (CONFIG_OTP && CONFIG_PHY_RFCALI_TO_OTP)
+#if (CONFIG_OTP_V1 && CONFIG_PHY_RFCALI_TO_OTP)
     return 0;
 #else
     bk_logic_partition_t * pt = NULL;
@@ -328,7 +328,8 @@ static bk_err_t bk_flash_set_protect_type_protect_none(void)
 #if (CONFIG_OTP && CONFIG_PHY_RFCALI_TO_OTP)
     return BK_ERR_NOT_SUPPORT;
 #else
-    return bk_flash_set_protect_type(FLASH_PROTECT_NONE);
+    /* Flash protection is now managed internally by the flash erase/write API. */
+    return BK_OK;
 #endif
 }
 
@@ -337,7 +338,8 @@ static bk_err_t bk_flash_set_protect_type_unprotect_last_block(void)
 #if (CONFIG_OTP && CONFIG_PHY_RFCALI_TO_OTP)
     return BK_ERR_NOT_SUPPORT;
 #else
-    return bk_flash_set_protect_type(FLASH_UNPROTECT_LAST_BLOCK);
+    /* Flash protection is now managed internally by the flash erase/write API. */
+    return BK_OK;
 #endif
 }
 
@@ -828,6 +830,7 @@ const phy_os_funcs_t g_phy_os_funcs = {
     ._me_is_connect_with_instrument         = me_is_connect_with_instrument,
     ._bk_epa_gpio_config                    = bk_epa_gpio_config,
     ._bk_get_package_type                   = bk_get_package_type,
+    ._sys_drv_get_temp_mode_flag            = sys_drv_get_temp_mode_flag,
 };
 
 const phy_os_variable_t g_phy_os_variable = {
@@ -856,9 +859,6 @@ const phy_os_variable_t g_phy_os_variable = {
 #endif
     ._dd_dev_type_sctrl      = DD_DEV_TYPE_SCTRL,
     ._dd_dev_type_icu        = DD_DEV_TYPE_ICU,
-#if CONFIG_FLASH_ORIGIN_API
-    ._dd_dev_type_flash      = DD_DEV_TYPE_FLASH,
-#endif
     ._chip_version_a         = CHIP_VERSION_A,
     ._chip_version_b         = CHIP_VERSION_B,
     ._chip_version_c         = CHIP_VERSION_C,
@@ -901,10 +901,12 @@ const phy_os_variable_t g_phy_os_variable = {
     ._ieee80211_num_bands           = IEEE80211_NUM_BANDS ,
 
 #if CONFIG_OTP_V1
+    ._OTP_MAC_ADDRESS1              = OTP_MAC_ADDRESS_1,
     ._OTP_RFCALI1                   = OTP_RFCALI1,
     ._OTP_VDDDIG_BANDGAP            = OTP_VDDDIG_BANDGAP ,
     ._OTP_DIA                       = OTP_DIA ,
     ._OTP_GADC_TEMPERATURE          = OTP_GADC_TEMPERATURE,
+    ._OTP_DEVICE_ID                 = OTP_DEVICE_ID,
 #endif
     ._BK_PACKAGE_TYPE_A_OLD_128A_S_MIC           = BK_PACKAGE_TYPE_A_OLD_128A_S_MIC,
     ._BK_PACKAGE_TYPE_A_NEW_128A_S_MIC           = BK_PACKAGE_TYPE_A_NEW_128A_S_MIC,

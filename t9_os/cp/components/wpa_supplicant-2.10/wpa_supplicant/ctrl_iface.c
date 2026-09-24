@@ -63,6 +63,7 @@
 #include "driver_i.h"
 #include "bk_rw.h"
 #include "rwnx_defs.h"
+#include "rw_ieee80211.h"
 #if (CONFIG_EASY_FLASH && CONFIG_EASY_FLASH_V4)
 #include "bk_ef.h"
 #endif
@@ -777,9 +778,18 @@ int wpa_supplicant_ctrl_iface_set_network(struct wpa_supplicant *wpa_s, wlan_sta
 			//}
 		}
 		break;
-	case WLAN_STA_FIELD_WEP_KEY0:
-		//wpa_config_parse_wep_key
-		break;
+	case WLAN_STA_FIELD_WEP_KEY0: {
+		//wpa_config_parse_wep_key, set_wep_key
+		char *key = config->u.wep_key;
+		int key_len = strlen(key);
+		if (key_len == 5 || key_len == 13) {
+			memcpy(ssid->wep_key[0], key, key_len);
+			ssid->wep_key_len[0] = key_len;
+		} else if (key_len == 10 || key_len == 26) {
+			ssid->wep_key_len[0] = key_len / 2;
+			hexstr2bin(key, ssid->wep_key[0], ssid->wep_key_len[0]);
+		}
+	}	break;
 	case WLAN_STA_FIELD_WEP_KEY1:
 		break;
 	case WLAN_STA_FIELD_WEP_KEY2:
@@ -1685,6 +1695,7 @@ int wpa_supplicant_ctrl_iface_receive(wpah_msg_t *msg)
 		if (hostapd_has_p2p_group_bss()) {
 			if (hostapd_disable_infra_bss() < 0)
 				res = -1;
+			rwnx_csa_release();
 			break;
 		}
 #endif
@@ -1693,13 +1704,7 @@ int wpa_supplicant_ctrl_iface_receive(wpah_msg_t *msg)
 			hostapd_started = 0;
 		}
 
-		struct rwnx_hw *rwnx_hw = &g_rwnx_hw;
-		if(rwnx_hw->csa)
-		{
-			os_free(rwnx_hw->csa->bcn_ptr);
-			os_free(rwnx_hw->csa);
-			rwnx_hw->csa = 0;
-		}
+		rwnx_csa_release();
 	}	break;
 
 	case WPA_CTRL_CMD_AP_SET:
@@ -1944,6 +1949,7 @@ int wpa_supplicant_ctrl_iface_receive(wpah_msg_t *msg)
 #if CONFIG_P2P_SOFTAP_CHAN_ALIGN
 				if (hostapd_has_infra_bss()) {
 					hostapd_disable_p2p_bss();
+					rwnx_csa_release();
 					break;
 				}
 #endif
@@ -1951,13 +1957,7 @@ int wpa_supplicant_ctrl_iface_receive(wpah_msg_t *msg)
 					hostapd_main_exit();
 					hostapd_started = 0;
 				}
-				struct rwnx_hw *rwnx_hw = &g_rwnx_hw;
-				if(rwnx_hw->csa)
-				{
-					os_free(rwnx_hw->csa->bcn_ptr);
-					os_free(rwnx_hw->csa);
-					rwnx_hw->csa = 0;
-				}
+				rwnx_csa_release();
 			}
 		} else {
 			// Not in P2P group, just disable supplicant

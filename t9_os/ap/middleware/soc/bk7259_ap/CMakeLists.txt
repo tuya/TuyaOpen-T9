@@ -6,12 +6,12 @@ if(NOT "${target}" STREQUAL "bk7259_ap")
 endif()
 
 set(incs
-	soc
-	hal
-	./
-	./misc
+	${CMAKE_CURRENT_LIST_DIR}/soc
+	${CMAKE_CURRENT_LIST_DIR}/hal
+	${CMAKE_CURRENT_LIST_DIR}
+	${CMAKE_CURRENT_LIST_DIR}/misc
 	)
-set(srcs "misc/stub.c")
+set(srcs)
 
 list(APPEND incs
 	$ENV{PROJECT_DIR}/ap/config/${target}/
@@ -68,7 +68,6 @@ list(APPEND srcs
 	"hal/sdio1_hal_debug.c"
 	"hal/qspi_hal_debug.c"
 	"hal/i2s_hal.c"
-	"hal/i2s_multi_hal.c"
 	"hal/ckmn_hal_debug.c"
 	"hal/lin_hal_debug.c"
 	#"hal/scr_hal.c"

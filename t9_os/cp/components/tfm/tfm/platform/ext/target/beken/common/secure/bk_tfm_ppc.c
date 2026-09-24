@@ -18,6 +18,7 @@
 #include "driver/efuse.h"
 #include "sys_driver.h"
 #include "bk_tfm_ppc.h"
+#include "cmsis.h"
 #include "common/bk_err.h"
 #include "partitions_gen.h"
 
@@ -34,6 +35,14 @@ extern bk_err_t bk_flash_read_bytes(uint32_t address, uint8_t *user_buf,
 
 static sys_lock_ctx_t s_ppc_lock;
 static uint32_t s_sys_ns_flag;
+
+/* Cold-boot cache of the plaintext CP/AP protection configs. Loaded once while
+ * flash is still Secure; every later apply reads from RAM so the secure world
+ * never touches the flash controller after CP marks the flash region Non-secure
+ * (and so the config survives for AP re-prepare / register restore). */
+static uint32_t s_cp_config[BK_PPC_CONFIG_WORD_COUNT];
+static uint32_t s_ap_config[BK_PPC_CONFIG_WORD_COUNT];
+static bool s_ppc_cache_valid;
 
 static uint32_t ppc_get_bit(uint32_t reg, uint32_t bit)
 {   
@@ -55,6 +64,38 @@ static void ppc_clear_bit(uint32_t reg, uint32_t bit)
     REG_WRITE((SOC_PPRO_REG_BASE + (reg << 2)), v);
 }       
 
+void bk_ppc_copy_cp_config_to_snapshot(uint32_t dest[BK_PPC_CONFIG_WORD_COUNT])
+{
+	if (dest == NULL) {
+		return;
+	}
+
+	if (bk_ppc_cache_load_from_flash() != BK_OK) {
+		for (uint32_t i = 0u; i < BK_PPC_CONFIG_WORD_COUNT; i++) {
+			dest[i] = 0u;
+		}
+		return;
+	}
+
+	for (uint32_t i = 0u; i < BK_PPC_CONFIG_WORD_COUNT; i++) {
+		dest[i] = s_cp_config[i];
+	}
+}
+
+void bk_ppc_set_ap_master_nsec(void)
+{
+#if CONFIG_AP_BOOT_NSC
+    /* AP master access security attribute, PPRO reg0xF[3:2]. PPRO is a Secure
+     * register, so the secure world sets the AP master Non-secure here; the CP
+     * Non-secure world then reaches the AP SYS/AHBP registers through the NS
+     * alias. Applied after the CP config so the config words cannot clear it. */
+    ppc_set_bit(0xF, 2);
+    ppc_set_bit(0xF, 3);
+    __DSB();
+    __ISB();
+#endif
+}
+
 int bk_ppc_apply_config(const uint32_t config[BK_PPC_CONFIG_WORD_COUNT])
 {
     if (config == NULL) {
@@ -74,9 +115,10 @@ int bk_pphs_apply_config(const uint32_t config[BK_PPHS_CONFIG_WORD_COUNT])
         return BK_ERR_PARAM;
     }
 
-    /* Apply PPHS reg4..6 as masks; leave master bank (reg7) untouched.
-     * Flash config marks SYS Non-Secure (ahbp_ahb_sys_nsec) so CP NS can
-     * program AP SysCfg; Secure AHBP access after this must use the NS alias. */
+    /* Apply PPHS reg4..7 as masks, including the master security/privilege
+     * bank used by VIDP_M and the other AP bus masters. Flash config marks SYS
+     * Non-Secure so CP NS can program AP SysCfg; Secure AHBP access after this
+     * must use the NS alias. */
     for (uint32_t i = 0; i < BK_PPHS_CONFIG_WORD_COUNT; i++) {
         volatile uint32_t *reg =
             (volatile uint32_t *)(SOC_PPHS_REG_BASE + ((0x4u + i) << 2));
@@ -121,32 +163,69 @@ static int ppc_load_config(uint32_t flash_offset,
     return BK_OK;
 }
 
-int bk_ppc_apply_config_from_flash(void)
+int bk_ppc_cache_load_from_flash(void)
 {
-    uint32_t cp_config[BK_PPC_CONFIG_WORD_COUNT];
-    uint32_t ap_config[BK_PPC_CONFIG_WORD_COUNT];
+    if (s_ppc_cache_valid) {
+        return BK_OK;
+    }
 
-    /* Read and validate both plaintext images before changing either block. */
-    if (ppc_load_config(PPC_CP_CONFIG_FLASH_OFFSET, cp_config) != BK_OK ||
-        ppc_load_config(PPC_AP_CONFIG_FLASH_OFFSET, ap_config) != BK_OK) {
+    /* Read and validate both plaintext images before caching either block. */
+    if (ppc_load_config(PPC_CP_CONFIG_FLASH_OFFSET, s_cp_config) != BK_OK ||
+        ppc_load_config(PPC_AP_CONFIG_FLASH_OFFSET, s_ap_config) != BK_OK) {
         return BK_FAIL;
     }
 
-    if (bk_ppc_apply_config(cp_config) != BK_OK ||
-        bk_pphs_apply_config(ap_config) != BK_OK) {
+    s_ppc_cache_valid = true;
+    return BK_OK;
+}
+
+int bk_ppc_apply_config_from_flash(void)
+{
+    if (bk_ppc_cache_load_from_flash() != BK_OK) {
+        return BK_FAIL;
+    }
+
+    if (bk_ppc_apply_config(s_cp_config) != BK_OK ||
+        bk_pphs_apply_config(s_ap_config) != BK_OK) {
         return BK_FAIL;
     }
 
     return BK_OK;
 }
 
+int bk_ppc_apply_cp_config_from_flash(void)
+{
+    if (bk_ppc_cache_load_from_flash() != BK_OK) {
+        return BK_FAIL;
+    }
+
+    return bk_ppc_apply_config(s_cp_config);
+}
+
+int bk_pphs_apply_ap_config_from_flash(void)
+{
+    if (bk_ppc_cache_load_from_flash() != BK_OK) {
+        return BK_FAIL;
+    }
+
+    return bk_pphs_apply_config(s_ap_config);
+}
+
 int bk_ppc_init(void)
 {
-    *((volatile uint32_t *)(SOC_PPRO_REG_BASE + 2 * 4)) = 1;
-    *((volatile uint32_t *)(SOC_PPRO_REG_BASE + 8 * 4)) = BIT(16);
-    *((volatile uint32_t *)(SOC_PPRO_REG_BASE + 5 * 4)) = 0;
-    *((volatile uint32_t *)(SOC_PPRO_REG_BASE + 11 * 4)) = 0;
-    return 0;
+	volatile uint32_t *ppro_reg2 =
+		(volatile uint32_t *)(SOC_PPRO_REG_BASE + 2u * 4u);
+
+	/* Pulse SOFT_RESET then release; leaving bit0 set hangs reg4+ R/W. */
+	*ppro_reg2 = 1u;
+	__DSB();
+	*ppro_reg2 = 0u;
+	__DSB();
+
+	*((volatile uint32_t *)(SOC_PPRO_REG_BASE + 8u * 4u)) = BIT(16);
+	*((volatile uint32_t *)(SOC_PPRO_REG_BASE + 5u * 4u)) = 0u;
+	*((volatile uint32_t *)(SOC_PPRO_REG_BASE + 11u * 4u)) = 0u;
+	return 0;
 }
 
 uint32_t bk_ppc_lock_flash(void)

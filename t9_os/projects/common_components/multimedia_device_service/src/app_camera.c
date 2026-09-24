@@ -123,16 +123,6 @@ void *app_isp_handle_get(void)
     return isp_cam_handle.isp_handle;
 }
 
-bk_isp_camera_ctlr_handle_t app_isp_camera_ctlr_handle_get(void)
-{
-    return isp_cam_handle.camera_ctlr_handle;
-}
-
-bk_camera_sensor_handle_t app_isp_camera_sensor_handle_get(void)
-{
-    return isp_cam_handle.sensor_handle;
-}
-
 int app_isp_camera_turn_off(void)
 {
     LOGI("%s\n", __func__);
@@ -233,11 +223,11 @@ int app_isp_dvp_camera_turn_on(camera_parameters_ext_t *paramters)
     bus_config.pin_scl = camera_board_config->mipi.pin_scl;
     bus_config.pin_sda = camera_board_config->mipi.pin_sda;
     bus_config.i2c_id = camera_board_config->mipi.i2c_id;
+    bus_config.pin_xclk = camera_board_config->mipi.pin_xclk;
 
     bk_camera_sensor_config_t sensor_config = {
         .pin_reset = camera_board_config->mipi.pin_reset,
         .pin_pwdn = camera_board_config->mipi.pin_pwdn,
-        .pin_xclk = camera_board_config->mipi.pin_xclk,
     };
 
     if (paramters->camera_width > camera_board_config->mipi.sensor_max_width || paramters->camera_width == 0)
@@ -358,11 +348,11 @@ int app_isp_mipi_sensor_turn_on(const camera_board_config_t *config, bk_isp_came
     bus_config.pin_scl = camera_board_config->mipi.pin_scl;
     bus_config.pin_sda = camera_board_config->mipi.pin_sda;
     bus_config.i2c_id = camera_board_config->mipi.i2c_id;
+    bus_config.pin_xclk = camera_board_config->mipi.pin_xclk;
 
     bk_camera_sensor_config_t sensor_config = {
         .pin_reset = camera_board_config->mipi.pin_reset,
         .pin_pwdn = camera_board_config->mipi.pin_pwdn,
-        .pin_xclk = camera_board_config->mipi.pin_xclk,
     };
 
     LOGI("%s width: %d, height: %d, fps: %d\n", __func__, config->mipi.sensor_max_width, config->mipi.sensor_max_height, config->mipi.sensor_fps);
@@ -561,11 +551,11 @@ int app_isp_dual_camera_turn_on(camera_parameters_ext_t *paramters)
     bus_config.pin_scl = camera_board_config->mipi.pin_scl;
     bus_config.pin_sda = camera_board_config->mipi.pin_sda;
     bus_config.i2c_id = camera_board_config->mipi.i2c_id;
+    bus_config.pin_xclk = camera_board_config->mipi.pin_xclk;
 
     bk_camera_sensor_config_t sensor_config = {
         .pin_reset = camera_board_config->mipi.pin_reset,
         .pin_pwdn = camera_board_config->mipi.pin_pwdn,
-        .pin_xclk = camera_board_config->mipi.pin_xclk,
     };
 
     if (paramters->camera_width > camera_board_config->mipi.sensor_max_width || paramters->camera_width == 0)

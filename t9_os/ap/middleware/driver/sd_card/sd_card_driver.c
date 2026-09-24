@@ -30,42 +30,21 @@
 #include "sd_card_driver.h"
 #include "gpio_driver.h"
 
-// Modified by TUYA Start
-/* Which physical SDIO host controller the SD card is wired to.
- *
- * Board-driven selection (matches the legacy usr_sdio design): the active pin
- * group configured in the Tuya adapter (usr_sdio.c) is the single source of
- * truth, exposed via sdio_board_use_sdio1() which derives 0/1 from that pin
- * group. usr_sdio.c provides the STRONG (pin-derived) override; the weak default
- * below only applies when usr_sdio is not linked, in which case it falls back to
- * the compile-time CONFIG_SDCARD_HOST_ID.
- *
- * SDCARD_HOST_ID is therefore a RUNTIME expression (a function call), not a
- * compile-time constant macro — it must never be used to initialize a file-scope
- * static (C requires constant initializers). All uses here are inside functions. */
-uint8_t __attribute__((weak)) sdio_board_use_sdio1(void)
-{
+/* Which physical SDIO host controller the SD card is wired to. The single
+ * source of truth is CONFIG_SDCARD_HOST_ID (0 = SDIO0, 1 = SDIO1), an int
+ * Kconfig that always has a value when SDCARD is enabled. The selection is
+ * applied at runtime by passing SDCARD_HOST_ID to the generic bk_sdio_host_*()
+ * API. */
 #if defined(CONFIG_SDCARD_HOST_ID)
-	return (CONFIG_SDCARD_HOST_ID == 1) ? 1 : 0;
+#define SDCARD_HOST_ID   ((sdio_host_id_t)CONFIG_SDCARD_HOST_ID)
 #else
-	return 0;
+#define SDCARD_HOST_ID   SDIO_HOST_ID_0
 #endif
-}
-#define SDCARD_HOST_ID   (sdio_board_use_sdio1() ? SDIO_HOST_ID_1 : SDIO_HOST_ID_0)
-
-uint8_t __attribute__((weak)) sdio_board_bus_width(void)
-{
-#if defined(CONFIG_SDCARD_BUSWIDTH_4LINE) && CONFIG_SDCARD_BUSWIDTH_4LINE
-	return 4;
-#else
-	return 1;
-#endif
-}
 
 /* Board card-detect predicate registered via bk_sd_card_set_present_cb() (see
  * sd_card.h). NULL means no board hook: presence is treated as "unknown" and the
- * stack keeps the original retry behavior. A board (e.g. the TuyaOS app) registers
- * a callback that reads the actual SDCD GPIO. */
+ * stack keeps the original retry behavior. A board registers a callback that
+ * reads the actual SDCD GPIO. */
 static bk_sd_card_present_cb_t s_present_cb = NULL;
 
 bk_err_t bk_sd_card_set_present_cb(bk_sd_card_present_cb_t cb)
@@ -78,7 +57,6 @@ uint8_t bk_sd_card_is_present(void)
 {
 	return s_present_cb ? s_present_cb() : 1;
 }
-// Modified by TUYA End
 
 #define SDIO_CARD_STABLE_TIMEOUT_MS  50
 /* Number of times we re-issue CMD0+CMD8 during sd_card_identify() before
@@ -101,74 +79,50 @@ static bool s_sd_card_is_init = false;
 static sd_card_obj_t s_sd_card_obj = {0};
 static uint32_t sdio_rca = 0xAAAA0000;
 
-// Modified by TUYA Start
-extern bk_err_t user_sdio_force_data3_high(void) __attribute__((weak));
-extern bk_err_t user_sdio_restore_data3(void) __attribute__((weak));
-// Modified by TUYA End
-
-// Modified by TUYA Start
-#if CONFIG_USR_GPIO_CFG_EN
+#if CONFIG_SDCARD_BUSWIDTH_4LINE && CONFIG_USR_GPIO_CFG_EN
 static gpio_dev_t sd_card_data3_func(sdio_host_id_t host_id)
 {
 	return (host_id == SDIO_HOST_ID_1) ?
 		GPIO_DEV_SDIO1_HOST_DATA3 : GPIO_DEV_SDIO_HOST_DATA3;
 }
-#endif
-// Modified by TUYA End
+
+/* SD cards sample CD/DAT3 (CS) when CMD0 is received. Some boards wire an
+ * on-board SD-NAND to the 4-bit bus and rely on the host DAT3 pad to idle high;
+ * on BK7259 this is not always strong enough during 1-bit identification. Keep
+ * the project pinmux table standard (DATA3 is configured as SDIO in
+ * usr_gpio_cfg.h), but temporarily detach that pad and drive it high until the
+ * card is enumerated. The pad is restored to SDIO DATA3 before ACMD6 switches
+ * the card to 4-bit mode. */
 static bk_err_t sd_card_force_data3_high(sdio_host_id_t host_id,
 					 gpio_dev_t *data3_func)
 {
-// Modified by TUYA Start
-	*data3_func = GPIO_DEV_INVALID;
+	gpio_dev_t func = sd_card_data3_func(host_id);
+	gpio_id_t gpio_id = gpio_get_id_by_func(func);
+	bk_err_t ret;
 
-	if (user_sdio_force_data3_high)
-		return user_sdio_force_data3_high();
+	*data3_func = func;
 
-#if CONFIG_USR_GPIO_CFG_EN
-	{
-		gpio_dev_t func = sd_card_data3_func(host_id);
-		gpio_id_t gpio_id = gpio_get_id_by_func(func);
-		bk_err_t ret;
-
-		*data3_func = func;
-
-		if (gpio_id >= SOC_GPIO_NUM) {
-			SD_CARD_LOGE("DATA3 function %u is not configured in usr_gpio_cfg.h\r\n",
-				     (unsigned)func);
-			return BK_FAIL;
-		}
-
-		ret = gpio_dev_unprotect_map(gpio_id, GPIO_DEV_GPIO_OUTPUT);
-		if (ret != BK_OK)
-			return ret;
-
-		return bk_gpio_set_output_high(gpio_id);
+	if (gpio_id >= SOC_GPIO_NUM) {
+		SD_CARD_LOGE("DATA3 function %u is not configured in usr_gpio_cfg.h\r\n",
+			     (unsigned)func);
+		return BK_FAIL;
 	}
-#else
-	(void)host_id;
-	SD_CARD_LOGE("no way to drive DATA3 high for 4-bit init\r\n");
-	return BK_FAIL;
-#endif
-// Modified by TUYA End
+
+	ret = gpio_dev_unprotect_map(gpio_id, GPIO_DEV_GPIO_OUTPUT);
+	if (ret != BK_OK)
+		return ret;
+
+	return bk_gpio_set_output_high(gpio_id);
 }
 
 static bk_err_t sd_card_restore_data3_func(gpio_dev_t data3_func)
 {
-// Modified by TUYA Start
-	if (user_sdio_restore_data3)
-		return user_sdio_restore_data3();
-
-#if CONFIG_USR_GPIO_CFG_EN
 	if (data3_func == GPIO_DEV_INVALID)
 		return BK_OK;
 
 	return gpio_dev_map_by_func(data3_func);
-#else
-	(void)data3_func;
-	return BK_OK;
-#endif
-// Modified by TUYA End
 }
+#endif
 
 /* Convenience wrapper: issue a command on the SD card host controller. The
  * caller-visible response code is preserved in *resp (may be NULL). */
@@ -353,6 +307,120 @@ no_card:
 	return BK_FAIL;
 }
 
+static uint32_t sd_card_configured_clock_hz(void)
+{
+#if defined(CONFIG_SDCARD_CLOCK_FREQ_HZ)
+	return (uint32_t)CONFIG_SDCARD_CLOCK_FREQ_HZ;
+#elif CONFIG_SDCARD_HIGH_SPEED
+	return SD_HS_DEFAULT_CLOCK_HZ;
+#else
+	return 20000000u;
+#endif
+}
+
+static bk_err_t sd_card_apply_transfer_clock(bool high_speed)
+{
+	uint32_t hz = sd_card_configured_clock_hz();
+	bk_err_t ret;
+
+	if (high_speed) {
+		ret = bk_sdio_host_set_timing(SDCARD_HOST_ID, SDIO_HOST_TIMING_SDR25);
+		if (hz > SD_HS_MAX_CLOCK_HZ)
+			hz = SD_HS_MAX_CLOCK_HZ;
+	} else {
+		ret = bk_sdio_host_set_timing(SDCARD_HOST_ID, SDIO_HOST_TIMING_SDR12);
+		if (hz > SD_DS_MAX_CLOCK_HZ)
+			hz = SD_DS_MAX_CLOCK_HZ;
+	}
+	if (ret != BK_OK)
+		return ret;
+
+	ret = bk_sdio_host_set_clock(SDCARD_HOST_ID, hz);
+	if (ret != BK_OK)
+		return ret;
+
+	SD_CARD_LOGI("%s, clock=%u Hz\r\n",
+		     high_speed ? "High Speed" : "Default Speed", (unsigned)hz);
+	return BK_OK;
+}
+
+#if CONFIG_SDCARD_HIGH_SPEED
+typedef enum {
+	SD_HS_SWITCH_NOT_ENABLED = 0,
+	SD_HS_SWITCH_ENABLED,
+	SD_HS_SWITCH_INDETERMINATE,
+} sd_hs_switch_result_t;
+
+static bk_err_t sd_card_cmd6(uint32_t arg, uint8_t *status)
+{
+	sdio_host_cmd_t cmd = {
+		.index = SD_CMD_SWITCH_FUNC,
+		.arg = arg,
+		.resp_type = SDIO_HOST_RESP_R1,
+	};
+	sdio_host_data_t xfer = {
+		.dir = SDIO_HOST_XFER_READ,
+		.mode = SDIO_HOST_XFER_PIO,
+		.buf = status,
+		.block_size = SD_SWITCH_STATUS_SIZE,
+		.block_cnt = 1,
+	};
+	sdio_host_resp_t resp = {0};
+	bk_err_t ret;
+
+	ret = bk_sdio_host_xfer(SDCARD_HOST_ID, &cmd, &xfer, &resp);
+	if (ret != BK_OK)
+		return ret;
+	if (resp.timeout || resp.crc_err ||
+	    (resp.resp[0] & SD_R1_CMD6_ERROR_MASK)) {
+		SD_CARD_LOGW("CMD6 R1 error: status=0x%08x timeout=%u crc=%u\r\n",
+			     (unsigned)resp.resp[0], (unsigned)resp.timeout,
+			     (unsigned)resp.crc_err);
+		return BK_FAIL;
+	}
+	return BK_OK;
+}
+
+/* CMD6 must complete while the bus is still at Default Speed (<=25MHz). */
+static sd_hs_switch_result_t sd_card_switch_high_speed(void)
+{
+	uint8_t status[SD_SWITCH_STATUS_SIZE] = {0};
+	uint32_t retry;
+
+	for (retry = 0; retry < SD_SWITCH_BUSY_RETRY_CNT; retry++) {
+		if (sd_card_cmd6(SD_SWITCH_FUNC_CHECK_HS, status) != BK_OK) {
+			SD_CARD_LOGW("CMD6 High Speed check failed\r\n");
+			return SD_HS_SWITCH_NOT_ENABLED;
+		}
+		if ((status[13] & SD_SWITCH_GROUP1_HS_SUPPORT) == 0) {
+			SD_CARD_LOGW("card does not support High Speed\r\n");
+			return SD_HS_SWITCH_NOT_ENABLED;
+		}
+		if ((status[43] & SD_SWITCH_GROUP1_HS_BUSY) == 0)
+			break;
+		rtos_delay_milliseconds(1);
+	}
+	if (retry == SD_SWITCH_BUSY_RETRY_CNT) {
+		SD_CARD_LOGW("card High Speed function remains busy\r\n");
+		return SD_HS_SWITCH_NOT_ENABLED;
+	}
+
+	if (sd_card_cmd6(SD_SWITCH_FUNC_SET_HS, status) != BK_OK) {
+		SD_CARD_LOGE("CMD6 High Speed set result is indeterminate\r\n");
+		return SD_HS_SWITCH_INDETERMINATE;
+	}
+	if ((status[16] & SD_SWITCH_GROUP1_FUNC_MASK) != SD_SWITCH_GROUP1_FUNC_HS) {
+		SD_CARD_LOGW("CMD6 High Speed not selected (group1=%u)\r\n",
+			     (unsigned)(status[16] & SD_SWITCH_GROUP1_FUNC_MASK));
+		return SD_HS_SWITCH_NOT_ENABLED;
+	}
+
+	/* Spec: wait at least 8 clocks after a successful switch. */
+	rtos_delay_milliseconds(1);
+	return SD_HS_SWITCH_ENABLED;
+}
+#endif
+
 sd_card_state_t bk_sd_card_get_card_state(void)
 {
 	sdio_host_resp_t resp = {0};
@@ -365,12 +433,9 @@ sd_card_state_t bk_sd_card_get_card_state(void)
 bk_err_t bk_sd_card_init(void)
 {
 	bk_err_t ret = BK_OK;
+#if CONFIG_SDCARD_BUSWIDTH_4LINE && CONFIG_USR_GPIO_CFG_EN
 	gpio_dev_t data3_func = GPIO_DEV_INVALID;
-// Modified by TUYA Start
-	/* Resolved once here: the width must not change between the DATA3 window
-	 * and the ACMD6 switch below. */
-	uint8_t bus_width = sdio_board_bus_width();
-// Modified by TUYA End
+#endif
 	sdio_host_cfg_t cfg = {
 		.is_emmc = false,
 		.init_clock_hz = 0,   /* host default identification clock */
@@ -382,80 +447,82 @@ bk_err_t bk_sd_card_init(void)
 		return BK_OK;
 	}
 
-// Modified by TUYA Start
-	if (bus_width == 4) {
-		ret = sd_card_force_data3_high(SDCARD_HOST_ID, &data3_func);
-		if (ret)
-			return ret;
-	}
-// Modified by TUYA End
+#if CONFIG_SDCARD_BUSWIDTH_4LINE && CONFIG_USR_GPIO_CFG_EN
+	ret = sd_card_force_data3_high(SDCARD_HOST_ID, &data3_func);
+	if (ret)
+		return ret;
+#endif
 
 	ret = bk_sdio_host_init(SDCARD_HOST_ID, &cfg);
 	if (ret) {
-// Modified by TUYA Start
-		if (bus_width == 4)
-			(void)sd_card_restore_data3_func(data3_func);
-// Modified by TUYA End
+#if CONFIG_SDCARD_BUSWIDTH_4LINE && CONFIG_USR_GPIO_CFG_EN
+		(void)sd_card_restore_data3_func(data3_func);
+#endif
 		return ret;
 	}
 
 	ret = sd_card_identify();
 	if (ret) {
-// Modified by TUYA Start
-		if (bus_width == 4)
-			(void)sd_card_restore_data3_func(data3_func);
-// Modified by TUYA End
+#if CONFIG_SDCARD_BUSWIDTH_4LINE && CONFIG_USR_GPIO_CFG_EN
+		(void)sd_card_restore_data3_func(data3_func);
+#endif
+		(void)bk_sdio_host_deinit(SDCARD_HOST_ID);
 		return ret;
 	}
 
-// Modified by TUYA Start
-	if (bus_width == 4) {
-		ret = sd_card_restore_data3_func(data3_func);
-		if (ret)
-			return ret;
+#if CONFIG_SDCARD_BUSWIDTH_4LINE && CONFIG_USR_GPIO_CFG_EN
+	ret = sd_card_restore_data3_func(data3_func);
+	if (ret) {
+		(void)bk_sdio_host_deinit(SDCARD_HOST_ID);
+		return ret;
 	}
-// Modified by TUYA End
+#endif
 
 	rtos_delay_milliseconds(1);
 
-// Modified by TUYA Start
-	if (bus_width == 4) {
-		/* The card is now fully enumerated and latched in SD mode, and DATA3
-		 * has been released from the identification window. Switch the card
-		 * (ACMD6 arg=2 => 4-bit) and match the controller's DAT_XFER_WIDTH.
-		 * bk_sdio_host_set_bus_width() also re-runs the pinmux, which is what
-		 * brings DATA1~DATA3 up as SDIO functions. */
-		sd_send(SD_CMD_APP_CMD, SDIO_HOST_RESP_R1, sdio_rca, NULL);    /* CMD55 */
-		rtos_delay_milliseconds(1);
-		sd_send(SD_CMD_APP_CMD6_SET_BUS_WIDTH, SDIO_HOST_RESP_R1, 2, NULL); /* ACMD6 arg=2 => 4-bit */
-		rtos_delay_milliseconds(1);
-		bk_sdio_host_set_bus_width(SDCARD_HOST_ID, SDIO_HOST_BUS_WIDTH_4);
-		rtos_delay_milliseconds(1);
-	}
-	SD_CARD_LOGI("sd bus width = %d bit\r\n", bus_width);
-// Modified by TUYA End
+#if CONFIG_SDCARD_BUSWIDTH_4LINE
+	/* 4-bit bus (opt-in via Kconfig; default build stays 1-bit). The card is
+	 * now fully enumerated and latched in SD mode, and DATA3 has been restored
+	 * to its SDIO function. Switch the card (ACMD6 arg=2 => 4-bit) and match
+	 * the controller's DAT_XFER_WIDTH. */
+	sd_send(SD_CMD_APP_CMD, SDIO_HOST_RESP_R1, sdio_rca, NULL);    /* CMD55 */
+	rtos_delay_milliseconds(1);
+	sd_send(SD_CMD_APP_CMD6_SET_BUS_WIDTH, SDIO_HOST_RESP_R1, 2, NULL); /* ACMD6 arg=2 => 4-bit */
+	rtos_delay_milliseconds(1);
+	bk_sdio_host_set_bus_width(SDCARD_HOST_ID, SDIO_HOST_BUS_WIDTH_4);
+	rtos_delay_milliseconds(1);
+#endif
 
 	/* CMD16: set block length to 512. The legacy driver issued this with the
 	 * controller long-response code; preserve that exact behavior. */
 	sd_send(SD_CMD_SET_BLOCKLEN, SDIO_HOST_RESP_R2, SD_BLOCK_LEN, NULL);
 	rtos_delay_milliseconds(1);
 
-	/* 20MHz is within the SD Default-Speed range (<=25MHz), so use the
-	 * Default-Speed (SDR12) sampling path here instead of SDR50. SDR50 is a
-	 * UHS-I mode that requires 1.8V signaling plus a tuned sampling clock;
-	 * on this 3.3V-only EVB with no tuning the SDR50 data-capture phase is
-	 * marginal and depends on the PHY delay value happening to be aligned.
-	 * After a full power-on boot it usually is, but after a soft re-init
-	 * (mount/unmount without reboot) it is intermittently misaligned and the
-	 * first multi-block read returns no data (RD_XFER_ACTIVE set but
-	 * BUF_RD_ENABLE never asserts, no CRC/timeout). SDR12 is the exact
-	 * sampling path used by card identification, which is 100% reliable. */
-	bk_sdio_host_set_timing(SDCARD_HOST_ID, SDIO_HOST_TIMING_SDR12);
-#if defined(CONFIG_SDCARD_CLOCK_FREQ_HZ)
-	bk_sdio_host_set_clock(SDCARD_HOST_ID, CONFIG_SDCARD_CLOCK_FREQ_HZ);
+	/* Speed mode is independent of DMA. Default Speed (SDR12, <=25MHz) is
+	 * the safe 3.3V path used by identification. High Speed is opt-in via
+	 * CONFIG_SDCARD_HIGH_SPEED: CMD6 first, then host HIGH_SPEED_EN / SDR25,
+	 * then the configured clock (default 40MHz). UHS-I SDR50/SDR104 are not
+	 * used here (1.8V + tuning). */
+#if CONFIG_SDCARD_HIGH_SPEED
+	{
+		sd_hs_switch_result_t hs_result = sd_card_switch_high_speed();
+
+		if (hs_result == SD_HS_SWITCH_INDETERMINATE) {
+			/* The card may already be in High Speed. Stop the host and
+			 * require a fresh CMD0 enumeration instead of continuing
+			 * with mismatched card/host timing. */
+			(void)bk_sdio_host_deinit(SDCARD_HOST_ID);
+			return BK_FAIL;
+		}
+		ret = sd_card_apply_transfer_clock(hs_result == SD_HS_SWITCH_ENABLED);
+	}
 #else
-	bk_sdio_host_set_clock(SDCARD_HOST_ID, 20000000);
+	ret = sd_card_apply_transfer_clock(false);
 #endif
+	if (ret != BK_OK) {
+		(void)bk_sdio_host_deinit(SDCARD_HOST_ID);
+		return ret;
+	}
 	rtos_delay_milliseconds(1);
 
 	s_sd_card_is_init = true;
@@ -464,10 +531,9 @@ bk_err_t bk_sd_card_init(void)
 
 bk_err_t bk_sd_card_deinit(void)
 {
-// Modified by TUYA Start
+	bk_sdio_host_reset(SDCARD_HOST_ID);
 	s_sd_card_is_init = false;
 	return bk_sdio_host_deinit(SDCARD_HOST_ID);
-// Modified by TUYA End
 }
 
 bk_err_t bk_sd_card_write_blocks(const uint8_t *data, uint32_t block_addr, uint32_t block_num)

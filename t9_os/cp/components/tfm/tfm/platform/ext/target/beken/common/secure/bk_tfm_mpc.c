@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "components/log.h"
+#include "bk_tfm_log.h"
 #include "driver/mpc.h"
 #include "armino_config.h"
 #include "bk_tfm_mpc.h"
@@ -23,6 +23,11 @@
 #include "hal_hw_fih.h"
 #include "hal_sw_fih.h"
 #include "bk_tfm_ppc.h"
+/* Generated OTP2 map (otp_map_2 with per-item security from otp2.csv). Compiled
+ * into platform_s via common/secure/CMakeLists.txt; used to derive the OTP2 MPC
+ * secure/non-secure block LUT. */
+#include "_otp.h"
+#include "otp_s.h"
 
 #define TAG "mpc"
 
@@ -144,9 +149,9 @@ static void flash_mpc_cfg(void)
 
 	/* The Non-Secure world is the CPU0 application; mark its flash region
 	 * Non-Secure so the SPM can read the NS MSP/VTOR from that alias. */
-	BK_LOGI(TAG, "flash NS carve start phy=%x\r\n", nspe_phy_offset);
+	BK_LOGD(TAG, "NS carve phy=%x\r\n", nspe_phy_offset);
 	if (nspe_phy_offset == 0) {
-		BK_LOGI(TAG, "no NS image, skip flash NS carve (flash stays secure)\r\n");
+		BK_LOGE(TAG, "no NS image, skip flash NS carve (flash stays secure)\r\n");
 		return;
 	}
 	/* Carve Non-Secure from the first partition after the TF-M image to the end
@@ -156,7 +161,7 @@ static void flash_mpc_cfg(void)
 		uint32_t ns_vir = FLASH_PHY2VIRTUAL(nspe_phy_offset);
 		uint32_t start_blk = ns_vir / block_sz;
 		uint32_t ns_blk = (start_blk < max_block_num) ? (max_block_num - start_blk) : 0;
-		BK_LOGI(TAG, "flash NS: vir=%x start_blk=%x ns_blk=%x max=%x\r\n", ns_vir, start_blk, ns_blk, max_block_num);
+		BK_LOGD(TAG, "NS vir=%x blk=%x/%x max=%x\r\n", ns_vir, start_blk, ns_blk, max_block_num);
 		if (ns_blk > 0 && ns_blk <= max_block_num) {
 			BK_LOG_ON_ERR(bk_mpc_set_secure_attribute(MPC_DEV_FLASH, ns_vir, ns_blk, MPC_BLOCK_NON_SECURE));
 		}
@@ -207,6 +212,47 @@ static void ram_mpc_cfg(void)
 	FIH_ASSERT4(iter_count == (ram_mpc_dev_end - MPC_DEV_SMEM0));
 }
 
+/* ---------------------------------------------------------------------------
+ * OTP2 MPC (CP domain)
+ *
+ * OTP2 holds RF calibration, MAC and customer items. The whole bank defaults to
+ * Non-Secure so the Non-Secure world can read it, EXCEPT the blocks covered by
+ * items whose otp2.csv security field is OTP_SECURITY, which stay Secure (only
+ * reachable from the secure world / the OTP NSC gateways). Driven through the CP
+ * MPC driver (MPC_DEV_OTP2) from the generated otp_map_2[].
+ *
+ * MPC granularity is one block; a secure item and a non-secure item that fall
+ * in the same block force the whole block Secure, so secure/non-secure
+ * boundaries in otp2.csv must be block aligned.
+ * ------------------------------------------------------------------------- */
+static void otp2_mpc_cfg(void)
+{
+	uint32_t block_bytes = bk_mpc_get_block_size(MPC_DEV_OTP2);
+	uint32_t max_blocks  = 32u * (bk_mpc_get_max_block_index(MPC_DEV_OTP2) + 1u);
+	uint32_t items = otp_map_2_row();
+	uint32_t item;
+
+	/* Fail-safe baseline: mark the whole OTP2 bank Secure (also the MPC reset
+	 * state). Secure items are never written Non-Secure afterwards, so a key
+	 * block can never be transiently exposed and any error leaves it Secure. */
+	BK_LOG_ON_ERR(bk_mpc_set_secure_attribute(MPC_DEV_OTP2, 0, max_blocks, MPC_BLOCK_SECURE));
+
+	/* Open only the non-secure items (otp2.csv security != OTP_SECURITY) to the
+	 * Non-Secure world. S/NS boundaries in otp2.csv must be block aligned. */
+	for (item = 0; item < items; item++) {
+		uint32_t first, last;
+
+		if (otp_map_2[item].security == OTP_SECURITY) {
+			continue;
+		}
+		first = otp_map_2[item].offset / block_bytes;
+		last  = (otp_map_2[item].offset + otp_map_2[item].allocated_size +
+		         block_bytes - 1u) / block_bytes; /* exclusive */
+		BK_LOG_ON_ERR(bk_mpc_set_secure_attribute(MPC_DEV_OTP2, first * block_bytes,
+		                                          last - first, MPC_BLOCK_NON_SECURE));
+	}
+}
+
 static void cp_mpc_cfg(void)
 {
 	BK_LOG_ON_ERR(bk_mpc_driver_init());
@@ -216,6 +262,7 @@ static void cp_mpc_cfg(void)
 #if CONFIG_TFM_S_JUMP_TO_CPU0_APP || CONFIG_TFM_S_JUMP_TO_TFM_NS
 	ram_mpc_cfg();
 	flash_mpc_cfg();
+	otp2_mpc_cfg();
 #endif
 
 #if (0 == CONFIG_ENABLE_DEBUG)
@@ -228,11 +275,24 @@ static void cp_mpc_cfg(void)
 
 int bk_mpc_cfg(void)
 {
-	/* The AP power domain is powered on by bk_ap_power_domain_on() (called from
-	 * tfm_hal_set_up_static_boundaries before this), so the AP AHBP MPC
-	 * instances are accessible here. */
-	ap_mpc_cfg();
+	/* CP-domain MPC only. The AP AHBP MPC instances live in the AP power domain,
+	 * which is off during TF-M static-boundary setup; they are (re)programmed by
+	 * bk_mpc_ap_cfg() from psa_ap_secure_prepare() after CP NS powers the AP up. */
 	cp_mpc_cfg();
+
+	/* Secure-world only: define the whole OTP1 range as secure. */
+	otp_secure_range_enable();
+
+	__DSB();
+	__ISB();
+
+	return BK_OK;
+}
+
+int bk_mpc_ap_cfg(void)
+{
+	/* AP-domain AHBP MPC. The AP power domain must already be up. */
+	ap_mpc_cfg();
 
 	__DSB();
 	__ISB();

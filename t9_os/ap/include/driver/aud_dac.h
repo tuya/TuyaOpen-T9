@@ -16,6 +16,9 @@
 #include <common/bk_include.h>
 #include <driver/dma.h>
 #include <driver/aud_dac_types.h>
+#if CONFIG_AUD_DRIVER_V2
+#include <driver/aud_dac_drc.h>
+#endif
 
 #ifdef __cplusplus
 extern "C" {
@@ -31,6 +34,8 @@ extern "C" {
  *
  * This API init the dac module:
  *  - Configure the dac parameters to enable dac function.
+ *  - V2: when a2dp_drc_en != 0 apply dac_config->a2dp_drc (Preset/L2/raw);
+ *    otherwise bypass HW DRC. CALL/HINT do not pass through DRC.
  *
  * @param
  *    - dac_config: dac parameters configure
@@ -76,6 +81,19 @@ bk_err_t bk_aud_dac_deinit(void);
 bk_err_t bk_aud_dac_set_samp_rate(uint32_t samp_rate);
 #elif CONFIG_AUD_DRIVER_V2
 bk_err_t bk_aud_dac_set_sample_rate(aud_dac_source_t source, uint32_t sample_rate);
+
+/**
+ * @brief Set A2DP 44.1k rate policy (native clock vs HW resample to 48k domain).
+ *
+ * Does not change @ref bk_aud_dac_set_sample_rate signature. Takes effect on the
+ * next @ref bk_aud_dac_set_sample_rate for A2DP 44100.
+ */
+bk_err_t bk_aud_dac_set_a2dp_rate_policy(aud_dac_a2dp_rate_policy_t policy);
+
+/**
+ * @brief Get current A2DP 44.1k rate policy.
+ */
+bk_err_t bk_aud_dac_get_a2dp_rate_policy(aud_dac_a2dp_rate_policy_t *policy);
 #endif
 
 /**

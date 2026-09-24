@@ -158,7 +158,9 @@ static void flexa_done_cb(uint32_t wr_ptr, void *args)
 		}
 		bk_flexa_bond_t *b = (bk_flexa_bond_t *)ctrl->port[i].bond;
 		if (ctrl->port[i].first_bond != 0U) {
-			if (wr_ptr == 1U) {
+			uint32_t seg_num = (ctrl->config.segment_number != 0U) ?
+				(uint32_t)ctrl->config.segment_number : 2U;
+			if (wr_ptr > 0U && wr_ptr < seg_num) {
 				ctrl->port[i].first_bond = 0U;
 				if (b->flexa_done != NULL) {
 					b->flexa_done(wr_ptr, b);
@@ -459,6 +461,12 @@ static avdk_err_t h264_decode_ctlr_ioctl(bk_h264_decode_ctlr_handle_t handle, ui
 		break;
 	case BK_H264_DECODE_IOCTL_ABORT:
 		vcdec_h264_abort(ctrl->vcdec_handle);
+		break;
+	case BK_H264_DECODE_IOCTL_SET_RECON_COVER:
+		AVDK_RETURN_ON_FALSE(arg, AVDK_ERR_INVAL, TAG, "arg is NULL");
+		if (vcdec_h264_set_recon_cover_enabled(ctrl->vcdec_handle, *(uint8_t *)arg) != VCDEC_OK) {
+			return AVDK_ERR_GENERIC;
+		}
 		break;
 	case BK_H264_DECODE_IOCTL_PORT_SET_RD_PTR: {
 		uint32_t flags = rtos_enter_critical();

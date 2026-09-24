@@ -3,11 +3,10 @@ set(srcs)
 
 if (CONFIG_USB)
 
-	if (CONFIG_BK_USB_CHERRYUSB_V1_6)
-		set(BK_CHERRYUSB_DIR CherryUSB_v1_6)
-	else()
-		set(BK_CHERRYUSB_DIR CherryUSB_legacy)
-	endif()
+	# Only the CherryUSB v1.6.x stack ships now; the legacy tree
+	# (CherryUSB_legacy/) was removed. Keep using CONFIG_BK_USB_CHERRYUSB_V1_6
+	# (forced y in Kconfig) for the per-feature guards below.
+	set(BK_CHERRYUSB_DIR CherryUSB)
 
 	list(APPEND incs
 		cherryusb_adapter/include
@@ -35,15 +34,10 @@ if (CONFIG_USB)
 		${BK_CHERRYUSB_DIR}/driver/usb_driver.c
 		${BK_CHERRYUSB_DIR}/osal/usb_osal_adaptor.c
 	)
-	if (CONFIG_BK_USB_CHERRYUSB_V1_6)
-		list(APPEND srcs
-			cherryusb_adapter/v1_6/bk_cherryusb_adapter_v1_6.c
-		)
-	else()
-		list(APPEND srcs
-			cherryusb_adapter/legacy/bk_cherryusb_adapter_legacy.c
-		)
-	endif()
+	# Only the v1.6 adapter remains (legacy stack + its adapter were removed).
+	list(APPEND srcs
+		cherryusb_adapter/v1_6/bk_cherryusb_adapter_v1_6.c
+	)
 	if (CONFIG_USB_DEVICE)
 		# BK7259 USB device controller (MUSB-MHDRC) lives on a HIGH-SPEED
 		# phy (SOC_USB_HS_BASE = 0x480A0000). The CherryUSB device port
@@ -141,8 +135,8 @@ if (CONFIG_USB)
 	# Pull it in once at the CONFIG_USB level so a device-only build (e.g.
 	# usb_example/ap/config/bk7259_ap/defconfig with USB_DEVICE=y +
 	# USBD_MSC=y) can also opt into CONFIG_USB_RISCV_BRIDGE without first
-	# forcing CONFIG_USB_HOST=y. The host call site (usb_hc_beken_musb.c)
-	# is itself still gated by CONFIG_USB_HOST below.
+	# forcing CONFIG_USB_HOST=y. usb_hc_beken_musb.c (which also uses the
+	# bridge) is compiled at the host-OR-device gate just below.
 	if (CONFIG_USB_RISCV_BRIDGE)
 		list(APPEND incs
 			${BK_CHERRYUSB_DIR}/port/beken_musb/riscv_bridge
@@ -152,13 +146,24 @@ if (CONFIG_USB)
 		)
 	endif() # CONFIG_USB_RISCV_BRIDGE
 
+	# usb_hc_beken_musb.c is the host controller port, but it also defines the
+	# low-level clock/analog-phy/spitrig helpers + RISC-V IPI enable shared with
+	# usb_driver.c (compiled unconditionally under CONFIG_USB). Gate it at the
+	# same CONFIG_USB level (already inside `if (CONFIG_USB)`, so unconditional)
+	# so a pure device build (CONFIG_USB_HOST=n) still resolves those symbols.
+	# The host-controller code here is unreachable when CONFIG_USB_HOST=n (see
+	# the guard on usb_hc_riscv_poll_events in the shared IPI callback) and is
+	# dropped by --gc-sections, so no host-only undefined refs leak in.
+	list(APPEND srcs
+		${BK_CHERRYUSB_DIR}/port/beken_musb/usb_hc_beken_musb.c
+	)
+
 	if (CONFIG_USB_HOST)
 		list(APPEND incs
 			${BK_CHERRYUSB_DIR}/demo/beken/usb_host
 		)
 		list(APPEND srcs
 			${BK_CHERRYUSB_DIR}/core/usbh_core.c
-			${BK_CHERRYUSB_DIR}/port/beken_musb/usb_hc_beken_musb.c
 		)
 
 		if (CONFIG_USB_HUB)

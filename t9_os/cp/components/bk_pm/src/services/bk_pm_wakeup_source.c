@@ -24,6 +24,9 @@
 #include <driver/aon_rtc.h>
 #include "pm_wakeup_source.h"
 #include "pm_sleep.h"
+#include <sys_sw_regs.h>
+#include "cache.h"
+#include <driver/aud_lp_vad.h>
 
 /*=====================DEFINE SECTION START=====================*/
 #define PM_WAKEUP_SOURCE_MARK                                (WAKEUP_SOURCE_MARK)
@@ -47,6 +50,22 @@ static void pm_core_gpio_callback(gpio_id_t gpio_id);
 static bk_err_t pm_core_rtc_wakeup_config(const pm_ap_core_msg_t *msg);
 static bk_err_t pm_core_gpio_wakeup_config(const pm_ap_core_msg_t *msg);
 /*================FUNCTION DECLARATION SECTION END========*/
+
+void pm_set_ap_reset_reason_without_lock(uint32_t reset_reason)
+{
+	volatile sys_sw_regs_t *sw_regs = bk_sys_sw_regs_ptr();
+
+	/*
+	 * The caller must ensure AP is powered off. No other core can access the
+	 * AP reset-reason field then, so avoid HSPL and publish through cache.
+	 */
+	sw_regs->ap_reset_reason = reset_reason;
+	__DSB();
+	flush_dcache((void *)&sw_regs->ap_reset_reason,
+		sizeof(sw_regs->ap_reset_reason));
+	__DSB();
+}
+
 static void pm_core_rtc_callback(aon_rtc_id_t id, uint8_t *name_p, void *param)
 {
 	bk_pm_module_vote_sleep_ctrl(PM_SLEEP_MODULE_NAME_LV_WAKEUP,0x0,0x0);
@@ -192,22 +211,31 @@ pm_wakeup_source_e bk_pm_wakeup_source_get(void)
 	return s_pm_wakeup_source;
 }
 
-void pm_touched_wakeup_low_voltage()
+void pm_touched_wakeup_low_voltage(void)
 {
 	sys_drv_touch_wakeup_enable(s_touch_wakeup_param.touch_channel);
 }
 
-void pm_rtc_wakeup_deep_sleep()
+bk_err_t pm_vad_wakeup_low_voltage(void)
+{
+	return bk_lp_vad_set_sleep_para_before_sleep();
+}
+
+bk_err_t pm_vad_wakeup_deep_sleep(void)
+{
+	return bk_lp_vad_set_sleep_para_before_sleep();
+}
+void pm_rtc_wakeup_deep_sleep(void)
 {
 	aon_pmu_drv_set_wakeup_source(WAKEUP_SOURCE_INT_RTC);
 }
 
-void pm_touched_wakeup_deep_sleep()
+void pm_touched_wakeup_deep_sleep(void)
 {
 	sys_drv_touch_wakeup_enable(s_touch_wakeup_param.touch_channel);
 }
 
-bk_err_t pm_wakeup_from_deepsleep_handle()
+bk_err_t pm_wakeup_from_deepsleep_handle(void)
 {
 	uint32_t pmu_state = 0;
 	if (aon_pmu_drv_reg_get(PMU_REG2) & BIT(BIT_SLEEP_FLAG_DEEP_SLEEP))
@@ -220,7 +248,7 @@ bk_err_t pm_wakeup_from_deepsleep_handle()
 	return BK_OK;
 }
 
-void pm_deep_sleep_wakeup_source_set()
+void pm_deep_sleep_wakeup_source_set(void)
 {
 	uint32_t pmu_state = 0;
 	if (aon_pmu_drv_reg_get(PMU_REG2) & BIT(BIT_SLEEP_FLAG_DEEP_SLEEP))
@@ -233,10 +261,14 @@ void pm_deep_sleep_wakeup_source_set()
 		{
 		case 0x1: // gpio
 			bk_misc_set_reset_reason(RESET_SOURCE_DEEPPS_GPIO);
+			bk_misc_set_ap_reset_reason(RESET_SOURCE_DEEPPS_GPIO);
+			pm_set_ap_reset_reason_without_lock(RESET_SOURCE_DEEPPS_GPIO);
 			s_pm_exit_deepsleep_wakeup_source = PM_WAKEUP_SOURCE_INT_GPIO;
 			break;
 		case 0x2: // rtc
 			bk_misc_set_reset_reason(RESET_SOURCE_DEEPPS_RTC);
+			bk_misc_set_ap_reset_reason(RESET_SOURCE_DEEPPS_RTC);
+			pm_set_ap_reset_reason_without_lock(RESET_SOURCE_DEEPPS_RTC);
 			s_pm_exit_deepsleep_wakeup_source = PM_WAKEUP_SOURCE_INT_RTC;
 			break;
 		case 0x10: // usbplug
@@ -267,7 +299,7 @@ pm_wakeup_source_e bk_pm_exit_low_vol_wakeup_source_get()
 	return s_pm_exit_low_vol_wakeup_source;
 }
 
-__IRAM_PM bk_err_t bk_pm_exit_low_vol_wakeup_source_set()
+__IRAM_PM bk_err_t bk_pm_exit_low_vol_wakeup_source_set(void)
 {
 	uint32_t pmu_state = 0;
 
@@ -306,7 +338,7 @@ __IRAM_PM bk_err_t bk_pm_exit_low_vol_wakeup_source_set()
 	return BK_OK;
 }
 
-bk_err_t bk_pm_exit_low_vol_wakeup_source_clear()
+bk_err_t bk_pm_exit_low_vol_wakeup_source_clear(void)
 {
 	/*clear the wakeup source*/
 	uint32_t pmu_state = 0;
@@ -321,7 +353,7 @@ bk_err_t bk_pm_exit_low_vol_wakeup_source_clear()
 	return BK_OK;
 }
 
-__attribute__((section(".iram")))  bk_err_t bk_pm_sleep_wakeup_reason_clear()
+__attribute__((section(".iram"))) bk_err_t bk_pm_sleep_wakeup_reason_clear(void)
 {
 	s_sleep_wakeup_irq    = 0;
 	s_sleep_wakeup_irq_id = 0;
@@ -341,7 +373,7 @@ __attribute__((section(".iram")))  bk_err_t bk_pm_sleep_wakeup_reason_set(uint64
 	}
 	return BK_OK;
 }
-bk_err_t bk_pm_rtc_wakeup_reason_parse()
+bk_err_t bk_pm_rtc_wakeup_reason_parse(void)
 {
 	bk_pm_wakeup_reason_e wakeup_reason = BK_PM_WAKEUP_UNKNOWN;
 	uint32_t int_src = 0;

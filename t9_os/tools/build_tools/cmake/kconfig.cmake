@@ -182,25 +182,20 @@ function(__kconfig_generate_config sdkconfig sdkconfig_defaults sdkconfig_defaul
     configure_file("${armino_tools_path}/build_tools/kconfig/config.env.in" ${config_env_path})
     armino_build_set_property(CONFIG_ENV_PATH ${config_env_path})
 
-    set(config_dependency_files) # Modified by TUYA
-
     if(sdkconfig_default_soc)
         list(APPEND defaults_arg --defaults "${sdkconfig_default_soc}")
-        list(APPEND config_dependency_files "${sdkconfig_default_soc}") # Modified by TUYA
     endif()
 
     if(sdkconfig_defaults)
         foreach(sdkconfig_default ${sdkconfig_defaults})
             if(EXISTS "${sdkconfig_default}.${armino_target}")
                 list(APPEND defaults_arg --defaults "${sdkconfig_default}.${armino_target}")
-                list(APPEND config_dependency_files "${sdkconfig_default}.${armino_target}") # Modified by TUYA
             endif()
         endforeach()
     endif()
     if(sdkconfig_defaults)
         foreach(sdkconfig_default ${sdkconfig_defaults})
             list(APPEND defaults_arg --defaults "${sdkconfig_default}")
-            list(APPEND config_dependency_files "${sdkconfig_default}") # Modified by TUYA
         endforeach()
     endif()
 
@@ -210,7 +205,6 @@ function(__kconfig_generate_config sdkconfig sdkconfig_defaults sdkconfig_defaul
     set(project_diff_config "${CMAKE_SOURCE_DIR}/${sub_sys}/config/${armino_target}/defconfig")
     if(EXISTS "${project_diff_config}")
         list(APPEND defaults_arg --defaults "${project_diff_config}")
-        list(APPEND config_dependency_files "${project_diff_config}") # Modified by TUYA
     endif()
 
     armino_build_get_property(root_kconfig __ROOT_KCONFIG)
@@ -249,54 +243,11 @@ function(__kconfig_generate_config sdkconfig sdkconfig_defaults sdkconfig_defaul
     set(config_dir ${build_dir}/config)
     file(MAKE_DIRECTORY "${config_dir}")
 
-    # Modified by TUYA Start
-    list(REMOVE_DUPLICATES config_dependency_files)
-
-    set(defaults_fingerprint_file "${config_dir}/defaults_fingerprint.txt")
-    set(current_defaults_fingerprint)
-    foreach(config_dependency_file ${config_dependency_files})
-        if(EXISTS "${config_dependency_file}")
-            file(MD5 "${config_dependency_file}" config_dependency_md5)
-            string(APPEND current_defaults_fingerprint
-                "${config_dependency_file}:${config_dependency_md5}\n")
-        endif()
-    endforeach()
-
-    set(refresh_sdkconfig_from_defaults 0)
-    if(EXISTS "${sdkconfig}")
-        if(EXISTS "${defaults_fingerprint_file}")
-            file(READ "${defaults_fingerprint_file}" saved_defaults_fingerprint)
-            if(NOT saved_defaults_fingerprint STREQUAL current_defaults_fingerprint)
-                set(refresh_sdkconfig_from_defaults 1)
-            endif()
-        else()
-            set(refresh_sdkconfig_from_defaults 1)
-        endif()
-    else()
-        set(refresh_sdkconfig_from_defaults 1)
-    endif()
-
-    # Modified by TUYA End
-
     # Generate the config outputs
     set(sdkconfig_cmake ${config_dir}/sdkconfig.cmake)
     set(sdkconfig_header ${config_dir}/sdkconfig.h)
     set(sdkconfig_json ${config_dir}/sdkconfig.json)
     set(sdkconfig_json_menus ${config_dir}/kconfig_menus.json)
-    # Modified by TUYA Start
-    set(sdkconfig_backup "${sdkconfig}.bak")
-
-    if(EXISTS "${sdkconfig_backup}")
-        file(REMOVE "${sdkconfig_backup}")
-    endif()
-    if(EXISTS "${sdkconfig}")
-        if(refresh_sdkconfig_from_defaults)
-            file(RENAME "${sdkconfig}" "${sdkconfig_backup}")
-        else()
-            configure_file("${sdkconfig}" "${sdkconfig_backup}" COPYONLY)
-        endif()
-    endif()
-    # Modified by TUYA End
 
     armino_build_get_property(output_sdkconfig __OUTPUT_SDKCONFIG)
     if(output_sdkconfig)
@@ -322,23 +273,6 @@ function(__kconfig_generate_config sdkconfig sdkconfig_defaults sdkconfig_defaul
             RESULT_VARIABLE config_result)
     endif()
 
-    # Modified by TUYA Start
-    if(config_result)
-        if(EXISTS "${sdkconfig}")
-            file(REMOVE "${sdkconfig}")
-        endif()
-        if(EXISTS "${sdkconfig_backup}")
-            file(RENAME "${sdkconfig_backup}" "${sdkconfig}")
-        endif()
-    else()
-        if(EXISTS "${sdkconfig_backup}")
-            file(REMOVE "${sdkconfig_backup}")
-        endif()
-
-        file(WRITE "${defaults_fingerprint_file}" "${current_defaults_fingerprint}")
-    endif()
-    # Modified by TUYA End
-
     if(config_result)
         LOGE("Failed to run kconfgen.py (${confgen_basecommand}). Error ${config_result}")
     endif()
@@ -348,13 +282,6 @@ function(__kconfig_generate_config sdkconfig sdkconfig_defaults sdkconfig_defaul
 
     # When sdkconfig file changes in the future, trigger a cmake run
     set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${sdkconfig}")
-
-    # Modified by TUYA Start
-    # Re-run config generation when any default config seed changes.
-    foreach(config_dependency_file ${config_dependency_files})
-        set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${config_dependency_file}")
-    endforeach()
-    # Modified by TUYA End
 
     # Ditto if either of the generated files are missing/modified (this is a bit irritating as it means
     # you can't edit these manually without them being regenerated, but I don't know of a better way...)

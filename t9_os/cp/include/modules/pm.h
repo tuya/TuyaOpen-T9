@@ -27,6 +27,10 @@ typedef void (*ap_ctrl_callback_t)(void *arg);
 typedef enum {
 	PM_AP_CTRL_CB_TYPE_POWER_ON = 0,  /**< Execute after AP power-on */
 	PM_AP_CTRL_CB_TYPE_POWER_OFF = 1, /**< Execute after AP power-off */
+#if CONFIG_PM_AP_FAST_BOOT_ENABLE
+	PM_AP_CTRL_CB_TYPE_POWER_OFF_PREPARE, /**< Execute before CP closes AP business IPC */
+	PM_AP_CTRL_CB_TYPE_POWER_OFF_ABORT,   /**< Execute after a failed close rolls back */
+#endif
 } pm_ap_ctrl_cb_type_t;
 
 
@@ -280,7 +284,7 @@ typedef enum
 	PM_SLEEP_MODULE_NAME_WDG,      // 27
 	PM_SLEEP_MODULE_NAME_AUDIO_ASR,// 28
 	PM_SLEEP_MODULE_NAME_APP1,     // 29
-	PM_SLEEP_MODULE_NAME_CPU1,     // 30
+	PM_SLEEP_MODULE_NAME_AP,       // 30
 	PM_SLEEP_MODULE_NAME_ROSC_PROG,// 31
 	PM_SLEEP_MODULE_NAME_ROSC,     // 32
 	PM_SLEEP_MODULE_NAME_FLASH_OP, // 33
@@ -370,11 +374,13 @@ typedef enum
 	PM_DEV_ID_SECURE_WORLD,// 37
 	PM_DEV_ID_UART4,       // 38
 	PM_DEV_ID_TRNG,        // 39
-	PM_DEV_ID_CPU1,        // 40
+	PM_DEV_ID_AP,          // 40
 	PM_DEV_ID_PHY_DPD_CALI, //41
 	PM_DEV_ID_KEY,          //42
 	PM_DEV_ID_CIF,          //43
 	PM_DEV_ID_MAILBOX,      //44
+	PM_DEV_ID_UART5,        //45, callback slot for hardware UART4
+	PM_DEV_ID_IPI,          //46
 	/*
 	 * S2 (HPDMA review):
 	 *   Keep CP-side PM device id table in lock-step with the AP side.
@@ -383,9 +389,9 @@ typedef enum
 	 *   core PM ABI: shifting PM_DEV_ID_DEFAULT to a different ordinal
 	 *   on one core would silently misalign any cross-core PM tables.
 	 */
-	PM_DEV_ID_HPDMA,        //45
+	PM_DEV_ID_HPDMA,        //47
 
-	PM_DEV_ID_DEFAULT,      //46  it is used by pm module set default cpu frequency
+	PM_DEV_ID_DEFAULT,      //48  it is used by pm module set default cpu frequency
 
 	PM_DEV_ID_MAX
 }pm_dev_id_e;
@@ -508,7 +514,7 @@ typedef enum
 	PM_SLEEP_MODULE_NAME_WDG,\
 	PM_SLEEP_MODULE_NAME_AUDIO_ASR,\
 	PM_SLEEP_MODULE_NAME_APP1,\
-	PM_SLEEP_MODULE_NAME_CPU1,\
+	PM_SLEEP_MODULE_NAME_AP,\
 	PM_SLEEP_MODULE_NAME_ROSC_PROG,\
 	PM_SLEEP_MODULE_NAME_ROSC,\
 	PM_SLEEP_MODULE_NAME_FLASH_OP, \
@@ -550,7 +556,7 @@ typedef enum
 	PM_SLEEP_MODULE_NAME_WDG,\
 	PM_SLEEP_MODULE_NAME_AUDIO_ASR,\
 	PM_SLEEP_MODULE_NAME_APP1,\
-	PM_SLEEP_MODULE_NAME_CPU1,\
+	PM_SLEEP_MODULE_NAME_AP,\
 	PM_SLEEP_MODULE_NAME_ROSC_PROG,\
 	PM_SLEEP_MODULE_NAME_ROSC,\
 	PM_SLEEP_MODULE_NAME_FLASH_OP,\
@@ -579,7 +585,11 @@ typedef enum {
 	PM_AP_WORK_STATE_FIRST_BOOT   = (1U << 0), /**< first AP boot */
 	PM_AP_WORK_STATE_BOOT_SUCCESS = (1U << 1), /**< AP boot success */
 	PM_AP_WORK_STATE_FAST_RESUME  = (1U << 2), /**< AP FreeRTOS context is ready for restore */
+#if CONFIG_PM_AP_FAST_BOOT_ENABLE
+	PM_AP_WORK_STATE_FULL_READY   = (1U << 3), /**< CPU2, CPU3 and registered AP modules are ready */
+#else
 	PM_AP_WORK_STATE_RESERVED3    = (1U << 3), /**< reserved for extension */
+#endif
 } pm_ap_work_state_e;
 
 typedef struct {
@@ -592,8 +602,8 @@ typedef struct {
 	volatile uint8_t wakeup_alarm_name[ALARM_NAME_MAX_LEN+1];
 	volatile uint8_t gpio_id;
 	volatile uint32_t param0;
-	volatile uint32_t param1;
-	volatile uint32_t param2;
+	volatile uint32_t param1; /**< Fast Boot: AP-published suspend-failed recovery sequence */
+	volatile uint32_t param2; /**< Fast Boot: AP-published prepare-ready recovery sequence */
 } pm_shared_info_t;
 
 typedef enum {
@@ -850,6 +860,31 @@ bk_err_t bk_pm_ap_boot_success_set(bool boot_success);
  * @return true if AP boot success (PM_AP_WORK_STATE_BOOT_SUCCESS), false otherwise
  */
 bool bk_pm_ap_boot_success_get(void);
+
+#if CONFIG_PM_AP_FAST_BOOT_ENABLE
+/**
+ * @brief Set the complete AP readiness state
+ *
+ * Updates the PM_AP_WORK_STATE_FULL_READY flag in the shared PM information.
+ * This state indicates that the AP CPUs and registered AP modules are ready,
+ * and is maintained independently from PM_AP_WORK_STATE_BOOT_SUCCESS.
+ *
+ * @param ready true to publish complete AP readiness; false to clear it
+ *
+ * @return BK_OK on success
+ */
+bk_err_t bk_pm_ap_full_ready_set(bool ready);
+
+/**
+ * @brief Get the complete AP readiness state
+ *
+ * Reads the PM_AP_WORK_STATE_FULL_READY flag from the shared PM information
+ * after synchronizing its cached contents.
+ *
+ * @return true if the complete AP is ready; false otherwise
+ */
+bool bk_pm_ap_full_ready_get(void);
+#endif
 
 /**
  * @brief set whether this is the first AP boot
@@ -1828,6 +1863,15 @@ void bk_pm_wifi_rtc_set(uint32_t tick, void *callback);
  *
  */
 void bk_pm_wifi_rtc_clear(void);
+/**
+ * @brief check whether wifi rtc alarm ("bk_wifi") is still registered
+ *
+ * @return
+ * - true: registered
+ * - false: not registered
+ *
+ */
+bool bk_pm_wifi_rtc_is_registered(void);
 /**
  * @brief pm hardware init
  *

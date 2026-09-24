@@ -25,6 +25,7 @@
 #include <components/log.h>
 #include "common/bk_err.h"
 #include "driver/pm_ap_core.h"
+#include "sys_pm_hal_debug.h"
 #include <driver/gpio.h>
 #include <driver/hal/hal_gpio_types.h>
 //#include "gpio_hal.h"
@@ -76,6 +77,13 @@ static gpio_ldo_vote_node_t *s_gpio_ldo_vote_list  = NULL;
 
 
 /*================FUNCTION DECLARATION  SECTION  END========*/
+#if CONFIG_PM_AP_SRAM_RETENTION_CHECK
+void bk_pm_ap_sram_retention_check_set_idle_stack(void *start, void *end)
+{
+	sys_pm_hal_ap_sram_check_set_idle_stack(start, end);
+}
+#endif
+
 bk_err_t bk_pm_ap_misc_rtc_enter_deepsleep(uint32_t time_interval , aon_rtc_isr_t callback)
 {
 	return BK_OK;
@@ -181,22 +189,32 @@ bk_err_t bk_pm_ap_close_ap_unregister_callback(pm_ap_close_ap_callback_info_t * 
 
 bk_err_t bk_pm_ap_close_ap_handle_callback()
 {
+#if CONFIG_PM_AP_FAST_BOOT_ENABLE
+    uint32_t callback_count = 0;
+#endif
+
     for(int i = 0; i < sizeof(s_close_ap_cb_arry)/sizeof(pm_ap_close_ap_callback_info_t);i++)
     {
         if(s_close_ap_cb_arry[i].close_ap_cb_fn != NULL)
         {
 #if CONFIG_PM_AP_FAST_BOOT_ENABLE
+            callback_count++;
+#if CONFIG_PM_AP_FAST_BOOT_VERBOSE_TRACE
             uint32_t callback_start_ms = rtos_get_time();
             LOGI("AP close callback begin module=%d fn=%p\r\n",
                 i, s_close_ap_cb_arry[i].close_ap_cb_fn);
 #endif
+#endif
             s_close_ap_cb_arry[i].close_ap_cb_fn(s_close_ap_cb_arry[i].param1,s_close_ap_cb_arry[i].param2);
-#if CONFIG_PM_AP_FAST_BOOT_ENABLE
+#if CONFIG_PM_AP_FAST_BOOT_ENABLE && CONFIG_PM_AP_FAST_BOOT_VERBOSE_TRACE
             LOGI("AP close callback end module=%d elapsed_ms=%u\r\n",
                 i, (uint32_t)(rtos_get_time() - callback_start_ms));
 #endif
         }
     }
+#if CONFIG_PM_AP_FAST_BOOT_ENABLE
+    LOGI("AP close callback summary count=%u\r\n", callback_count);
+#endif
     return BK_OK;
 }
 

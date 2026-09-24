@@ -23,13 +23,10 @@
 /******************************************************************************/
 
 #include "common/bk_include.h"
+#include "soc/bk7259/reg_base.h"
 
-/* Register Base Address */
-#ifdef CONFIG_SPE
-#define ETH_BASE (0x48080000 + SOC_ADDR_OFFSET)
-#else
-#define ETH_BASE 0x48080000
-#endif // CONFIG_SPE
+/* Register Base Address: always apply SOC_ADDR_OFFSET (0 for SPE, 0x10000000 for NS). */
+#define ETH_BASE (0x48080000u + SOC_ADDR_OFFSET)
 #define ETH                 ((ETH_TypeDef *)ETH_BASE)
 
 
@@ -88,6 +85,9 @@
 #define ETH_MACCR_JE_Pos                              (16U)
 #define ETH_MACCR_JE_Msk                              (0x1UL << ETH_MACCR_JE_Pos) /*!< 0x00010000 */
 #define ETH_MACCR_JE                                  ETH_MACCR_JE_Msk         /* Jumbo Packet Enable */
+#define ETH_MACCR_PS_Pos                              (15U)
+#define ETH_MACCR_PS_Msk                              (0x1UL << ETH_MACCR_PS_Pos) /*!< 0x00008000 */
+#define ETH_MACCR_PS                                  ETH_MACCR_PS_Msk         /* Port select: 1 = MII/RMII, 0 = GMII */
 #define ETH_MACCR_FES_Pos                             (14U)
 #define ETH_MACCR_FES_Msk                             (0x1UL << ETH_MACCR_FES_Pos) /*!< 0x00004000 */
 #define ETH_MACCR_FES                                 ETH_MACCR_FES_Msk        /* Fast ethernet speed */
@@ -1434,6 +1434,10 @@
 #define ETH_MTLISR_QIS                                ETH_MTLISR_QIS_Msk       /* Queue Interrupt status */
 
 /* Bit definition for Ethernet MTL Tx Queue Operation Mode Register */
+#define ETH_MTLTQOMR_TQS_Pos                          (16U)
+#define ETH_MTLTQOMR_TQS_Msk                          (0xFUL << ETH_MTLTQOMR_TQS_Pos) /*!< 0x000F0000 */
+#define ETH_MTLTQOMR_TQS                              ETH_MTLTQOMR_TQS_Msk     /* Transmit Queue Size, (TQS+1)*256 bytes */
+#define ETH_MTLTQOMR_TQS_2048B                        ((uint32_t)0x00070000)   /* 8 blocks of 256 bytes */
 #define ETH_MTLTQOMR_TTC_Pos                          (4U)
 #define ETH_MTLTQOMR_TTC_Msk                          (0x7UL << ETH_MTLTQOMR_TTC_Pos) /*!< 0x00000070 */
 #define ETH_MTLTQOMR_TTC                              ETH_MTLTQOMR_TTC_Msk     /* Transmit Threshold Control */
@@ -1451,6 +1455,20 @@
 #define ETH_MTLTQOMR_FTQ_Pos                          (0U)
 #define ETH_MTLTQOMR_FTQ_Msk                          (0x1UL << ETH_MTLTQOMR_FTQ_Pos) /*!< 0x00000001 */
 #define ETH_MTLTQOMR_FTQ                              ETH_MTLTQOMR_FTQ_Msk     /* Flush Transmit Queue */
+#define ETH_MTLTQOMR_TXQEN_Pos                        (2U)
+#define ETH_MTLTQOMR_TXQEN_Msk                        (0x3UL << ETH_MTLTQOMR_TXQEN_Pos) /*!< 0x0000000C */
+#define ETH_MTLTQOMR_TXQEN                            ETH_MTLTQOMR_TXQEN_Msk   /* Transmit Queue Enable */
+#define ETH_MTLTQOMR_TXQEN_DISABLED                   ((uint32_t)0x00000000)   /* Queue not enabled */
+#define ETH_MTLTQOMR_TXQEN_AV                         ((uint32_t)0x00000004)   /* Enabled in AV mode */
+#define ETH_MTLTQOMR_TXQEN_ENABLED                    ((uint32_t)0x00000008)   /* Enabled */
+
+/******************  Bit definition for ETH_MACRQC0R register  ****************/
+#define ETH_MACRQC0R_RXQ0EN_Pos                       (0U)
+#define ETH_MACRQC0R_RXQ0EN_Msk                       (0x3UL << ETH_MACRQC0R_RXQ0EN_Pos) /*!< 0x00000003 */
+#define ETH_MACRQC0R_RXQ0EN                           ETH_MACRQC0R_RXQ0EN_Msk  /* Receive Queue 0 Enable */
+#define ETH_MACRQC0R_RXQ0EN_DISABLED                  ((uint32_t)0x00000000)   /* Queue not enabled */
+#define ETH_MACRQC0R_RXQ0EN_DCB                       ((uint32_t)0x00000001)   /* Enabled for DCB/generic traffic */
+#define ETH_MACRQC0R_RXQ0EN_AV                        ((uint32_t)0x00000002)   /* Enabled for AV traffic */
 
 /* Bit definition for Ethernet MTL Tx Queue Underflow Register */
 #define ETH_MTLTQUR_UFCNTOVF_Pos                      (11U)
@@ -1693,6 +1711,10 @@
 #define ETH_DMACCR_DSL_Pos                            (18U)
 #define ETH_DMACCR_DSL_Msk                            (0x7UL << ETH_DMACCR_DSL_Pos) /*!< 0x001C0000 */
 #define ETH_DMACCR_DSL                                ETH_DMACCR_DSL_Msk       /* Descriptor Skip Length */
+/* WARNING: these names assume DSL counts 32-bit words, which is wrong on this
+ * SoC -- its DMA bus is 128 bit, so DSL counts 16-byte units. The skip actually
+ * programmed is 4x what the name says: _32BIT skips 16 bytes, _64BIT skips 32,
+ * _128BIT skips 64. Pick by the byte count you need, not by the name. */
 #define ETH_DMACCR_DSL_0BIT                           ((uint32_t)0x00000000)
 #define ETH_DMACCR_DSL_32BIT                          ((uint32_t)0x00040000)
 #define ETH_DMACCR_DSL_64BIT                          ((uint32_t)0x00080000)

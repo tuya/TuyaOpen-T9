@@ -16,11 +16,9 @@
  * ============================================================================ */
 
 /* Maximum number of heap regions (default: 4) */
-/* Modified by TUYA Start */
 #ifndef BK_HEAP_MAX_REGION
-#define BK_HEAP_MAX_REGION        (6)
+#define BK_HEAP_MAX_REGION        (4)
 #endif
-/* Modified by TUYA End */
 
 /* ============================================================================
  * Memory Alignment Configuration

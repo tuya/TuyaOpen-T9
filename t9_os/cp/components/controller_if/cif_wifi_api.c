@@ -7,6 +7,7 @@
 #include <string.h>
 #include "cif_wifi_api.h"
 #include "cif_main.h"
+#include "cif_cntrl.h"
 #include "cif_ipc.h"
 #include "wifi_v2.h"
 #include "lwip/etharp.h"
@@ -56,6 +57,10 @@ static bk_err_t bk_wifi_sta_get_arp_table(wifi_arp_sync_table_t *table)
 
 bk_err_t wifi_monitor_cp_cb(const uint8_t *frame, uint32_t len, const wifi_frame_info_t *frame_info)
 {
+#if (defined(CONFIG_QUICK_TRACK) && CONFIG_QUICK_TRACK) || (defined(CONFIG_WFA_CERT) && CONFIG_WFA_CERT)
+    return BK_OK;
+#endif
+
     struct monitor_struct
     {
         cpdu_t cp;
@@ -115,6 +120,10 @@ bk_err_t wifi_monitor_cp_cb(const uint8_t *frame, uint32_t len, const wifi_frame
 
 bk_err_t wifi_filter_cp_cb(const uint8_t *frame, uint32_t len, const wifi_frame_info_t *frame_info)
 {
+#if (defined(CONFIG_QUICK_TRACK) && CONFIG_QUICK_TRACK) || (defined(CONFIG_WFA_CERT) && CONFIG_WFA_CERT)
+    return BK_OK;
+#endif
+
     struct filter_struct
     {
         cpdu_t cp;
@@ -779,6 +788,18 @@ bk_err_t cif_handle_wifi_api_cmd(struct bk_msg_hdr *msg)
             }
             break;
         }
+#ifdef CONFIG_IPV6
+        case STA_GET_NETIF_IPV6_CONFIG:
+        {
+            struct bk_msg_ipv6_ind *ipv6_config = (struct bk_msg_ipv6_ind *)arg_info->args[0];
+            if (ipv6_config) {
+                ret = cif_get_sta_ipv6_config(ipv6_config);
+            } else {
+                ret = BK_ERR_NULL_PARAM;
+            }
+            break;
+        }
+#endif
 #if CONFIG_BK_RAW_LINK
         case RLK_REGISTER_SEND_CB:
         {
@@ -980,6 +1001,17 @@ bk_err_t cif_handle_wifi_api_cmd(struct bk_msg_hdr *msg)
             ret = wlan_p2p_enable_with_intent((char *)arg_info->args[0], (int)arg_info->args[1]);
             break;
         }
+        case P2P_SET_GO_NOA:
+        {
+            uint8_t enabled = (uint8_t)arg_info->args[0];
+            if (enabled > 1) {
+                ret = BK_ERR_PARAM;
+                break;
+            }
+            wlan_p2p_go_noa_set_enabled(enabled);
+            ret = BK_OK;
+            break;
+        }
         case P2P_FIND:
         {
             ret = wlan_p2p_find();
@@ -1021,6 +1053,7 @@ bk_err_t cif_handle_wifi_api_cmd(struct bk_msg_hdr *msg)
 #else
         case P2P_ENABLE:
         case P2P_ENABLE_WITH_INTENT:
+        case P2P_SET_GO_NOA:
         case P2P_FIND:
         case P2P_LISTEN:
         case P2P_STOP_FIND:
@@ -1053,6 +1086,10 @@ bk_err_t cif_send_wifi_api_evt(uint32_t cmd_id, uint32_t argc, ...)
 {
      bk_err_t ret = BK_OK;
     wifi_api_arg_info_t arg_info = { 0 };
+
+#if (defined(CONFIG_QUICK_TRACK) && CONFIG_QUICK_TRACK) || (defined(CONFIG_WFA_CERT) && CONFIG_WFA_CERT)
+    return BK_OK;
+#endif
 
     if (argc)
     {

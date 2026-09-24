@@ -26,6 +26,8 @@
 #include <os/os.h>
 #include <components/bk_audio/audio_pipeline/ringbuf.h>
 #include <components/bk_audio/audio_utils/debug_dump_util.h>
+#include <soc/soc.h>
+#include <components/bk_audio/audio_utils/audio_obs_util.h>
 #include "aud_hal.h"
 
 
@@ -109,8 +111,8 @@ typedef struct eq_algorithm
 #define EQ_HW_DAC_EQ_BPS_ALL_ON          ((1u << EQ_HW_DAC_EQ_BPS_BITS) - 1u)
 #define EQ_HW_DAC_EQ_COEF_NUM_PER_FILTER (5)
 
-#define EQ_HW_DAC0_EQ_COEF_MEM_BASE_ADDR ((volatile int32_t *)0x41016600)
-#define EQ_HW_DAC1_EQ_COEF_MEM_BASE_ADDR ((volatile int32_t *)0x41016800)
+#define EQ_HW_DAC0_EQ_COEF_MEM_BASE_ADDR ((volatile int32_t *)(SOC_AUDIO_FIFO_REG_BASE + 0x6600U))
+#define EQ_HW_DAC1_EQ_COEF_MEM_BASE_ADDR ((volatile int32_t *)(SOC_AUDIO_FIFO_REG_BASE + 0x6800U))
 
 static void eq_hw_write_coef_mem(volatile int32_t *base, const eq_algorithm_t *eq, uint32_t filters)
 {
@@ -284,6 +286,8 @@ static int _eq_algorithm_process(audio_element_handle_t self, char *in_buffer, i
     int w_size = 0;
     if (r_size > 0)
     {
+        AUDIO_ELEMENT_OBS_BEGIN(self);
+
         EQ_DATA_DUMP_IN_DATA(in_buffer, r_size);
         if(is_aud_dump_valid(DUMP_TYPE_EQ_IN_DATA))
         {
@@ -319,6 +323,7 @@ static int _eq_algorithm_process(audio_element_handle_t self, char *in_buffer, i
         rtos_unlock_mutex(&eq->cfg_lock);
 
         EQ_ALGORITHM_END();
+        AUDIO_ELEMENT_OBS_END(self, r_size, (uint32_t)in_len);
 
         EQ_DATA_DUMP_OUT_DATA(in_buffer, r_size);
 

@@ -1,7 +1,11 @@
 #include <os/os.h>
 #include <os/mem.h>
+#include <components/bk_gpu_types.h>
 #include <components/bk_gpu_ctlr.h>
 #include <components/bk_hardware_ram.h>
+#include <components/bk_frame_buffer.h>
+#include <driver/gpio.h>
+#include "gpio_driver.h"
 #include "avdk_monitor.h"
 #include "gpu_vn_ctlr.h"
 #include "gpu_core.h"
@@ -32,100 +36,10 @@
 
 #define GPU_HPDMA_TRANSFER_TIMEOUT_MS 3000
 
-/* osd_by_flexa: per-instance OSD blend timing via BK_GPU_IOCTL_SET_OSD_BY_FLEXA. */
-
 /* Worker doorbell wait poll period. Acts as a safety net: even if a wakeup post
  * is ever missed/consumed, the worker re-checks flexa_stop at least this often,
  * so shutdown can never hang. */
 #define GPU_WORKER_POLL_MS 100
-
-
-// Modified by TUYA Start
-
-#define GPU_DRAW_RECT_LINE_WIDTH  4
-
-static void gpu_draw_path_calc_bounds(const bk_gpu_draw_path_set_t *path_set,
-                                      int16_t *xmin, int16_t *ymin,
-                                      int16_t *xmax, int16_t *ymax)
-{
-    const uint8_t *cmd = path_set->cmd;
-    const int16_t *data = (const int16_t *)path_set->data;
-    bool has_point = false;
-
-    *xmin = INT16_MAX;
-    *ymin = INT16_MAX;
-    *xmax = INT16_MIN;
-    *ymax = INT16_MIN;
-
-    for (uint32_t i = 0; i < path_set->size; i++)
-    {
-        uint8_t op = cmd[i];
-        uint32_t point_count = 0;
-
-        if (op == VLC_OP_END)
-        {
-            break;
-        }
-
-        switch (op)
-        {
-            case VLC_OP_MOVE:
-            case VLC_OP_MOVE_REL:
-            case VLC_OP_LINE:
-            case VLC_OP_LINE_REL:
-                point_count = 1;
-                break;
-            case VLC_OP_QUAD:
-            case VLC_OP_QUAD_REL:
-                point_count = 2;
-                break;
-            case VLC_OP_CUBIC:
-            case VLC_OP_CUBIC_REL:
-                point_count = 3;
-                break;
-            default:
-                point_count = 0;
-                break;
-        }
-
-        for (uint32_t p = 0; p < point_count; p++)
-        {
-            int16_t x = *data++;
-            int16_t y = *data++;
-
-            if (x < *xmin) *xmin = x;
-            if (y < *ymin) *ymin = y;
-            if (x > *xmax) *xmax = x;
-            if (y > *ymax) *ymax = y;
-            has_point = true;
-        }
-    }
-
-    if (!has_point)
-    {
-        *xmin = *ymin = *xmax = *ymax = 0;
-    }
-}
-
-static bool gpu_draw_path_intersects_line_block(gpu_flex_data_t *data,
-                                                const bk_gpu_ctlr_config_t *config)
-{
-    int32_t block_start;
-    int32_t block_end;
-
-    if (config->rotate_degree == 90)
-    {
-        block_start = ((int32_t)data->flexa_index - 1) * config->flexa_lines;
-        block_end = (int32_t)data->flexa_index * config->flexa_lines;
-        return data->draw_ymax >= block_start && data->draw_ymin <= block_end;
-    }
-
-    block_start = ((int32_t)data->flexa_index - 1) * config->flexa_lines;
-    block_end = block_start + config->flexa_lines;
-    return data->draw_ymax >= block_start && data->draw_ymin <= block_end;
-}
-// Modified by TUYA End
-
 
 static void gpu_flexa_addr_mapping(uint16_t width, uint16_t height, uint32_t base_addr, uint16_t flexa_lines, uint8_t buf_cnt)
 {
@@ -167,7 +81,7 @@ static void gpu_flexa_addr_unmapping(void)
     sys_hal_set_gpu_picb_end_value(0);
 }
 
-vg_lite_buffer_format_t gpu_format_convert(bk_pixel_format_t bk_format)
+static vg_lite_buffer_format_t gpu_format_convert(bk_pixel_format_t bk_format)
 {
     /* Default to unsupported format, then override supported cases only. */
     vg_lite_buffer_format_t vg_format = (vg_lite_buffer_format_t)-1;
@@ -213,103 +127,7 @@ vg_lite_buffer_format_t gpu_format_convert(bk_pixel_format_t bk_format)
     return vg_format;
 }
 
-static vg_lite_buffer_format_t gpu_blit_format_convert(bk_pixel_format_t bk_format)
-{
-    if (bk_format == BK_PIXEL_FORMAT_BGRA8888) {
-        /*
-         * The ISP SP path uses this public format as 32bpp BGRX. When a
-         * rotated blit forces an alpha-aware path in VG-Lite, treating X as A
-         * can make the overlay fully transparent.
-         */
-        return VG_LITE_BGRX8888;
-    }
-
-    return gpu_format_convert(bk_format);
-}
-
-static void *gpu_blit_uv_plane_get(const bk_gpu_blit_config_t *blit_config, void *front_frame)
-{
-    if (blit_config == NULL || front_frame == NULL) {
-        return NULL;
-    }
-
-    if (blit_config->src_format == BK_PIXEL_FORMAT_NV12) {
-        return (uint8_t *)front_frame +
-               ((uint32_t)blit_config->src_width * (uint32_t)blit_config->src_height);
-    }
-
-    return NULL;
-}
-
 #define CHECK_ERROR
-static bool gpu_blit_rotate_degree_is_valid(uint16_t rotate_degree);
-
-static avdk_err_t gpu_blit_set(bk_gpu_ctlr_handle_t handle, void *src_buffer, bk_gpu_blit_config_t *blit_config)
-{
-    gpu_vn_ctlr_t *controller =  __containerof(handle, gpu_vn_ctlr_t, ops);
-
-    if (blit_config == NULL) {
-        LOGW("%s %d blit config is NULL\r\n", __func__, __LINE__);
-        return AVDK_ERR_INVAL;
-    }
-    if (!gpu_blit_rotate_degree_is_valid(blit_config->rotate_degree)) {
-        LOGW("%s %d unsupported blit rotate %u\r\n",
-             __func__, __LINE__, (unsigned)blit_config->rotate_degree);
-        return AVDK_ERR_INVAL;
-    }
-
-    uint8_t slot = blit_config->osd_slot;
-    if (slot >= BK_GPU_BLIT_SLOT_MAX) {
-        LOGW("%s %d osd_slot %u out of range, clamp to 0\r\n", __func__, __LINE__, (unsigned)slot);
-        slot = 0;
-    }
-
-    rtos_lock_mutex(&controller->blit_mutex);
-    if (controller->update_blit_buffer[slot]) {
-        controller->update_blit_config[slot].free(controller->update_blit_buffer[slot],
-                                                   controller->update_blit_config[slot].args);
-        controller->update_blit_buffer[slot] = NULL;
-    }
-    controller->update_blit_buffer[slot] = src_buffer;
-    os_memcpy(&controller->update_blit_config[slot], blit_config, sizeof(bk_gpu_blit_config_t));
-    controller->blit_enable = true;
-    LOGI("%s, %d, blit_enable %d slot %u\n", __func__, __LINE__, controller->blit_enable, (unsigned)slot);
-    rtos_unlock_mutex(&controller->blit_mutex);
-
-    return 0;
-}
-
-static avdk_err_t gpu_blit_clear(bk_gpu_ctlr_handle_t handle)
-{
-    gpu_vn_ctlr_t *controller =  __containerof(handle, gpu_vn_ctlr_t, ops);
-
-    rtos_lock_mutex(&controller->blit_mutex);
-
-    for (uint8_t slot = 0; slot < BK_GPU_BLIT_SLOT_MAX; slot++)
-    {
-        if (controller->update_blit_buffer[slot])
-        {
-            controller->update_blit_config[slot].free(controller->update_blit_buffer[slot],
-                                                      controller->update_blit_config[slot].args);
-            controller->update_blit_buffer[slot] = NULL;
-            os_memset(&controller->update_blit_config[slot], 0, sizeof(bk_gpu_blit_config_t));
-        }
-
-        if (controller->display_blit_buffer[slot])
-        {
-            controller->display_blit_config[slot].free(controller->display_blit_buffer[slot],
-                                                       controller->display_blit_config[slot].args);
-            controller->display_blit_buffer[slot] = NULL;
-            os_memset(&controller->display_blit_config[slot], 0, sizeof(bk_gpu_blit_config_t));
-        }
-    }
-
-    controller->blit_enable = false;
-
-    rtos_unlock_mutex(&controller->blit_mutex);
-
-    return 0;
-}
 
 static avdk_err_t gpu_draw_path_build(bk_gpu_ctlr_handle_t handle, bk_gpu_draw_path_set_t *path_set)
 {
@@ -318,9 +136,6 @@ static avdk_err_t gpu_draw_path_build(bk_gpu_ctlr_handle_t handle, bk_gpu_draw_p
 
     rtos_lock_mutex(&flex->draw_mutex);
 
-// Modified by TUYA Start
-    controller->flex.draw_flexa_overlay = 0;
-// Modified by TUYA End
     CHECK_ERROR(vg_lite_clear_path(&flex->draw_path));
 
     memset(&flex->draw_path, 0, sizeof(vg_lite_path_t));
@@ -345,140 +160,30 @@ static avdk_err_t gpu_draw_path_clear(bk_gpu_ctlr_handle_t handle)
     gpu_flex_data_t *flex = &controller->flex;
 
     rtos_lock_mutex(&flex->draw_mutex);
-// Modified by TUYA Start
-    controller->flex.draw_flexa_overlay = 0;
-// Modified by TUYA End
     controller->flex.draw_enable = 0;
     CHECK_ERROR(vg_lite_clear_path(&flex->draw_path));
     rtos_unlock_mutex(&flex->draw_mutex);
     return 0;
 }
 
-static int gpu_draw_path_process(vg_lite_matrix_t *matrix, vg_lite_path_t *path, vg_lite_buffer_t* buffer)
+static int gpu_draw_path_submit(vg_lite_matrix_t *matrix,
+                                vg_lite_path_t *path,
+                                vg_lite_buffer_t *buffer)
 {
-	CHECK_ERROR(vg_lite_draw(buffer, path, VG_LITE_FILL_EVEN_ODD, matrix, VG_LITE_BLEND_NONE, 0xFFFFFFFF));
-    CHECK_ERROR(vg_lite_finish());
+    vg_lite_error_t ret = vg_lite_draw(
+        buffer, path, VG_LITE_FILL_EVEN_ODD, matrix,
+        VG_LITE_BLEND_NONE, 0xFFFFFFFF);
+    if (ret != VG_LITE_SUCCESS) {
+        LOGE("vg_lite_draw failed %d buf=%dx%d fmt=%d tiled=%d compress=%d screen_copy=%d\r\n",
+             ret, buffer->width, buffer->height, (int)buffer->format,
+             (int)buffer->tiled, (int)buffer->compress_mode,
+             (int)buffer->screen_copy);
+        return -1;
+    }
     return 0;
 }
 
-
-// Modified by TUYA Start
-static bool gpu_clip_rect_to_buffer(vg_lite_buffer_t *buffer,
-    int32_t x,
-    int32_t y,
-    int32_t width,
-    int32_t height,
-    vg_lite_rectangle_t *rect)
-{
-    int32_t x2 = x + width;
-    int32_t y2 = y + height;
-
-    if (width <= 0 || height <= 0)
-    {
-        return false;
-    }
-
-    if (x < 0)
-    {
-        x = 0;
-    }
-    if (y < 0)
-    {
-        y = 0;
-    }
-    if (x2 > buffer->width)
-    {
-        x2 = buffer->width;
-    }
-    if (y2 > buffer->height)
-    {
-        y2 = buffer->height;
-    }
-
-    if (x >= x2 || y >= y2)
-    {
-        return false;
-    }
-
-    rect->x = x;
-    rect->y = y;
-    rect->width = x2 - x;
-    rect->height = y2 - y;
-
-    return true;
-}
-
-static int gpu_draw_rect_line(vg_lite_buffer_t *buffer,
-    int32_t x,
-    int32_t y,
-    int32_t width,
-    int32_t height,
-    bool *drawn)
-{
-    vg_lite_rectangle_t rect;
-
-    if (!gpu_clip_rect_to_buffer(buffer, x, y, width, height, &rect))
-    {
-        return 0;
-    }
-
-    CHECK_ERROR(vg_lite_clear(buffer, &rect, 0xFF00FF00));
-    *drawn = true;
-
-    return 0;
-}
-
-static int gpu_flex_overlay_draw_line_block(gpu_flex_data_t *data,
-                                            const bk_gpu_ctlr_config_t *config,
-                                            vg_lite_buffer_t *buffer)
-{
-    int32_t x1;
-    int32_t y1;
-    int32_t x2;
-    int32_t y2;
-    int32_t line_width = GPU_DRAW_RECT_LINE_WIDTH;
-    bool drawn = false;
-
-    if (config->rotate_degree == 90)
-    {
-        int32_t block_end = (int32_t)data->flexa_index * config->flexa_lines;
-
-        x1 = block_end - data->draw_ymax;
-        x2 = block_end - data->draw_ymin;
-        y1 = data->draw_xmin;
-        y2 = data->draw_xmax;
-    }
-    else
-    {
-        int32_t block_start = ((int32_t)data->flexa_index - 1) * config->flexa_lines;
-
-        x1 = data->draw_xmin;
-        x2 = data->draw_xmax;
-        y1 = data->draw_ymin - block_start;
-        y2 = data->draw_ymax - block_start;
-    }
-
-    gpu_draw_rect_line(buffer, x1 - line_width / 2, y1, line_width, y2 - y1, &drawn);
-    gpu_draw_rect_line(buffer, x2 - line_width / 2, y1, line_width, y2 - y1, &drawn);
-    gpu_draw_rect_line(buffer, x1, y1 - line_width / 2, x2 - x1, line_width, &drawn);
-    gpu_draw_rect_line(buffer, x1, y2 - line_width / 2, x2 - x1, line_width, &drawn);
-
-    if (drawn)
-    {
-        CHECK_ERROR(vg_lite_finish());
-    }
-
-    return 0;
-}
-// Modified by TUYA End
-
-static bool gpu_blit_rotate_degree_is_valid(uint16_t rotate_degree)
-{
-    return rotate_degree == 0 || rotate_degree == 90 ||
-           rotate_degree == 180 || rotate_degree == 270;
-}
-
-static void gpu_flexa_event_ready_handle(uint32_t frame_seq, uint32_t line, gpu_vn_ctlr_t *gpu_vn_ctlr)
+static void gpu_flexa_lines_ready_update(uint32_t frame_seq, uint32_t line, gpu_vn_ctlr_t *gpu_vn_ctlr)
 {
     if (gpu_vn_ctlr == NULL) {
         return;
@@ -505,7 +210,7 @@ static void gpu_flexa_event_ready_handle(uint32_t frame_seq, uint32_t line, gpu_
     }
 }
 
-static void gpu_isp_line_done_handle(uint32_t line, void *arg)
+static void gpu_decoder_flexa_lines_ready_handle(uint32_t line, void *arg)
 {
     gpu_vn_ctlr_t *gpu_vn_ctlr = (gpu_vn_ctlr_t *)arg;
     uint32_t frame_seq;
@@ -518,7 +223,7 @@ static void gpu_isp_line_done_handle(uint32_t line, void *arg)
      * delivered synchronously in the decoder's flexa_done context, so in_stream->last_seq
      * identifies the exact decode frame these lines belong to. Aligning the GPU's per-frame
      * seq to the decoder lets the decoder later drop cross-frame reports. Fall back to the
-     * locally derived counter for sources that do not stamp last_seq (e.g. ISP). */
+     * locally derived counter for legacy sources that do not stamp last_seq. */
     uint32_t dec_seq = 0U;
     if (gpu_vn_ctlr->bond != NULL && gpu_vn_ctlr->bond->bond_config != NULL) {
         bk_flexa_bond_t *in_s = (bk_flexa_bond_t *)gpu_vn_ctlr->bond->bond_config->in_stream;
@@ -538,7 +243,7 @@ static void gpu_isp_line_done_handle(uint32_t line, void *arg)
         }
     }
 
-    gpu_flexa_event_ready_handle(frame_seq, line, gpu_vn_ctlr);
+    gpu_flexa_lines_ready_update(frame_seq, line, gpu_vn_ctlr);
 }
 
 /**
@@ -916,6 +621,26 @@ static inline void gpu_flex_data_deinit(gpu_flex_data_t *data, gpu_vn_ctlr_t *gp
     }
 }
 
+static inline void gpu_flex_frame_mutex_lock(gpu_vn_ctlr_t *gpu_vn_ctlr)
+{
+    if (gpu_vn_ctlr->flexa_frame_mutex != NULL &&
+        !gpu_vn_ctlr->flexa_frame_mutex_owned)
+    {
+        rtos_lock_mutex(&gpu_vn_ctlr->flexa_frame_mutex);
+        gpu_vn_ctlr->flexa_frame_mutex_owned = true;
+    }
+}
+
+static inline void gpu_flex_frame_mutex_unlock(gpu_vn_ctlr_t *gpu_vn_ctlr)
+{
+    if (gpu_vn_ctlr->flexa_frame_mutex != NULL &&
+        gpu_vn_ctlr->flexa_frame_mutex_owned)
+    {
+        gpu_vn_ctlr->flexa_frame_mutex_owned = false;
+        rtos_unlock_mutex(&gpu_vn_ctlr->flexa_frame_mutex);
+    }
+}
+
 /**
  * @brief Reset GPU flex pipeline state so that next frame can start cleanly.
  *        This is typically used when the upstream JPEG decoder reports a fatal error
@@ -929,6 +654,7 @@ static inline void gpu_flex_restart(gpu_vn_ctlr_t *gpu_vn_ctlr)
     gpu_vn_ctlr->line_err_flag = 1;
     gpu_vn_ctlr->flexa_frame_active = false;
     gpu_vn_ctlr->flexa_abort_notified = false;
+    gpu_flex_frame_mutex_unlock(gpu_vn_ctlr);
 
     /* Reset per-frame counters; next frame will start from index 1. */
     flex->flexa_index = 1;
@@ -1037,8 +763,20 @@ static inline void gpu_flex_data_dma_transfer(gpu_flex_data_t *data, uint32_t of
     dma_config[0].dst_step = dst_step;
     dma_config[0].finish_int_en = 1;
     dma_config[0].half_finish_int_en = 0;
-    BK_LOG_ON_ERR(bk_hpdma_link_set_descs(data->link_dma_list_table, (hpdma_link_config_t *)dma_config, 1));
-    BK_LOG_ON_ERR(bk_hpdma_link_transfer(data->gdma, data->link_dma_list_table));
+    bk_err_t ret = bk_hpdma_link_set_descs(
+        data->link_dma_list_table, dma_config, 1);
+    if (ret != BK_OK) {
+        LOGE("%s, set desc failed: %d\r\n", __func__, ret);
+        return;
+    }
+
+    HPDMA_LINE_START();
+    ret = bk_hpdma_link_transfer(
+        data->gdma, data->link_dma_list_table);
+    if (ret != BK_OK) {
+        HPDMA_LINE_END();
+        LOGE("%s, transfer failed: %d\r\n", __func__, ret);
+    }
 }
 
 /**
@@ -1118,106 +856,6 @@ static inline bool gpu_flex_data_line_pull_out(gpu_flex_data_t *data, gpu_vn_ctl
     return true;
 }
 
-static void gpu_flex_data_frame_done_blit(gpu_flex_data_t *flex, const bk_gpu_ctlr_config_t *config, bk_gpu_blit_config_t *blit_config, void *front_frame, void *display_frame)
-{
-    vg_lite_buffer_t display_buffer;
-    vg_lite_buffer_t front_buffer;
-    vg_lite_matrix_t display_matrix;
-
-    LOGV("%s, frame_done_blit\n", __func__);
-
-    memset(&display_buffer , 0, sizeof(display_buffer));
-    memset(&front_buffer , 0, sizeof(front_buffer));
-
-    if (config->rotate_degree == 90 || config->rotate_degree == 270)
-    {
-        display_buffer.width = flex->output_height;
-        display_buffer.height = flex->output_width;
-    }
-    else
-    {
-        display_buffer.width = flex->output_width;
-        display_buffer.height = flex->output_height;
-    }
-
-    display_buffer.format = VG_LITE_BGRA8888;
-    display_buffer.tiled = VG_LITE_TILED;
-    display_buffer.compress_mode = VG_LITE_DEC_HV_SAMPLE;
-
-    memset(&front_buffer , 0, sizeof(front_buffer));
-    /* sprite_width/height give the true buffer stride; src_* may be a sub-rect. */
-    front_buffer.width = blit_config->sprite_width ? blit_config->sprite_width : blit_config->src_width;
-    front_buffer.height = blit_config->sprite_height ? blit_config->sprite_height : blit_config->src_height;
-    front_buffer.format = gpu_blit_format_convert(blit_config->src_format);
-    vg_lite_allocate_with_data(&front_buffer,
-                               front_frame,
-                               gpu_blit_uv_plane_get(blit_config, front_frame),
-                               NULL,
-                               NULL);
-
-    memset(&display_matrix , 0, sizeof(display_matrix));
-    vg_lite_identity(&display_matrix);
-    vg_lite_allocate_with_data(&display_buffer, display_frame, NULL, NULL, NULL);
-
-    vg_lite_rectangle_t rect = {
-        .x = blit_config->src_x,
-        .y = blit_config->src_y,
-        .width = blit_config->src_width,
-        .height = blit_config->src_height,
-    };
-
-    switch (blit_config->rotate_degree)
-    {
-        case 90:
-            vg_lite_rotate(90.0f, &display_matrix);
-            display_matrix.m[0][2] = (vg_lite_float_t)blit_config->dst_x +
-                                     (vg_lite_float_t)blit_config->src_height;
-            display_matrix.m[1][2] = (vg_lite_float_t)blit_config->dst_y;
-            break;
-        case 180:
-            vg_lite_rotate(180.0f, &display_matrix);
-            display_matrix.m[0][2] = (vg_lite_float_t)blit_config->dst_x +
-                                     (vg_lite_float_t)blit_config->src_width;
-            display_matrix.m[1][2] = (vg_lite_float_t)blit_config->dst_y +
-                                     (vg_lite_float_t)blit_config->src_height;
-            break;
-        case 270:
-            vg_lite_rotate(270.0f, &display_matrix);
-            display_matrix.m[0][2] = (vg_lite_float_t)blit_config->dst_x;
-            display_matrix.m[1][2] = (vg_lite_float_t)blit_config->dst_y +
-                                     (vg_lite_float_t)blit_config->src_width;
-            break;
-        case 0:
-        default:
-            vg_lite_translate(blit_config->dst_x, blit_config->dst_y, &display_matrix);
-            break;
-    }
-
-    /* Default keeps the legacy opaque copy; alpha_blend selects SRC_OVER so a
-     * transparent ARGB8888 OSD sprite composites correctly over the video. */
-    vg_lite_blend_t blend_mode = blit_config->alpha_blend ? VG_LITE_BLEND_SRC_OVER : VG_LITE_BLEND_NONE;
-
-    int ret = vg_lite_blit_rect(
-        &display_buffer,
-        &front_buffer,
-        &rect,
-        &display_matrix,
-        blend_mode,
-        0,
-        VG_LITE_FILTER_POINT
-    );
-
-    if (ret != VG_LITE_SUCCESS)
-    {
-        LOGE("vg_lite_blit_rect failed, ret %d\r\n", ret);
-    }
-
-    vg_lite_finish();
-
-    vg_lite_free_without_free_data(&display_buffer);
-    vg_lite_free_without_free_data(&front_buffer);
-}
-
 /**
  * @brief Handle frame completion
  * @param data GPU flex data structure
@@ -1239,55 +877,6 @@ static inline bool gpu_flex_data_frame_done(gpu_flex_data_t *data, gpu_vn_ctlr_t
     while(bk_hpdma_get_next_ll_addr(data->gdma));
     while(bk_hpdma_get_enable_status(data->gdma));
 #endif
-    rtos_lock_mutex(&gpu_vn_ctlr->blit_mutex);
-
-    if (gpu_vn_ctlr->blit_enable)
-    {
-        LOGV("%s, check blit\n", __func__);
-
-        if (!gpu_vn_ctlr->osd_by_flexa) {
-            OSD_BLIT_START();
-        }
-
-        for (uint8_t slot = 0; slot < BK_GPU_BLIT_SLOT_MAX; slot++)
-        {
-            /* Promote update buffer to display. */
-            if (gpu_vn_ctlr->display_blit_buffer[slot] && gpu_vn_ctlr->update_blit_buffer[slot])
-            {
-                gpu_vn_ctlr->display_blit_config[slot].free(gpu_vn_ctlr->display_blit_buffer[slot],
-                                                            gpu_vn_ctlr->display_blit_config[slot].args);
-                gpu_vn_ctlr->display_blit_buffer[slot] = NULL;
-                os_memset(&gpu_vn_ctlr->display_blit_config[slot], 0, sizeof(bk_gpu_blit_config_t));
-            }
-
-            if (gpu_vn_ctlr->update_blit_buffer[slot])
-            {
-                gpu_vn_ctlr->display_blit_buffer[slot] = gpu_vn_ctlr->update_blit_buffer[slot];
-                os_memcpy(&gpu_vn_ctlr->display_blit_config[slot], &gpu_vn_ctlr->update_blit_config[slot], sizeof(bk_gpu_blit_config_t));
-                gpu_vn_ctlr->update_blit_buffer[slot] = NULL;
-            }
-
-            /* osd_by_flexa composites in gpu_flex_process_line_block(); skip frame-end blit. */
-            if (gpu_vn_ctlr->display_blit_buffer[slot] && !gpu_vn_ctlr->osd_by_flexa)
-            {
-                rtos_lock_mutex(&gpu_vn_ctlr->gpu_mutex);
-                OSD_SLOT_START();
-                gpu_flex_data_frame_done_blit(data,
-                                              config,
-                                              &gpu_vn_ctlr->display_blit_config[slot],
-                                              gpu_vn_ctlr->display_blit_buffer[slot],
-                                              data->dpu_frame_buffers);
-                OSD_SLOT_END();
-                rtos_unlock_mutex(&gpu_vn_ctlr->gpu_mutex);
-            }
-        }
-
-        if (!gpu_vn_ctlr->osd_by_flexa) {
-            OSD_BLIT_END();
-        }
-    }
-
-    rtos_unlock_mutex(&gpu_vn_ctlr->blit_mutex);
 
     /* Swap frame buffer */
     uint32_t frame_size = bk_pixel_size_get(config->dst_format) * (config->compress ? data->output_width / 4 : data->output_width) * data->output_height;
@@ -1298,6 +887,28 @@ static inline bool gpu_flex_data_frame_done(gpu_flex_data_t *data, gpu_vn_ctlr_t
         void *done_frame = data->dpu_frame_buffers;
         data->dpu_frame_buffers = new_buffer;
         AVDK_MONITOR_GPU_FRAME_PLUS();
+
+        if (!config->client_compose_frame) {
+            /*
+             * Default SDK behavior: compose registered layers before handing
+             * the frame to the client. A solution that sets
+             * client_compose_frame performs face/UI composition in frame_done.
+             */
+            bk_gpu_global_lock();
+            bk_gpu_frame_composer_t composer = gpu_vn_ctlr->frame_composer;
+            bk_gpu_global_unlock();
+            if (gpu_vn_ctlr->osd_render_per_flexa_block)
+            {
+                if (composer.commit_flexa_frame != NULL)
+                {
+                    composer.commit_flexa_frame(composer.ctx);
+                }
+            }
+            else if (composer.compose_frame != NULL)
+            {
+                composer.compose_frame(composer.ctx, done_frame, frame_size);
+            }
+        }
 
         if (config->frame_done)
         {
@@ -1332,6 +943,7 @@ static inline bool gpu_flex_data_frame_done(gpu_flex_data_t *data, gpu_vn_ctlr_t
     rtos_set_semaphore(&data->transfer_sem);
 #endif
 
+    gpu_flex_frame_mutex_unlock(gpu_vn_ctlr);
     return true;
 }
 
@@ -1388,155 +1000,6 @@ static inline bool gpu_flex_frame_abort_needed(gpu_flex_data_t *data,
     return false;
 }
 
-/* Return true if OSD slot overlaps flexa block @p blk (1-based). */
-static bool gpu_flex_osd_slot_hits_block(const bk_gpu_ctlr_config_t *config, gpu_flex_data_t *data,
-                                         uint16_t blk, const bk_gpu_blit_config_t *bc)
-{
-    int32_t fl = (int32_t)config->flexa_lines;
-    int32_t blk_lo, blk_hi;
-    int32_t osd_lo, osd_hi;
-
-    if (config->rotate_degree == 90)
-    {
-        blk_lo = (int32_t)data->output_height - (int32_t)blk * fl;
-        blk_hi = (int32_t)data->output_height - (int32_t)(blk - 1) * fl;
-        osd_lo = (int32_t)bc->dst_x;
-        osd_hi = (int32_t)bc->dst_x + (int32_t)bc->src_width;
-    }
-    else if (config->rotate_degree == 270)
-    {
-        blk_lo = (int32_t)(blk - 1) * fl;
-        blk_hi = (int32_t)blk * fl;
-        osd_lo = (int32_t)bc->dst_x;
-        osd_hi = (int32_t)bc->dst_x + (int32_t)bc->src_width;
-    }
-    else /* rotate 0 */
-    {
-        blk_lo = (int32_t)(blk - 1) * fl;
-        blk_hi = (int32_t)blk * fl;
-        osd_lo = (int32_t)bc->dst_y;
-        osd_hi = (int32_t)bc->dst_y + (int32_t)bc->src_height;
-    }
-
-    return !(osd_hi <= blk_lo || osd_lo >= blk_hi);
-}
-
-static void gpu_flex_osd_slot_block_blit(gpu_vn_ctlr_t *gpu_vn_ctlr, gpu_flex_data_t *data,
-                                         uint16_t blk, bk_gpu_blit_config_t *bc, void *sprite)
-{
-    const bk_gpu_ctlr_config_t *config = &gpu_vn_ctlr->config;
-
-    if (!gpu_flex_osd_slot_hits_block(config, data, blk, bc))
-    {
-        return;
-    }
-
-    vg_lite_buffer_t front;
-    memset(&front, 0, sizeof(front));
-    front.width  = bc->sprite_width  ? bc->sprite_width  : bc->src_width;
-    front.height = bc->sprite_height ? bc->sprite_height : bc->src_height;
-    front.format = gpu_blit_format_convert(bc->src_format);
-    vg_lite_allocate_with_data(&front, sprite, gpu_blit_uv_plane_get(bc, sprite), NULL, NULL);
-
-    /* OSD placement in assembled-frame coords (identical to frame_done path). */
-    vg_lite_matrix_t m;
-    memset(&m, 0, sizeof(m));
-    vg_lite_identity(&m);
-    switch (bc->rotate_degree)
-    {
-        case 90:
-            vg_lite_rotate(90.0f, &m);
-            m.m[0][2] = (vg_lite_float_t)bc->dst_x + (vg_lite_float_t)bc->src_height;
-            m.m[1][2] = (vg_lite_float_t)bc->dst_y;
-            break;
-        case 180:
-            vg_lite_rotate(180.0f, &m);
-            m.m[0][2] = (vg_lite_float_t)bc->dst_x + (vg_lite_float_t)bc->src_width;
-            m.m[1][2] = (vg_lite_float_t)bc->dst_y + (vg_lite_float_t)bc->src_height;
-            break;
-        case 270:
-            vg_lite_rotate(270.0f, &m);
-            m.m[0][2] = (vg_lite_float_t)bc->dst_x;
-            m.m[1][2] = (vg_lite_float_t)bc->dst_y + (vg_lite_float_t)bc->src_width;
-            break;
-        case 0:
-        default:
-            vg_lite_translate(bc->dst_x, bc->dst_y, &m);
-            break;
-    }
-
-    /* Shift assembled-frame coords to current block-local dst_buf coords. */
-    if (config->rotate_degree == 90)
-    {
-        m.m[0][2] -= (vg_lite_float_t)((int32_t)data->output_height - (int32_t)blk * (int32_t)config->flexa_lines);
-    }
-    else if (config->rotate_degree == 270)
-    {
-        m.m[0][2] -= (vg_lite_float_t)((int32_t)(blk - 1) * (int32_t)config->flexa_lines);
-    }
-    else /* rotate 0 */
-    {
-        m.m[1][2] -= (vg_lite_float_t)((int32_t)(blk - 1) * (int32_t)config->flexa_lines);
-    }
-
-    vg_lite_rectangle_t rect = {
-        .x = bc->src_x,
-        .y = bc->src_y,
-        .width = bc->src_width,
-        .height = bc->src_height,
-    };
-
-    vg_lite_blend_t blend_mode = bc->alpha_blend ? VG_LITE_BLEND_SRC_OVER : VG_LITE_BLEND_NONE;
-
-    /* compress path: clear screen_copy so SRC_OVER is not forced to BLEND_NONE. */
-    vg_lite_uint8_t saved_screen_copy = data->dst_buf.screen_copy;
-    if (blend_mode != VG_LITE_BLEND_NONE)
-    {
-        data->dst_buf.screen_copy = 0;
-    }
-
-    int ret = vg_lite_blit_rect(&data->dst_buf, &front, &rect, &m, blend_mode, 0, VG_LITE_FILTER_POINT);
-    if (ret != VG_LITE_SUCCESS)
-    {
-        LOGE("%s, osd block blit failed %d\n", __func__, ret);
-    }
-    vg_lite_finish();
-
-    data->dst_buf.screen_copy = saved_screen_copy;
-    vg_lite_free_without_free_data(&front);
-}
-
-static void gpu_flex_osd_block_blit(gpu_vn_ctlr_t *gpu_vn_ctlr, gpu_flex_data_t *data, uint16_t blk)
-{
-    rtos_lock_mutex(&gpu_vn_ctlr->blit_mutex);
-
-    if (!gpu_vn_ctlr->blit_enable)
-    {
-        rtos_unlock_mutex(&gpu_vn_ctlr->blit_mutex);
-        return;
-    }
-
-    OSD_BLIT_START();
-    for (uint8_t slot = 0; slot < BK_GPU_BLIT_SLOT_MAX; slot++)
-    {
-        void *sprite = gpu_vn_ctlr->display_blit_buffer[slot];
-        if (sprite == NULL) {
-            continue;
-        }
-        if (!gpu_flex_osd_slot_hits_block(&gpu_vn_ctlr->config, data, blk,
-                                          &gpu_vn_ctlr->display_blit_config[slot])) {
-            continue;
-        }
-        OSD_SLOT_START();
-        gpu_flex_osd_slot_block_blit(gpu_vn_ctlr, data, blk,
-                                     &gpu_vn_ctlr->display_blit_config[slot], sprite);
-        OSD_SLOT_END();
-    }
-    OSD_BLIT_END();
-
-    rtos_unlock_mutex(&gpu_vn_ctlr->blit_mutex);
-}
-
 /**
  * @brief Process a single line block with GPU
  * @param data GPU flex data structure
@@ -1548,69 +1011,151 @@ static bool gpu_flex_process_line_block(gpu_flex_data_t *data,
 {
     const bk_gpu_ctlr_config_t *config = &gpu_vn_ctlr->config;
     uint16_t blk = data->flexa_index;   /* 1-based index of the block about to be produced */
+    bool render_per_block = gpu_vn_ctlr->osd_render_per_flexa_block;
     GPU_LINE_START();
     /* Update transformation matrix for current line */
     gpu_flex_update_matrix(data, config);
 
-    rtos_lock_mutex(&gpu_vn_ctlr->gpu_mutex);
+    bk_gpu_global_lock();
 
     if (gpu_flex_frame_abort_needed(data, gpu_vn_ctlr, frame_seq))
     {
         gpu_flex_abort_current_frame(gpu_vn_ctlr);
         GPU_LINE_END();
-        rtos_unlock_mutex(&gpu_vn_ctlr->gpu_mutex);
+        bk_gpu_global_unlock();
         return false;
     }
+
+    vg_lite_error_t render_ret = VG_LITE_SUCCESS;
 
     if (gpu_flex_current_block_has_padding(data, config))
     {
-        vg_lite_clear(&data->dst_buf, NULL, 0x00000000);
+        render_ret = vg_lite_clear(
+            &data->dst_buf, NULL, 0x00000000);
     }
 
-    /* Perform GPU blit operation */
-    vg_lite_blit(&data->dst_buf, &data->src_buf, &data->matrix,
-                 VG_LITE_BLEND_NONE, 0, VG_LITE_FILTER_POINT);
-    vg_lite_finish();
+    if (render_ret == VG_LITE_SUCCESS)
+    {
+        render_ret = vg_lite_blit(
+            &data->dst_buf, &data->src_buf, &data->matrix,
+            VG_LITE_BLEND_NONE, 0, VG_LITE_FILTER_POINT);
+    }
 
-    /* Draw path changes are rare; avoid taking draw_mutex on every block when disabled. */
+    vg_lite_error_t finish_ret = vg_lite_finish();
+    if (render_ret != VG_LITE_SUCCESS ||
+        finish_ret != VG_LITE_SUCCESS)
+    {
+        LOGE("%s, GPU block render failed, render=%d finish=%d\r\n",
+             __func__, render_ret, finish_ret);
+        gpu_flex_abort_current_frame(gpu_vn_ctlr);
+        GPU_LINE_END();
+        bk_gpu_global_unlock();
+        return false;
+    }
+
+    /* Preserve the SDK draw-path API behavior for clients that enable it. */
     if (data->draw_enable)
     {
+        int draw_ret = 0;
+        vg_lite_error_t draw_finish_ret = VG_LITE_SUCCESS;
         rtos_lock_mutex(&data->draw_mutex);
-// Modified by TUYA Start
-        if (data->draw_enable)
+        if (data->draw_enable &&
+            gpu_flex_draw_path_intersects_block(data))
         {
-            if (data->draw_flexa_overlay)
+            draw_ret = gpu_draw_path_submit(
+                &data->draw_matrix, &data->draw_path, &data->dst_buf);
+            if (draw_ret == 0)
             {
-                if (gpu_draw_path_intersects_line_block(data, config))
-                {
-                    gpu_flex_overlay_draw_line_block(data, config, &data->dst_buf);
-                }
-            }
-            else if (gpu_flex_draw_path_intersects_block(data))
-            {
-                gpu_draw_path_process(&data->draw_matrix, &data->draw_path, &data->dst_buf);
+                draw_finish_ret = vg_lite_finish();
             }
         }
-// Modified by TUYA End
         rtos_unlock_mutex(&data->draw_mutex);
+        if (draw_ret != 0 || draw_finish_ret != VG_LITE_SUCCESS)
+        {
+            LOGE("%s, path draw=%d finish=%d\r\n",
+                 __func__, draw_ret, draw_finish_ret);
+            gpu_flex_abort_current_frame(gpu_vn_ctlr);
+            GPU_LINE_END();
+            bk_gpu_global_unlock();
+            return false;
+        }
     }
 
     if (gpu_flex_frame_abort_needed(data, gpu_vn_ctlr, frame_seq))
     {
         gpu_flex_abort_current_frame(gpu_vn_ctlr);
         GPU_LINE_END();
-        rtos_unlock_mutex(&gpu_vn_ctlr->gpu_mutex);
+        bk_gpu_global_unlock();
         return false;
     }
 
-    if (gpu_vn_ctlr->osd_by_flexa)
+    bk_gpu_global_unlock();
+    if (render_per_block)
     {
-        gpu_flex_osd_block_blit(gpu_vn_ctlr, data, blk);
+        const uint16_t flexa_lines = config->flexa_lines;
+        bk_gpu_flexa_block_t block = {
+            .block_index = blk,
+            .local_width = (uint16_t)data->dst_buf.width,
+            .local_height = (uint16_t)data->dst_buf.height,
+            .compress_mode = (uint8_t)data->dst_buf.compress_mode,
+            .memory = data->dst_buf.memory,
+            .native_target = &data->dst_buf,
+        };
+        if (config->rotate_degree == 90U ||
+            config->rotate_degree == 270U)
+        {
+            block.frame_total_width = (uint16_t)data->output_height;
+            block.frame_total_height = (uint16_t)data->output_width;
+        }
+        else
+        {
+            block.frame_total_width = (uint16_t)data->output_width;
+            block.frame_total_height = (uint16_t)data->output_height;
+        }
+        if (config->rotate_degree == 90U)
+        {
+            block.frame_x = (int32_t)data->output_height -
+                            (int32_t)blk * flexa_lines;
+            block.frame_width = flexa_lines;
+            block.frame_height = (uint16_t)data->output_width;
+        }
+        else if (config->rotate_degree == 270U)
+        {
+            block.frame_x = (int32_t)(blk - 1U) * flexa_lines;
+            block.frame_width = flexa_lines;
+            block.frame_height = (uint16_t)data->output_width;
+        }
+        else
+        {
+            block.frame_y =
+                config->rotate_degree == 180U
+                    ? (int32_t)data->output_height -
+                          (int32_t)blk * flexa_lines
+                    : (int32_t)(blk - 1U) * flexa_lines;
+            block.frame_width = (uint16_t)data->output_width;
+            block.frame_height = flexa_lines;
+        }
+        /*
+         * Compose the shared overlay onto this block as it streams out, so the
+         * application does not drive per-block composition itself. Then publish
+         * the block for the optional client notification: it can still pull the
+         * block via BK_GPU_IOCTL_GET_FLEXA_BLOCK during the (synchronous,
+         * same-thread) callback; done_lines carries the completed-block count
+         * (== blk), preserving the historical flexa_line_done() argument.
+         */
+        bk_gpu_frame_composer_t composer = gpu_vn_ctlr->frame_composer;
+        if (composer.compose_flexa_block != NULL)
+        {
+            composer.compose_flexa_block(composer.ctx, &block);
+        }
+        if (config->flexa_line_done != NULL)
+        {
+            gpu_vn_ctlr->current_flexa_block = &block;
+            config->flexa_line_done((uint32_t)blk, config->flexa_line_done_args);
+            gpu_vn_ctlr->current_flexa_block = NULL;
+        }
     }
-
     GPU_LINE_END();
-    rtos_unlock_mutex(&gpu_vn_ctlr->gpu_mutex);
-    HPDMA_LINE_START();
     /* Pull out processed line data */
     return gpu_flex_data_line_pull_out(data, gpu_vn_ctlr);
 }
@@ -1643,8 +1188,9 @@ static void gpu_flex_main_entry(void *arg)
             break;
         }
 
-        /* Consume a deferred SET_NOTIFY restart here on the worker thread (never on the bond
-         * ISR), so the FLEXA read state is only mutated when no vg_lite op is in flight. */
+        /* Consumer side of flexa_notify_pending: run the deferred restart here on the worker
+         * thread (never on the bond ISR), so the FLEXA read state is only mutated between
+         * vg_lite ops, with none in flight. */
         if (gpu_vn_ctlr->flexa_notify_pending)
         {
             gpu_vn_ctlr->flexa_notify_pending = false;
@@ -1664,6 +1210,7 @@ static void gpu_flex_main_entry(void *arg)
                                (src_line_count <= config->flexa_buff_cnt));
         if (can_sync_frame)
         {
+            gpu_flex_frame_mutex_lock(gpu_vn_ctlr);
             if (src_line_count != 1) {
                 LOGW("%s, flexa sync from early block, frame %u line %u\n",
                      __func__, src_frame_seq, src_line_count);
@@ -1698,8 +1245,6 @@ static void gpu_flex_main_entry(void *arg)
         {
             if (!gpu_vn_ctlr->flexa_frame_active)
             {
-                LOGD("%s, flexa waits frame start, frame %u line %u\n",
-                     __func__, src_frame_seq, src_line_count);
                 gpu_flex_restart(gpu_vn_ctlr);
             }
             else if (src_frame_seq != gpu_vn_ctlr->active_frame_seq)
@@ -1754,11 +1299,6 @@ static void gpu_flex_main_entry(void *arg)
             gpu_vn_ctlr->bond->flexa_done(gpu_rd_cnt, gpu_vn_ctlr->bond);
         }
 
-        if (gpu_vn_ctlr->config.flexa_line_done)
-        {
-            gpu_vn_ctlr->config.flexa_line_done(gpu_rd_cnt, gpu_vn_ctlr->config.flexa_line_done_args);
-        }
-
         if (gpu_vn_ctlr->flexa_stop)
         {
             break;
@@ -1775,6 +1315,7 @@ static void gpu_flex_main_entry(void *arg)
     }
 
 thread_exit:
+    gpu_flex_frame_mutex_unlock(gpu_vn_ctlr);
     LOGW("%s,%d exit\n", __func__, __LINE__);
 
     /* Self-delete only. gpu_ctlr_close() joins this thread via rtos_thread_join() and is the
@@ -1789,38 +1330,34 @@ static avdk_err_t gpu_ctlr_init(bk_gpu_ctlr_handle_t handle)
     AVDK_RETURN_ON_FALSE(control, AVDK_ERR_INVAL, TAG, "control is NULL");
     avdk_err_t ret = AVDK_ERR_OK;
     vg_lite_error_t vg_ret = VG_LITE_SUCCESS;
+    bool driver_inited = false;
 
-    if (control->config.flexa) {
-        control->blit_enable = false;
-        os_memset(control->display_blit_buffer, 0, sizeof(control->display_blit_buffer));
-        os_memset(control->display_blit_config, 0, sizeof(control->display_blit_config));
-        os_memset(control->update_blit_buffer, 0, sizeof(control->update_blit_buffer));
-        os_memset(control->update_blit_config, 0, sizeof(control->update_blit_config));
-        ret = rtos_init_mutex(&control->blit_mutex);
-        if (ret != AVDK_ERR_OK) {
-            LOGE("%s, %d rtos_init_mutex failed\n", __func__, __LINE__);
-            return ret;
-        }
-        ret = rtos_init_mutex(&control->gpu_mutex);
-        if (ret != AVDK_ERR_OK) {
-            LOGE("%s, %d rtos_init_mutex gpu_mutex failed\n", __func__, __LINE__);
-            rtos_deinit_mutex(&control->blit_mutex);
-            control->blit_mutex = NULL;
-            return ret;
-        }
-    } else {
+    if (!control->config.flexa) {
         LOGE("%s %d flexa is not enabled\r\n", __func__, __LINE__);
         return AVDK_ERR_INVAL;
     }
 
     bk_gpu_driver_init();
+    driver_inited = true;
 
-    control->gpu_contiguous_buffer = bk_get_gpu_flexa_buffer(CONFIG_VG_LITE_GPU_CONTIGUOUS_MEM_SZ);
-    if (control->gpu_contiguous_buffer == NULL)
     {
-        LOGE("%s, %d bk_get_gpu_flexa_buffer failed\n", __func__, __LINE__);
-        ret = AVDK_ERR_NOMEM;
-        goto error;
+        uint32_t vg_mem_sz = bk_gpu_vg_lite_apply_mem_config(control->config.tess_width,
+                                                             control->config.tess_height);
+        if (vg_mem_sz == 0)
+        {
+            LOGE("%s, %d vg_lite mem config failed\n", __func__, __LINE__);
+            ret = AVDK_ERR_INVAL;
+            goto error;
+        }
+        control->gpu_contiguous_buffer = bk_get_gpu_flexa_buffer(vg_mem_sz);
+        if (control->gpu_contiguous_buffer == NULL)
+        {
+            LOGE("%s, %d bk_get_gpu_flexa_buffer failed, size=%u\n",
+                 __func__, __LINE__, (unsigned)vg_mem_sz);
+            ret = AVDK_ERR_NOMEM;
+            goto error;
+        }
+        LOGI("%s, %d vg_lite mem config success, size=%u\n", __func__, __LINE__, (unsigned)vg_mem_sz);
     }
     vg_lite_set_buffer(control->gpu_contiguous_buffer);
     vg_ret = vg_lite_init(control->config.tess_width, control->config.tess_height);
@@ -1838,13 +1375,8 @@ error:
         os_free(control->gpu_contiguous_buffer);
         control->gpu_contiguous_buffer = NULL;
     }
-    if (control->gpu_mutex) {
-        rtos_deinit_mutex(&control->gpu_mutex);
-        control->gpu_mutex = NULL;
-    }
-    if (control->blit_mutex) {
-        rtos_deinit_mutex(&control->blit_mutex);
-        control->blit_mutex = NULL;
+    if (driver_inited) {
+        bk_gpu_driver_deinit();
     }
     return ret;
 }
@@ -1855,24 +1387,7 @@ static avdk_err_t gpu_ctlr_deinit(bk_gpu_ctlr_handle_t handle)
     AVDK_RETURN_ON_FALSE(control, AVDK_ERR_INVAL, TAG, "control is NULL");
     vg_lite_error_t vg_ret = VG_LITE_SUCCESS;
 
-    if (control->config.flexa) {
-        if (control->blit_mutex) {
-            avdk_err_t ret = rtos_deinit_mutex(&control->blit_mutex);
-            if (ret != AVDK_ERR_OK) {
-                LOGE("%s, %d rtos_deinit_mutex failed\n", __func__, __LINE__);
-                return ret;
-            }
-            control->blit_mutex = NULL;
-        }
-        if (control->gpu_mutex) {
-            avdk_err_t ret = rtos_deinit_mutex(&control->gpu_mutex);
-            if (ret != AVDK_ERR_OK) {
-                LOGE("%s, %d rtos_deinit_mutex gpu_mutex failed\n", __func__, __LINE__);
-                return ret;
-            }
-            control->gpu_mutex = NULL;
-        }
-    } else {
+    if (!control->config.flexa) {
         LOGE("%s %d flexa is not enabled\r\n", __func__, __LINE__);
         return AVDK_ERR_INVAL;
     }
@@ -1941,6 +1456,12 @@ static void gpu_flex_resource_teardown(gpu_vn_ctlr_t *control)
 
     gpu_flex_deinit_pingpong_buffer(flex);
     gpu_flex_data_deinit(flex, control);
+
+    gpu_flex_frame_mutex_unlock(control);
+    if (control->flexa_frame_mutex != NULL) {
+        rtos_deinit_mutex(&control->flexa_frame_mutex);
+        control->flexa_frame_mutex = NULL;
+    }
 }
 
 static avdk_err_t gpu_ctlr_open(bk_gpu_ctlr_handle_t handle)
@@ -1967,6 +1488,13 @@ static avdk_err_t gpu_ctlr_open(bk_gpu_ctlr_handle_t handle)
             LOGE("%s, %d rtos_init_semaphore_ex gpu_process_sem failed\n", __func__, __LINE__);
             return ret;
         }
+
+        ret = rtos_init_mutex(&control->flexa_frame_mutex);
+        if (ret != AVDK_ERR_OK) {
+            LOGE("%s, %d rtos_init_mutex flexa_frame_mutex failed\n", __func__, __LINE__);
+            goto open_fail;
+        }
+        control->flexa_frame_mutex_owned = false;
 
         /* Initialize GPU hardware */
         gpu_flex_data_init(flex, control);
@@ -1998,7 +1526,7 @@ static avdk_err_t gpu_ctlr_open(bk_gpu_ctlr_handle_t handle)
                                         1,
                                         "gpu",
                                         (beken_thread_function_t)gpu_flex_main_entry,
-                                        1024 * 10,
+                                        CONFIG_VG_LITE_GPU_TASK_STACK_SIZE,
                                         control);
 
         if (ret != AVDK_ERR_OK) {
@@ -2020,12 +1548,10 @@ static avdk_err_t gpu_ctlr_open(bk_gpu_ctlr_handle_t handle)
 open_fail:
         gpu_flex_resource_teardown(control);
         return ret;
-    } else {
-        LOGE("%s %d flexa is not enabled\r\n", __func__, __LINE__);
-        return AVDK_ERR_INVAL;
     }
 
-    return AVDK_ERR_OK;
+    LOGE("%s %d flexa is not enabled\r\n", __func__, __LINE__);
+    return AVDK_ERR_INVAL;
 }
 
 
@@ -2056,10 +1582,17 @@ static avdk_err_t gpu_ctlr_close(bk_gpu_ctlr_handle_t handle)
             }
         }
 
-        /* Block until the worker has fully terminated, then take ownership of the handle
-         * here. close() is the sole clearer of flexa_thd, so a fast re-open always observes
-         * a fully torn-down controller instead of a stale handle. */
-        rtos_thread_join(&control->flexa_thd);
+        /* Block until the worker has fully terminated, then take ownership of
+         * the handle here. close() is the sole clearer of flexa_thd, so a fast
+         * re-open always observes a fully torn-down controller instead of a
+         * stale handle. */
+        bk_err_t join_ret = rtos_thread_join(&control->flexa_thd);
+        if (join_ret != BK_OK)
+        {
+            LOGE("%s, %d flexa thread join failed %d; resources retained\n",
+                 __func__, __LINE__, (int)join_ret);
+            return AVDK_ERR_GENERIC;
+        }
         control->flexa_thd = NULL;
 
         gpu_flex_resource_teardown(control);
@@ -2080,25 +1613,25 @@ static avdk_err_t gpu_ctlr_ioctl(bk_gpu_ctlr_handle_t handle, uint32_t cmd, void
 
     switch (cmd)
     {
-        case BK_GPU_IOCTL_SET_FLEXA_LINES_READY:
-            gpu_isp_line_done_handle((uint32_t)args, control);
+        case BK_GPU_IOCTL_DEC_FLEXA_READY:
+            gpu_decoder_flexa_lines_ready_handle((uint32_t)args, control);
             break;
 
-        case BK_GPU_IOCTL_SET_FLEXA_EVENT_READY:
+        case BK_GPU_IOCTL_ISP_FLEXA_READY:
         {
-            bk_gpu_flexa_event_t *event = (bk_gpu_flexa_event_t *)args;
+            bk_gpu_isp_flexa_event_t *event = (bk_gpu_isp_flexa_event_t *)args;
             if (event == NULL) {
                 LOGW("%s %d flexa event is NULL\r\n", __func__, __LINE__);
                 return AVDK_ERR_INVAL;
             }
-            gpu_flexa_event_ready_handle(event->frame_seq, event->line_cnt, control);
+            gpu_flexa_lines_ready_update(event->frame_seq, event->line_cnt, control);
         }
         break;
 
         case BK_GPU_IOCTL_SET_NOTIFY:
-            /* This runs in the bond ISR, cross-core with the worker's vg_lite ops, so the
-             * restart is not done here. Set the flag and wake the worker, which runs
-             * gpu_flex_restart() from its own context with no vg_lite op in flight. */
+            /* Producer side of flexa_notify_pending: this runs in the bond ISR, cross-core with
+             * the worker's vg_lite ops, so the restart is deferred rather than run here. Set the
+             * flag and wake the worker, which runs gpu_flex_restart() from its own context. */
             control->flexa_notify_pending = true;
             rtos_set_semaphore(&control->gpu_process_sem);
             break;
@@ -2151,25 +1684,180 @@ static avdk_err_t gpu_ctlr_ioctl(bk_gpu_ctlr_handle_t handle, uint32_t cmd, void
             break;
 
         case BK_GPU_IOCTL_LOCK:
-            if (control->gpu_mutex == NULL) {
-                LOGW("%s %d gpu_mutex is NULL\r\n", __func__, __LINE__);
-                return AVDK_ERR_INVAL;
+            if (bk_gpu_global_lock() != BK_OK) {
+                LOGW("%s %d gpu global lock failed\r\n", __func__, __LINE__);
+                return AVDK_ERR_GENERIC;
             }
-            rtos_lock_mutex(&control->gpu_mutex);
             break;
 
         case BK_GPU_IOCTL_UNLOCK:
-            if (control->gpu_mutex == NULL) {
-                LOGW("%s %d gpu_mutex is NULL\r\n", __func__, __LINE__);
-                return AVDK_ERR_INVAL;
+            if (bk_gpu_global_unlock() != BK_OK) {
+                LOGW("%s %d gpu global unlock failed\r\n", __func__, __LINE__);
+                return AVDK_ERR_GENERIC;
             }
-            rtos_unlock_mutex(&control->gpu_mutex);
+            break;
+
+        case BK_GPU_IOCTL_FLEXA_FRAME_LOCK:
+            if (control->flexa_frame_mutex == NULL ||
+                rtos_lock_mutex(&control->flexa_frame_mutex) != BK_OK) {
+                LOGW("%s %d flexa frame lock failed\r\n", __func__, __LINE__);
+                return AVDK_ERR_GENERIC;
+            }
+            break;
+
+        case BK_GPU_IOCTL_FLEXA_FRAME_UNLOCK:
+            if (control->flexa_frame_mutex == NULL ||
+                rtos_unlock_mutex(&control->flexa_frame_mutex) != BK_OK) {
+                LOGW("%s %d flexa frame unlock failed\r\n", __func__, __LINE__);
+                return AVDK_ERR_GENERIC;
+            }
             break;
 
         case BK_GPU_IOCTL_SET_OSD_BY_FLEXA:
-            control->osd_by_flexa = (args != NULL) ? *(bool *)args : false;
-            LOGI("osd_by_flexa = %d\n", (int)control->osd_by_flexa);
+            control->osd_render_per_flexa_block =
+                (args != NULL && *(bool *)args);
+            LOGI("osd_render_per_flexa_block = %d\n",
+                 (int)control->osd_render_per_flexa_block);
             break;
+
+        case BK_GPU_IOCTL_GET_OUTPUT_INFO:
+        {
+            bk_gpu_output_info_t *output = (bk_gpu_output_info_t *)args;
+            if (output == NULL) {
+                LOGW("%s %d output is NULL\r\n", __func__, __LINE__);
+                return AVDK_ERR_INVAL;
+            }
+            bool swap = (control->config.rotate_degree == 90U ||
+                         control->config.rotate_degree == 270U);
+            output->width = swap ? control->flex.output_height
+                                 : control->flex.output_width;
+            output->height = swap ? control->flex.output_width
+                                  : control->flex.output_height;
+            output->format = control->config.dst_format;
+            output->is_flexa = control->config.flexa;
+            output->is_compressed = control->config.compress;
+        }
+        break;
+
+        case BK_GPU_IOCTL_GET_FLEXA_BLOCK:
+        {
+            bk_gpu_flexa_block_t *out = (bk_gpu_flexa_block_t *)args;
+            if (out == NULL) {
+                return AVDK_ERR_INVAL;
+            }
+            /*
+             * Only valid while the GPU worker is inside flexa_line_done(); the
+             * client calls this synchronously from that same thread, so no lock
+             * is needed. Outside the callback current_flexa_block is NULL.
+             */
+            if (control->current_flexa_block == NULL) {
+                return AVDK_ERR_RDYDONE;
+            }
+            *out = *control->current_flexa_block;
+        }
+        break;
+
+        case BK_GPU_IOCTL_CLAIM_COMPOSITOR:
+        {
+            bk_gpu_compositor_owner_t *owner =
+                (bk_gpu_compositor_owner_t *)args;
+            if (owner == NULL) {
+                return AVDK_ERR_INVAL;
+            }
+            bk_gpu_global_lock();
+            avdk_err_t ret = AVDK_ERR_OK;
+            if (*owner == BK_GPU_COMPOSITOR_OWNER_NONE) {
+                control->compositor_owner = BK_GPU_COMPOSITOR_OWNER_NONE;
+            } else if (control->compositor_owner ==
+                           BK_GPU_COMPOSITOR_OWNER_NONE ||
+                       control->compositor_owner == (uint8_t)*owner) {
+                control->compositor_owner = (uint8_t)*owner;
+            } else {
+                ret = AVDK_ERR_BUSY;
+            }
+            bk_gpu_global_unlock();
+            return ret;
+        }
+
+        case BK_GPU_IOCTL_SET_FRAME_COMPOSER:
+        {
+            bk_gpu_frame_composer_t *composer =
+                (bk_gpu_frame_composer_t *)args;
+            bk_gpu_global_lock();
+            avdk_err_t ret = AVDK_ERR_OK;
+            if (composer == NULL) {
+                os_memset(&control->frame_composer, 0,
+                          sizeof(control->frame_composer));
+                if (control->compositor_owner ==
+                        BK_GPU_COMPOSITOR_OWNER_LEGACY) {
+                    control->compositor_owner =
+                        BK_GPU_COMPOSITOR_OWNER_NONE;
+                }
+            } else if (control->compositor_owner ==
+                           BK_GPU_COMPOSITOR_OWNER_OVERLAY) {
+                /*
+                 * The bk_gpu_overlay_* path owns this controller. It stashes
+                 * the shared overlay here (ctx + compose hooks + destroy) so the
+                 * controller composites it every frame, tears it down on delete,
+                 * and other SDK components fetch it via GET_FRAME_COMPOSER.
+                 *
+                 * A compose hook is accepted only for the SAME shared overlay
+                 * (matching ctx); a hook carrying a DIFFERENT ctx is rejected so
+                 * two distinct compositors never draw the same output frame.
+                 */
+                if (composer->compose_frame != NULL &&
+                    control->frame_composer.ctx != NULL &&
+                    control->frame_composer.ctx != composer->ctx) {
+                    ret = AVDK_ERR_BUSY;
+                } else {
+                    control->frame_composer = *composer;
+                }
+            } else if (control->frame_composer.compose_frame != NULL) {
+                /* Another caller already installed a composer (lost race). */
+                ret = AVDK_ERR_RDYDONE;
+            } else {
+                control->frame_composer = *composer;
+                control->compositor_owner =
+                    BK_GPU_COMPOSITOR_OWNER_LEGACY;
+            }
+            bk_gpu_global_unlock();
+            return ret;
+        }
+
+        case BK_GPU_IOCTL_GET_FRAME_COMPOSER:
+        {
+            bk_gpu_frame_composer_t *composer =
+                (bk_gpu_frame_composer_t *)args;
+            if (composer == NULL) {
+                return AVDK_ERR_INVAL;
+            }
+            bk_gpu_global_lock();
+            *composer = control->frame_composer;
+            bk_gpu_global_unlock();
+        }
+        break;
+
+        case BK_GPU_IOCTL_REFRESH_DIRTY:
+        {
+            void *bg_frame = args;
+            if (bg_frame == NULL) {
+                return AVDK_ERR_INVAL;
+            }
+            /*
+             * Snapshot the composer under the lock, then run refresh_dirty
+             * unlocked: the overlay takes its own mutex and issues GPU work, so
+             * holding the GPU global lock across it would serialize/stall the worker.
+             */
+            bk_gpu_global_lock();
+            avdk_err_t (*refresh)(void *, void *) =
+                control->frame_composer.refresh_dirty;
+            void *ctx = control->frame_composer.ctx;
+            bk_gpu_global_unlock();
+            if (refresh == NULL || ctx == NULL) {
+                return AVDK_ERR_OK; /* nothing composited yet */
+            }
+            return refresh(ctx, bg_frame);
+        }
 
         default:
             return AVDK_ERR_UNSUPPORTED;
@@ -2183,68 +1871,121 @@ static avdk_err_t gpu_ctlr_delete(bk_gpu_ctlr_handle_t handle)
     gpu_vn_ctlr_t *control =  __containerof(handle, gpu_vn_ctlr_t, ops);
     AVDK_RETURN_ON_FALSE(control, AVDK_ERR_INVAL, TAG, "control is NULL");
 
+    /* Tear down the hidden legacy-blit overlay (if any) with the controller. */
+    if (control->frame_composer.destroy != NULL)
+    {
+        control->frame_composer.destroy(control->frame_composer.ctx);
+        os_memset(&control->frame_composer, 0, sizeof(control->frame_composer));
+    }
+
     os_free(control);
     control = NULL;
 
     return AVDK_ERR_OK;
 }
 
-
-// Modified by TUYA Start
-avdk_err_t bk_gpu_flex_overlay_path_build(bk_gpu_ctlr_handle_t handle, bk_gpu_draw_path_set_t *path_set)
+/**
+ * Flexa ring depth check for downscale.
+ *
+ * Each output strip (flexa_lines) samples about
+ *   strip_src = ceil(flexa_lines * src_h / dst_h)
+ * source lines through the flexa window. The ISP/JPEG ring only holds
+ *   ring_lines = flexa_buff_cnt * flexa_lines
+ * When strip_src grows (dst_h shrinks), blit can fetch outside the mapped
+ * ring and trigger a VGLite AXI bus error.
+ *
+ * Empirically (1080p, flexa_lines=16, cnt=3): dst_h≈704 OK, dst_h<=688 fails.
+ * Require: 2 * strip_src <= ring_lines + 2
+ */
+static uint32_t gpu_flex_min_buff_cnt_for_scale(uint16_t src_h, uint16_t dst_h, uint8_t flexa_lines)
 {
-    gpu_vn_ctlr_t *controller = __containerof(handle, gpu_vn_ctlr_t, ops);
-    gpu_flex_data_t *flex = &controller->flex;
-    int16_t xmin;
-    int16_t ymin;
-    int16_t xmax;
-    int16_t ymax;
+    uint32_t strip_src;
+    uint32_t min_ring_lines;
 
-    rtos_lock_mutex(&flex->draw_mutex);
+    if (flexa_lines == 0 || src_h == 0 || dst_h == 0) {
+        return 0;
+    }
 
-    /*
-     * Flexa block blit shares the GPU with stroked paths and can hang BK7259.
-     * Store bbox from path commands and draw borders via gpu_flex_overlay_draw_line_block().
-     */
-    flex->draw_flexa_overlay = 1;
-    CHECK_ERROR(vg_lite_clear_path(&flex->draw_path));
-    os_memset(&flex->draw_path, 0, sizeof(vg_lite_path_t));
+    /* Same 16-align as gpu_flex_data_init() output_height. */
+    dst_h = (uint16_t)((dst_h + GPU_HIGHT_ALIGNMENT) & ~GPU_HIGHT_ALIGNMENT);
+    if (dst_h == 0) {
+        return 0;
+    }
 
-    gpu_draw_path_calc_bounds(path_set, &xmin, &ymin, &xmax, &ymax);
-    flex->draw_xmin = xmin;
-    flex->draw_ymin = ymin;
-    flex->draw_xmax = xmax;
-    flex->draw_ymax = ymax;
-    flex->draw_enable = 1;
+    strip_src = ((uint32_t)flexa_lines * src_h + dst_h - 1U) / dst_h;
+    /* 2 * strip_src - 2, clamped so upscale/1:1 still asks for at least 1 slot. */
+    if (strip_src <= 1U) {
+        min_ring_lines = flexa_lines;
+    } else {
+        min_ring_lines = strip_src * 2U - 2U;
+    }
 
-    rtos_unlock_mutex(&flex->draw_mutex);
-
-    return 0;
+    return (min_ring_lines + flexa_lines - 1U) / flexa_lines;
 }
 
-avdk_err_t bk_gpu_flex_overlay_path_clear(bk_gpu_ctlr_handle_t handle)
+static avdk_err_t gpu_ctlr_validate_scale_flexa(const bk_gpu_ctlr_config_t *config)
 {
-    gpu_vn_ctlr_t *controller = __containerof(handle, gpu_vn_ctlr_t, ops);
-    gpu_flex_data_t *flex = &controller->flex;
+    uint16_t out_h;
+    uint8_t flexa_lines;
+    uint32_t min_cnt;
+    uint32_t strip_src;
 
-    rtos_lock_mutex(&flex->draw_mutex);
-    flex->draw_enable = 0;
-    flex->draw_flexa_overlay = 0;
-    rtos_unlock_mutex(&flex->draw_mutex);
+    if (config == NULL || !config->flexa || !config->scale) {
+        return AVDK_ERR_OK;
+    }
 
-    return 0;
+    flexa_lines = config->flexa_lines ? config->flexa_lines : 16;
+    if (config->src_height == 0 || config->dst_height == 0 || config->flexa_buff_cnt == 0) {
+        LOGE("%s, invalid flexa scale config: src=%ux%u dst=%ux%u buff_cnt=%u lines=%u\n",
+             __func__,
+             config->src_width, config->src_height,
+             config->dst_width, config->dst_height,
+             config->flexa_buff_cnt, flexa_lines);
+        return AVDK_ERR_INVAL;
+    }
+
+    /* Only downscale on the flexa strip axis needs a deeper ring. */
+    out_h = (uint16_t)((config->dst_height + GPU_HIGHT_ALIGNMENT) & ~GPU_HIGHT_ALIGNMENT);
+    if (out_h >= config->src_height) {
+        return AVDK_ERR_OK;
+    }
+
+    min_cnt = gpu_flex_min_buff_cnt_for_scale(config->src_height, config->dst_height, flexa_lines);
+    strip_src = ((uint32_t)flexa_lines * config->src_height + out_h - 1U) / out_h;
+
+    if (config->flexa_buff_cnt < min_cnt) {
+        LOGE("%s, flexa buff_cnt too small for scale: src=%ux%u dst=%ux%u(aligned_h=%u) "
+             "scale_y=%u/%u strip_src_lines=%u lines=%u buff_cnt=%u need>=%u "
+             "(raise ISP/JPEG DECODE_BUFFER_CNT / flexa_buff_cnt)\n",
+             __func__,
+             config->src_width, config->src_height,
+             config->dst_width, config->dst_height, out_h,
+             (unsigned)out_h, (unsigned)config->src_height,
+             (unsigned)strip_src, flexa_lines,
+             config->flexa_buff_cnt, (unsigned)min_cnt);
+        return AVDK_ERR_INVAL;
+    }
+
+    LOGI("%s, scale flexa ok: src_h=%u dst_h=%u strip_src=%u buff_cnt=%u (min=%u)\n",
+         __func__, config->src_height, out_h, (unsigned)strip_src,
+         config->flexa_buff_cnt, (unsigned)min_cnt);
+    return AVDK_ERR_OK;
 }
-// Modified by TUYA End
 
 avdk_err_t bk_gpu_ctlr_new(bk_gpu_ctlr_handle_t *handle, bk_gpu_ctlr_config_t *config)
 {
     AVDK_RETURN_ON_FALSE(config && handle, AVDK_ERR_INVAL, TAG, AVDK_ERR_INVAL_NULL_TEXT);
+
+    if (gpu_ctlr_validate_scale_flexa(config) != AVDK_ERR_OK) {
+        return AVDK_ERR_INVAL;
+    }
 
     gpu_vn_ctlr_t *controller = os_malloc(sizeof(gpu_vn_ctlr_t));
     AVDK_RETURN_ON_FALSE(controller, AVDK_ERR_NOMEM, TAG, AVDK_ERR_NOMEM_TEXT);
     os_memset(controller, 0, sizeof(gpu_vn_ctlr_t));
 
     os_memcpy(&controller->config, config, sizeof(bk_gpu_ctlr_config_t));
+    controller->osd_render_per_flexa_block = false;
     controller->ops.init = gpu_ctlr_init;
     controller->ops.open = gpu_ctlr_open;
     controller->ops.close = gpu_ctlr_close;
@@ -2253,8 +1994,6 @@ avdk_err_t bk_gpu_ctlr_new(bk_gpu_ctlr_handle_t *handle, bk_gpu_ctlr_config_t *c
     controller->ops.del = gpu_ctlr_delete;
     controller->ops.draw_path_clear = gpu_draw_path_clear;
     controller->ops.draw_path_build = gpu_draw_path_build;
-    controller->ops.blit_set = gpu_blit_set;
-    controller->ops.blit_clear = gpu_blit_clear;
 
     *handle = &(controller->ops);
 

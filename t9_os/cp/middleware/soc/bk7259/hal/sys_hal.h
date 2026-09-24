@@ -91,6 +91,8 @@ uint32_t sys_hal_get_sdio_clk_sel();
 void sys_hal_enter_deep_sleep(void *param);
 void sys_hal_enter_normal_sleep();
 void sys_hal_enter_normal_wakeup();
+void sys_hal_wifi_enter_sleep_status_set(uint32_t status);
+uint32_t sys_hal_wifi_enter_sleep_status_get(void);
 void sys_hal_enter_low_voltage(void);
 bk_err_t sys_hal_set_alo2core_power_switch(uint32_t value);
 #if CONFIG_DEEP_LV_DEBUG_LOG
@@ -144,14 +146,18 @@ int32 sys_hal_rosc_calibration(uint32_t rosc_cali_mode, uint32_t cali_interval);
 int sys_hal_rosc_test_mode(bool enabled);
 int32 sys_hal_bandgap_cali_set(uint32_t value);//increase or decrease the dvdddig voltage
 uint32_t sys_hal_bandgap_cali_get();
-bk_err_t sys_hal_switch_cpu_bus_freq(pm_cpu_freq_e cpu_bus_freq);
-bk_err_t sys_hal_core_bus_clock_ctrl(uint32_t cksel_core, uint32_t ckdiv_core,uint32_t ckdiv_bus, uint32_t ckdiv_cpu0,uint32_t ckdiv_cpu1);
+__IRAM_SEC bk_err_t sys_hal_switch_cpu_bus_freq(pm_cpu_freq_e cpu_bus_freq);
+__IRAM_SEC bk_err_t sys_hal_core_bus_clock_ctrl(uint32_t cksel_core, uint32_t ckdiv_core,uint32_t ckdiv_bus, uint32_t ckdiv_cpu0,uint32_t ckdiv_cpu1);
+__IRAM_SEC bk_err_t sys_hal_switch_cpu_bus_freq_prepare(pm_cpu_freq_e cpu_bus_freq);
+__IRAM_SEC bk_err_t sys_hal_switch_cpu_bus_freq_clock(pm_cpu_freq_e cpu_bus_freq);
+__IRAM_SEC bk_err_t sys_hal_switch_cpu_bus_freq_finish(pm_cpu_freq_e cpu_bus_freq);
+bk_err_t sys_hal_ap_cpu_freq_dump();
 bk_err_t sys_hal_cpu_freq_dump();
 void sys_hal_set_cpu0_rxevt_sel(uint32_t param);
 void sys_hal_set_cpu1_rxevt_sel(uint32_t param);
 void sys_hal_set_cpu2_rxevt_sel(uint32_t param);
-bk_err_t sys_hal_switch_cpu_bus_freq_high_to_low(pm_cpu_freq_e cpu_bus_freq);
-bk_err_t sys_hal_switch_cpu_bus_freq_low_to_high(pm_cpu_freq_e cpu_bus_freq);
+__IRAM_SEC bk_err_t sys_hal_switch_cpu_bus_freq_high_to_low(pm_cpu_freq_e cpu_bus_freq);
+__IRAM_SEC bk_err_t sys_hal_switch_cpu_bus_freq_low_to_high(pm_cpu_freq_e cpu_bus_freq);
 
 /*low power feature end*/
 uint32 sys_hal_get_chip_id(void);
@@ -322,7 +328,8 @@ void sys_hal_pwm_select_clock(sys_sel_pwm_t num, pwm_src_clk_t mode);
 /* PWM select clock    DIRTY **/
 
 void sys_hal_en_tempdet(uint32_t value);
-
+void sys_hal_set_temp_mode(uint32_t value);
+uint32_t sys_hal_get_temp_mode(void);
 void sys_hal_trng_disckg_set(uint32_t value);
 /**  Platform End **/
 
@@ -501,7 +508,7 @@ void sys_hal_aud_bias_en(uint32_t value);
 void sys_hal_aud_dacr_en(uint32_t value);
 void sys_hal_aud_dacl_en(uint32_t value);
 //void sys_hal_aud_diffen_en(uint32_t value); ////????
-void sys_hal_aud_dac_diffen_en(uint32_t value); 
+void sys_hal_aud_dac_diffen_en(uint32_t value);
 void sys_hal_aud_rvcmd_en(uint32_t value);
 void sys_hal_aud_lvcmd_en(uint32_t value);
 void sys_hal_aud_micbias1v_en(uint32_t value);
@@ -517,11 +524,14 @@ void sys_hal_aud_mic2_single_en(uint32_t value);
 void sys_hal_aud_dacg_set(uint32_t value);
 uint32_t sys_hal_aud_dacg_get(void);
 void sys_hal_aud_dcoc_en(uint32_t value);
+void sys_hal_aud_dac_ldcoc_en(uint32_t value);
+void sys_hal_aud_dac_rdcoc_en(uint32_t value);
 void sys_hal_aud_lmdcin_set(uint32_t value);
 void sys_hal_aud_audbias_en(uint32_t value);
 void sys_hal_aud_adcbias_en(uint32_t value);
 void sys_hal_aud_micbias_en(uint32_t value);
 void sys_hal_aud_dac_bias_en(uint32_t value);
+void sys_hal_aud_dac_enbs_en(uint32_t value);
 //void sys_hal_aud_idac_en(uint32_t value); ////????
 void sys_hal_aud_idacl_en(uint32_t value);
 void sys_hal_aud_idacr_en(uint32_t value);
@@ -580,6 +590,7 @@ void sys_hal_apll_spi_trigger_set(uint32_t value);
 void sys_hal_i2s0_ckdiv_set(uint32_t value);
 void sys_hal_apll_config_set(uint32_t value);
 void sys_hal_dmic_clk_div_set(uint32_t value);
+void sys_hal_aud_looprst0v9_en(uint32_t value);
 /**  I2S End  **/
 
 
@@ -653,6 +664,7 @@ void sys_hal_psram_ldo_enable(uint32_t enable);
 uint32_t sys_hal_psram_ldo_status();
 void sys_hal_psram_clk_sel_with_id(uint32_t id, uint32_t value);
 void sys_hal_psram_set_clkdiv_with_id(uint32_t id, uint32_t value);
+void sys_hal_psram_get_clk_config_with_id(uint32_t id, uint32_t *clk_sel, uint32_t *clk_div);
 void sys_hal_psram_psldo_vsel(uint32_t value);
 void sys_hal_psram_psldo_vset(uint32_t output_voltage, uint32_t is_add_200mv);
 void sys_hal_psram_psram0_disckg(uint32_t value);
@@ -695,8 +707,6 @@ void sys_hal_set_ana_cb_cal_manu_val(uint32_t value);
 void sys_hal_set_ana_vlsel_ldodig(uint32_t value);
 void sys_hal_set_ana_vhsel_ldodig(uint32_t value);
 void sys_hal_set_ana_vctrl_sysldo(uint32_t value);
-void sys_hal_enable_eth_int(uint32_t value);
-void sys_hal_set_eth_clk_en(uint32_t value);
 void sys_hal_set_yuv_buf_clock_en(uint32_t value);
 void sys_hal_set_h264_clock_en(uint32_t value);
 void sys_hal_set_ana_reg11_apfms(uint32_t value);
@@ -768,7 +778,7 @@ void sys_hal_set_ram_tph_cfg(uint32_t value);
 void sys_hal_set_ram_spl_cfg(uint32_t value);
 void sys_hal_set_ram_tpl_cfg(uint32_t value);
 void sys_hal_set_ram_high_speed(void);
-void sys_hal_set_ram_low_speed(void);
+__IRAM_SEC void sys_hal_set_ram_low_speed(void);
 void sys_hal_early_init(void);
 void sys_hal_set_rott_int_en(uint32_t core_index, uint32_t value);
 void sys_hal_enter_low_analog(void);
@@ -888,5 +898,3 @@ uint32_t sys_hal_get_psram_cpu1_qos(void);
 #ifdef __cplusplus
 }
 #endif
-
-

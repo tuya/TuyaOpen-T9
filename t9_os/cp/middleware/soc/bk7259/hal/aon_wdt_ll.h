@@ -66,4 +66,4 @@ static inline void aon_wdt_ll_set_period(uint32_t period)
 
 #ifdef __cplusplus
 }
-#endif
+#endif

@@ -838,7 +838,7 @@ struct wpa_supplicant {
 	void *drv_priv; /* private data used by driver_ops */
 	void *global_drv_priv;
 
-#ifdef CONFIG_FULL_SUPPLICANT
+#ifdef CONFIG_QUICK_MBO
 	u8 *bssid_filter;
 	size_t bssid_filter_count;
 
@@ -1323,6 +1323,8 @@ struct wpa_supplicant {
 	int auto_reconnect_count;
 	/* start time of connection */
 	struct os_reltime auto_reconnect_start_time;
+	/* flag indicates last auto reconnect */
+	bool is_last_auto_reconnect;
 #endif
 
 	 /* Channel preferences for AP/P2P GO use */
@@ -1435,10 +1437,10 @@ struct wpa_supplicant {
 	u8 coloc_intf_dialog_token;
 	u8 coloc_intf_auto_report;
 	u8 coloc_intf_timeout;
-#ifdef CONFIG_MBO
+#ifdef CONFIG_QUICK_MBO
 	unsigned int wnm_mbo_trans_reason_present:1;
 	u8 wnm_mbo_transition_reason;
-#endif /* CONFIG_MBO */
+#endif /* CONFIG_QUICK_MBO */
 
 #ifdef CONFIG_TESTING_GET_GTK
 	u8 last_gtk[32];
@@ -1504,7 +1506,7 @@ struct wpa_supplicant {
 	struct wpabuf *received_mb_ies;
 #endif /* CONFIG_FST */
 
-#ifdef CONFIG_MBO
+#ifdef CONFIG_QUICK_MBO
 	/* Multiband operation non-preferred channel */
 	struct wpa_mbo_non_pref_channel {
 		enum mbo_non_pref_chan_reason reason;
@@ -1932,6 +1934,19 @@ static inline bool wpas_auto_reconnect_limited(struct wpa_supplicant *wpa_s)
 		return false;
 
 	return true;
+}
+
+/**
+ * Whether wpa supplicant connection auto reconnect is finished.
+ */
+static inline bool wpas_auto_reconnect_finish(struct wpa_supplicant *wpa_s)
+{
+	if (wpa_s->auto_reconnect_max_count != 0 &&
+		wpa_s->auto_reconnect_count == 0 &&
+		wpa_s->is_last_auto_reconnect)
+		return true;
+
+	return false;
 }
 #endif
 

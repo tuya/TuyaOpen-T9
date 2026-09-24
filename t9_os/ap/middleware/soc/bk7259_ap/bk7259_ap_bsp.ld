@@ -63,19 +63,19 @@ MEMORY
   FLASH (rx)            : ORIGIN = (SOC_FLASH_DATA_BASE + CONFIG_AP_VIRTUAL_PARTITION_OFFSET), LENGTH = CONFIG_AP_VIRTUAL_PARTITION_SIZE
   IRAM (rx)             : ORIGIN = __AP_APP_IRAM_BASE, LENGTH = __AP_APP_IRAM_SIZE
 
-  RAM (rwx)             : ORIGIN = __AP_APP_RAM_BASE, LENGTH = CONFIG_AP_RAM_SIZE
-  SWAP (rwx)            : ORIGIN = __AP_SWAP_BASE, LENGTH = CONFIG_SWAP_SIZE
+  RAM (rw)              : ORIGIN = __AP_APP_RAM_BASE, LENGTH = CONFIG_AP_RAM_SIZE
+  SWAP (rw)             : ORIGIN = __AP_SWAP_BASE, LENGTH = CONFIG_SWAP_SIZE
 
   DTCM (rwx)            : ORIGIN = SOC_DTCM_DATA_BASE + 0, LENGTH = CONFIG_DTCM_SIZE
 #if CONFIG_PSRAM
 #if (CONFIG_PSRAM_AS_SYS_MEMORY)
-  PSRAM_HEAP (rwx)      : ORIGIN = CONFIG_AP_PSRAM_HEAP_ADDR, LENGTH = CONFIG_AP_PSRAM_HEAP_SIZE
+  PSRAM_HEAP (rw)       : ORIGIN = CONFIG_AP_PSRAM_HEAP_ADDR, LENGTH = CONFIG_AP_PSRAM_HEAP_SIZE
 #endif
 #if (CONFIG_AP_PSRAM_CODE_SECTION_ADDR)
-  PSRAM_CODE_SECTION (rwx)   : ORIGIN = CONFIG_AP_PSRAM_CODE_SECTION_ADDR, LENGTH = CONFIG_AP_PSRAM_CODE_SECTION_SIZE
+  PSRAM_CODE_SECTION (rx)    : ORIGIN = CONFIG_AP_PSRAM_CODE_SECTION_ADDR, LENGTH = CONFIG_AP_PSRAM_CODE_SECTION_SIZE
 #endif
 #if (CONFIG_AP_PSRAM_DATA_SECTION_ADDR)
-  PSRAM_DATA_SECTION (rwx)   : ORIGIN = CONFIG_AP_PSRAM_DATA_SECTION_ADDR, LENGTH = CONFIG_AP_PSRAM_DATA_SECTION_SIZE
+  PSRAM_DATA_SECTION (rw)    : ORIGIN = CONFIG_AP_PSRAM_DATA_SECTION_ADDR, LENGTH = CONFIG_AP_PSRAM_DATA_SECTION_SIZE
 #endif
 #endif
 }
@@ -100,19 +100,6 @@ SECTIONS
 #endif
         *(.fix.reset_entry)
     } > FLASH
-
-// Modified by TUYA Start
-    /*
-     * Tuya UA/UG tooling (get_map_section / split_point): virtual address of AP
-     * "business" flash start. When no separate .ty_text_section is used, align
-     * with the vector table base (split delta 0 vs ap_start).
-     */
-#if (CONFIG_SOC_SMP)
-    PROVIDE(_ty_section_start = __vector_core0_table);
-#else
-    PROVIDE(_ty_section_start = __vector_table);
-#endif
-// Modified by TUYA End
 
     .gnu.sgstubs ALIGN(32) : ALIGN(32)
     {
@@ -205,6 +192,20 @@ SECTIONS
       __lcd_panel_device_array_start = .;
       KEEP(*(.lcd_panel_device_list.*))
       __lcd_panel_device_array_end = .;
+    } > FLASH
+
+    .qspi_nand_device_list ALIGN(4) : ALIGN(4)
+    {
+      __qspi_nand_device_array_start = .;
+      KEEP(*(.qspi_nand_device_list.*))
+      __qspi_nand_device_array_end = .;
+    } > FLASH
+
+    .qspi_nor_device_list ALIGN(4) : ALIGN(4)
+    {
+      __qspi_nor_device_array_start = .;
+      KEEP(*(.qspi_nor_device_list.*))
+      __qspi_nor_device_array_end = .;
     } > FLASH
 
     .tp_detect :
@@ -308,6 +309,7 @@ SECTIONS
         *(.itcm_sec_code*)
         *(.interrupt)
         __itcm_end__ = .;
+#endif
 
 
         . = ALIGN(4);
@@ -316,13 +318,11 @@ SECTIONS
         *(.dtcm_section*)
         *(.dtcm_sec_data*)
         . = ALIGN(4);
-#endif
 
 
         __dtcm_end__ = .;
     } > DTCM AT > FLASH
 
-#if CONFIG_SPE
     /* NOLOAD DTCM region: scratch buffers that need no init value.
      * Not in copy.table (no flash copy) and not in zero.table, so it adds
      * nothing to boot-time b_data_copy_dtcm(). */
@@ -332,7 +332,6 @@ SECTIONS
         *(.dtcm_noinit*)
         . = ALIGN(4);
     } > DTCM
-#endif
 
     .iram :
     {
@@ -381,10 +380,6 @@ SECTIONS
         . = ALIGN(512);
 #endif
         KEEP(*(.vectors_iram))
-
-        *(.dtcm)
-        *(.dtcm_section*)
-        *(.dtcm_sec_data*)
 #endif
 
 #ifdef CONFIG_GCOV
@@ -427,9 +422,6 @@ SECTIONS
         *(".uninitialized.*")
         *(.noinit)
         *(.noinit*)
-#if !CONFIG_SPE
-        *(.dtcm_noinit*)
-#endif
         KEEP(*(.keep.uninitialized))
         . = ALIGN(32);
         __uninitialized_end = .;
@@ -572,6 +564,22 @@ SECTIONS
         __psram_code_end__ = .;
     } > PSRAM_CODE_SECTION AT > FLASH
 
+#if CONFIG_PM_AP_SRAM_RETENTION_CHECK
+    /*
+     * Fixed AP/CP shared layout:
+     *   +0x0000..+0x0fff control
+     *   +0x1000..+0xe0fff SMEM3..SMEM6 snapshot
+     * CP validates the retained banks before releasing AP reset, so this
+     * reservation must precede all normal AP PSRAM data.
+     */
+    .ap_sram_check (NOLOAD) :
+    {
+        . = ALIGN(32);
+        __ap_sram_check_start__ = .;
+        . += 0x000e1000;
+        __ap_sram_check_end__ = .;
+    } > PSRAM_DATA_SECTION
+#endif
 
     .psram.data :
     {

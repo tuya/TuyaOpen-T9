@@ -33,6 +33,7 @@
 #include <components/bk_audio/audio_algorithms/eq_algorithm.h>
 #endif
 #include <driver/aud_dac.h>
+#include <modules/pm.h>
 #include "audio_play.h"
 #if CONFIG_ADK_ONBOARD_SPEAKER_STREAM_SUPPORT_MULTIPLE_SOURCE
 #include "spk_service.h"
@@ -134,7 +135,11 @@ static void audio_play_build_spk_cfg(const audio_play_cfg_t *cfg, onboard_speake
     spk_cfg->frame_size[1] = cfg->frame_size;
     spk_cfg->frame_size[2] = cfg->frame_size;
     spk_cfg->pool_length = cfg->pool_size;
-    spk_cfg->pa_ctrl_en = false;
+    spk_cfg->pa_ctrl_en   = cfg->pa_ctrl_en;
+    spk_cfg->pa_ctrl_gpio = cfg->pa_ctrl_gpio;
+    spk_cfg->pa_on_level  = cfg->pa_on_level;
+    spk_cfg->pa_on_delay  = cfg->pa_on_delay;
+    spk_cfg->pa_off_delay = cfg->pa_off_delay;
     spk_cfg->dac_source_bitmap = cfg->dac_source_bitmap;
     spk_cfg->main_dac_source   = cfg->main_dac_source;
 }
@@ -213,8 +218,11 @@ bk_err_t audio_play_open(audio_play_t *play)
         return BK_OK;
     }
 
+    bk_pm_module_vote_cpu_freq(PM_DEV_ID_AUDIO, PM_CPU_FRQ_480M);
+
     audio_play_ctx_t *ctx = os_malloc(sizeof(audio_play_ctx_t));
     if (!ctx) {
+        bk_pm_module_vote_cpu_freq(PM_DEV_ID_AUDIO, PM_CPU_FRQ_DEFAULT);
         return BK_FAIL;
     }
     os_memset(ctx, 0x00, sizeof(audio_play_ctx_t));
@@ -414,6 +422,7 @@ fail:
         }
         os_free(ctx);
     }
+    bk_pm_module_vote_cpu_freq(PM_DEV_ID_AUDIO, PM_CPU_FRQ_DEFAULT);
     return BK_FAIL;
 }
 
@@ -500,6 +509,7 @@ bk_err_t audio_play_close(audio_play_t *play)
 
     os_free(ctx);
     play->play_ctx = NULL;
+    bk_pm_module_vote_cpu_freq(PM_DEV_ID_AUDIO, PM_CPU_FRQ_DEFAULT);
     return BK_OK;
 }
 

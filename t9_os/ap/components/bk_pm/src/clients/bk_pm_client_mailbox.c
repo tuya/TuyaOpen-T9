@@ -75,6 +75,12 @@ static mb_chnl_cmd_t                              s_pm_mb_data                  
 static volatile  uint32_t                         s_pm_cp1_boot_try_count        = 0;
 #if CONFIG_PM_AP_FAST_BOOT_ENABLE
 static volatile  uint32_t                         s_pm_ap_recovery_request_seq   = 0;
+static volatile  bool                             s_pm_ap_recovery_queued;
+
+uint32_t bk_pm_ap_recovery_request_seq_get(void)
+{
+	return s_pm_ap_recovery_request_seq;
+}
 #endif
 
 /*=====================VARIABLE  SECTION  END=================*/
@@ -357,33 +363,97 @@ static void pm_cp1_mailbox_rx_isr(int *pm_mb, mb_chnl_cmd_t *cmd_buf)
 			break;
 		case PM_CP1_RECOVERY_CMD:
 #if CONFIG_PM_AP_FAST_BOOT_ENABLE
-			/*
-			 * CP retries a close request to recover a lost mailbox interrupt
-			 * or ACK. Queue each transaction only once; a new sequence number
-			 * represents a new close attempt after resume or rollback.
-			 */
-			if ((cmd_buf->param1 == 0U) ||
-			    (cmd_buf->param1 != s_pm_ap_recovery_request_seq)) {
-#endif
-				msg.event= PM_AP_CORE_AP_RECOVERY;
-				msg.param1 = cmd_buf->param1;
-				msg.param2 = cmd_buf->param2;
-				ret = bk_pm_ap_core_send_msg(&msg);
-				if (ret == BK_OK) {
-#if CONFIG_PM_AP_FAST_BOOT_ENABLE
-					s_pm_ap_recovery_request_seq = cmd_buf->param1;
-					LOGI("AP close request queued seq=%u\r\n",
-						cmd_buf->param1);
-#endif
-					bk_pm_cp1_ctrl_state_set(PM_MAILBOX_COMMUNICATION_INIT);
+			if (cmd_buf->param2 == PM_AP_RECOVERY_ACTION_ABORT) {
+				if ((cmd_buf->param1 != 0U) &&
+				    (cmd_buf->param1 == s_pm_ap_recovery_request_seq)) {
+					msg.event = PM_AP_CORE_FAST_SUSPEND_ABORT;
+					msg.param1 = cmd_buf->param1;
+					ret = bk_pm_ap_core_send_msg(&msg);
+					if (ret == BK_OK) {
+						s_pm_ap_recovery_request_seq = 0U;
+						s_pm_ap_recovery_queued = false;
+						LOGW("AP close abort queued seq=%u\r\n",
+							cmd_buf->param1);
+					}
+				} else {
+					LOGD("AP close stale abort seq=%u current=%u ignored\r\n",
+						cmd_buf->param1, s_pm_ap_recovery_request_seq);
 				}
-#if CONFIG_PM_AP_FAST_BOOT_ENABLE
-			} else {
+				break;
+			}
+
+			if (cmd_buf->param1 == 0U) {
+				LOGW("AP close request with invalid seq ignored\r\n");
+				break;
+			}
+
+			/*
+			 * The first request only records the transaction. CPU2 Idle keeps
+			 * probing prepare_power_off while normal tasks drain their work.
+			 * An existing CP retry queues fast suspend only after all modules
+			 * report READY.
+			 */
+			if (cmd_buf->param1 != s_pm_ap_recovery_request_seq) {
+				s_pm_ap_recovery_request_seq = cmd_buf->param1;
+				s_pm_ap_recovery_queued = false;
+#if CONFIG_PM_AP_FAST_BOOT_VERBOSE_TRACE
+				LOGI("AP close request pending prepare seq=%u\r\n",
+					cmd_buf->param1);
+#endif
+			}
+
+			if (s_pm_ap_recovery_queued) {
 				LOGD("AP close request duplicate seq=%u ignored\r\n",
 					cmd_buf->param1);
+				break;
+			}
+
+			if (!bk_pm_ap_power_prepare_is_ready()) {
+				LOGD("AP close request waiting prepare seq=%u\r\n",
+					cmd_buf->param1);
+				break;
+			}
+
+			/*
+			 * No module can submit new work after prepare is READY. Close CP
+			 * business RX immediately before handing the transaction to the
+			 * PM task. PWC stays open for retry and abort.
+			 */
+			bk_pm_ap_fast_ipc_rx_block_set(true);
+			msg.event= PM_AP_CORE_AP_RECOVERY;
+			msg.param1 = cmd_buf->param1;
+			msg.param2 = cmd_buf->param2;
+			ret = bk_pm_ap_core_send_msg(&msg);
+			if (ret == BK_OK) {
+				s_pm_ap_recovery_queued = true;
+#if CONFIG_PM_AP_FAST_BOOT_VERBOSE_TRACE
+				LOGI("AP close request queued after prepare seq=%u\r\n",
+					cmd_buf->param1);
+#endif
+				bk_pm_cp1_ctrl_state_set(PM_MAILBOX_COMMUNICATION_INIT);
+			} else {
+				/* Retry can queue it again; do not leave business RX closed. */
+				bk_pm_ap_fast_ipc_rx_block_set(false);
+			}
+#else
+			msg.event= PM_AP_CORE_AP_RECOVERY;
+			msg.param1 = cmd_buf->param1;
+			msg.param2 = cmd_buf->param2;
+			ret = bk_pm_ap_core_send_msg(&msg);
+			if (ret == BK_OK) {
+				bk_pm_cp1_ctrl_state_set(PM_MAILBOX_COMMUNICATION_INIT);
 			}
 #endif
 			break;
+#if CONFIG_PM_AP_FAST_BOOT_ENABLE
+		case PM_AP_APP_RESUME_NOTIFY_CMD:
+			msg.event = PM_AP_CORE_APP_RESUME;
+			ret = bk_pm_ap_core_send_msg(&msg);
+			if (ret != BK_OK) {
+				LOGE("AP app resume notify queue failed[%d]\r\n", ret);
+			}
+			break;
+#endif
         case PM_RTC_DEEPSLEEP_CMD:
 			if(cmd_buf->param1 == BK_OK)
 			{

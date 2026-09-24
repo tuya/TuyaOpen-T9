@@ -11,13 +11,39 @@ menu "BK_GPU"
 		hex "vg-lite gpu module base address"
 		default 0x4c280000
 
-	config VG_LITE_GPU_CONTIGUOUS_MEM_SZ
-		depends on VG_LITE_GPU
-		hex "vg-lite gpu contigours memory size in sram"
-		default 0x20000
-
 	config VG_LITE_GPU_COMMAND_BUFFER_SIZE
 		depends on VG_LITE_GPU
 		hex "vg-lite gpu command buffer size, Default 16KB."
 		default 0x2000
+
+	config VG_LITE_GPU_TASK_STACK_SIZE
+		depends on VG_LITE_GPU
+		int "vg-lite gpu flexa worker task stack size (bytes)"
+		default 10240
+		help
+			Stack for the "gpu" worker created by gpu_ctlr_open(). It comes
+			out of HSRAM, which the display pipeline and the LVGL heap also
+			draw on, so on memory-tight products this is worth measuring with
+			the memstack command and trimming.
+
+	config VG_LITE_GPU_TESS_WIDTH
+		depends on VG_LITE_GPU
+		int "vg-lite reserved tessellation width (0 = no reserved tess)"
+		default 0
+		help
+		  Maximum tessellation width reserved when applying VG-Lite mem
+		  config. GPU is shared by multiple scenes, so the contiguous
+		  heap is always allocated for this maximum. A later
+		  vg_lite_init() request larger than this value fails.
+		  0 disables the reserved tess buffer.
+
+	config VG_LITE_GPU_TESS_HEIGHT
+		depends on VG_LITE_GPU
+		int "vg-lite reserved tessellation height (0 = no reserved tess)"
+		default 0
+		help
+		  Maximum tessellation height reserved when applying VG-Lite mem
+		  config. Must be used together with VG_LITE_GPU_TESS_WIDTH.
+		  0 disables the reserved tess buffer.
+
 endmenu

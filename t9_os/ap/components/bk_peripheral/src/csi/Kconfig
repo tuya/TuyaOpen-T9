@@ -5,6 +5,15 @@ menu "CSI Camera"
         bool "Enable csi camera"
         default n
 
+    config CSI_CALIB_USE_PSRAM
+        depends on CSI_CAMERA && PSRAM_AS_SYS_MEMORY
+        bool "Allocate CSI sensor calibration data from PSRAM"
+        default n
+        help
+            Allocate every CSI sensor's mutable ~20 KiB ISP calibration copy
+            from PSRAM instead of the small AP SRAM heap. Shared by all CSI
+            sensor drivers via CSI_CALIB_MALLOC/CSI_CALIB_FREE.
+
     config CSI_F58
         depends on CSI_CAMERA
         bool "Enable CSI_F58"
@@ -15,9 +24,24 @@ menu "CSI Camera"
         bool "Enable CSI_GC2053"
         default n
 
+    config CSI_GC20C3
+        depends on CSI_CAMERA
+        bool "Enable CSI_GC20C3"
+        default n
+
     config CSI_CV2005
         depends on CSI_CAMERA
         bool "Enable CSI_CV2005"
+        default n
+
+    config CSI_CV2002
+        depends on CSI_CAMERA
+        bool "Enable CSI_CV2002"
+        default n
+
+    config CSI_CV2008
+        depends on CSI_CAMERA
+        bool "Enable CSI_CV2008"
         default n
 
     config CSI_GC4653
@@ -43,6 +67,16 @@ menu "CSI Camera"
     config CSI_SC3336P
         depends on CSI_CAMERA
         bool "Enable CSI_SC3336P"
+        default n
+
+    config CSI_MIPI_BRIDGE
+        depends on CSI_CAMERA
+        bool "Enable CSI_MIPI_BRIDGE"
+        default n
+
+    config CSI_TP2863
+        depends on CSI_CAMERA
+        bool "Enable CSI_TP2863"
         default n
 
 endmenu

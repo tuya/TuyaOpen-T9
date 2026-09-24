@@ -5,6 +5,16 @@ menu "DSI LCD"
 		bool "Enable LCD_DSI intf"
 		default n
 
+	config LCD_FRD700B30023_MIPI_1024x600
+		depends on LCD_DSI
+		bool "Enable LCD_FRD700B30023_MIPI_1024x600 API"
+		default n
+
+	config LCD_GH8555BL_MIPI_800x1280
+		depends on LCD_DSI
+		bool "Enable LCD_GH8555BL_MIPI_800x1280 API"
+		default n
+
 	config LCD_HX8394F_MIPI_720x1280
 		depends on LCD_DSI
 		bool "Enable LCD_HX8394F_MIPI_720x1280 API"
@@ -23,6 +33,11 @@ menu "DSI LCD"
 	config LCD_FL7703NP_MIPI_720x1280
 		depends on LCD_DSI
 		bool "Enable LCD_FL7703NP_MIPI_720x1280 API"
+		default n
+
+	config LCD_FL7703_MIPI_720x1280
+		depends on LCD_DSI
+		bool "Enable LCD_FL7703_MIPI_720x1280 API"
 		default n
 
 	config LCD_ER68576B_MIPI_720x1280
@@ -44,13 +59,6 @@ menu "DSI LCD"
 		depends on LCD_DSI
 		bool "Enable LCD_JD9855_MIPI_320x385 API"
 		default n
-
-	# Modified by TUYA Start
-	config LCD_JD9165T_MIPI_1024x600
-		depends on LCD_DSI
-		bool "Enable LCD_JD9165T_MIPI_1024x600 API"
-		default n
-	# Modified by TUYA End
 
 	config LCD_CO5300_MIPI_320x360
 		depends on LCD_DSI

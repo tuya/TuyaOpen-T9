@@ -1,4 +1,4 @@
-set(incs include/bk_private)
+set(incs)
 set(srcs "")
 
 if (CONFIG_WPA_SUPPLICANT)
@@ -193,6 +193,11 @@ if (CONFIG_P2P)
 		"wpa_supplicant/p2p_supplicant.c"
 		"wpa_supplicant/p2p_supplicant_sd.c"
 		"wpa_supplicant/wps_supplicant.c"
+		)
+endif()
+if (CONFIG_MBO OR CONFIG_QUICK_MBO)
+	list(APPEND srcs
+		"wpa_supplicant/mbo.c"
 		)
 endif()
 if (CONFIG_WPA3)

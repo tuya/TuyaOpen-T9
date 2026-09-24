@@ -9,12 +9,7 @@
 #include <modules/pm.h>
 #include <avdk_check.h>
 #include <components/bk_camera_bus.h>
-// Modified by TUYA Start
-#include "gpio_driver.h"
-// Modified by TUYA End
 #include "sw_i2c.h"
-#include "isp_camera_ctlr.h"
-#include <components/bk_camera_sensor.h>
 
 #define TAG "bk_cam_bus"
 
@@ -23,44 +18,10 @@
 #define LOGE(...) BK_LOGE(TAG, ##__VA_ARGS__)
 #define LOGD(...) BK_LOGD(TAG, ##__VA_ARGS__)
 
-// Modified by TUYA Start
-#define SW_I2C_ENABLE 0
-// Modified by TUYA End
+#define SW_I2C_ENABLE 1
 
 static bk_camera_bus_t *s_bk_camera_bus = NULL;
 
-// Modified by TUYA Start
-#if !SW_I2C_ENABLE
-static void camera_i2c_map_pins(uint8_t i2c_id, uint8_t pin_scl, uint8_t pin_sda)
-{
-    gpio_dev_t scl_dev = GPIO_DEV_INVALID;
-    gpio_dev_t sda_dev = GPIO_DEV_INVALID;
-
-    switch (i2c_id) {
-    case I2C_ID_0:
-        scl_dev = GPIO_DEV_I2C0_SCL;
-        sda_dev = GPIO_DEV_I2C0_SDA;
-        break;
-    case I2C_ID_1:
-        scl_dev = GPIO_DEV_I2C1_SCL;
-        sda_dev = GPIO_DEV_I2C1_SDA;
-        break;
-#if (SOC_I2C_UNIT_NUM > 2)
-    case I2C_ID_2:
-        scl_dev = GPIO_DEV_I2C2_SCL;
-        sda_dev = GPIO_DEV_I2C2_SDA;
-        break;
-#endif
-    default:
-        LOGE("unsupported i2c id %u\n", i2c_id);
-        return;
-    }
-    
-    gpio_dev_map(pin_scl, scl_dev);
-    gpio_dev_map(pin_sda, sda_dev);
-}
-#endif
-// Modified by TUYA End
 static int camera_i2c_read_uint8(bk_camera_bus_t *bus, uint8_t reg, uint8_t *value)
 {
     i2c_mem_param_t mem_param = {0};
@@ -146,6 +107,7 @@ bk_camera_bus_t *bk_camera_bus_new(bk_camera_bus_config_t *config)
     bus->timeout_ms = config->timeout_ms;
     bus->mipi_port_en = config->mipi_port_en;
     bus->dvp_port_en = config->dvp_port_en;
+    bus->pin_xclk = config->pin_xclk;
 
 #if SW_I2C_ENABLE
     sw_i2c_config_t i2c_cfg = {0};
@@ -154,9 +116,6 @@ bk_camera_bus_t *bk_camera_bus_new(bk_camera_bus_config_t *config)
     bus->i2c_handle = sw_i2c_init(&i2c_cfg);
     // AVDK_RETURN_ON_FALSE(bus->i2c_handle, AVDK_ERR_NOMEM, TAG, AVDK_ERR_NOMEM_TEXT);
 #else
-    // Modified by TUYA Start
-    camera_i2c_map_pins(bus->i2c_id, bus->pin_scl, bus->pin_sda);
-    // Modified by TUYA End
     bk_i2c_driver_init();
     i2c_config_t i2c_cfg = {0};
     i2c_cfg.addr_mode = I2C_ADDR_MODE_7BIT;
@@ -199,11 +158,19 @@ avdk_err_t bk_camera_bus_enable(bk_camera_bus_t *bus)
         auxldo_cfg.user = PM_AUXLDO_USER_CAMERA;
         AVDK_RETURN_ON_ERROR(bk_pm_auxldo_ctrl_vote(&auxldo_cfg), TAG, "camera 3v ldo on failed");
 
-        bk_cis_auxs_clock_enable(20000000, 59, 1);
+        if (bus->pin_xclk != BK_CAMERA_PIN_INVALID)
+        {
+            bk_cis_auxs_clock_enable(20000000, bus->pin_xclk, 1);
+        }
+        else
+        {
+            LOGI("skip CSI auxs clock, pin_xclk invalid\n");
+        }
     }
     if (bus->dvp_port_en == 1)
     {
-        bk_cis_mclk_clock_enable(20000000, 27, 1);
+        uint8_t mclk_pin = (bus->pin_xclk != BK_CAMERA_PIN_INVALID) ? bus->pin_xclk : 27;
+        bk_cis_mclk_clock_enable(20000000, mclk_pin, 1);
     }
 
     return AVDK_ERR_OK;
@@ -215,7 +182,10 @@ avdk_err_t bk_camera_bus_disable(bk_camera_bus_t *bus)
 
     if (bus->mipi_port_en == 1)
     {
-        bk_cis_auxs_clock_enable(20000000, 59, 0);
+        if (bus->pin_xclk != BK_CAMERA_PIN_INVALID)
+        {
+            bk_cis_auxs_clock_enable(20000000, bus->pin_xclk, 0);
+        }
         pm_auxldo_ctrl_cfg_t auxldo_cfg = {0};
         auxldo_cfg.ldo = AUXLDOS_SEL_2P8V;  //csi phy ldo
         auxldo_cfg.out = PM_AUXLDO_2P8V_OUT_2P8V;
@@ -234,7 +204,8 @@ avdk_err_t bk_camera_bus_disable(bk_camera_bus_t *bus)
     }
     if (bus->dvp_port_en == 1)
     {
-        bk_cis_mclk_clock_enable(20000000, 27, 0);
+        uint8_t mclk_pin = (bus->pin_xclk != BK_CAMERA_PIN_INVALID) ? bus->pin_xclk : 27;
+        bk_cis_mclk_clock_enable(20000000, mclk_pin, 0);
     }
 
     s_bk_camera_bus = NULL;

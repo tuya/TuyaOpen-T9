@@ -1,5 +1,6 @@
 #include <os/os.h>
 #include <os/mem.h>
+#include "csi_calib_mem.h"
 #include "csi_sensor_devices.h"
 #include <driver/mipi_csi.h>
 #include <components/bk_camera_sensor.h>
@@ -96,7 +97,6 @@
     #define SC3336P_VMAX_300W20FPS_LINEAR (1440)
     #define SC3336P_VMAX_300W10FPS_LINEAR (2880)
     #define SC3336P_VMAX_300W15FPS_LINEAR (1920)
-    #define SC3336P_VMAX_300W17FPS_LINEAR (1728)
 #endif
 
 enum SC3336P_REG_INDEX {
@@ -115,7 +115,6 @@ enum SC3336P_REG_INDEX {
 #define SC3336P_1080P25FPS_LINEAR_MODE (1)
 #define SC3336P_300W10FPS_LINEAR_MODE (2)
 #define SC3336P_300W15FPS_LINEAR_MODE (3)
-#define SC3336P_300W17FPS_LINEAR_MODE (4)
 
 typedef struct vsisc3336p_DEVICE_S {
     vsi_u8_t i2cBus;
@@ -922,7 +921,7 @@ static int sc3336p_SensorInit(ISP_PORT IspPort, vsi_u8_t snsDev)
 {
     if (SC3336P_2304x1296_CalibParam_dynamic == NULL)
     {
-        SC3336P_2304x1296_CalibParam_dynamic = os_malloc(sizeof(SC3336P_2304x1296_CalibParam));
+        SC3336P_2304x1296_CalibParam_dynamic = CSI_CALIB_MALLOC(sizeof(SC3336P_2304x1296_CalibParam));
         if (SC3336P_2304x1296_CalibParam_dynamic == NULL)
         {
             LOGE("Failed to malloc SC3336P_2304x1296_CalibParam_dynamic\n");
@@ -970,7 +969,7 @@ static int sc3336p_SensorExit(ISP_PORT IspPort)
 
     if (SC3336P_2304x1296_CalibParam_dynamic != NULL)
     {
-        os_free(SC3336P_2304x1296_CalibParam_dynamic);
+        CSI_CALIB_FREE(SC3336P_2304x1296_CalibParam_dynamic);
         SC3336P_2304x1296_CalibParam_dynamic = NULL;
     }
     return  BK_OK;
@@ -1127,33 +1126,6 @@ static int sc3336p_InitAeDefault(ISP_PORT IspPort)
             pAeSnsDft->tolerance = 2;
             pAeSnsDft->initExposure = 0x08 * pAeSnsDft->minAgain;
             break;
-        case SC3336P_300W17FPS_LINEAR_MODE:
-            pAeSnsDft->fullLinesStd = SC3336P_VMAX_300W17FPS_LINEAR;
-            pAeSnsDft->fullLines = pAeSnsDft->fullLinesStd;
-            pAeSnsDft->fps = 1667; //17 * ISP_SNS_FPS_ACCU;
-            pAeSnsDft->fullLinesMax =
-                pAeSnsDft->fps * SC3336P_VMAX_300W17FPS_LINEAR / ISP_SNS_FPS_ACCU;
-            pAeSnsDft->linesPer500ms =
-                pAeSnsDft->fullLines * pAeSnsDft->fps / (2 * ISP_SNS_FPS_ACCU);
-
-            pAeSnsDft->maxIntLine  = pAeSnsDft->fullLines - 8;
-            pAeSnsDft->minIntLine  = 8;
-            pAeSnsDft->intLineStep = 1;
-
-            pAeSnsDft->maxAgain  = 3200;
-            pAeSnsDft->minAgain  = 64;
-            pAeSnsDft->againStep = 1;
-
-            pAeSnsDft->maxDgain  = 1024;
-            pAeSnsDft->minDgain  = 1024;
-            pAeSnsDft->dgainStep = 1;
-
-            pAeSnsDft->aeTarget = 62;
-            pAeSnsDft->dampOver = 0x40;
-            pAeSnsDft->dampUnder = 0x40;
-            pAeSnsDft->tolerance = 2;
-            pAeSnsDft->initExposure = 0x08 * pAeSnsDft->minAgain;
-            break;
         default:
             return BK_FAIL;
     }
@@ -1204,13 +1176,6 @@ static int sc3336p_SetMode(ISP_PORT IspPort, ISP_SNS_MODE_S *pSnsMode)
         (pSnsMode->fps == 15 * ISP_SNS_FPS_ACCU)) {
         os_memcpy(&psc3336pDev->snsMode, pSnsMode, sizeof(*pSnsMode));
         psc3336pDev->snsModeId = SC3336P_300W15FPS_LINEAR_MODE;
-        sc3336p_InitAeDefault(IspPort);
-    } else if ((pSnsMode->width  == 2304) &&
-        (pSnsMode->height == 1296) &&
-        (pSnsMode->hdrMode == HDR_MODE_LINEAR) &&
-        (pSnsMode->fps == 17 * ISP_SNS_FPS_ACCU)) {
-        os_memcpy(&psc3336pDev->snsMode, pSnsMode, sizeof(*pSnsMode));
-        psc3336pDev->snsModeId = SC3336P_300W17FPS_LINEAR_MODE;
         sc3336p_InitAeDefault(IspPort);
     } else {
         LOGE("sc3336p_SetMode: not supported width: %d, height: %d, fps: %d\n", pSnsMode->width, pSnsMode->height, pSnsMode->fps);
@@ -1339,7 +1304,6 @@ static int sc3336p_SlowFrameRate(ISP_PORT IspPort, vsi_u32_t fullLines)
         case SC3336P_300W20FPS_LINEAR_MODE:
         case SC3336P_300W10FPS_LINEAR_MODE:
         case SC3336P_300W15FPS_LINEAR_MODE:
-        case SC3336P_300W17FPS_LINEAR_MODE:
         case SC3336P_1080P25FPS_LINEAR_MODE:
             pAeSnsDft->maxIntLine = fullLines - 8;
             pAeSnsDft->fps = tempfps;
@@ -1380,7 +1344,6 @@ static int sc3336p_IntTimeUpdate(ISP_PORT IspPort, vsi_u32_t *pIntLine)
     switch(psc3336pDev->snsModeId) {
         case SC3336P_300W10FPS_LINEAR_MODE:
         case SC3336P_300W15FPS_LINEAR_MODE:
-        case SC3336P_300W17FPS_LINEAR_MODE:
         case SC3336P_300W20FPS_LINEAR_MODE:
         case SC3336P_1080P25FPS_LINEAR_MODE:
             pSnsRegsInfo->snsData[REG_EXPOSURE_H].data = ((*pIntLine >> 12) & 0x0F);
@@ -1465,7 +1428,6 @@ static int sc3336p_GainUpdate(ISP_PORT IspPort, vsi_u32_t *pAgain, vsi_u32_t *pD
     switch(psc3336pDev->snsModeId) {
         case SC3336P_300W10FPS_LINEAR_MODE:
         case SC3336P_300W15FPS_LINEAR_MODE:
-        case SC3336P_300W17FPS_LINEAR_MODE:
         case SC3336P_300W20FPS_LINEAR_MODE:
         case SC3336P_1080P25FPS_LINEAR_MODE:
             *pDgain = 1024;
@@ -1498,7 +1460,7 @@ static int sc3336p_InitIspSnsFunc(ISP_SNS_FUNC_S *pIspSnsFunc)
 static int sc3336p_InitAeSnsFunc(AE_SNS_FUNC_S *pAeSnsFunc)
 {
     pAeSnsFunc->pfnGetAeDefault  = sc3336p_GetAeDefault;
-    pAeSnsFunc->pfnSetFps        = NULL;//sc3336p_SetFps;
+    pAeSnsFunc->pfnSetFps        = sc3336p_SetFps;
     pAeSnsFunc->pfnSlowFrameRate = sc3336p_SlowFrameRate;
     pAeSnsFunc->pfnIntTimeUpdate = sc3336p_IntTimeUpdate;
     pAeSnsFunc->pfnGainUpdate    = sc3336p_GainUpdate;
@@ -1528,13 +1490,6 @@ static const bk_camera_sensor_format_t sc3336p_format_array[] = {
         .width = 2304,
         .height = 1296,
         .fps = 20,
-        .output_pixel_fmt = BK_PIXEL_FORMAT_BGGR10,
-    },
-
-    {
-        .width = 2304,
-        .height = 1296,
-        .fps = 17,
         .output_pixel_fmt = BK_PIXEL_FORMAT_BGGR10,
     },
 
@@ -1682,25 +1637,16 @@ static avdk_err_t sc3336p_set_fps(bk_camera_sensor_ctlr_t *controller, uint16_t 
     AVDK_RETURN_ON_FALSE(csi_sensor, AVDK_ERR_INVAL, TAG, "csi sensor is NULL");
     bk_camera_bus_t *bus = csi_sensor->config.bus;
 
-    if (s_sc3336p_width == 2304 && s_sc3336p_height == 1296 && fps == 17) {
-        //16.67 fps
-        uint32_t fps_real = 1667;
+    if (s_sc3336p_width == 2304 && s_sc3336p_height == 1296) {
         uint32_t pclk = SC3336P_PCLK;
-        uint16_t vts = (pclk / SC3336P_HTS * 100 + fps_real / 2) / fps_real;
+        uint16_t vts = pclk / SC3336P_HTS / fps;
         bus->write16(bus, SC3336P_REG_VTS_L, (vts & 0xff));
         bus->write16(bus, SC3336P_REG_VTS_H, (vts >> 8));
-    } else {
-        if (s_sc3336p_width == 2304 && s_sc3336p_height == 1296) {
-            uint32_t pclk = SC3336P_PCLK;
-            uint16_t vts = pclk / SC3336P_HTS / fps;
-            bus->write16(bus, SC3336P_REG_VTS_L, (vts & 0xff));
-            bus->write16(bus, SC3336P_REG_VTS_H, (vts >> 8));
-        } else if (s_sc3336p_width == 1920 && s_sc3336p_height == 1080) {
-            uint32_t pclk = 2500 * 1360 * 30;
-            uint16_t vts = pclk / 2500 / fps;
-            bus->write16(bus, SC3336P_REG_VTS_L, (vts & 0xff));
-            bus->write16(bus, SC3336P_REG_VTS_H, (vts >> 8));
-        }
+    } else if (s_sc3336p_width == 1920 && s_sc3336p_height == 1080) {
+        uint32_t pclk = 2500 * 1360 * 30;
+        uint16_t vts = pclk / 2500 / fps;
+        bus->write16(bus, SC3336P_REG_VTS_L, (vts & 0xff));
+        bus->write16(bus, SC3336P_REG_VTS_H, (vts >> 8));
     }
 
     return BK_OK;

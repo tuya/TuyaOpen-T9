@@ -68,7 +68,20 @@ static inline uint32_t aon_pmu_ll_get_r7b_fast_boot(void) {
 	aon_pmu_r0_t *r = (aon_pmu_r0_t*)(SOC_AON_PMU_REG_BASE + (0x7b << 2));
 	return r->fast_boot;
 }
+static inline void aon_pmu_ll_set_r0_secboot_bootloader_address(uint32_t v) {
+	aon_pmu_r0_t *r = (aon_pmu_r0_t*)(SOC_AON_PMU_REG_BASE + (0x0 << 2));
+	r->secboot_bootloader_address = v;
+}
 
+static inline uint32_t aon_pmu_ll_get_r0_secboot_bootloader_address(void) {
+	aon_pmu_r0_t *r = (aon_pmu_r0_t*)(SOC_AON_PMU_REG_BASE + (0x0 << 2));
+	return r->secboot_bootloader_address;
+}
+
+static inline uint32_t aon_pmu_ll_get_r7b_secboot_bootloader_address(void) {
+	aon_pmu_r0_t *r = (aon_pmu_r0_t*)(SOC_AON_PMU_REG_BASE + (0x7b << 2));
+	return r->secboot_bootloader_address;
+}
 static inline void aon_pmu_ll_set_r0_dlv_startup(uint32_t v) {
 	aon_pmu_r0_t *r = (aon_pmu_r0_t*)(SOC_AON_PMU_REG_BASE + (0x0 << 2));
 	r->dlv_startup = v;
@@ -82,6 +95,21 @@ static inline uint32_t aon_pmu_ll_get_r0_dlv_startup(void) {
 static inline uint32_t aon_pmu_ll_get_r7b_dlv_startup(void) {
 	aon_pmu_r0_t *r = (aon_pmu_r0_t*)(SOC_AON_PMU_REG_BASE + (0x7b << 2));
 	return r->dlv_startup;
+}
+
+static inline void aon_pmu_ll_set_r0_flash_remap_sel(uint32_t v) {
+	aon_pmu_r0_t *r = (aon_pmu_r0_t*)(SOC_AON_PMU_REG_BASE + (0x0 << 2));
+	r->flash_remap_sel = v;
+}
+
+static inline uint32_t aon_pmu_ll_get_r0_flash_remap_sel(void) {
+	aon_pmu_r0_t *r = (aon_pmu_r0_t*)(SOC_AON_PMU_REG_BASE + (0x0 << 2));
+	return r->flash_remap_sel;
+}
+
+static inline uint32_t aon_pmu_ll_get_r7b_flash_remap_sel(void) {
+	aon_pmu_r0_t *r = (aon_pmu_r0_t*)(SOC_AON_PMU_REG_BASE + (0x7b << 2));
+	return r->flash_remap_sel;
 }
 
 static inline void aon_pmu_ll_set_r0_aon_reg0_for_software(uint32_t v) {

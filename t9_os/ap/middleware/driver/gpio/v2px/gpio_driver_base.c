@@ -302,8 +302,7 @@ uint32_t bk_gpio_get_value(gpio_id_t id)
 
 bk_err_t bk_gpio_enable_output(gpio_id_t gpio_id)
 {
-// Modified by TUYA
-#if 0 // !CONFIG_USR_GPIO_CFG_EN
+#if CONFIG_USR_GPIO_CFG_EN
 	const gpio_default_map_t *m = gpio_find_row_by_id(gpio_id);
 	if (!m || (m->second_func_dev != GPIO_DEV_GPIO_OUTPUT &&
 	           m->time_sharing_func_dev != GPIO_DEV_GPIO_OUTPUT)) {
@@ -322,8 +321,7 @@ bk_err_t bk_gpio_disable_output(gpio_id_t gpio_id)
 
 bk_err_t bk_gpio_enable_input(gpio_id_t gpio_id)
 {
-// Modified by TUYA
-#if 0 // !CONFIG_USR_GPIO_CFG_EN
+#if CONFIG_USR_GPIO_CFG_EN
 	const gpio_default_map_t *m = gpio_find_row_by_id(gpio_id);
 	if (!m || (m->second_func_dev != GPIO_DEV_GPIO_INPUT &&
 	           m->time_sharing_func_dev != GPIO_DEV_GPIO_INPUT)) {

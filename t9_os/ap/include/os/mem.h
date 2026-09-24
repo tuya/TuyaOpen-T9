@@ -19,7 +19,6 @@ typedef enum {
     HEAP_MEM_TYPE_SRAM,    /**< SRAM heap memory type */
     HEAP_MEM_TYPE_PSRAM,   /**< PSRAM heap memory type */
     HEAP_MEM_TYPE_HSRAM,   /**< HSRAM heap memory type */
-    HEAP_MEM_TYPE_EXT_SRAM,/**< Extended SRAM heap memory type */
     MEM_TYPE_MAX = 0xf
 } beken_mem_type_t;
 
@@ -155,12 +154,15 @@ void *psram_realloc_debug(const char *func_name, int line, void *ptr, size_t siz
 void *psram_realloc_release(void *ptr, size_t size);
 void *psram_zalloc_release(size_t size);
 
-#if defined(CONFIG_AP_PSRAM_NOCACHE_HEAP_ADDR) && (CONFIG_AP_PSRAM_NOCACHE_HEAP_SIZE > 0)
-void *psram_nocache_malloc_debug(const char *func_name, int line, size_t size, int need_zero);
-void *psram_nocache_malloc_release(size_t size);
-void *psram_nocache_zalloc_release(size_t size);
-void psram_nocache_free_debug(const char *func_name, int line, void *ptr);
-void psram_nocache_free_release(void *ptr);
+#if defined(CONFIG_AP_PSRAM_CACHE_HEAP_ADDR) && (CONFIG_AP_PSRAM_CACHE_HEAP_SIZE > 0)
+void *psram_cache_malloc_debug(const char *func_name, int line, size_t size, int need_zero);
+void *psram_cache_malloc_release(size_t size);
+void *psram_cache_zalloc_release(size_t size);
+void psram_cache_free_debug(const char *func_name, int line, void *ptr);
+void psram_cache_free_release(void *ptr);
+size_t bk_psram_cache_heap_get_total_size(void);
+size_t bk_psram_cache_heap_get_free_size(void);
+size_t bk_psram_cache_heap_get_minimum_free_size(void);
 #endif
 
 void *hsram_malloc_debug(const char *func_name, int line, size_t size, int need_zero);
@@ -168,12 +170,6 @@ void *hsram_malloc_release(size_t size);
 void *hsram_realloc_debug(const char *func_name, int line, void *ptr, size_t size, int need_zero);
 void *hsram_realloc_release(void *ptr, size_t size);
 void *hsram_zalloc_release(size_t size);
-
-void *ext_sram_malloc_debug(const char *func_name, int line, size_t size, int need_zero);
-void *ext_sram_malloc_release(size_t size);
-void *ext_sram_realloc_debug(const char *func_name, int line, void *ptr, size_t size, int need_zero);
-void *ext_sram_realloc_release(void *ptr, size_t size);
-void *ext_sram_zalloc_release(size_t size);
 
 #if (CONFIG_MALLOC_STATIS || CONFIG_MEM_DEBUG)
 
@@ -190,23 +186,19 @@ void *ext_sram_zalloc_release(size_t size);
 #define psram_zalloc(size)      psram_malloc_debug((const char*)__FUNCTION__,__LINE__,size, 1)
 #define psram_realloc(ptr, size) psram_realloc_debug((const char*)__FUNCTION__,__LINE__,ptr,size)
 
-#if defined(CONFIG_AP_PSRAM_NOCACHE_HEAP_ADDR) && (CONFIG_AP_PSRAM_NOCACHE_HEAP_SIZE > 0)
-#define psram_nocache_malloc(size)       psram_nocache_malloc_debug((const char*)__FUNCTION__,__LINE__,size, 0)
-#define psram_nocache_zalloc(size)       psram_nocache_malloc_debug((const char*)__FUNCTION__,__LINE__,size, 1)
-#define psram_nocache_free(ptr)          psram_nocache_free_debug((const char*)__FUNCTION__,__LINE__,ptr)
-#elif defined(CONFIG_AP_PSRAM_NOCACHE_HEAP_ADDR)
-#define psram_nocache_malloc(size)       ((void)(size), (void *)NULL)
-#define psram_nocache_zalloc(size)       ((void)(size), (void *)NULL)
-#define psram_nocache_free(ptr)          ((void)(ptr))
+#if defined(CONFIG_AP_PSRAM_CACHE_HEAP_ADDR) && (CONFIG_AP_PSRAM_CACHE_HEAP_SIZE > 0)
+#define psram_cache_malloc(size)         psram_cache_malloc_debug((const char*)__FUNCTION__,__LINE__,size, 0)
+#define psram_cache_zalloc(size)         psram_cache_malloc_debug((const char*)__FUNCTION__,__LINE__,size, 1)
+#define psram_cache_free(ptr)            psram_cache_free_debug((const char*)__FUNCTION__,__LINE__,ptr)
+#else
+#define psram_cache_malloc(size)         psram_malloc(size)
+#define psram_cache_zalloc(size)         psram_zalloc(size)
+#define psram_cache_free(ptr)            os_free(ptr)
 #endif
 
 #define hsram_malloc(size)      hsram_malloc_debug((const char*)__FUNCTION__,__LINE__,size, 0)
 #define hsram_zalloc(size)      hsram_malloc_debug((const char*)__FUNCTION__,__LINE__,size, 1)
 #define hsram_realloc(ptr, size) hsram_realloc_debug((const char*)__FUNCTION__,__LINE__,ptr,size, 0)
-
-#define ext_sram_malloc(size)      ext_sram_malloc_debug((const char*)__FUNCTION__,__LINE__,size, 0)
-#define ext_sram_zalloc(size)      ext_sram_malloc_debug((const char*)__FUNCTION__,__LINE__,size, 1)
-#define ext_sram_realloc(ptr, size) ext_sram_realloc_debug((const char*)__FUNCTION__,__LINE__,ptr,size, 0)
 
 void os_dump_memory_stats(uint32_t start_tick, uint32_t ticks_since_malloc, const char* task);
 #if CONFIG_HEAP_UAF_AUDIT_POISON
@@ -229,23 +221,19 @@ void os_trace_heap_free_addr(uint32_t addr);
 #define psram_zalloc(size)      psram_zalloc_release(size)
 #define psram_realloc(ptr, size) psram_realloc_release(ptr, size)
 
-#if defined(CONFIG_AP_PSRAM_NOCACHE_HEAP_ADDR) && (CONFIG_AP_PSRAM_NOCACHE_HEAP_SIZE > 0)
-#define psram_nocache_malloc(size)       psram_nocache_malloc_release(size)
-#define psram_nocache_zalloc(size)       psram_nocache_zalloc_release(size)
-#define psram_nocache_free(ptr)          psram_nocache_free_release(ptr)
-#elif defined(CONFIG_AP_PSRAM_NOCACHE_HEAP_ADDR)
-#define psram_nocache_malloc(size)       ((void)(size), (void *)NULL)
-#define psram_nocache_zalloc(size)       ((void)(size), (void *)NULL)
-#define psram_nocache_free(ptr)          ((void)(ptr))
+#if defined(CONFIG_AP_PSRAM_CACHE_HEAP_ADDR) && (CONFIG_AP_PSRAM_CACHE_HEAP_SIZE > 0)
+#define psram_cache_malloc(size)         psram_cache_malloc_release(size)
+#define psram_cache_zalloc(size)         psram_cache_zalloc_release(size)
+#define psram_cache_free(ptr)            psram_cache_free_release(ptr)
+#else
+#define psram_cache_malloc(size)         psram_malloc(size)
+#define psram_cache_zalloc(size)         psram_zalloc(size)
+#define psram_cache_free(ptr)            os_free(ptr)
 #endif
 
 #define hsram_malloc(size)      hsram_malloc_release(size)
 #define hsram_zalloc(size)      hsram_zalloc_release(size)
 #define hsram_realloc(ptr, size) hsram_realloc_release(ptr, size)
-
-#define ext_sram_malloc(size)      ext_sram_malloc_release(size)
-#define ext_sram_zalloc(size)      ext_sram_zalloc_release(size)
-#define ext_sram_realloc(ptr, size) ext_sram_realloc_release(ptr, size)
 
 #endif
 
@@ -254,7 +242,6 @@ void os_trace_heap_free_addr(uint32_t addr);
 #define os_sram_free      os_free
 #define psram_free        os_free
 #define hsram_free        os_free
-#define ext_sram_free     os_free
 
 /** @brief   get the current used psram size
   *

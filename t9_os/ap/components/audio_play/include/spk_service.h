@@ -167,6 +167,37 @@ bk_err_t spk_service_set_src_mute(spk_service_src_t src, uint8_t mute);
  */
 bool spk_service_is_running(void);
 
+/**
+ * @brief  Select A2DP 44.1k clock/resample policy (app-configurable).
+ *
+ * NATIVE: 44.1k uses 90.3168MHz APLL (default).
+ * HW_TO_48K: 44.1k keeps input rate but HW-resamples into 48k / 98.304MHz so it
+ * can share the APLL with CALL/HINT. Safe to call before or after
+ * spk_service_init(); takes effect on the next A2DP 44100 sample-rate program.
+ *
+ * @param[in] policy  see aud_dac_a2dp_rate_policy_t
+ *
+ * @return BK_OK on success, otherwise a bk_err_t error.
+ */
+bk_err_t spk_service_set_a2dp_rate_policy(aud_dac_a2dp_rate_policy_t policy);
+
+/**
+ * @brief  Get the currently selected A2DP 44.1k rate policy.
+ */
+bk_err_t spk_service_get_a2dp_rate_policy(aud_dac_a2dp_rate_policy_t *policy);
+
+/**
+ * @brief  Provide external-amp PA control for the persistent speaker.
+ *
+ * Must be called before the first spk_service_init() that actually builds the
+ * DAC (idempotent re-init keeps the original PA config). pa==NULL or
+ * pa_ctrl_en=false leaves PA GPIO undriven.
+ *
+ * With MULTI_SOURCE enabled, A2DP/HFP open the DAC via spk_service rather than
+ * audio_play's own speaker, so product PA settings must land here.
+ */
+void spk_service_set_pa_ctrl(const aud_pa_ctrl_t *pa);
+
 #ifdef __cplusplus
 }
 #endif

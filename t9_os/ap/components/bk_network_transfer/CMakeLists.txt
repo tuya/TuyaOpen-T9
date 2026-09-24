@@ -7,9 +7,9 @@ set(incs .
 	common/bk_video_fps_strategy
 	common/bk_ntwk_sdp
 	bk_network_service/bk_ntwk_socket
-	bk_network_service/bk_net_tcp_service
-	bk_network_service/bk_net_udp_service
-	bk_network_service/bk_net_cs2_service
+	bk_network_service/bk_ntwk_tcp_service
+	bk_network_service/bk_ntwk_udp_service
+	bk_network_service/bk_ntwk_cs2_service
 	bk_network_service/bk_ntwk_kvs_service
 )
 
@@ -46,6 +46,12 @@ endif()
 if (CONFIG_NTWK_H264_DROP_POLICY)
 list(APPEND srcs
 	common/bk_video_drop_policy/h264_backpressure_drop.c
+)
+endif()
+
+if (CONFIG_CS2_P2P_SERVER OR CONFIG_CS2_P2P_CLIENT)
+list(APPEND srcs
+	common/bk_video_drop_policy/cs2_congestion_drop.c
 )
 endif()
 

@@ -1,5 +1,5 @@
 /**
- * @file lv_malloc_core.c
+ * @file lv_mem_core_builtin.c
  */
 
 /*********************
@@ -14,7 +14,7 @@
 #include "../../misc/lv_log.h"
 #include "../../misc/lv_ll.h"
 #include "../../misc/lv_math.h"
-#include "../../osal/lv_os.h"
+#include "../../osal/lv_os_private.h"
 #include "../../core/lv_global.h"
 
 #ifdef LV_MEM_POOL_INCLUDE
@@ -79,7 +79,7 @@ void lv_mem_init(void)
     state.tlsf = lv_tlsf_create_with_pool((void *)LV_MEM_POOL_ALLOC(LV_MEM_SIZE), LV_MEM_SIZE);
 #else
     /*Allocate a large array to store the dynamically allocated data*/
-    static LV_ATTRIBUTE_LARGE_RAM_ARRAY MEM_UNIT work_mem_int[LV_MEM_SIZE / sizeof(MEM_UNIT)];
+    static MEM_UNIT work_mem_int[LV_MEM_SIZE / sizeof(MEM_UNIT)] LV_ATTRIBUTE_LARGE_RAM_ARRAY;
     state.tlsf = lv_tlsf_create_with_pool((void *)work_mem_int, LV_MEM_SIZE);
 #endif
 #else
@@ -136,6 +136,21 @@ void lv_mem_remove_pool(lv_mem_pool_t pool)
     LV_LOG_WARN("invalid pool: %p", pool);
 }
 
+bool lv_mem_owns(const void * data)
+{
+    /*
+     * lv_tlsf_create() returns the block it was handed, so state.tlsf is the
+     * base of the LV_MEM_SIZE region lv_mem_init() built the heap on - its
+     * control block first, then the pool. Every lv_malloc() result therefore
+     * lies inside [state.tlsf, state.tlsf + LV_MEM_SIZE).
+     */
+    const uint8_t * base = (const uint8_t *)state.tlsf;
+
+    if(base == NULL || data == NULL) return false;
+
+    return (const uint8_t *)data >= base && (const uint8_t *)data < base + LV_MEM_SIZE;
+}
+
 void * lv_malloc_core(size_t size)
 {
 #if LV_USE_OS
@@ -182,7 +197,7 @@ void lv_free_core(void * p)
 #endif
 
 #if LV_MEM_ADD_JUNK
-    lv_memset(p, 0xbb, lv_tlsf_block_size(data));
+    lv_memset(p, 0xbb, lv_tlsf_block_size(p));
 #endif
     size_t size = lv_tlsf_block_size(p);
     lv_tlsf_free(state.tlsf, p);

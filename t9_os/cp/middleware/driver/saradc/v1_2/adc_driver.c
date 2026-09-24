@@ -78,11 +78,8 @@ static bool adc_try_load_otp_cwt(uint32_t *otp_cwt_buf)
     uint8_t *data = NULL;
     bk_err_t result = BK_FAIL;
     uint32_t required_size = ADC_CWT_COEF_NUM * sizeof(uint32_t);
-#if CONFIG_SOC_BK7259
-    otp_data_size = 0;//junpeng_bringup//otp_map_2[OTP_GADC_CALIBRATION].allocated_size;
-#else
+
     otp_data_size = otp_map_2[OTP_GADC_CALIBRATION].allocated_size;
-#endif
 
     // Check if OTP data size is sufficient for CWT coefficients
     // For bk7236/bk7236n, otp_data_size is too small (4/8 bytes), so this will return false
@@ -96,11 +93,8 @@ static bool adc_try_load_otp_cwt(uint32_t *otp_cwt_buf)
         return false;
     }
 
-#if CONFIG_SOC_BK7259
-    result = BK_FAIL;//junpeng_bringup//bk_otp_ahb_read(OTP_GADC_CALIBRATION, data, otp_data_size);
-#else
     result = bk_otp_ahb_read(OTP_GADC_CALIBRATION, data, otp_data_size);
-#endif
+
     if (result != BK_OK) {
         ADC_LOGW("read otp gadc calib failed:%d\r\n", result);
         os_free(data);
@@ -336,7 +330,7 @@ __IRAM_SEC static int adc_pm_restore_cb(uint64_t sleep_time, void *args)
 static bk_err_t adc_set_default_cali_val(struct sadc_data *data)
 {
     const uint16_t cali_val[SARADC_CALIBRATE_MAX] = {
-        0, 0x1481, 0x279D, ADC_TEMP_CODE_DFT_25DEGREE, ADC_TMEP_LSB_PER_10DEGREE /* 1Volt, 2Volt, 25Degree, 10Step*/
+        0x6CA, 0x15BD, 0x2B10, ADC_TEMP_CODE_DFT_25DEGREE, ADC_TMEP_LSB_PER_10DEGREE /* 1Volt, 2Volt, 25Degree, 10Step*/
     };
 
     os_memcpy(data->sadc_cali_val, cali_val, sizeof(cali_val));
@@ -357,8 +351,8 @@ static bk_err_t adc_cli_register(void)
     #endif
 
     #if CONFIG_ADC_API_TEST
-    int bk_adc_api_register_cli_test_feature(void);
-    bk_adc_api_register_cli_test_feature();
+    //int bk_adc_api_register_cli_test_feature(void);
+    //bk_adc_api_register_cli_test_feature();
     #endif
 
     return BK_OK;
@@ -903,6 +897,12 @@ bk_err_t bk_adc_driver_init(void)
     #endif
 
     adc_set_default_cali_val(&dev->data);
+
+#if CONFIG_TEMPERATURE_HIGH_VOLT
+    sys_drv_set_temp_mode(true);
+#else
+    sys_drv_set_temp_mode(false);
+#endif
     bk_int_isr_register(INT_SRC_SARADC, adc_isr, NULL);
 
     sys_hal_set_saradc_cali_config();
@@ -1136,7 +1136,8 @@ UINT32 saradc_set_calibrate_val(uint16_t *value, SARADC_MODE mode)
     }
     irq_level = rtos_disable_int();
 
-    if (mode == SARADC_CALIBRATE_LOW) {
+    if (mode == SARADC_CALIBRATE_LOW)
+    {
         threshold = bk_adc_get_1Volt_threshold();
         dft_value = bk_adc_get_1Volt_value();
         if ((*value + threshold < dft_value) || (dft_value + threshold < *value)) {
@@ -1145,7 +1146,9 @@ UINT32 saradc_set_calibrate_val(uint16_t *value, SARADC_MODE mode)
         if (!dev->adc_cali_invalid) {
             data->sadc_cali_val[mode] = *value;
         }
-    } else if (mode == SARADC_CALIBRATE_HIGH) {
+    }
+    else if (mode == SARADC_CALIBRATE_HIGH)
+    {
         threshold = bk_adc_get_2Volt_threshold();
         dft_value = bk_adc_get_2Volt_value();
         if ((*value + threshold < dft_value) || (dft_value + threshold < *value)) {
@@ -1154,13 +1157,17 @@ UINT32 saradc_set_calibrate_val(uint16_t *value, SARADC_MODE mode)
         if (!dev->adc_cali_invalid) {
             data->sadc_cali_val[mode] = *value;
         }
-    } else if (mode == SARADC_CALIBRATE_TEMP_CODE25) {
+    }
+    else if (mode == SARADC_CALIBRATE_TEMP_CODE25)
+    {
         threshold = bk_adc_get_temp_code_dft_threshold();
         dft_value = bk_adc_get_temp_code_dft_25degree();
         if ((dft_value <= *value + threshold) && (*value <= dft_value + threshold)) {
             data->sadc_cali_val[mode] = *value;
         }
-    } else {
+    }
+    else
+    {
         data->sadc_cali_val[mode] = *value;
     }
 

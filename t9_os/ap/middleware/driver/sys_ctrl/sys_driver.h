@@ -171,6 +171,7 @@ int32 sys_drv_bandgap_cali_set(uint32_t value);//increase or decrease the dvdddi
 int sys_drv_rosc_test_mode(bool enabled);
 uint32_t sys_drv_bandgap_cali_get();
 bk_err_t sys_drv_switch_cpu_bus_freq(pm_cpu_freq_e cpu_bus_freq);
+bk_err_t sys_drv_switch_cpu_bus_freq_unlocked(pm_cpu_freq_e cpu_bus_freq);
 bk_err_t sys_drv_core_bus_clock_ctrl(uint32_t cksel_core, uint32_t ckdiv_core,uint32_t ckdiv_bus, uint32_t ckdiv_cpu0,uint32_t ckdiv_cpu1);
 
 /*for  low power  function end*/
@@ -445,6 +446,9 @@ uint32_t sys_drv_i2s3_int_en(uint32_t value);
 uint32_t sys_drv_i2s4_int_en(uint32_t value);
 #endif
 uint32_t sys_drv_apll_en(uint32_t value);
+uint32_t sys_drv_apll_ref_acquire(void);
+uint32_t sys_drv_apll_ref_release(void);
+uint32_t sys_drv_apll_ref_get(void);
 uint32_t sys_drv_cb_manu_val_set(uint32_t value);
 uint32_t sys_drv_ana_reg11_vsel_set(uint32_t value);
 uint32_t sys_drv_apll_cal_val_set(uint32_t value);
@@ -529,6 +533,8 @@ uint32_t sys_drv_psram_set_clkdiv(uint32_t value);
 uint32_t sys_drv_psram_psldo_vsel(uint32_t value);
 uint32_t sys_drv_psram_psldo_vset(uint32_t psldo_swb, uint32_t vpsramsel);
 uint32_t sys_drv_psram_psram_disckg(uint32_t value);
+/* Latch / unlatch PSRAM I/O pads at 3V (ana_reg5.gpio_latch bit7). */
+uint32_t sys_drv_set_psram_pad_latch(uint32_t value);
 /**  psram End **/
 
 uint32_t sys_drv_cali_dpll(uint32_t param);

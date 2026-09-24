@@ -247,22 +247,8 @@ int bk_vfs_stat(const char *pathname, struct stat *statbuf) {
 		goto out;
 	}
 
-// Modified by TUYA Start
-	if (strcmp(fs->mount_point, full_path) == 0) {
-		memset(statbuf, 0, sizeof(struct stat));
-		statbuf->st_mode = S_IFDIR | S_IRWXU;
-		ret = 0;
-		goto out;
-	}
-// Modified by TUYA End
-
 	if (fs->f_ops->stat) {
 		ret = fs->f_ops->stat(fs, bk_sub_path(fs->mount_point, full_path), statbuf);
-		// Modified by TUYA Start
-		if (ret == 0) {
-			statbuf->st_mode |= S_IRWXU;
-		}
-		// Modified by TUYA End
 	} else {
 		bk_set_errno(ENOTSUP);
 	}

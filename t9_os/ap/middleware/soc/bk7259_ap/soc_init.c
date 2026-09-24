@@ -194,9 +194,7 @@ void _soc_start(void)
 #endif
 
 	/* Discard stale data lines from enabled cache levels before L1 enable. */
-#if CONFIG_CACHE_MAINTENANCE
 	arch_dcache_invd_all();
-#endif
 
 #if CONFIG_ICACHE
 	arch_icache_enable();
@@ -206,13 +204,11 @@ void _soc_start(void)
 	arch_dcache_enable();
 #endif
 
-#if CONFIG_CACHE_MAINTENANCE
     flush_all_dcache();
-#endif
 
     core_init();
     // bk_sys_uart_write_string(0,"M55 ==> core_init\r\n");
-
+    pm_hardware_init();
     #if CONFIG_CM_BACKTRACE
         cm_backtrace_init(FIREWARE_NAME, HARDWARE_VERSION, SOFTWARE_VERSION);
     #endif

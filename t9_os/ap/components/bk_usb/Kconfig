@@ -5,22 +5,24 @@ menu "Bk_usb"
 		bool "Enable Usb"
 		default n
 
-	choice BK_USB_CHERRYUSB_VERSION
-		prompt "CherryUSB stack version"
+	# The legacy Beken-adapted CherryUSB v0.7 tree (CherryUSB_legacy/) has
+	# been removed; bk_usb now ships only the upstream CherryUSB 1.6.x based
+	# stack. BK_USB_CHERRYUSB_V1_6 is forced y (no prompt, so it can no longer
+	# be turned off) whenever USB is enabled, because CMakeLists and several
+	# class options (USB_HSET, USBD_MTP, ...) still gate on
+	# CONFIG_BK_USB_CHERRYUSB_V1_6.
+	config BK_USB_CHERRYUSB_V1_6
+		bool
 		depends on USB
-		default BK_USB_CHERRYUSB_LEGACY
-		help
-			Select which CherryUSB implementation is compiled by bk_usb.
-			The legacy stack is the existing Beken-adapted CherryUSB v0.7
-			tree. The v1.6 stack is an upstream CherryUSB 1.6.x based tree
-			with a separate Beken adapter/port.
+		default y
 
-		config BK_USB_CHERRYUSB_LEGACY
-			bool "CherryUSB legacy (Beken v0.7 adapted)"
-
-		config BK_USB_CHERRYUSB_V1_6
-			bool "CherryUSB v1.6.x"
-	endchoice
+	# Hidden, always-off compat symbol. The legacy stack no longer exists, so
+	# it can never be turned on; it is kept only so existing project defconfigs
+	# that still carry `# CONFIG_BK_USB_CHERRYUSB_LEGACY is not set` do not emit
+	# an "unknown kconfig symbol" warning. Do not add a prompt.
+	config BK_USB_CHERRYUSB_LEGACY
+		bool
+		default n
 
 	config USB_VBAT_CONTROL_GPIO_ID
 		depends on USB
@@ -35,6 +37,16 @@ menu "Bk_usb"
 		config USB_HOST
 			bool "Enable USB Host Mode"
 			default y
+
+		config USB_HOST_STRUCTS_IN_PSRAM
+			bool "Place large USB host bookkeeping structures in PSRAM"
+			depends on USB_HOST && PSRAM_AS_SYS_MEMORY
+			default n
+			help
+				Place g_usbhost_bus and g_hub_class in .psram.bss to reduce
+				AP SRAM static usage. These structures are accessed during
+				USB enumeration and interrupt processing, so this option trades
+				access latency for about 31 KiB of SRAM.
 	
 		config USB_DEVICE
 			bool "Enable USB Device Mode"
@@ -143,6 +155,17 @@ menu "Bk_usb"
 					Perceived device type reported by MTP device property 0xD407.
 					Common values: 0 generic, 1 still image camera, 2 media player,
 					3 phone, 4 video camera, 5 PIM, 6 audio recorder.
+
+			config USBD_MTP_MAX_OBJECT_HANDLES
+				int "Max object handles in one GetObjectHandles response"
+				default 4096
+				help
+					Upper bound on how many objects MTP reports in a single
+					GetObjectHandles. The handle array is allocated from PSRAM
+					once as (N+1)*4 bytes. Folders with more files are truncated.
+					Raise this if a folder can exceed 4096 entries; lower it to
+					save PSRAM. MTP has no pagination, so the host only sees
+					this many objects per listing.
 		endmenu
 
 		config USBD_MSC_CBW_DEBUG_LOG
@@ -198,13 +221,13 @@ menu "Bk_usb"
 				Host mode: fully implemented; AP-side USBH IRQ is owned by RISC-V
 				firmware (see riscv_usb_bridge.c::usb_hc_riscv_host_prepare()).
 
-				Device mode: scaffolding only at this milestone. With
-				CONFIG_USB_DEVICE=y the bridge code links in, but
-				usb_dc_riscv_device_prepare() is a stub returning -1; the
-				CherryUSB device port detects the stub failure and falls back to
-				the original M55-resident USBD_IRQHandler path. The shared
-				memory protocol + RISC-V firmware device path will be wired up
-				in the follow-up milestone (see docs/USB重构/07-*.md §5).
+				Device mode: implemented; AP-side USBD IRQ is owned by RISC-V
+				firmware (see riscv_usb_bridge.c::usb_dc_riscv_device_prepare(),
+				which starts the dual-role firmware and returns 0 so the device
+				port skips the M55 USBD_IRQHandler). Device events are reported to
+				the CherryUSB core via the shared-memory probe + IPI. If the
+				firmware is missing usb_dc_riscv_device_prepare() returns <0 and
+				the port falls back to the M55-resident USBD_IRQHandler.
 
 		config USB_RISCV_LOG_UART
 			depends on USB_RISCV_BRIDGE

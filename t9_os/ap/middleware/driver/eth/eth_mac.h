@@ -95,6 +95,8 @@ typedef struct
   __IO uint32_t DESC3;
   uint32_t BackupAddr0; /* used to store rx buffer 1 address */
   uint32_t BackupAddr1; /* used to store rx buffer 2 address */
+  uint32_t Reserved0;   /* pad to a 32-byte stride, matching DMACCR.DSL */
+  uint32_t Reserved1;
 } ETH_DMADescTypeDef;
 /**
   *
@@ -1381,8 +1383,10 @@ typedef struct
 /** @defgroup ETH_Speed  ETH Speed
   * @{
   */
-#define ETH_SPEED_10M        0x00000000U
-#define ETH_SPEED_100M       ETH_MACCR_FES
+/* PS selects the 10/100 MII/RMII port; without it the MAC stays on the
+   1000M GMII port and its Tx/Rx engines never start on an RMII PHY. */
+#define ETH_SPEED_10M        ETH_MACCR_PS
+#define ETH_SPEED_100M       (ETH_MACCR_PS | ETH_MACCR_FES)
 /**
   * @}
   */
