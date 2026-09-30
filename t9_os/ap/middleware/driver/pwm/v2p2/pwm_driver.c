@@ -173,7 +173,9 @@ static void pwm_chan_init_common(pwm_chan_t sw_ch)
 {
 	bk_pm_clock_ctrl(CLK_PWR_ID_PWM0, CLK_PWR_CTRL_PWR_UP);
 	sys_drv_pwm_select_clock(SYS_SEL_PWM0, PWM_SCLK_XTAL);
-	pwm_chan_init_gpio(sw_ch);
+// Modified by TUYA Start
+	// pwm_chan_init_gpio(sw_ch);
+// Modified by TUYA End
 	s_pwm.chan_init_bits |= BIT(sw_ch);
 }
 

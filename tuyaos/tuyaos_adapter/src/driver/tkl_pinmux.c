@@ -244,6 +244,19 @@ INT32_T tkl_io_pin_to_func(UINT32_T pin, TUYA_PIN_TYPE_E pin_type)
             } else if (TUYA_IO_PIN_37 == pin) {
                 port_channel = 11;
             }
+
+            /*
+             * TKL-owned PWM pinmux: route the requested pad to its PWM channel
+             * function here. The board's GPIO_DEFAULT_DEV_CONFIG (usr_gpio_cfg.h)
+             * intentionally has no PWM rows, so bk_pwm_init()'s own
+             * gpio_dev_map_by_func() can never route the pad and the channel
+             * would run with the pad left high-Z (no waveform). Idempotent
+             * (unmap + map), safe to repeat on every lookup.
+             */
+            if (port_channel >= 0) {
+                (void)tkl_io_pinmux_config((TUYA_PIN_NAME_E)pin,
+                                           (TUYA_PIN_FUNC_E)(TUYA_PWM0 + port_channel));
+            }
             break;
         case TUYA_IO_TYPE_ADC:
             if (TUYA_IO_PIN_25 == pin) {

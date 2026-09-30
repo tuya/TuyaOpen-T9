@@ -134,6 +134,9 @@ static void sdcard_operation_err_reset()
 #endif
 
 	bk_sd_card_deinit();
+// Modified by TUYA Start
+	sdcard_ldo_power_enable(1);
+// Modified by TUYA End
 	bk_sd_card_init();
 }
 #endif

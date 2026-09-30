@@ -464,9 +464,10 @@ bk_err_t bk_sd_card_init(void)
 
 bk_err_t bk_sd_card_deinit(void)
 {
-	bk_sdio_host_reset(SDCARD_HOST_ID);
+// Modified by TUYA Start
 	s_sd_card_is_init = false;
 	return bk_sdio_host_deinit(SDCARD_HOST_ID);
+// Modified by TUYA End
 }
 
 bk_err_t bk_sd_card_write_blocks(const uint8_t *data, uint32_t block_addr, uint32_t block_num)

@@ -153,6 +153,29 @@ STATIC VOID_T __wifi_copy_str(CHAR_T *dst, UINT_T dst_size, CONST CHAR_T *src)
     dst[copy_len] = '\0';
 }
 
+/**
+ * @brief Check whether a fixed-size key buffer holds non-zero material.
+ * @param[in] buf buffer to inspect
+ * @param[in] len buffer length
+ * @return TRUE if any byte is non-zero
+ */
+STATIC BOOL_T __wifi_buf_nonzero(CONST UINT8_T *buf, UINT_T len)
+{
+    UINT_T i = 0;
+
+    if ((buf == NULL) || (len == 0)) {
+        return FALSE;
+    }
+
+    for (i = 0; i < len; i++) {
+        if (buf[i] != 0) {
+            return TRUE;
+        }
+    }
+
+    return FALSE;
+}
+
 STATIC VOID_T __fast_connect_ap_info_dump(CONST CHAR_T *tag, CONST wifi_sta_config_t *sta_cfg)
 {
     if (sta_cfg == NULL) {
@@ -170,6 +193,9 @@ STATIC VOID_T __fast_connect_ap_info_dump(CONST CHAR_T *tag, CONST wifi_sta_conf
     bk_printf("security: %d, chan: %d\r\n", sta_cfg->security, sta_cfg->channel);
     bk_printf("psk: ********************************, pmf: %d\r\n", sta_cfg->pmf);
     bk_printf("pwd: ****************\r\n");
+    bk_printf("tk: %s, pmk_len: %d, akmp: 0x%x\r\n",
+              __wifi_buf_nonzero(sta_cfg->tk, sizeof(sta_cfg->tk)) ? "set" : "empty",
+              sta_cfg->pmk_len, sta_cfg->akmp);
     bk_printf("ip: %d.%d.%d.%d\r\n", sta_cfg->ip_addr[0], sta_cfg->ip_addr[1], sta_cfg->ip_addr[2], sta_cfg->ip_addr[3]);
     bk_printf("netmask: %d.%d.%d.%d\r\n", sta_cfg->netmask[0], sta_cfg->netmask[1], sta_cfg->netmask[2], sta_cfg->netmask[3]);
     bk_printf("gw: %d.%d.%d.%d\r\n", sta_cfg->gw[0], sta_cfg->gw[1], sta_cfg->gw[2], sta_cfg->gw[3]);
@@ -1657,6 +1683,22 @@ OPERATE_RET tkl_wifi_get_connected_ap_info(FAST_WF_CONNECTED_AP_INFO_T **fast_ap
     sta_cfg.security = link_status.security;
     sta_cfg.is_user_fast_connect = 1;
 
+    /* WPA3 fast-connect material diagnostics (CP exports pmk/pmkid/akmp into wifi_sta_config_t) */
+    if ((sta_cfg.security == WIFI_SECURITY_WPA3_SAE) ||
+        (sta_cfg.security == WIFI_SECURITY_WPA3_WPA2_MIXED)) {
+        if (sta_cfg.pmk_len > 0) {
+            bk_printf("get_connected_ap_info WPA3 material ok pmk_len=%d akmp=0x%x\r\n",
+                      sta_cfg.pmk_len, sta_cfg.akmp);
+        } else {
+            bk_printf("get_connected_ap_info warn: WPA3 ap but no PMK material, fast connect will run full SAE\r\n");
+        }
+    }
+
+    /* CP rejects is_user_fast_connect with empty TK (wifi_v2.c validate) */
+    if (__wifi_buf_nonzero(sta_cfg.tk, sizeof(sta_cfg.tk)) == FALSE) {
+        bk_printf("get_connected_ap_info warn: TK empty, CP will reject user fast connect\r\n");
+    }
+
     if ((tkl_wifi_get_ip(WF_STATION, &ip) == OPRT_OK) &&
         (__wifi_parse_ipv4(ip.ip, ip_addr) == TRUE) &&
         (__wifi_parse_ipv4(ip.mask, mask) == TRUE) &&
@@ -1722,6 +1764,8 @@ OPERATE_RET tkl_wifi_get_bssid(UCHAR_T *mac)
  */
 OPERATE_RET tkl_wifi_set_country_code(CONST COUNTRY_CODE_E ccode)
 {
+    // WIFI_REGDOMAIN is supported, so we don't need to set country code
+    /*
     wifi_country_t country;
     bk_err_t bk_ret = BK_OK;
     OPERATE_RET op_ret = OPRT_OK;
@@ -1742,6 +1786,7 @@ OPERATE_RET tkl_wifi_set_country_code(CONST COUNTRY_CODE_E ccode)
 
     memcpy(s_wifi.country_code, country.cc, 2);
     s_wifi.country_code[2] = '\0';
+    */
     return OPRT_OK;
 }
 
@@ -1771,6 +1816,8 @@ OPERATE_RET tkl_wifi_set_rf_calibrated(VOID_T)
 OPERATE_RET tkl_wifi_set_lp_mode(CONST BOOL_T enable, CONST UCHAR_T dtim)
 {
     bk_err_t bk_ret = BK_OK;
+
+    bk_printf("-- wifi lp set enable: %d, dtim:%d\r\n", enable, dtim);
 
     if (s_wifi.inited == FALSE) {
         return OPRT_RESOURCE_NOT_READY;
@@ -1803,7 +1850,7 @@ OPERATE_RET tkl_wifi_set_lp_mode(CONST BOOL_T enable, CONST UCHAR_T dtim)
  */
 OPERATE_RET tkl_wifi_station_fast_connect(CONST FAST_WF_CONNECTED_AP_INFO_T *fast_ap_info)
 {
-    CONST wifi_sta_config_t *sta_cfg = NULL;
+    wifi_sta_config_t *sta_cfg = NULL;
     bk_err_t bk_ret = BK_OK;
     OPERATE_RET op_ret = OPRT_OK;
 
@@ -1823,12 +1870,24 @@ OPERATE_RET tkl_wifi_station_fast_connect(CONST FAST_WF_CONNECTED_AP_INFO_T *fas
         return OPRT_RESOURCE_NOT_READY;
     }
 
-    sta_cfg = (CONST wifi_sta_config_t *)fast_ap_info->data;
+    sta_cfg = (wifi_sta_config_t *)fast_ap_info->data;
+    sta_cfg->is_not_support_auto_fci = 1;
+	sta_cfg->is_user_fast_connect = 1;
+
+    sta_cfg->auto_reconnect_count = 1;
+    sta_cfg->disable_auto_reconnect_after_disconnect = TRUE;
     bk_printf("fast_connect enter ssid=%s chan=%d security=%d bssid=%02x:%02x:%02x:%02x:%02x:%02x\r\n",
               sta_cfg->ssid, sta_cfg->channel, sta_cfg->security,
               sta_cfg->bssid[0], sta_cfg->bssid[1], sta_cfg->bssid[2],
               sta_cfg->bssid[3], sta_cfg->bssid[4], sta_cfg->bssid[5]);
     __fast_connect_ap_info_dump("station fast connect", sta_cfg);
+
+    /* WPA3 fast-connect: CP preloads PMKSA cache from this material on sta_start */
+    if ((sta_cfg->pmk_len > 0) &&
+        (__wifi_buf_nonzero(sta_cfg->tk, sizeof(sta_cfg->tk)) == TRUE)) {
+        bk_printf("fast_connect WPA3 material ready pmk_len=%d akmp=0x%x, CP will preload PMKSA\r\n",
+                  sta_cfg->pmk_len, sta_cfg->akmp);
+    }
 
     if (sta_cfg->ssid[0] == '\0') {
         bk_printf("fast_connect invalid ssid empty\r\n");
@@ -1913,6 +1972,10 @@ OPERATE_RET tkl_wifi_station_connect(CONST SCHAR_T *ssid, CONST SCHAR_T *passwd)
         __wifi_copy_str(sta_cfg.password, sizeof(sta_cfg.password), passwd);
     }
     sta_cfg.security = WIFI_SECURITY_AUTO;
+    sta_cfg.is_user_fast_connect = 0;
+    sta_cfg.is_not_support_auto_fci = 1;
+    sta_cfg.auto_reconnect_count = 1;
+    sta_cfg.disable_auto_reconnect_after_disconnect = TRUE;
 
     bk_ret = bk_wifi_sta_set_config(&sta_cfg);
     if (bk_ret != BK_OK) {
@@ -1958,10 +2021,7 @@ OPERATE_RET tkl_wifi_station_disconnect(VOID_T)
     }
 
     s_wifi.sta_started = FALSE;
-    s_wifi.work_mode = s_wifi.ap_started ? WWM_SOFTAP : WWM_POWERDOWN;
-
-    bk_printf("disconnect issued new_mode=%s(%d)\r\n",
-              __wifi_work_mode_name(s_wifi.work_mode), s_wifi.work_mode);
+    bk_printf("disconnect issued\r\n");
     return OPRT_OK;
 }
 
@@ -2188,6 +2248,8 @@ OPERATE_RET tkl_wifi_get_country_code(UCHAR_T *ccode)
  */
 OPERATE_RET tkl_wifi_set_country_code_v2(CONST UCHAR_T *ccode)
 {
+    // WIFI_REGDOMAIN is supported, so we don't need to set country code
+    /*
     wifi_country_t country;
     bk_err_t bk_ret = BK_OK;
     OPERATE_RET op_ret = OPRT_OK;
@@ -2208,5 +2270,6 @@ OPERATE_RET tkl_wifi_set_country_code_v2(CONST UCHAR_T *ccode)
 
     memcpy(s_wifi.country_code, country.cc, 2);
     s_wifi.country_code[2] = '\0';
+    */
     return OPRT_OK;
 }
