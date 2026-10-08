@@ -13,12 +13,17 @@
 #include <components/bk_decode/bk_jpeg_decode_ctlr.h>
 #include "tkl_memory.h"
 #include "tkl_media_buf.h"
+#include "tkl_hwjpeg_internal.h"
 #include "tkl_vdec_internal.h"
 
 #define TKL_VDEC_DEFAULT_TIMEOUT_MS 1000U
 #define TKL_VDEC_DEFAULT_FLEXA_LINES 16U
 #define TKL_VDEC_DEFAULT_FLEXA_CNT 3U
 #define TKL_VDEC_ALIGN_HEIGHT(height) (((height) + 15U) & ~15U)
+/* How long a decoder session waits for the one hardware JPEG core. A session
+ * holds the gate for its whole life, so this only ever covers another
+ * session's teardown - never a running stream. */
+#define TKL_VDEC_HWJPEG_WAIT_MS 1000U
 
 typedef struct {
     TUYA_VCODEC_FRAME_T frame;
@@ -30,6 +35,7 @@ typedef struct {
     BOOL_T sink_ready;
     BOOL_T backend_inited;
     BOOL_T backend_opened;
+    BOOL_T hwjpeg_held;         /**< this session owns the hardware JPEG gate */
     TUYA_VDEC_CFG_T cfg;
     TUYA_VDEC_PP_T pp;
     TUYA_VDEC_SINK_T sink;
@@ -298,6 +304,16 @@ static OPERATE_RET tkl_vdec_backend_create(TUYA_VDEC_CTX_T *ctx)
         return op_ret;
     }
 
+    /* The hardware JPEG decoder serves one session at a time. A second one does
+     * not queue behind this one - it takes over the interrupt routing and both
+     * stall for good (see tkl_hwjpeg_internal.h). Hold the gate for the whole
+     * life of this decoder; backend_destroy() releases it. */
+    op_ret = tkl_hwjpeg_acquire(TKL_VDEC_HWJPEG_WAIT_MS);
+    if (op_ret != OPRT_OK) {
+        return op_ret;
+    }
+    ctx->hwjpeg_held = TRUE;
+
     if (ctx->sink.type == TUYA_VDEC_SINK_FRAME) {
         bk_jpeg_decode_frame_config_t cfg;
 
@@ -334,14 +350,16 @@ static OPERATE_RET tkl_vdec_backend_create(TUYA_VDEC_CTX_T *ctx)
     }
 
     if (ret != AVDK_ERR_OK) {
-        return tkl_vdec_ret_convert(ret);
+        op_ret = tkl_vdec_ret_convert(ret);
+        goto err_release;
     }
 
     ret = bk_jpeg_decode_init(ctx->backend_handle);
     if (ret != AVDK_ERR_OK) {
         (void)bk_jpeg_decode_delete(ctx->backend_handle);
         ctx->backend_handle = NULL;
-        return tkl_vdec_ret_convert(ret);
+        op_ret = tkl_vdec_ret_convert(ret);
+        goto err_release;
     }
 
     ctx->backend_inited = TRUE;
@@ -349,6 +367,11 @@ static OPERATE_RET tkl_vdec_backend_create(TUYA_VDEC_CTX_T *ctx)
         tkl_vdec_flexa_fill(ctx, &ctx->sink.flexa.flexa);
     }
     return OPRT_OK;
+
+err_release:
+    ctx->hwjpeg_held = FALSE;
+    tkl_hwjpeg_release();
+    return op_ret;
 }
 
 static OPERATE_RET tkl_vdec_backend_open(TUYA_VDEC_CTX_T *ctx)
@@ -419,6 +442,12 @@ static OPERATE_RET tkl_vdec_backend_destroy(TUYA_VDEC_CTX_T *ctx)
         op_ret = tkl_vdec_ret_convert(ret);
     }
     ctx->backend_handle = NULL;
+
+    /* The hardware session is gone, so let the next one in. */
+    if (ctx->hwjpeg_held == TRUE) {
+        ctx->hwjpeg_held = FALSE;
+        tkl_hwjpeg_release();
+    }
 
     return op_ret;
 }

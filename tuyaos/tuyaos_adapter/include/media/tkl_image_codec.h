@@ -135,13 +135,14 @@ OPERATE_RET tkl_image_codec_get_info(CONST TUYA_IMAGE_BUF_T *in, TUYA_IMAGE_INFO
  * no quality or engine choice is exposed.
  *
  * @note Buffer sizing is the caller's job:
- *       - pixel outputs: NV12 rows round to even and RGB rows to a multiple of
- *         16, and the hardware RGB888 is 4 bytes/pixel - see the formulas in
- *         the API doc. For a native-size NV12 decode, tkl_image_codec_get_info()
- *         returns the geometry in @ref TUYA_IMAGE_INFO_T - size the buffer from
- *         it and pass that back as the capacity and no sizing formula reaches
- *         you; convert recomputes the requirement itself and checks what you
- *         hand it.
+ *       - pixel outputs: use tkl_pp_output_size() - it is the rule every pixel
+ *         buffer in this adapter is stored by, and the number convert checks
+ *         against. Do not derive it from width x height x 3/2: NV12 keeps both
+ *         planes on whole 16-row DMA segments, so the stored height rounds up
+ *         to a multiple of 32 and 1280x720 needs 1280x736 worth of bytes.
+ *         For a native-size NV12 decode, tkl_image_codec_get_info() returns the
+ *         geometry in @ref TUYA_IMAGE_INFO_T; feed that to tkl_pp_output_size()
+ *         and pass the result back as the capacity.
  *       - JPEG output: no exact formula; budget about 4.5 bits/pixel.
  *       An undersized buffer returns OPRT_INVALID_PARM.
  * @note Encode: geometry comes from @p in (must be even), @c out->width /

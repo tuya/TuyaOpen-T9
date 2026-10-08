@@ -182,24 +182,24 @@ static OPERATE_RET test_image_capture_nv12(UINT8_T **buf,
         return OPRT_MALLOC_FAILED;
     }
 
-    /* get_frame() serves the SP frame path only - MP carries display and/or
+    /* get_frame() serves ch1, the SP frame path - MP carries display and/or
      * h264, i.e. flexa, and a flexa channel has no frame queue to pull from.
      *
      * The camera lends this buffer - it must go back through frame->free_cb, and
      * the pool is only two deep - so copy into our own block and release
      * straight away. */
-    ret = tkl_mipi_csi_get_frame(&frame, timeout);
+    ret = tkl_mipi_csi_get_frame(TUYA_CAMERA_FRAME_CHANNEL_1, &frame, timeout);
     if (ret != OPRT_OK) {
         test_image_buf_free(nv12);
         tkl_log_output("ximg: capture failed: %d\r\n", ret);
         return ret;
     }
 
-    copy_size = (frame->size < alloc_size) ? frame->size : alloc_size;
-    os_memcpy(nv12, frame->data, copy_size);
+    copy_size = (frame->length < alloc_size) ? frame->length : alloc_size;
+    os_memcpy(nv12, frame->buffer, copy_size);
     *width = frame->width;
     *height = frame->height;
-    frame->free_cb(frame->data);
+    frame->free_cb(frame);
 
     *buf = nv12;
     *size = copy_size;

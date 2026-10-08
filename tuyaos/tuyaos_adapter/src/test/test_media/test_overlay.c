@@ -11,10 +11,10 @@
 #include "tkl_mipi_csi.h"
 #include "tkl_uvc.h"
 
-/* The caller keys the overlay by output type - PIXEL feeds the ISP display
- * path, STREAM feeds the encode path. Both map onto two fixed slots through
- * test_overlay_ctx_get(), so a renumbered enum cannot silently index the
- * wrong slot: an unknown type is rejected, not misrouted. */
+/* The caller keys the overlay by channel - ch2 feeds the display path, ch3
+ * the encode path. Both map onto two fixed slots through test_overlay_ctx_get(),
+ * so a renumbered enum cannot silently index the wrong slot: an unknown
+ * channel is rejected, not misrouted. */
 #define TEST_OVERLAY_SLOT_MAX 2U
 
 #define TEST_OVERLAY_TIME_TEXT_LEN 16U
@@ -46,21 +46,21 @@ typedef struct {
 
 static test_overlay_ctx_t s_overlay[TEST_OVERLAY_SLOT_MAX];
 
-static test_overlay_ctx_t *test_overlay_ctx_get(TUYA_CAMERA_OUTPUT_TYPE_E type)
+static test_overlay_ctx_t *test_overlay_ctx_get(TUYA_CAMERA_FRAME_CHANNEL_E channel)
 {
-    switch (type) {
-    case TUYA_CAMERA_OUTPUT_PIXEL:
+    switch (channel) {
+    case TUYA_CAMERA_FRAME_CHANNEL_2:
         return &s_overlay[0];
-    case TUYA_CAMERA_OUTPUT_STREAM:
+    case TUYA_CAMERA_FRAME_CHANNEL_3:
         return &s_overlay[1];
     default:
         return NULL;
     }
 }
 
-static const char *test_overlay_type_name(TUYA_CAMERA_OUTPUT_TYPE_E type)
+static const char *test_overlay_type_name(TUYA_CAMERA_FRAME_CHANNEL_E channel)
 {
-    return (type == TUYA_CAMERA_OUTPUT_STREAM) ? "stream" : "pixel";
+    return (channel == TUYA_CAMERA_FRAME_CHANNEL_3) ? "enc" : "disp";
 }
 
 STATIC VOID_T test_overlay_format_time(CHAR_T *text, UINT32_T text_len)
@@ -121,7 +121,7 @@ static void test_overlay_task(void *arg)
     tkl_thread_release(self);
 }
 
-OPERATE_RET test_overlay_clock_start(TUYA_CAMERA_OUTPUT_TYPE_E type,
+OPERATE_RET test_overlay_clock_start(TUYA_CAMERA_FRAME_CHANNEL_E channel,
                                      TEST_OVERLAY_SUBMIT_CB cb, VOID_T *arg)
 {
     test_overlay_ctx_t *ctx;
@@ -132,12 +132,12 @@ OPERATE_RET test_overlay_clock_start(TUYA_CAMERA_OUTPUT_TYPE_E type,
         return OPRT_INVALID_PARM;
     }
 
-    ctx = test_overlay_ctx_get(type);
+    ctx = test_overlay_ctx_get(channel);
     if (ctx == NULL) {
         return OPRT_INVALID_PARM;
     }
 
-    test_overlay_clock_stop(type);
+    test_overlay_clock_stop(channel);
 
     ctx->cb = cb;
     ctx->arg = arg;
@@ -148,7 +148,7 @@ OPERATE_RET test_overlay_clock_start(TUYA_CAMERA_OUTPUT_TYPE_E type,
     ret = cb(text, arg);
     if (ret != OPRT_OK) {
         tkl_log_output("overlay %s: first submit failed: %d\r\n",
-                       test_overlay_type_name(type), ret);
+                       test_overlay_type_name(channel), ret);
         return ret;
     }
 
@@ -158,7 +158,7 @@ OPERATE_RET test_overlay_clock_start(TUYA_CAMERA_OUTPUT_TYPE_E type,
     ctx->running = TRUE;
 
     ret = tkl_thread_create(&ctx->task,
-                            (type == TUYA_CAMERA_OUTPUT_STREAM) ? "osd_enc" : "osd_disp",
+                            (channel == TUYA_CAMERA_FRAME_CHANNEL_3) ? "osd_enc" : "osd_disp",
                             TEST_OVERLAY_STACK,
                             TKL_THREAD_PRI_NORMAL,
                             test_overlay_task,
@@ -170,16 +170,16 @@ OPERATE_RET test_overlay_clock_start(TUYA_CAMERA_OUTPUT_TYPE_E type,
     }
 
     tkl_log_output("overlay %s: clock started at %s\r\n",
-                   test_overlay_type_name(type), text);
+                   test_overlay_type_name(channel), text);
     return OPRT_OK;
 }
 
-VOID_T test_overlay_clock_stop(TUYA_CAMERA_OUTPUT_TYPE_E type)
+VOID_T test_overlay_clock_stop(TUYA_CAMERA_FRAME_CHANNEL_E channel)
 {
     test_overlay_ctx_t *ctx;
     UINT32_T waited_ms = 0U;
 
-    ctx = test_overlay_ctx_get(type);
+    ctx = test_overlay_ctx_get(channel);
     if (ctx == NULL) {
         return;
     }
@@ -200,9 +200,9 @@ VOID_T test_overlay_clock_stop(TUYA_CAMERA_OUTPUT_TYPE_E type)
     ctx->last_text[0] = '\0';
 }
 
-STATIC BOOL_T test_overlay_clock_running(TUYA_CAMERA_OUTPUT_TYPE_E type)
+STATIC BOOL_T test_overlay_clock_running(TUYA_CAMERA_FRAME_CHANNEL_E channel)
 {
-    test_overlay_ctx_t *ctx = test_overlay_ctx_get(type);
+    test_overlay_ctx_t *ctx = test_overlay_ctx_get(channel);
 
     if (ctx == NULL) {
         return FALSE;

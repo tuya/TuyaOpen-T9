@@ -15,8 +15,21 @@
 extern "C" {
 #endif
 
-/** Device plug/unplug notification. Runs on a vendor USB thread. */
-typedef VOID (*TUYA_UVC_STATE_CB)(BOOL_T connected, VOID_T *arg);
+/* ---------------------------------------------------------------------------
+ * Channel topology (UVC source, T9 / BK7259) - what each channel is and where
+ * it comes from.
+ *
+ *   USB MJPEG
+ *   |
+ *   +-- parked pool -----------> ch0   the MJPEG as captured   get_frame / cb
+ *   |
+ *   \-- vdec (MJPEG -> NV12) --> ch1   the decoded NV12        get_frame / cb
+ *       |
+ *       +-- GPU ---------------> ch2   display frames          cb required
+ *       |
+ *       \-- vcenc -------------> ch3   H264 bitstream          cb required
+ *
+ * ------------------------------------------------------------------------- */
 
 /** One (width,height) frame descriptor and its advertised frame rates. */
 typedef struct {
@@ -72,18 +85,13 @@ typedef struct {
     UINT8_T  port;                   /* USB hub port; 0 = adapter default */
     TUYA_CAMERA_FRAME_CFG_T uvc_cfg; /* input frame: w/h/fps/format (MJPEG/H264) */
 
-    TUYA_FRAME_OUTPUT_CFG_T frame;   /* raw frames via tkl_uvc_get_frame();
-                                         MJPEG sources only this version */
+    TUYA_MEDIA_OUTPUT_CFG_T     *outputs;
+    UINT8_T                   output_num;
 
-    /** Applies to TUYA_CAMERA_OUTPUT_PIXEL. */
-    TUYA_PIXEL_OUTPUT_CFG_T pixel;
-
-    /** Applies to TUYA_CAMERA_OUTPUT_STREAM. */
-    TUYA_STREAM_OUTPUT_CFG_T stream;
-
-    /** Plug/unplug notification; runs on a vendor USB thread. */
-    TUYA_UVC_STATE_CB connect_state_cb;
-    VOID_T           *connect_state_arg;
+    /** Lifecycle and error events (TUYA_CAMERA_EVENT_E); replaces the old
+     *  plug/unplug state callback. */
+    TUYA_CAMERA_EVENT_CB event_cb;
+    VOID_T           *event_arg;
 } TUYA_UVC_CFG_T;
 
 /** Enumerate the camera and allocate adapter resources; no stream yet. */
@@ -98,8 +106,28 @@ OPERATE_RET tkl_uvc_stop(VOID_T);
 /** Stop and release all camera resources. */
 OPERATE_RET tkl_uvc_deinit(VOID_T);
 
-/** Submit or clear one business-composed ARGB8888 overlay bitmap. */
-OPERATE_RET tkl_uvc_set_osd(TUYA_CAMERA_OUTPUT_TYPE_E type, CONST TUYA_OSD_T *osd);
+/**
+ * @brief Change one output channel's resolution while it is running.
+ *
+ * ch1: FRAME-sink mode restarts the decoder at the new size; pull mode takes
+ * effect on the next get_frame(). ch2: GPU pipeline rebuild around the new
+ * size, brief hiccup, ch3 keeps streaming. ch3 is rejected - the encoder has
+ * no scaler and encodes the USB-negotiated source size. ch0 is rejected (the
+ * USB format was negotiated at open). INIT-state requests are recorded for
+ * start().
+ */
+OPERATE_RET tkl_uvc_set_pp(TUYA_CAMERA_FRAME_CHANNEL_E channel, UINT16_T width, UINT16_T height);
+
+/** Set the I-frame interval for ch3. The encoder takes gop only at build
+ *  time, so a running stream refuses it: call while STOPPED - the value is
+ *  recorded and applied at the next start(). gop 0 restores the default 40. */
+OPERATE_RET tkl_uvc_set_gop(UINT32_T gop);
+
+/** Submit or clear one business-composed overlay bitmap on a pipeline
+ *  channel: ch2 addresses the GPU (display) path, ch3 the encoder path;
+ *  ch0/ch1 carry no overlay and are rejected. See TUYA_OSD_T for the bitmap
+ *  formats each backend takes. */
+OPERATE_RET tkl_uvc_set_osd(TUYA_CAMERA_FRAME_CHANNEL_E channel, CONST TUYA_OSD_T *osd);
 
 /**
  * @brief Read the USB/UVC enumeration snapshot before tkl_uvc_init().
@@ -112,18 +140,39 @@ OPERATE_RET tkl_uvc_set_osd(TUYA_CAMERA_OUTPUT_TYPE_E type, CONST TUYA_OSD_T *os
  */
 OPERATE_RET tkl_uvc_get_info(TUYA_UVC_INFO_T *info);
 
-/** Pull one raw frame; requires cfg.frame.enable. Caller releases via the
- *  returned buf's free_cb - it returns both the frame and the buf struct. */
-OPERATE_RET tkl_uvc_get_frame(TUYA_MEDIA_BUF_T **out, UINT32_T timeout_ms);
+/** Pull one complete frame from a pull channel: ch0 (parked JPEG) or ch1
+ *  (decoded NV12). get_frame(ch1) always decodes one parked MJPEG on demand -
+ *  the decoder serves ch2/ch3 first and takes this job in between (see the
+ *  topology note). A channel configured with cb is push-only and rejects
+ *  get_frame(). The adapter allocates the returned buffer; release both frame
+ *  and struct via buf->free_cb(buf). */
+OPERATE_RET tkl_uvc_get_frame(TUYA_CAMERA_FRAME_CHANNEL_E channel, TUYA_MEDIA_BUF_T **out, UINT32_T timeout_ms);
 
 /**
- * @brief Adjust the encoder bitrate while streaming.
- * @note STREAM output (MJPEG source, internal transcoder) must be configured
- *       and running; otherwise OPRT_RESOURCE_NOT_READY.
+ * @brief Resume one configured channel's output after cancel_channel().
+ *
+ * Rebuilds from the init-time configuration. Idempotent when the channel is
+ * already running. ch2/ch3 re-claim the shared GPU / encoder and fail with
+ * OPRT_RESOURCE_NOT_READY when the other peripheral holds the hardware.
  */
+OPERATE_RET tkl_uvc_resume_channel(TUYA_CAMERA_FRAME_CHANNEL_E channel);
+
+/**
+ * @brief Cancel one configured channel's output while the camera keeps
+ *        running.
+ *
+ * ch1: delivery detaches (FRAME-sink mode parks the decode task; pull mode
+ * only gates get_frame()). ch2: the GPU pipeline is torn
+ * down and ch3 keeps streaming. ch3: the encoder is torn down and ch2 keeps
+ * displaying. ch0 is rejected (it is the parking pool itself). Idempotent.
+ * Deinit/stop cancel everything anyway.
+ */
+OPERATE_RET tkl_uvc_cancel_channel(TUYA_CAMERA_FRAME_CHANNEL_E channel);
+
+/** Adjust the encoder bitrate (ch3); requires ch3 configured and streaming. */
 OPERATE_RET tkl_uvc_set_bitrate(UINT32_T bitrate);
 
-/** Force an IDR frame; requires STREAM (MJPEG source) to be running. */
+/** Force an IDR frame; requires ch3 running. */
 OPERATE_RET tkl_uvc_force_idr(VOID_T);
 
 #ifdef __cplusplus

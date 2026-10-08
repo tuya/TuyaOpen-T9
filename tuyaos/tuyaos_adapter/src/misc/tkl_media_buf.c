@@ -257,3 +257,77 @@ VOID_T tkl_media_buf_dump(VOID_T)
 
     tkl_log_output("tkl_media_buf: total inflight=%u\r\n", (unsigned int)total);
 }
+
+/* ---------------------------------------------------------------------------
+ * Media hardware arbitration
+ * ------------------------------------------------------------------------- */
+
+/** Current holder per hardware instance, one of TUYA_MEDIA_HW_CLAIMANT_E. */
+STATIC volatile UINT8_T s_hw_holder[TUYA_MEDIA_HW_MAX];
+
+STATIC CONST CHAR_T *CONST s_hw_name[TUYA_MEDIA_HW_MAX] = {"gpu", "vpu_enc"};
+STATIC CONST CHAR_T *CONST s_hw_claimant_name[TUYA_MEDIA_HW_CLAIM_MAX] = {"none", "csi", "uvc"};
+
+OPERATE_RET tkl_media_hw_claim(TUYA_MEDIA_HW_E hw, TUYA_MEDIA_HW_CLAIMANT_E who)
+{
+    UINT32_T flags;
+    UINT8_T holder;
+
+    if (hw >= TUYA_MEDIA_HW_MAX ||
+        who <= TUYA_MEDIA_HW_CLAIM_NONE || who >= TUYA_MEDIA_HW_CLAIM_MAX) {
+        return OPRT_INVALID_PARM;
+    }
+
+    flags = rtos_disable_int();
+    holder = s_hw_holder[hw];
+    if (holder == TUYA_MEDIA_HW_CLAIM_NONE) {
+        s_hw_holder[hw] = (UINT8_T)who;
+    }
+    rtos_enable_int(flags);
+
+    if (holder == TUYA_MEDIA_HW_CLAIM_NONE || holder == (UINT8_T)who) {
+        return OPRT_OK;
+    }
+
+    tkl_log_output("tkl_media_hw: %s held by %s, %s claim refused\r\n",
+                   s_hw_name[hw], s_hw_claimant_name[holder], s_hw_claimant_name[who]);
+    return OPRT_RESOURCE_NOT_READY;
+}
+
+VOID_T tkl_media_hw_release(TUYA_MEDIA_HW_E hw, TUYA_MEDIA_HW_CLAIMANT_E who)
+{
+    UINT32_T flags;
+    UINT8_T holder;
+    BOOL_T released = FALSE;
+
+    if (hw >= TUYA_MEDIA_HW_MAX ||
+        who <= TUYA_MEDIA_HW_CLAIM_NONE || who >= TUYA_MEDIA_HW_CLAIM_MAX) {
+        return;
+    }
+
+    flags = rtos_disable_int();
+    holder = s_hw_holder[hw];
+    if (holder == (UINT8_T)who) {
+        s_hw_holder[hw] = TUYA_MEDIA_HW_CLAIM_NONE;
+        released = TRUE;
+    }
+    rtos_enable_int(flags);
+
+    if (released != TRUE) {
+        tkl_log_output("tkl_media_hw: release mismatch, %s held by %s (caller %s)\r\n",
+                       s_hw_name[hw], s_hw_claimant_name[holder], s_hw_claimant_name[who]);
+    }
+}
+
+UINT32_T tkl_media_bitrate_from_level(TUYA_ENCODE_BITRATE_LEVEL_E level)
+{
+    switch (level) {
+    case TUYA_ENCODE_BITRATE_LEVEL_LOW:
+        return 750000U;
+    case TUYA_ENCODE_BITRATE_LEVEL_HIGH:
+        return 3000000U;
+    case TUYA_ENCODE_BITRATE_LEVEL_MEDIUM:
+    default:
+        return 1500000U;
+    }
+}

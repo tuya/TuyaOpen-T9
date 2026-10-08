@@ -38,7 +38,16 @@ typedef struct {
     TUYA_GPIO_CTRL_T power_ctrl;
 } test_mipi_display_cfg_t;
 
-static test_mipi_display_cfg_t s_mipi_display_cfg;
+/* TUYA_GPIO_NUM_MAX is the "not wired" sentinel, and it has to be set here:
+ * zero-initialising would leave bl.pin == 0, which is a *real* pin, so
+ * backlight_set() would pass its range check and unmap whatever owns GPIO 0 -
+ * on this board that is P0, and the console died when 'xmipi dsi close' ran
+ * before any open had called test_mipi_runtime_reset(). */
+static test_mipi_display_cfg_t s_mipi_display_cfg = {
+    .bl.pin = TUYA_GPIO_NUM_MAX,
+    .reset.pin = TUYA_GPIO_NUM_MAX,
+    .power_ctrl.pin = TUYA_GPIO_NUM_MAX,
+};
 static TUYA_MIPI_BASE_CFG_T s_mipi_base_cfg;
 static tkl_mipi_dsi_flush_frame_t s_mipi_flush_frame;
 static TKL_THREAD_HANDLE s_mipi_task = NULL;
@@ -691,6 +700,15 @@ static OPERATE_RET test_mipi_lcd_close(void)
 {
     OPERATE_RET ret;
     OPERATE_RET stop_ret;
+
+    /* Nothing was opened, so there is nothing to close - and running the
+     * teardown anyway is actively harmful: backlight_set() would act on the
+     * not-yet-configured pin, and tkl_mipi_dsi_deinit() would tear down DPU
+     * state it never built. Idempotent by contract, so report success. */
+    if (s_mipi_lcd_opened != true) {
+        tkl_log_output("mipi close: not open, nothing to do\r\n");
+        return OPRT_OK;
+    }
 
     if (s_mipi_task_running == true || s_mipi_task != NULL) {
         stop_ret = test_mipi_task_stop();

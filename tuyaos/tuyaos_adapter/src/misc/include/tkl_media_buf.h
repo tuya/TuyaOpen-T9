@@ -24,6 +24,7 @@
 #define __TKL_MEDIA_BUF_H__
 
 #include "tuya_cloud_types.h"
+#include "tkl_media_types.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -167,6 +168,56 @@ OPERATE_RET tkl_media_buf_drain(TUYA_MEDIA_BUF_OWNER_E owner,
  * @brief Log every owner that still holds buffers. Leak-hunting aid.
  */
 VOID_T tkl_media_buf_dump(VOID_T);
+
+/* ---------------------------------------------------------------------------
+ * Media hardware arbitration
+ *
+ * GPU (display pipeline) and VPU encoder are single-instance on T9: only one
+ * peripheral may run a pipeline on each at a time. A peripheral claims before
+ * it opens its ch2/ch3 pipeline (open and resume), and releases on cancel,
+ * stop and deinit. The decoder needs no arbiter - its sessions coexist and
+ * the vendor hw_decoder_ctlr serializes decode jobs on the shared hardware.
+ * ------------------------------------------------------------------------- */
+
+/** Which media hardware instance. */
+typedef enum {
+    TUYA_MEDIA_HW_GPU = 0,      /**< display pipeline (every peripheral's ch2) */
+    TUYA_MEDIA_HW_VPU_ENC = 1,  /**< H264 encoder (every peripheral's ch3) */
+    TUYA_MEDIA_HW_MAX,
+} TUYA_MEDIA_HW_E;
+
+/** Who holds the hardware; appears in conflict logs. */
+typedef enum {
+    TUYA_MEDIA_HW_CLAIM_NONE = 0,
+    TUYA_MEDIA_HW_CLAIM_CSI  = 1,
+    TUYA_MEDIA_HW_CLAIM_UVC  = 2,
+    TUYA_MEDIA_HW_CLAIM_MAX,
+} TUYA_MEDIA_HW_CLAIMANT_E;
+
+/**
+ * @brief Take one media hardware instance for a claimant.
+ *
+ * Re-claim by the current holder succeeds (idempotent resume). A conflicting
+ * claim is refused with a log naming the holder.
+ *
+ * @return OPRT_OK, or OPRT_RESOURCE_NOT_READY when the other claimant holds it
+ */
+OPERATE_RET tkl_media_hw_claim(TUYA_MEDIA_HW_E hw, TUYA_MEDIA_HW_CLAIMANT_E who);
+
+/**
+ * @brief Give one media hardware instance back.
+ *
+ * Releasing while the other claimant holds it logs a mismatch and changes
+ * nothing.
+ */
+VOID_T tkl_media_hw_release(TUYA_MEDIA_HW_E hw, TUYA_MEDIA_HW_CLAIMANT_E who);
+
+/**
+ * @brief Bitrate (bps) for one TUYA_ENCODE_BITRATE_LEVEL_E on T9.
+ *
+ * LOW 0.75 / MEDIUM 1.5 / HIGH 3 Mbps; MAX or out-of-range yields MEDIUM.
+ */
+UINT32_T tkl_media_bitrate_from_level(TUYA_ENCODE_BITRATE_LEVEL_E level);
 
 #ifdef __cplusplus
 }

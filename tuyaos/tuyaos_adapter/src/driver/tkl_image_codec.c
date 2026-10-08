@@ -20,6 +20,7 @@
 #include "tkl_media_buf.h"
 #include "tkl_media_fmt.h"
 #include "tkl_pp.h"
+#include "tkl_hwjpeg_internal.h"
 #include "tkl_memory.h"
 #include "tkl_output.h"
 #include "tkl_semaphore.h"
@@ -195,6 +196,8 @@ OPERATE_RET tkl_image_codec_get_info(CONST TUYA_IMAGE_BUF_T *in, TUYA_IMAGE_INFO
 
 STATIC OPERATE_RET tkl_image_codec_scale_convert(CONST TUYA_IMAGE_CODEC_BUF_T *in,
                                            TUYA_IMAGE_CODEC_BUF_T *out);
+STATIC OPERATE_RET tkl_image_codec_decode_sw(CONST TUYA_IMAGE_CODEC_BUF_T *in,
+                                             TUYA_IMAGE_CODEC_BUF_T *out);
 
 /**
  * @brief One decode, straight into the caller's buffer.
@@ -215,6 +218,14 @@ STATIC OPERATE_RET tkl_image_codec_decode_one(CONST TUYA_IMAGE_CODEC_BUF_T *in, 
     UINT32_T need_size;
     UINT32_T bk_fmt;
     avdk_err_t ret;
+
+    /* The hardware JPEG decoder serves one session at a time, and a live UVC
+     * stream holds it for its whole session - so this decode has to run
+     * somewhere else. See tkl_hwjpeg_internal.h for why "wait and take turns"
+     * is not an option here. */
+    if (tkl_hwjpeg_acquire(0) != OPRT_OK) {
+        return tkl_image_codec_decode_sw(in, out);
+    }
 
     bk_fmt = tkl_media_fmt_to_bk(out->format);
     need_size = tkl_image_codec_need_size(out->format, out->width, out->height);
@@ -247,11 +258,42 @@ STATIC OPERATE_RET tkl_image_codec_decode_one(CONST TUYA_IMAGE_CODEC_BUF_T *in, 
 
     if (ret != AVDK_ERR_OK) {
         tkl_log_output("tkl_image: jpeg decode failed: %d\r\n", ret);
+        tkl_hwjpeg_release();
         return tkl_image_codec_map_err(ret);
     }
 
     out->length = need_size;
+    tkl_hwjpeg_release();
     return OPRT_OK;
+}
+
+/**
+ * @brief Software JPEG decode - the fallback when the hardware decoder is busy.
+ *
+ * @note NOT IMPLEMENTED YET: this SDK ships no software JPEG decoder. Both APIs
+ *       that declare one - modules/jpeg_decode_sw.h (bk_jpeg_dec_sw_*) and
+ *       modules/libjpeg_dec.h (libjpeg_decode()) - have no implementation in
+ *       any of the 1240 static libraries this build links, and LVGL's bundled
+ *       tjpgd (the only source in the tree, lvgl_v9/src/libs/tjpgd/) is not
+ *       compiled into this configuration.
+ *
+ *       Until one of them is wired in here, a request that cannot have the
+ *       hardware fails cleanly instead. That is already the point: taking the
+ *       hardware away from a running stream does not fail cleanly, it kills
+ *       both (board-verified 2026-10-08).
+ *
+ * @return OPRT_NOT_SUPPORTED until a software decoder is wired in
+ */
+STATIC OPERATE_RET tkl_image_codec_decode_sw(CONST TUYA_IMAGE_CODEC_BUF_T *in,
+                                             TUYA_IMAGE_CODEC_BUF_T *out)
+{
+    (void)in;
+    (void)out;
+
+    tkl_log_output("tkl_image: hardware JPEG decoder is held by a running "
+                   "stream, and this build has no software decoder to fall "
+                   "back on\r\n");
+    return OPRT_NOT_SUPPORTED;
 }
 
 /**
