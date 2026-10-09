@@ -12,7 +12,6 @@ from tools.util import (
 )
 
 
-TUYA_CDN = "https://images.tuyacn.com/smart/embed/package/tuyaopen"
 ARM_BLOB = "https://armkeil.blob.core.windows.net/developer/Files/downloads/gnu/{rel}/binrel"
 
 LAST_PROGRESS = 0
@@ -31,10 +30,6 @@ def _arm_url(rel, name):
     return f"{ARM_BLOB.format(rel=rel)}/{name}"
 
 
-def _cdn_url(name):
-    return f"{TUYA_CDN}/{name}"
-
-
 def get_toolchain_package_info():
     country_code = get_country_code()
     host_key = _host_key()
@@ -44,6 +39,7 @@ def get_toolchain_package_info():
         "linux_x86_64": {
             "rel": "14.3.rel1",
             "name": "arm-gnu-toolchain-14.3.rel1-x86_64-arm-none-eabi.tar.xz",
+            "url_cn": "https://images.tuyacn.com/rms-static/a0799090-c2fa-11f1-9a8d-736398ab592b-1791451711513.tar.xz?tyName=arm-gnu-toolchain-14.3.rel1-x86_64-arm-none-eabi.tar.xz",
             "size": 149789432,
             "sha256": "8f6903f8ceb084d9227b9ef991490413014d991874a1e34074443c2a72b14dbd",
             "folder": "arm-gnu-toolchain-14.3.rel1-x86_64-arm-none-eabi",
@@ -51,28 +47,32 @@ def get_toolchain_package_info():
         "linux_aarch64": {
             "rel": "14.3.rel1",
             "name": "arm-gnu-toolchain-14.3.rel1-aarch64-arm-none-eabi.tar.xz",
+            "url_cn": "https://images.tuyacn.com/rms-static/a07bb370-c2fa-11f1-82af-d1f3191773d6-1791451711527.tar.xz?tyName=arm-gnu-toolchain-14.3.rel1-aarch64-arm-none-eabi.tar.xz",
             "size": 148423580,
             "sha256": "2d465847eb1d05f876270494f51034de9ace9abe87a4222d079f3360240184d3",
             "folder": "arm-gnu-toolchain-14.3.rel1-aarch64-arm-none-eabi",
         },
-        # 14.3 dropped darwin-x86_64; keep 14.2 for Intel Mac.
+        # 14.3 dropped darwin-x86_64; keep 14.2 for both darwin hosts.
         "darwin_x86_64": {
             "rel": "14.2.rel1",
             "name": "arm-gnu-toolchain-14.2.rel1-darwin-x86_64-arm-none-eabi.tar.xz",
+            "url_cn": "https://images.tuyacn.com/smart/embed/package/tuyaopen/arm-gnu-toolchain-14.2.rel1-darwin-x86_64-arm-none-eabi.tar.xz",
             "size": 145118692,
             "sha256": "2d9e717dd4f7751d18936ae1365d25916534105ebcb7583039eff1092b824505",
             "folder": "arm-gnu-toolchain-14.2.rel1-darwin-x86_64-arm-none-eabi",
         },
         "darwin_arm64": {
-            "rel": "14.3.rel1",
-            "name": "arm-gnu-toolchain-14.3.rel1-darwin-arm64-arm-none-eabi.tar.xz",
-            "size": 137816224,
-            "sha256": "30f4d08b219190a37cded6aa796f4549504902c53cfc3c7e044a8490b6eba1f7",
-            "folder": "arm-gnu-toolchain-14.3.rel1-darwin-arm64-arm-none-eabi",
+            "rel": "14.2.rel1",
+            "name": "arm-gnu-toolchain-14.2.rel1-darwin-arm64-arm-none-eabi.tar.xz",
+            "url_cn": "https://images.tuyacn.com/smart/embed/package/tuyaopen/arm-gnu-toolchain-14.2.rel1-darwin-arm64-arm-none-eabi.tar.xz",
+            "size": 134812148,
+            "sha256": "c7c78ffab9bebfce91d99d3c24da6bf4b81c01e16cf551eb2ff9f25b9e0a3818",
+            "folder": "arm-gnu-toolchain-14.2.rel1-darwin-arm64-arm-none-eabi",
         },
         "windows": {
             "rel": "14.3.rel1",
             "name": "arm-gnu-toolchain-14.3.rel1-mingw-w64-i686-arm-none-eabi.zip",
+            "url_cn": "https://images.tuyacn.com/rms-static/a07b3e40-c2fa-11f1-9a8d-736398ab592b-1791451711524.zip?tyName=arm-gnu-toolchain-14.3.rel1-mingw-w64-i686-arm-none-eabi.zip",
             "size": 291670457,
             "sha256": "836ebe51fd71b6542dd7884c8fb2011192464b16c28e4b38fddc9350daba5ee8",
             "folder": "arm-gnu-toolchain-14.3.rel1-mingw-w64-i686-arm-none-eabi",
@@ -91,7 +91,7 @@ def get_toolchain_package_info():
     name = package_info["name"]
     arm_url = _arm_url(package_info["rel"], name)
     if country_code == "China":
-        package_info["url"] = _cdn_url(name)
+        package_info["url"] = package_info["url_cn"]
         package_info["fallback_url"] = arm_url
     else:
         package_info["url"] = arm_url

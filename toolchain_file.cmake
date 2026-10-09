@@ -8,7 +8,7 @@ endif()
 set(TOOLCHAIN_DIR "${PLATFORM_PATH}/../tools/arm-gnu-toolchain-14.3.rel1-x86_64-arm-none-eabi")
 IF(APPLE)
     IF(OPEN_SYSTEM_PROCESSOR MATCHES "arm64")
-        set(TOOLCHAIN_DIR "${PLATFORM_PATH}/../tools/arm-gnu-toolchain-14.3.rel1-darwin-arm64-arm-none-eabi")
+        set(TOOLCHAIN_DIR "${PLATFORM_PATH}/../tools/arm-gnu-toolchain-14.2.rel1-darwin-arm64-arm-none-eabi")
         # solve gcc error: unrecognized command-line option '-arch'
         set(CMAKE_SYSTEM_NAME Linux)
         set(CMAKE_SYSTEM_PROCESSOR ARM)
