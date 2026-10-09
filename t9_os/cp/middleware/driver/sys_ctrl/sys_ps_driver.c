@@ -37,7 +37,14 @@ static uint32_t sys_drv_get_cpu_freq_flash_read_addr(void)
 		return s_sys_drv_cpu_freq_flash_read_addr;
 	}
 
+// Modified by TUYA Start
+#if CONFIG_EASY_FLASH
+	/* The Tuya product does not reserve an easyflash partition (CONFIG_EASY_FLASH=n),
+	 * so BK_PARTITION_EASYFLASH is not emitted into partitions_gen.h. Leave partition
+	 * NULL in that case: the caller falls back to SYS_DRV_CPU_FREQ_FLASH_READ_FALLBACK_ADDR. */
 	partition = bk_flash_partition_get_info(BK_PARTITION_EASYFLASH);
+#endif
+// Modified by TUYA End
 	if ((partition == NULL) ||
 		(partition->partition_length < SYS_DRV_CPU_FREQ_FLASH_READ_SIZE)) {
 		return SYS_DRV_CPU_FREQ_FLASH_READ_FALLBACK_ADDR;

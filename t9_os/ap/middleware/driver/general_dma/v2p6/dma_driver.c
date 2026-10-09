@@ -1250,7 +1250,10 @@ static void dma_isr_common(dma_unit_t dma_unit_id)
     uint32_t channel = 0;
     for (int id = 0; id < SOC_DMA_CHAN_NUM_PER_UNIT; id++) {
         channel = id + dma_unit_id * SOC_DMA_CHAN_NUM_PER_UNIT;
-
+//Modify by Tuya Start
+        extern void tkl_dma_isr_common(dma_unit_t dma_unit_id, uint32_t id);
+        tkl_dma_isr_common(dma_unit_id, id);
+//Modify by Tuya End
         if (dma_hal_is_half_finish_interrupt_triggered(hal, id)) {
             DMA_LOGV("dma_isr HALF FINISH TRIGGERED! id: %d\r\n", id);
             //NOTES:clear intrrupt in condition because maybe multi-core(two CPU) access one DMA

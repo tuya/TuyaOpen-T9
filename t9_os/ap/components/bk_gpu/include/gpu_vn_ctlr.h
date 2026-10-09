@@ -106,6 +106,15 @@ typedef struct {
     float scale_y;                            /* output_height / input_height */
 
     uint8_t draw_enable;
+
+// Modified by TUYA Start
+    /** When true, line-block drawing uses bbox + vg_lite_clear borders (Flexa-safe). When false, VG stroke path + vg_lite_draw. */
+    uint8_t draw_flexa_overlay;
+    int16_t draw_xmin;
+    int16_t draw_ymin;
+    int16_t draw_xmax;
+    int16_t draw_ymax;
+// Modified by TUYA End
     vg_lite_path_t draw_path;
     vg_lite_matrix_t draw_matrix;
     beken_mutex_t draw_mutex;

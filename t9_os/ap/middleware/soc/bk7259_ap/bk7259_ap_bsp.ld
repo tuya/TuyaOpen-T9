@@ -101,6 +101,19 @@ SECTIONS
         *(.fix.reset_entry)
     } > FLASH
 
+// Modified by TUYA Start
+    /*
+     * Tuya UA/UG tooling (get_map_section / split_point): virtual address of AP
+     * "business" flash start. When no separate .ty_text_section is used, align
+     * with the vector table base (split delta 0 vs ap_start).
+     */
+#if (CONFIG_SOC_SMP)
+    PROVIDE(_ty_section_start = __vector_core0_table);
+#else
+    PROVIDE(_ty_section_start = __vector_table);
+#endif
+// Modified by TUYA End
+
     .gnu.sgstubs ALIGN(32) : ALIGN(32)
     {
         *(.gnu.sgstubs*)

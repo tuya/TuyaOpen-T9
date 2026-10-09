@@ -146,8 +146,12 @@ static void i2s_init_gpio(i2s_gpio_group_id_t id)
 #endif
 }
 
+static uint8_t is_bk_i2s_driver_init = 0;
 bk_err_t bk_i2s_driver_init(void)
 {
+	if (is_bk_i2s_driver_init) {
+		return BK_OK;
+	}
 	bk_pm_module_vote_power_ctrl(PM_POWER_SUB_MODULE_NAME_AUDP_I2S, PM_POWER_MODULE_STATE_ON);
 	sys_drv_i2s_select_clock(1); //APLL
 	bk_pm_clock_ctrl(PM_CLK_ID_I2S1, CLK_PWR_CTRL_PWR_UP);
@@ -225,6 +229,7 @@ bk_err_t bk_i2s_driver_deinit(void)
 
 	bk_int_isr_unregister(int_config_table.int_src);
 
+	is_bk_i2s_driver_init = 0;
 	return BK_OK;
 }
 

@@ -43,6 +43,11 @@ else
 	export APP_VERSION := $(APP_VERSION)
 endif
 
+# Modified by Tuya Start
+# So CMake/ninja (tuya_link_sdk_libs.cmake) can resolve lib$(APP_NAME).a when linking app.elf.
+export APP_NAME
+# Modified by Tuya End
+
 ifeq ("$(PROJECT)", "")
 	export PROJECT := app
 else
@@ -137,9 +142,9 @@ ifdef BK_JENKINS_ID
     BK_JENKINS_JOBS ?= 2
     MAKEFLAGS += -j$(BK_JENKINS_JOBS)
 endif
-
+# Modified by TUYA
 ifndef PRINT_SUMMARY
-	PRINT_SUMMARY := 1
+	PRINT_SUMMARY := 0
 endif
 
 .PHONY: all_targets
@@ -352,7 +357,17 @@ $(ARMINO_SOC)_ap_menuconfig: common
 
 $(ARMINO_SOC)_cp_menuconfig: common
 	@make menuconfig ARMINO_TOOLS_PATH=$(ARMINO_TOOLS_PATH) PROJECT_DIR=$(PROJECT_DIR) BUILD_DIR=$(PROJECT_BUILD_DIR) APP_NAME=$(APP_NAME) APP_VERSION=$(APP_VERSION) MENUCONFIG_DEST_TYPE=cp SOC_NAME=$(ARMINO_SOC) -C $(ARMINO_CP_DIR)
+# Modified by TUYA Start
 clean:
+	@echo "save sdkconfig.h"
+	@mkdir -p .tmp_build/bk7259/tuya_app/bk7259/armino_as_lib/bk7259/config/
+	@mkdir -p .tmp_build/bk7259/tuya_app/bk7259/config/
+	@mkdir -p .tmp_build/bk7259/tuya_app/bk7259_ap/armino_as_lib/bk7259_ap/config/
+	@mkdir -p .tmp_build/bk7259/tuya_app/bk7259_ap/config/
+	@test ! -f build/bk7259/tuya_app/bk7259/armino_as_lib/bk7259/config/sdkconfig.h || cp build/bk7259/tuya_app/bk7259/armino_as_lib/bk7259/config/sdkconfig.h       .tmp_build/bk7259/tuya_app/bk7259/armino_as_lib/bk7259/config/
+	@test ! -f build/bk7259/tuya_app/bk7259/config/sdkconfig.h || cp build/bk7259/tuya_app/bk7259/config/sdkconfig.h                                                    .tmp_build/bk7259/tuya_app/bk7259/config/
+	@test ! -f build/bk7259/tuya_app/bk7259_ap/armino_as_lib/bk7259_ap/config/sdkconfig.h || cp build/bk7259/tuya_app/bk7259_ap/armino_as_lib/bk7259_ap/config/sdkconfig.h .tmp_build/bk7259/tuya_app/bk7259_ap/armino_as_lib/bk7259_ap/config/
+	@test ! -f build/bk7259/tuya_app/bk7259_ap/config/sdkconfig.h || cp build/bk7259/tuya_app/bk7259_ap/config/sdkconfig.h                                              .tmp_build/bk7259/tuya_app/bk7259_ap/config/
 	@echo "clean docs"
 	@$(RUN_PYTHON3) ./tools/armino_doc.py --clean True
 	@ARMINO_DIR=$(ARMINO_AP_DIR) ARMINO_PATH=$(ARMINO_AP_DIR) $(RUN_PYTHON3) $(ARMINO_TOOLS_PATH)/build_tools/armino_doc.py clean
@@ -369,4 +384,10 @@ else
 		MAKEFLAGS= $(MAKE) -C $(NORMAL_BOOTLOADER_DIR) SOC_TYPE=$(ARMINO_SOC) clean; \
 	fi
 endif
+	@mv .tmp_build build
 
+distclean: clean
+	@echo "delete python env & __pycache__"
+	@rm -rf projects/tuya_app/tuya_build_env
+	@find . -type d -name "__pycache__" -print0 | xargs -0 rm -rf 2>/dev/null
+# Modified by TUYA End

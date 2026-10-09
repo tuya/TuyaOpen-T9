@@ -420,6 +420,12 @@ int usbh_enumerate(struct usbh_hubport *hport)
                  ((struct usb_device_descriptor *)ep0_request_buffer[hport->bus->busid])->idProduct,
                  ((struct usb_device_descriptor *)ep0_request_buffer[hport->bus->busid])->bcdDevice);
 
+    // Modified by TUYA Start
+    extern void tkl_mftest_usb_info(uint32_t vid, uint32_t pid);
+    tkl_mftest_usb_info(((struct usb_device_descriptor *)ep0_request_buffer[hport->bus->busid])->idVendor,
+            ((struct usb_device_descriptor *)ep0_request_buffer[hport->bus->busid])->idProduct);
+    // Modified by TUYA End
+
     USB_LOG_INFO("The device has %d bNumConfigurations\r\n", ((struct usb_device_descriptor *)ep0_request_buffer[hport->bus->busid])->bNumConfigurations);
 
     config_index = usbh_get_hport_active_config_index(hport);

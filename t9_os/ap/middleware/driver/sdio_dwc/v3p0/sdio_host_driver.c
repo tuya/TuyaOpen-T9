@@ -812,11 +812,27 @@ bk_err_t adma2_receive_data (uintptr_t addr,uint32 SYS_ADDR,uint16 BLOCK_SIZE,ui
  *   1 -> SDIO1 group: GPIO14~23
  * Replaces the former compile-time SDIO0/SDIO1 selection so both BK7259
  * controllers can be brought up at runtime. */
+// Modified by TUYA Start
+/* Board pinmux: OEM leaves this empty and expects usr_gpio_cfg.h.
+ * Product keeps weak hooks so tuyaos_adapter usr_sdio.c can map pins
+ * at runtime (tuya_app does not put SDIO funcs in usr_gpio_cfg). */
+extern void user_sdio_gpio_init(void) __attribute__((weak));
+extern void user_sdio_set_width(uint8_t width_sel) __attribute__((weak));
+
 void sdio_gpio_init(uint8_t io_pos, sdio_wire_width_sel_t width_sel)
 {
+	if (user_sdio_gpio_init) {
+		if (user_sdio_set_width) {
+			user_sdio_set_width((uint8_t)width_sel);
+		}
+		user_sdio_gpio_init();
+		return;
+	}
+
 	(void)io_pos;
 	(void)width_sel;
 }
+// Modified by TUYA End
 
 void tuning_cfg(uintptr_t addr,uint8 tuning_rx_sel0, uint8 sample_rx_sel0,uint8 tuning_tx_sel0,uint8 sample_tx_sel0,uint8 clk_drv_inv_sel)
 {
@@ -874,17 +890,30 @@ bk_err_t mshc_host_init(uintptr_t addr,uint16 sysclk_div,uint16 sdclk_div,uint8 
 
 void sdio_reset(void)
 {
-	SDIOD_LOGI("func %s .\r\n", __func__);
+// Modified by TUYA Start
+	uintptr_t addr = SDIO_ACTIVE_BASE;
+	int i;
 
-	SW_RST_R(SDIO_ACTIVE_BASE)=0xff;
-	CLK_CTRL_R(SDIO_ACTIVE_BASE) = 0;
-	HOST_CTRL2_R(SDIO_ACTIVE_BASE) = 0;
-	PWR_CTRL_R(SDIO_ACTIVE_BASE) = 0;
-	sdio_reg2(SDIO_ACTIVE_BASE)= 0<<0;
-	sdio_reg2(SDIO_ACTIVE_BASE)= 3<<0;
-	card_clk_stop(SDIO_ACTIVE_BASE);
-	/* Enable the clock of whichever controller the generic API selected at
-	 * runtime (s_active_id), consistent with sdio_gpio_init() below. */
+	NORMAL_INT_SIGNAL_EN_R(addr) = 0;
+	ERROR_INT_SIGNAL_EN_R(addr) = 0;
+
+	/* SW_RST_ALL is self-clearing and needs SD_CLK to complete. Gate the
+	 * clock only after the bit clears, otherwise later MMIO can stall. */
+	SW_RST_R(addr) = SW_RST_ALL;
+	for (i = 0; i < MAX_WAIT_STATE_TRANS_TIMES; i++) {
+		if ((SW_RST_R(addr) & SW_RST_ALL) == 0)
+			break;
+		rtos_delay_milliseconds(1);
+	}
+	if (SW_RST_R(addr) & SW_RST_ALL) {
+		SDIOD_LOGE("sdio_reset: SW_RST_ALL did not clear, skip further MMIO\r\n");
+		return;
+	}
+
+	PWR_CTRL_R(addr) = 0;
+	card_clk_stop(addr);
+// Modified by TUYA End
+
 	if (s_active_id == SDIO_HOST_ID_1) {
 		sys_hal_sdio1_set_cken(0);
 		sys_hal_sdio1_set_cken(1);
@@ -1506,11 +1535,12 @@ bk_err_t bk_sdio_host_deinit(sdio_host_id_t id)
 	sdio_host_select(id);
 	NORMAL_INT_SIGNAL_EN_R(s_active_base) = 0;
 	ERROR_INT_SIGNAL_EN_R(s_active_base) = 0;
-	__DSB();
-	sdio_reset();
+// Modified by TUYA Start
 	NORMAL_INT_STAT_R(s_active_base) = 0xffff;
 	ERROR_INT_STAT_R(s_active_base) = 0xffff;
 	__DSB();
+	sdio_reset();
+// Modified by TUYA End
 	sdio_host_drain_completion_semas();
 	s_host_inst[id].initialized = false;
 	sdio_host_unlock();

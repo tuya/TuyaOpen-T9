@@ -456,7 +456,7 @@ CONFIG_DEMOS_IPERF=y
 #
 # Easy_flash
 #
-CONFIG_EASY_FLASH=y
+# CONFIG_EASY_FLASH is not set
 # end of Easy_flash
 
 #

@@ -30,16 +30,39 @@
 #include "sd_card_driver.h"
 #include "gpio_driver.h"
 
-/* Which physical SDIO host controller the SD card is wired to. The single
- * source of truth is CONFIG_SDCARD_HOST_ID (0 = SDIO0, 1 = SDIO1), an int
- * Kconfig that always has a value when SDCARD is enabled. The selection is
- * applied at runtime by passing SDCARD_HOST_ID to the generic bk_sdio_host_*()
- * API. */
+// Modified by TUYA Start
+/* Which physical SDIO host controller the SD card is wired to.
+ *
+ * Board-driven selection (matches the legacy usr_sdio design): the active pin
+ * group configured in the Tuya adapter (usr_sdio.c) is the single source of
+ * truth, exposed via sdio_board_use_sdio1() which derives 0/1 from that pin
+ * group. usr_sdio.c provides the STRONG (pin-derived) override; the weak default
+ * below only applies when usr_sdio is not linked, in which case it falls back to
+ * the compile-time CONFIG_SDCARD_HOST_ID.
+ *
+ * SDCARD_HOST_ID is therefore a RUNTIME expression (a function call), not a
+ * compile-time constant macro — it must never be used to initialize a file-scope
+ * static (C requires constant initializers). All uses here are inside functions. */
+uint8_t __attribute__((weak)) sdio_board_use_sdio1(void)
+{
 #if defined(CONFIG_SDCARD_HOST_ID)
-#define SDCARD_HOST_ID   ((sdio_host_id_t)CONFIG_SDCARD_HOST_ID)
+	return (CONFIG_SDCARD_HOST_ID == 1) ? 1 : 0;
 #else
-#define SDCARD_HOST_ID   SDIO_HOST_ID_0
+	return 0;
 #endif
+}
+#define SDCARD_HOST_ID   (sdio_board_use_sdio1() ? SDIO_HOST_ID_1 : SDIO_HOST_ID_0)
+
+uint8_t __attribute__((weak)) sdio_board_bus_width(void)
+{
+#if defined(CONFIG_SDCARD_BUSWIDTH_4LINE) && CONFIG_SDCARD_BUSWIDTH_4LINE
+	return 4;
+#else
+	return 1;
+#endif
+}
+
+// Modified by TUYA End
 
 /* Board card-detect predicate registered via bk_sd_card_set_present_cb() (see
  * sd_card.h). NULL means no board hook: presence is treated as "unknown" and the
@@ -79,50 +102,74 @@ static bool s_sd_card_is_init = false;
 static sd_card_obj_t s_sd_card_obj = {0};
 static uint32_t sdio_rca = 0xAAAA0000;
 
-#if CONFIG_SDCARD_BUSWIDTH_4LINE && CONFIG_USR_GPIO_CFG_EN
+// Modified by TUYA Start
+extern bk_err_t user_sdio_force_data3_high(void) __attribute__((weak));
+extern bk_err_t user_sdio_restore_data3(void) __attribute__((weak));
+// Modified by TUYA End
+
+// Modified by TUYA Start
+#if CONFIG_USR_GPIO_CFG_EN
 static gpio_dev_t sd_card_data3_func(sdio_host_id_t host_id)
 {
 	return (host_id == SDIO_HOST_ID_1) ?
 		GPIO_DEV_SDIO1_HOST_DATA3 : GPIO_DEV_SDIO_HOST_DATA3;
 }
-
-/* SD cards sample CD/DAT3 (CS) when CMD0 is received. Some boards wire an
- * on-board SD-NAND to the 4-bit bus and rely on the host DAT3 pad to idle high;
- * on BK7259 this is not always strong enough during 1-bit identification. Keep
- * the project pinmux table standard (DATA3 is configured as SDIO in
- * usr_gpio_cfg.h), but temporarily detach that pad and drive it high until the
- * card is enumerated. The pad is restored to SDIO DATA3 before ACMD6 switches
- * the card to 4-bit mode. */
+#endif
+// Modified by TUYA End
 static bk_err_t sd_card_force_data3_high(sdio_host_id_t host_id,
 					 gpio_dev_t *data3_func)
 {
-	gpio_dev_t func = sd_card_data3_func(host_id);
-	gpio_id_t gpio_id = gpio_get_id_by_func(func);
-	bk_err_t ret;
+// Modified by TUYA Start
+	*data3_func = GPIO_DEV_INVALID;
 
-	*data3_func = func;
+	if (user_sdio_force_data3_high)
+		return user_sdio_force_data3_high();
 
-	if (gpio_id >= SOC_GPIO_NUM) {
-		SD_CARD_LOGE("DATA3 function %u is not configured in usr_gpio_cfg.h\r\n",
-			     (unsigned)func);
-		return BK_FAIL;
+#if CONFIG_USR_GPIO_CFG_EN
+	{
+		gpio_dev_t func = sd_card_data3_func(host_id);
+		gpio_id_t gpio_id = gpio_get_id_by_func(func);
+		bk_err_t ret;
+
+		*data3_func = func;
+
+		if (gpio_id >= SOC_GPIO_NUM) {
+			SD_CARD_LOGE("DATA3 function %u is not configured in usr_gpio_cfg.h\r\n",
+				     (unsigned)func);
+			return BK_FAIL;
+		}
+
+		ret = gpio_dev_unprotect_map(gpio_id, GPIO_DEV_GPIO_OUTPUT);
+		if (ret != BK_OK)
+			return ret;
+
+		return bk_gpio_set_output_high(gpio_id);
 	}
-
-	ret = gpio_dev_unprotect_map(gpio_id, GPIO_DEV_GPIO_OUTPUT);
-	if (ret != BK_OK)
-		return ret;
-
-	return bk_gpio_set_output_high(gpio_id);
+#else
+	(void)host_id;
+	SD_CARD_LOGE("no way to drive DATA3 high for 4-bit init\r\n");
+	return BK_FAIL;
+#endif
+// Modified by TUYA End
 }
 
 static bk_err_t sd_card_restore_data3_func(gpio_dev_t data3_func)
 {
+// Modified by TUYA Start
+	if (user_sdio_restore_data3)
+		return user_sdio_restore_data3();
+
+#if CONFIG_USR_GPIO_CFG_EN
 	if (data3_func == GPIO_DEV_INVALID)
 		return BK_OK;
 
 	return gpio_dev_map_by_func(data3_func);
-}
+#else
+	(void)data3_func;
+	return BK_OK;
 #endif
+// Modified by TUYA End
+}
 
 /* Convenience wrapper: issue a command on the SD card host controller. The
  * caller-visible response code is preserved in *resp (may be NULL). */
@@ -433,9 +480,12 @@ sd_card_state_t bk_sd_card_get_card_state(void)
 bk_err_t bk_sd_card_init(void)
 {
 	bk_err_t ret = BK_OK;
-#if CONFIG_SDCARD_BUSWIDTH_4LINE && CONFIG_USR_GPIO_CFG_EN
 	gpio_dev_t data3_func = GPIO_DEV_INVALID;
-#endif
+// Modified by TUYA Start
+	/* Resolved once here: the width must not change between the DATA3 window
+	 * and the ACMD6 switch below. */
+	uint8_t bus_width = sdio_board_bus_width();
+// Modified by TUYA End
 	sdio_host_cfg_t cfg = {
 		.is_emmc = false,
 		.init_clock_hz = 0,   /* host default identification clock */
@@ -447,51 +497,61 @@ bk_err_t bk_sd_card_init(void)
 		return BK_OK;
 	}
 
-#if CONFIG_SDCARD_BUSWIDTH_4LINE && CONFIG_USR_GPIO_CFG_EN
-	ret = sd_card_force_data3_high(SDCARD_HOST_ID, &data3_func);
-	if (ret)
-		return ret;
-#endif
+// Modified by TUYA Start
+	if (bus_width == 4) {
+		ret = sd_card_force_data3_high(SDCARD_HOST_ID, &data3_func);
+		if (ret)
+			return ret;
+	}
+// Modified by TUYA End
 
 	ret = bk_sdio_host_init(SDCARD_HOST_ID, &cfg);
 	if (ret) {
-#if CONFIG_SDCARD_BUSWIDTH_4LINE && CONFIG_USR_GPIO_CFG_EN
-		(void)sd_card_restore_data3_func(data3_func);
-#endif
+// Modified by TUYA Start
+		if (bus_width == 4)
+			(void)sd_card_restore_data3_func(data3_func);
+// Modified by TUYA End
 		return ret;
 	}
 
 	ret = sd_card_identify();
 	if (ret) {
-#if CONFIG_SDCARD_BUSWIDTH_4LINE && CONFIG_USR_GPIO_CFG_EN
-		(void)sd_card_restore_data3_func(data3_func);
-#endif
+// Modified by TUYA Start
+		if (bus_width == 4)
+			(void)sd_card_restore_data3_func(data3_func);
+// Modified by TUYA End
 		(void)bk_sdio_host_deinit(SDCARD_HOST_ID);
 		return ret;
 	}
 
-#if CONFIG_SDCARD_BUSWIDTH_4LINE && CONFIG_USR_GPIO_CFG_EN
-	ret = sd_card_restore_data3_func(data3_func);
-	if (ret) {
-		(void)bk_sdio_host_deinit(SDCARD_HOST_ID);
-		return ret;
+// Modified by TUYA Start
+	if (bus_width == 4) {
+		ret = sd_card_restore_data3_func(data3_func);
+		if (ret) {
+			(void)bk_sdio_host_deinit(SDCARD_HOST_ID);
+			return ret;
+		}
 	}
-#endif
+// Modified by TUYA End
 
 	rtos_delay_milliseconds(1);
 
-#if CONFIG_SDCARD_BUSWIDTH_4LINE
-	/* 4-bit bus (opt-in via Kconfig; default build stays 1-bit). The card is
-	 * now fully enumerated and latched in SD mode, and DATA3 has been restored
-	 * to its SDIO function. Switch the card (ACMD6 arg=2 => 4-bit) and match
-	 * the controller's DAT_XFER_WIDTH. */
-	sd_send(SD_CMD_APP_CMD, SDIO_HOST_RESP_R1, sdio_rca, NULL);    /* CMD55 */
-	rtos_delay_milliseconds(1);
-	sd_send(SD_CMD_APP_CMD6_SET_BUS_WIDTH, SDIO_HOST_RESP_R1, 2, NULL); /* ACMD6 arg=2 => 4-bit */
-	rtos_delay_milliseconds(1);
-	bk_sdio_host_set_bus_width(SDCARD_HOST_ID, SDIO_HOST_BUS_WIDTH_4);
-	rtos_delay_milliseconds(1);
-#endif
+// Modified by TUYA Start
+	if (bus_width == 4) {
+		/* The card is now fully enumerated and latched in SD mode, and DATA3
+		 * has been released from the identification window. Switch the card
+		 * (ACMD6 arg=2 => 4-bit) and match the controller's DAT_XFER_WIDTH.
+		 * bk_sdio_host_set_bus_width() also re-runs the pinmux, which is what
+		 * brings DATA1~DATA3 up as SDIO functions. */
+		sd_send(SD_CMD_APP_CMD, SDIO_HOST_RESP_R1, sdio_rca, NULL);    /* CMD55 */
+		rtos_delay_milliseconds(1);
+		sd_send(SD_CMD_APP_CMD6_SET_BUS_WIDTH, SDIO_HOST_RESP_R1, 2, NULL); /* ACMD6 arg=2 => 4-bit */
+		rtos_delay_milliseconds(1);
+		bk_sdio_host_set_bus_width(SDCARD_HOST_ID, SDIO_HOST_BUS_WIDTH_4);
+		rtos_delay_milliseconds(1);
+	}
+	SD_CARD_LOGI("sd bus width = %d bit\r\n", bus_width);
+// Modified by TUYA End
 
 	/* CMD16: set block length to 512. The legacy driver issued this with the
 	 * controller long-response code; preserve that exact behavior. */
@@ -531,9 +591,10 @@ bk_err_t bk_sd_card_init(void)
 
 bk_err_t bk_sd_card_deinit(void)
 {
-	bk_sdio_host_reset(SDCARD_HOST_ID);
+// Modified by TUYA Start
 	s_sd_card_is_init = false;
 	return bk_sdio_host_deinit(SDCARD_HOST_ID);
+// Modified by TUYA End
 }
 
 bk_err_t bk_sd_card_write_blocks(const uint8_t *data, uint32_t block_addr, uint32_t block_num)
