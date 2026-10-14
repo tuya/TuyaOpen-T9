@@ -55,7 +55,6 @@ get_country_code
 
 cd "$TOOLCHAIN_PATH"
 HOST_MACHINE=$(uname -m)
-TUYA_CDN="https://images.tuyacn.com/smart/embed/package/tuyaopen"
 ARM_BLOB_143="https://armkeil.blob.core.windows.net/developer/Files/downloads/gnu/14.3.rel1/binrel"
 ARM_BLOB_142="https://armkeil.blob.core.windows.net/developer/Files/downloads/gnu/14.2.rel1/binrel"
 
@@ -67,12 +66,14 @@ Linux*)
         TOOLCHAIN_NAME=$TOOLCHAIN_PATH/arm-gnu-toolchain-14.3.rel1-x86_64-arm-none-eabi
         TOOLCHAIN_SIZE=149789432
         TOOLCHAIN_SHA256=8f6903f8ceb084d9227b9ef991490413014d991874a1e34074443c2a72b14dbd
+        TOOLCHAIN_CN_URL="https://images.tuyacn.com/rms-static/a0799090-c2fa-11f1-9a8d-736398ab592b-1791451711513.tar.xz?tyName=arm-gnu-toolchain-14.3.rel1-x86_64-arm-none-eabi.tar.xz"
         ARM_URL=$ARM_BLOB_143/$TOOLCHAIN_FILE
     elif [ "$HOST_MACHINE" = "aarch64" ]; then
         TOOLCHAIN_FILE=arm-gnu-toolchain-14.3.rel1-aarch64-arm-none-eabi.tar.xz
         TOOLCHAIN_NAME=$TOOLCHAIN_PATH/arm-gnu-toolchain-14.3.rel1-aarch64-arm-none-eabi
         TOOLCHAIN_SIZE=148423580
         TOOLCHAIN_SHA256=2d465847eb1d05f876270494f51034de9ace9abe87a4222d079f3360240184d3
+        TOOLCHAIN_CN_URL="https://images.tuyacn.com/rms-static/a07bb370-c2fa-11f1-82af-d1f3191773d6-1791451711527.tar.xz?tyName=arm-gnu-toolchain-14.3.rel1-aarch64-arm-none-eabi.tar.xz"
         ARM_URL=$ARM_BLOB_143/$TOOLCHAIN_FILE
     else
         echo "Toolchain not support, Please download toolchain from https://developer.arm.com/downloads/-/gnu-a"
@@ -86,13 +87,15 @@ Darwin*)
         TOOLCHAIN_NAME=$TOOLCHAIN_PATH/arm-gnu-toolchain-14.2.rel1-darwin-x86_64-arm-none-eabi
         TOOLCHAIN_SIZE=145118692
         TOOLCHAIN_SHA256=2d9e717dd4f7751d18936ae1365d25916534105ebcb7583039eff1092b824505
+        TOOLCHAIN_CN_URL="https://images.tuyacn.com/smart/embed/package/tuyaopen/arm-gnu-toolchain-14.2.rel1-darwin-x86_64-arm-none-eabi.tar.xz"
         ARM_URL=$ARM_BLOB_142/$TOOLCHAIN_FILE
     elif [ "$HOST_MACHINE" = "arm64" ]; then
-        TOOLCHAIN_FILE=arm-gnu-toolchain-14.3.rel1-darwin-arm64-arm-none-eabi.tar.xz
-        TOOLCHAIN_NAME=$TOOLCHAIN_PATH/arm-gnu-toolchain-14.3.rel1-darwin-arm64-arm-none-eabi
-        TOOLCHAIN_SIZE=137816224
-        TOOLCHAIN_SHA256=30f4d08b219190a37cded6aa796f4549504902c53cfc3c7e044a8490b6eba1f7
-        ARM_URL=$ARM_BLOB_143/$TOOLCHAIN_FILE
+        TOOLCHAIN_FILE=arm-gnu-toolchain-14.2.rel1-darwin-arm64-arm-none-eabi.tar.xz
+        TOOLCHAIN_NAME=$TOOLCHAIN_PATH/arm-gnu-toolchain-14.2.rel1-darwin-arm64-arm-none-eabi
+        TOOLCHAIN_SIZE=134812148
+        TOOLCHAIN_SHA256=c7c78ffab9bebfce91d99d3c24da6bf4b81c01e16cf551eb2ff9f25b9e0a3818
+        TOOLCHAIN_CN_URL="https://images.tuyacn.com/smart/embed/package/tuyaopen/arm-gnu-toolchain-14.2.rel1-darwin-arm64-arm-none-eabi.tar.xz"
+        ARM_URL=$ARM_BLOB_142/$TOOLCHAIN_FILE
     else
         echo "Toolchain not support, Please download toolchain from https://developer.arm.com/downloads/-/gnu-a"
         exit 1
@@ -104,6 +107,7 @@ MINGW* | CYGWIN* | MSYS*)
     TOOLCHAIN_NAME=$TOOLCHAIN_PATH/arm-gnu-toolchain-14.3.rel1-mingw-w64-i686-arm-none-eabi
     TOOLCHAIN_SIZE=291670457
     TOOLCHAIN_SHA256=836ebe51fd71b6542dd7884c8fb2011192464b16c28e4b38fddc9350daba5ee8
+    TOOLCHAIN_CN_URL="https://images.tuyacn.com/rms-static/a07b3e40-c2fa-11f1-9a8d-736398ab592b-1791451711524.zip?tyName=arm-gnu-toolchain-14.3.rel1-mingw-w64-i686-arm-none-eabi.zip"
     ARM_URL=$ARM_BLOB_143/$TOOLCHAIN_FILE
     ;;
 *)
@@ -113,7 +117,7 @@ MINGW* | CYGWIN* | MSYS*)
 esac
 
 if [ x"$MIRROR" = x"1" ]; then
-    TOOLCHAIN_URL=$TUYA_CDN/$TOOLCHAIN_FILE
+    TOOLCHAIN_URL=$TOOLCHAIN_CN_URL
     TOOLCHAIN_FALLBACK_URL=$ARM_URL
 else
     TOOLCHAIN_URL=$ARM_URL

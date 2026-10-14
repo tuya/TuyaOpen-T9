@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # coding=utf-8
 
-import datetime
 import os
+import datetime
 import platform
 import shutil
 import hashlib
@@ -10,23 +10,26 @@ import tarfile
 import zipfile
 
 
-# Timezone fallback cache only. OPEN_COUNTRY_CODE is read on every get.
-COUNTRY_CODE = ""
+COUNTRY_CODE = ""  # "China" or other
 
 SYSTEM_NAME = ""
 
 
 def set_country_code():
     global COUNTRY_CODE
+    if len(COUNTRY_CODE):
+        return COUNTRY_CODE
+
+    COUNTRY_CODE = os.environ.get("OPEN_COUNTRY_CODE", "")
     if COUNTRY_CODE:
+        print(f"country code: {COUNTRY_CODE} (from SDK)")
         return COUNTRY_CODE
 
     try:
         offset = datetime.datetime.now().astimezone().utcoffset()
-        if offset is not None and int(offset.total_seconds()) == 8 * 3600:
-            COUNTRY_CODE = "China"
-        else:
-            COUNTRY_CODE = "Other"
+        china = offset is not None and int(offset.total_seconds()) == 8 * 3600
+        COUNTRY_CODE = "China" if china else "Other"
+        print(f"country code: {COUNTRY_CODE} (from timezone)")
     except Exception as e:
         print(f"country code error: {e}")
         COUNTRY_CODE = "Other"
@@ -35,9 +38,9 @@ def set_country_code():
 
 
 def get_country_code():
-    env = os.environ.get("OPEN_COUNTRY_CODE", "").strip()
-    if env:
-        return env
+    global COUNTRY_CODE
+    if len(COUNTRY_CODE):
+        return COUNTRY_CODE
     return set_country_code()
 
 

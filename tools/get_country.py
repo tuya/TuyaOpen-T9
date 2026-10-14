@@ -1,13 +1,23 @@
-#!/usr/bin/env python3
-# coding=utf-8
+import datetime
+import os
 
-"""Print 1 for China, 2 otherwise. Logic lives in util.get_country_code."""
+def get_country_code():
+    global MORROR
+    if MORROR == 0:
+        code = os.environ.get("OPEN_COUNTRY_CODE", "")
+        if code:
+            MORROR = 1 if code == "China" else 2
+        else:
+            try:
+                offset = datetime.datetime.now().astimezone().utcoffset()
+                seconds = offset.total_seconds() if offset is not None else 0
+                MORROR = 1 if int(seconds) == 8 * 3600 else 2
+            except Exception:
+                MORROR = 2
 
-try:
-    from tools.util import get_country_code
-except ImportError:
-    from util import get_country_code
+    print(MORROR)
 
 
 if __name__ == "__main__":
-    print(1 if get_country_code() == "China" else 2)
+    MORROR = 0
+    get_country_code()
