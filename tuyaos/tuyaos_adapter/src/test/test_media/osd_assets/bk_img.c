@@ -10,41 +10,9 @@
 *        2026-07-23 10:14:34                                         *
 **********************************************************************
 */
-#include "components/bk_draw_osd.h"
 #include "blend.h"   /* OSD_VIEW_W / OSD_VIEW_H：元素坐标空间，随 OSD_LAYOUT_ROTATED 切换 */
 
-#define WIFI_MARGIN            16
-#define WIFI_ICON_W            60
-#define WIFI_ICON_H            60
-/* Top-right corner */
-#define WIFI_X                 (OSD_VIEW_W - WIFI_ICON_W - WIFI_MARGIN) /* 竖屏 524 / 横屏 948 */
-#define WIFI_Y                 WIFI_MARGIN                              /* 16 */
-
-/* ================= wifi: RSSI icons (none/1/2/3/full) ================= */
-#define wifi_rssi_full_X   WIFI_X
-#define wifi_rssi_full_Y   WIFI_Y
-#define wifi_rssi_full_WIDTH   WIFI_ICON_W
-#define wifi_rssi_full_HEIGHT  WIFI_ICON_H
-
-#define wifi_rssi_none_X   WIFI_X
-#define wifi_rssi_none_Y   WIFI_Y
-#define wifi_rssi_none_WIDTH   WIFI_ICON_W
-#define wifi_rssi_none_HEIGHT  WIFI_ICON_H
-
-#define wifi_rssi_1_X   WIFI_X
-#define wifi_rssi_1_Y   WIFI_Y
-#define wifi_rssi_1_WIDTH   WIFI_ICON_W
-#define wifi_rssi_1_HEIGHT  WIFI_ICON_H
-
-#define wifi_rssi_3_X   WIFI_X
-#define wifi_rssi_3_Y   WIFI_Y
-#define wifi_rssi_3_WIDTH   WIFI_ICON_W
-#define wifi_rssi_3_HEIGHT  WIFI_ICON_H
-
-#define wifi_rssi_2_X   WIFI_X
-#define wifi_rssi_2_Y   WIFI_Y
-#define wifi_rssi_2_WIDTH   WIFI_ICON_W
-#define wifi_rssi_2_HEIGHT  WIFI_ICON_H
+/* icon geometry lives in blend.h so the element table can reach it too */
 
 const unsigned char wifi_rssi_full_argb8888[14400] __attribute__((aligned(64))) = {
   0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 
@@ -6060,89 +6028,3 @@ const unsigned char wifi_rssi_2_argb8888[14400] __attribute__((aligned(64))) = {
   0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 
   0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
 };
-
-
-GUI_CONST_STORAGE bk_blend_t wifi_rssi_full = 
-{
-  .version = 0,
-  .blend_type = BLEND_TYPE_IMAGE,
-  .name = "wifi",
-  .width = wifi_rssi_full_WIDTH,
-  .height = wifi_rssi_full_HEIGHT,
-  .xpos = wifi_rssi_full_X,
-  .ypos = wifi_rssi_full_Y,
-  .image = {
-    .format = ARGB8888,
-    .data_len = wifi_rssi_full_WIDTH * wifi_rssi_full_HEIGHT *  4,
-    .data = wifi_rssi_full_argb8888
-  },
-};
-
-
-GUI_CONST_STORAGE bk_blend_t wifi_rssi_none = 
-{
-  .version = 0,
-  .blend_type = BLEND_TYPE_IMAGE,
-  .name = "wifi",
-  .width = wifi_rssi_none_WIDTH,
-  .height = wifi_rssi_none_HEIGHT,
-  .xpos = wifi_rssi_none_X,
-  .ypos = wifi_rssi_none_Y,
-  .image = {
-    .format = ARGB8888,
-    .data_len = wifi_rssi_none_WIDTH * wifi_rssi_none_HEIGHT *  4,
-    .data = wifi_rssi_none_argb8888
-  },
-};
-
-
-GUI_CONST_STORAGE bk_blend_t wifi_rssi_1 = 
-{
-  .version = 0,
-  .blend_type = BLEND_TYPE_IMAGE,
-  .name = "wifi",
-  .width = wifi_rssi_1_WIDTH,
-  .height = wifi_rssi_1_HEIGHT,
-  .xpos = wifi_rssi_1_X,
-  .ypos = wifi_rssi_1_Y,
-  .image = {
-    .format = ARGB8888,
-    .data_len = wifi_rssi_1_WIDTH * wifi_rssi_1_HEIGHT *  4,
-    .data = wifi_rssi_1_argb8888
-  },
-};
-
-
-GUI_CONST_STORAGE bk_blend_t wifi_rssi_3 = 
-{
-  .version = 0,
-  .blend_type = BLEND_TYPE_IMAGE,
-  .name = "wifi",
-  .width = wifi_rssi_3_WIDTH,
-  .height = wifi_rssi_3_HEIGHT,
-  .xpos = wifi_rssi_3_X,
-  .ypos = wifi_rssi_3_Y,
-  .image = {
-    .format = ARGB8888,
-    .data_len = wifi_rssi_3_WIDTH * wifi_rssi_3_HEIGHT *  4,
-    .data = wifi_rssi_3_argb8888
-  },
-};
-
-
-GUI_CONST_STORAGE bk_blend_t wifi_rssi_2 = 
-{
-  .version = 0,
-  .blend_type = BLEND_TYPE_IMAGE,
-  .name = "wifi",
-  .width = wifi_rssi_2_WIDTH,
-  .height = wifi_rssi_2_HEIGHT,
-  .xpos = wifi_rssi_2_X,
-  .ypos = wifi_rssi_2_Y,
-  .image = {
-    .format = ARGB8888,
-    .data_len = wifi_rssi_2_WIDTH * wifi_rssi_2_HEIGHT *  4,
-    .data = wifi_rssi_2_argb8888
-  },
-};
-

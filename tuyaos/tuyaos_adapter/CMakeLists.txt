@@ -2,6 +2,7 @@ set(incs
     include
     src/test
     src/misc
+    src/misc/include
     src/misc/mf_test
     tuyaopen
     src/test/test_lvgl
@@ -45,9 +46,7 @@ set(incs
     $ENV{ARMINO_PATH}/../../tuyaos/tuyaos_adapter/include/mcu8080
     $ENV{ARMINO_PATH}/../../tuyaos/tuyaos_adapter/include/dvp
     $ENV{ARMINO_PATH}/../../tuyaos/tuyaos_adapter/include/dma2d
-    $ENV{ARMINO_PATH}/../../tuyaos/tuyaos_adapter/include/gpu
-    $ENV{ARMINO_PATH}/../../tuyaos/tuyaos_adapter/include/vcodec
-    $ENV{ARMINO_PATH}/../../tuyaos/tuyaos_adapter/include/jpeg_codec
+    $ENV{ARMINO_PATH}/../../tuyaos/tuyaos_adapter/include/uvc
     $ENV{ARMINO_PATH}/../../tuyaos/tuyaos_adapter/include/audio
     $ENV{ARMINO_PATH}/../../tuyaos/tuyaos_adapter/include/tal_mtd/include
     # $ENV{ARMINO_PATH}/../../tuyaos/tuyaos_adapter/include/asr
@@ -118,10 +117,7 @@ else()
         src/driver/tkl_timer.c
         src/driver/tkl_mipi_dsi.c
         src/driver/tkl_camera_mipi.c
-        src/driver/tkl_frame_buffer.c
-        src/driver/tkl_gpu.c
-        src/driver/tkl_venc.c
-        src/driver/tkl_vdec.c
+        src/driver/tkl_image.c
         src/driver/tkl_uvc.c
         # src/driver/tkl_i2s_v2.c
         src/driver/tkl_aud_dmic.c
@@ -142,6 +138,12 @@ else()
         # src/misc/sflash.c
         # src/misc/bk_adapter.c
         src/misc/tuya_dma.c
+        src/misc/tkl_media_buf.c
+        src/misc/tkl_osd_engine.c
+        src/misc/tkl_pp.c
+        src/misc/tkl_gpu.c
+        src/misc/tkl_venc.c
+        src/misc/tkl_vdec.c
         src/misc/tkl_mftest.c
         src/misc/mf_test/mt_mipi.c
         src/misc/mf_test/mt_adc.c
@@ -198,13 +200,15 @@ else()
             # src/test/test_usb.c
             # src/test/test_spi.c
             src/test/test_ringbuffer/rb.c
+            src/test/test_media/test_mipi_dsi.c
             src/test/test_media/test_mipi.c
-            src/test/test_media/test_gpu.c
             src/test/test_media/osd_assets/bk_font.c
             src/test/test_media/osd_assets/bk_img.c
             src/test/test_media/osd_assets/blend_dsc.c
-            src/test/test_media/test_venc.c
-            src/test/test_media/test_vdec.c
+            src/test/test_media/test_overlay.c
+            src/test/test_media/test_record.c
+            src/test/test_media/test_image.c
+            src/test/test_media/test_camera_mipi.c
             src/test/test_media/test_uvc.c
             src/test/test_media/test_adc.c
             src/test/test_media/test_dac.c
