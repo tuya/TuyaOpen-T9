@@ -405,7 +405,7 @@ static void *tkl_venc_outbuf_malloc(uint32_t outbuf_size, void *args)
          * not come from the ordinary heap, which is neither DMA-safe nor big
          * enough (see tkl_media_buf.h). */
         payload = tkl_media_buf_alloc(TKL_BUF_USE_STREAM, outbuf_size,
-                                      TKL_MEDIA_BUF_OWNER_VENC);
+                                      TUYA_MEDIA_BUF_OWNER_VENC);
     }
 
     return payload;
@@ -442,7 +442,7 @@ static VOID tkl_venc_release_outbuf(TUYA_VENC_CTX_T *ctx, VOID *payload)
     if (ctx->sink.free_cb != NULL) {
         (void)ctx->sink.free_cb(payload, ctx->sink.cb_arg);
     } else {
-        tkl_media_buf_free(TKL_MEDIA_BUF_OWNER_VENC, payload);
+        tkl_media_buf_free(TUYA_MEDIA_BUF_OWNER_VENC, payload);
     }
 }
 
@@ -683,7 +683,6 @@ static OPERATE_RET tkl_venc_osd_open(TUYA_VENC_CTX_T *ctx)
     tkl_system_memset(&osd_cfg, 0, sizeof(osd_cfg));
     osd_cfg.target_w = width;
     osd_cfg.target_h = height;
-    osd_cfg.rotate = 0U;                /* the encoder sees the un-rotated frame */
 
     return tkl_osd_engine_open(TKL_OSD_BACKEND_VCENC, ctx->backend.h264, &osd_cfg, &ctx->osd);
 }
@@ -1130,15 +1129,10 @@ OPERATE_RET tkl_venc_request_idr(TUYA_VENC_HANDLE handle)
 }
 
 /**
- * @brief Set one encode-path overlay slot
- * @param[in] handle encoder handle
- * @param[in] osd slot contents; count==0 or elems==NULL clears the slot
- * @return OPRT_OK on success, OPRT_NOT_SUPPORTED for JPEG / non-H264
- * @note Coordinates are in un-rotated encoded-frame space, unlike the display
- *       channel. Max 8 slots; regions must not share a 64x16 CTB.
- *       Takes effect from the next encoded frame.
+ * @brief Set or clear one encode-path pre-composed ARGB8888 overlay.
+ * @note Same coordinates update one backend slot; NULL data clears it.
  */
-OPERATE_RET tkl_venc_set_osd(TUYA_VENC_HANDLE handle, CONST TKL_OSD_T *osd)
+OPERATE_RET tkl_venc_set_osd(TUYA_VENC_HANDLE handle, CONST TUYA_OSD_T *osd)
 {
     TUYA_VENC_CTX_T *ctx = tkl_venc_ctx_get(handle);
 
@@ -1155,31 +1149,6 @@ OPERATE_RET tkl_venc_set_osd(TUYA_VENC_HANDLE handle, CONST TKL_OSD_T *osd)
     }
 
     return tkl_osd_engine_submit(ctx->osd, osd);
-}
-
-/**
- * @brief Report what the encode-path overlay can do
- * @param[in] handle encoder handle
- * @param[out] caps receives the capabilities
- * @return OPRT_OK on success, OPRT_NOT_SUPPORTED for JPEG / non-H264
- */
-OPERATE_RET tkl_venc_get_osd_caps(TUYA_VENC_HANDLE handle, TKL_OSD_CAPS_T *caps)
-{
-    TUYA_VENC_CTX_T *ctx = tkl_venc_ctx_get(handle);
-
-    if (ctx == NULL || caps == NULL) {
-        return OPRT_INVALID_PARM;
-    }
-
-    if (ctx->backend_type != TKL_VENC_BACKEND_H264 || ctx->backend.h264 == NULL) {
-        return OPRT_NOT_SUPPORTED;
-    }
-
-    if (ctx->osd == NULL) {
-        return OPRT_RESOURCE_NOT_READY;
-    }
-
-    return tkl_osd_engine_caps(ctx->osd, caps);
 }
 
 OPERATE_RET tkl_venc_get_handle(TUYA_VENC_HANDLE handle, VOID **backend_handle)

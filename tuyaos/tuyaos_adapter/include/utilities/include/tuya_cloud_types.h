@@ -1614,12 +1614,31 @@ typedef struct {
 
 typedef enum {
     TUYA_FRAME_FMT_UNKNOWN = 0,
-    TUYA_FRAME_FMT_YUV422,
-    TUYA_FRAME_FMT_YUV420,
-    TUYA_FRAME_FMT_RGB565,
-    TUYA_FRAME_FMT_RGB888,
-    TUYA_FRAME_FMT_JPEG,
-    TUYA_FRAME_FMT_H264,
+    TUYA_FRAME_FMT_YUYV = (1U << 0),           /**< YUYV format (LCD/JPEG decode support) */
+    TUYA_FRAME_FMT_VYUY = (1U << 1),           /**< VYUY format (JPEG decode support) */
+    TUYA_FRAME_FMT_UYVY = (1U << 2),           /**< UYVY format */
+    TUYA_FRAME_FMT_YYUV = (1U << 3),           /**< YYUV format (JPEG decode support) */
+    TUYA_FRAME_FMT_VUYY = (1U << 4),           /**< VUYY format (JPEG decode support) */
+    TUYA_FRAME_FMT_UVYY = (1U << 5),           /**< UVYY format */
+    TUYA_FRAME_FMT_YUV422 = (1U << 6),
+    TUYA_FRAME_FMT_YUV420 = (1U << 7),
+    TUYA_FRAME_FMT_RGB565 = (1U << 8),
+    TUYA_FRAME_FMT_RGB888 = (1U << 9),
+    TUYA_FRAME_FMT_JPEG = (1U << 10),
+    TUYA_FRAME_FMT_H264 = (1U << 11),
+    TUYA_FRAME_FMT_H264_I = (1U << 12),  /**< H.264 I-frame */
+    TUYA_FRAME_FMT_H264_P = (1U << 13),  /**< H.264 P-frame */
+    TUYA_FRAME_FMT_H264_B = (1U << 14),  /**< H.264 B-frame */
+    TUYA_FRAME_FMT_H265 = (1U << 15),
+    /* --- T9 multimedia additions; appended, do not renumber above --- */
+    TUYA_FRAME_FMT_NV12 = (1U << 16),      /* YCbCr 4:2:0 semiplanar, Y plane then interleaved CbCr; != YUV420 */
+    TUYA_FRAME_FMT_ARGB8888 = (1U << 17),
+    TUYA_FRAME_FMT_ABGR8888 = (1U << 18),
+    /* Raw Bayer phase, CMOS sensor output format */
+    TUYA_FRAME_FMT_BGGR10 = (1U << 19),    /* B G / G R, 10-bit */
+    TUYA_FRAME_FMT_GBRG10 = (1U << 20),    /* G B / R G, 10-bit */
+    TUYA_FRAME_FMT_GRBG10 = (1U << 21),    /* G R / B G, 10-bit */
+    TUYA_FRAME_FMT_RGGB10 = (1U << 22),    /* R G / G B, 10-bit */
 } TUYA_FRAME_FMT_E;
 
 typedef enum {

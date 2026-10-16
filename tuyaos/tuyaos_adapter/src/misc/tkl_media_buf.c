@@ -36,20 +36,20 @@ STATIC BOOL_T s_media_buf_inited = FALSE;
 /** In-flight count per owner. Touched from the GPU flexa thread, the encoder
  *  worker thread and business threads, so every update runs with interrupts
  *  masked - the critical sections here are a handful of instructions long. */
-STATIC volatile UINT32_T s_inflight[TKL_MEDIA_BUF_OWNER_MAX];
+STATIC volatile UINT32_T s_inflight[TUYA_MEDIA_BUF_OWNER_MAX];
 
-STATIC CONST CHAR_T *CONST s_owner_name[TKL_MEDIA_BUF_OWNER_MAX] = {
-#define TKL_MEDIA_BUF_OWNER_NAME(sym, name) name,
-    TKL_MEDIA_BUF_OWNER_LIST(TKL_MEDIA_BUF_OWNER_NAME)
-#undef TKL_MEDIA_BUF_OWNER_NAME
+STATIC CONST CHAR_T *CONST s_owner_name[TUYA_MEDIA_BUF_OWNER_MAX] = {
+#define TUYA_MEDIA_BUF_OWNER_NAME(sym, name) name,
+    TUYA_MEDIA_BUF_OWNER_LIST(TUYA_MEDIA_BUF_OWNER_NAME)
+#undef TUYA_MEDIA_BUF_OWNER_NAME
 };
 
-STATIC INLINE BOOL_T __owner_valid(TKL_MEDIA_BUF_OWNER_E owner)
+STATIC INLINE BOOL_T __owner_valid(TUYA_MEDIA_BUF_OWNER_E owner)
 {
-    return (owner < TKL_MEDIA_BUF_OWNER_MAX) ? TRUE : FALSE;
+    return (owner < TUYA_MEDIA_BUF_OWNER_MAX) ? TRUE : FALSE;
 }
 
-STATIC VOID_T __inflight_inc(TKL_MEDIA_BUF_OWNER_E owner)
+STATIC VOID_T __inflight_inc(TUYA_MEDIA_BUF_OWNER_E owner)
 {
     UINT32_T flags = rtos_disable_int();
 
@@ -58,7 +58,7 @@ STATIC VOID_T __inflight_inc(TKL_MEDIA_BUF_OWNER_E owner)
     rtos_enable_int(flags);
 }
 
-STATIC VOID_T __inflight_dec(TKL_MEDIA_BUF_OWNER_E owner)
+STATIC VOID_T __inflight_dec(TUYA_MEDIA_BUF_OWNER_E owner)
 {
     BOOL_T underflow = FALSE;
     UINT32_T flags = rtos_disable_int();
@@ -91,7 +91,7 @@ VOID_T tkl_media_buf_init(VOID_T)
     s_media_buf_inited = TRUE;
 }
 
-VOID_T *tkl_media_buf_alloc(TKL_BUF_USE_E use, UINT32_T size, TKL_MEDIA_BUF_OWNER_E owner)
+VOID_T *tkl_media_buf_alloc(TKL_BUF_USE_E use, UINT32_T size, TUYA_MEDIA_BUF_OWNER_E owner)
 {
     frame_buffer_heap_type_t heap;
     VOID_T *buffer;
@@ -164,7 +164,7 @@ VOID_T *tkl_media_buf_alloc(TKL_BUF_USE_E use, UINT32_T size, TKL_MEDIA_BUF_OWNE
     return buffer;
 }
 
-VOID_T tkl_media_buf_free(TKL_MEDIA_BUF_OWNER_E owner, VOID_T *buffer)
+VOID_T tkl_media_buf_free(TUYA_MEDIA_BUF_OWNER_E owner, VOID_T *buffer)
 {
     if (buffer == NULL || __owner_valid(owner) != TRUE) {
         return;
@@ -180,21 +180,21 @@ VOID_T tkl_media_buf_free(TKL_MEDIA_BUF_OWNER_E owner, VOID_T *buffer)
 /* One thunk per owner. This is what makes per-owner accounting possible without
  * a buffer-to-owner lookup table: the release callback embedded in a frame has
  * no context argument, so the owner has to be baked into the function itself. */
-#define TKL_MEDIA_BUF_OWNER_THUNK(sym, name)                    \
+#define TUYA_MEDIA_BUF_OWNER_THUNK(sym, name)                    \
     STATIC VOID_T __media_buf_free_##sym(UINT8_T *buffer)       \
     {                                                           \
         tkl_media_buf_free(sym, (VOID_T *)buffer);              \
     }
-TKL_MEDIA_BUF_OWNER_LIST(TKL_MEDIA_BUF_OWNER_THUNK)
-#undef TKL_MEDIA_BUF_OWNER_THUNK
+TUYA_MEDIA_BUF_OWNER_LIST(TUYA_MEDIA_BUF_OWNER_THUNK)
+#undef TUYA_MEDIA_BUF_OWNER_THUNK
 
-STATIC CONST TKL_MEDIA_BUF_FREE_CB s_owner_free_cb[TKL_MEDIA_BUF_OWNER_MAX] = {
-#define TKL_MEDIA_BUF_OWNER_CB(sym, name) __media_buf_free_##sym,
-    TKL_MEDIA_BUF_OWNER_LIST(TKL_MEDIA_BUF_OWNER_CB)
-#undef TKL_MEDIA_BUF_OWNER_CB
+STATIC CONST TUYA_MEDIA_BUF_FREE_CB s_owner_free_cb[TUYA_MEDIA_BUF_OWNER_MAX] = {
+#define TUYA_MEDIA_BUF_OWNER_CB(sym, name) __media_buf_free_##sym,
+    TUYA_MEDIA_BUF_OWNER_LIST(TUYA_MEDIA_BUF_OWNER_CB)
+#undef TUYA_MEDIA_BUF_OWNER_CB
 };
 
-TKL_MEDIA_BUF_FREE_CB tkl_media_buf_free_cb(TKL_MEDIA_BUF_OWNER_E owner)
+TUYA_MEDIA_BUF_FREE_CB tkl_media_buf_free_cb(TUYA_MEDIA_BUF_OWNER_E owner)
 {
     if (__owner_valid(owner) != TRUE) {
         return NULL;
@@ -203,7 +203,7 @@ TKL_MEDIA_BUF_FREE_CB tkl_media_buf_free_cb(TKL_MEDIA_BUF_OWNER_E owner)
     return s_owner_free_cb[owner];
 }
 
-UINT32_T tkl_media_buf_inflight(TKL_MEDIA_BUF_OWNER_E owner)
+UINT32_T tkl_media_buf_inflight(TUYA_MEDIA_BUF_OWNER_E owner)
 {
     if (__owner_valid(owner) != TRUE) {
         return 0U;
@@ -212,7 +212,7 @@ UINT32_T tkl_media_buf_inflight(TKL_MEDIA_BUF_OWNER_E owner)
     return s_inflight[owner];
 }
 
-OPERATE_RET tkl_media_buf_drain(TKL_MEDIA_BUF_OWNER_E owner,
+OPERATE_RET tkl_media_buf_drain(TUYA_MEDIA_BUF_OWNER_E owner,
                                 UINT32_T expect_residual,
                                 UINT32_T timeout_ms)
 {
@@ -246,7 +246,7 @@ VOID_T tkl_media_buf_dump(VOID_T)
     UINT32_T i;
     UINT32_T total = 0U;
 
-    for (i = 0U; i < (UINT32_T)TKL_MEDIA_BUF_OWNER_MAX; i++) {
+    for (i = 0U; i < (UINT32_T)TUYA_MEDIA_BUF_OWNER_MAX; i++) {
         UINT32_T cnt = s_inflight[i];
 
         if (cnt != 0U) {
@@ -256,4 +256,78 @@ VOID_T tkl_media_buf_dump(VOID_T)
     }
 
     tkl_log_output("tkl_media_buf: total inflight=%u\r\n", (unsigned int)total);
+}
+
+/* ---------------------------------------------------------------------------
+ * Media hardware arbitration
+ * ------------------------------------------------------------------------- */
+
+/** Current holder per hardware instance, one of TUYA_MEDIA_HW_CLAIMANT_E. */
+STATIC volatile UINT8_T s_hw_holder[TUYA_MEDIA_HW_MAX];
+
+STATIC CONST CHAR_T *CONST s_hw_name[TUYA_MEDIA_HW_MAX] = {"gpu", "vpu_enc"};
+STATIC CONST CHAR_T *CONST s_hw_claimant_name[TUYA_MEDIA_HW_CLAIM_MAX] = {"none", "csi", "uvc"};
+
+OPERATE_RET tkl_media_hw_claim(TUYA_MEDIA_HW_E hw, TUYA_MEDIA_HW_CLAIMANT_E who)
+{
+    UINT32_T flags;
+    UINT8_T holder;
+
+    if (hw >= TUYA_MEDIA_HW_MAX ||
+        who <= TUYA_MEDIA_HW_CLAIM_NONE || who >= TUYA_MEDIA_HW_CLAIM_MAX) {
+        return OPRT_INVALID_PARM;
+    }
+
+    flags = rtos_disable_int();
+    holder = s_hw_holder[hw];
+    if (holder == TUYA_MEDIA_HW_CLAIM_NONE) {
+        s_hw_holder[hw] = (UINT8_T)who;
+    }
+    rtos_enable_int(flags);
+
+    if (holder == TUYA_MEDIA_HW_CLAIM_NONE || holder == (UINT8_T)who) {
+        return OPRT_OK;
+    }
+
+    tkl_log_output("tkl_media_hw: %s held by %s, %s claim refused\r\n",
+                   s_hw_name[hw], s_hw_claimant_name[holder], s_hw_claimant_name[who]);
+    return OPRT_RESOURCE_NOT_READY;
+}
+
+VOID_T tkl_media_hw_release(TUYA_MEDIA_HW_E hw, TUYA_MEDIA_HW_CLAIMANT_E who)
+{
+    UINT32_T flags;
+    UINT8_T holder;
+    BOOL_T released = FALSE;
+
+    if (hw >= TUYA_MEDIA_HW_MAX ||
+        who <= TUYA_MEDIA_HW_CLAIM_NONE || who >= TUYA_MEDIA_HW_CLAIM_MAX) {
+        return;
+    }
+
+    flags = rtos_disable_int();
+    holder = s_hw_holder[hw];
+    if (holder == (UINT8_T)who) {
+        s_hw_holder[hw] = TUYA_MEDIA_HW_CLAIM_NONE;
+        released = TRUE;
+    }
+    rtos_enable_int(flags);
+
+    if (released != TRUE) {
+        tkl_log_output("tkl_media_hw: release mismatch, %s held by %s (caller %s)\r\n",
+                       s_hw_name[hw], s_hw_claimant_name[holder], s_hw_claimant_name[who]);
+    }
+}
+
+UINT32_T tkl_media_bitrate_from_level(TUYA_ENCODE_BITRATE_LEVEL_E level)
+{
+    switch (level) {
+    case TUYA_ENCODE_BITRATE_LEVEL_LOW:
+        return 750000U;
+    case TUYA_ENCODE_BITRATE_LEVEL_HIGH:
+        return 3000000U;
+    case TUYA_ENCODE_BITRATE_LEVEL_MEDIUM:
+    default:
+        return 1500000U;
+    }
 }

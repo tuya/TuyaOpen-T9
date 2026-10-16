@@ -11,7 +11,7 @@
  * Free of any vendor header; pixel-format mapping needs the vendor enum and so
  * lives in tkl_media_fmt.h instead.
  *
- * TKL-internal: buffers reach business wrapped in TKL_MEDIA_BUF_T, which carries
+ * TKL-internal: buffers reach business wrapped in TUYA_MEDIA_BUF_T, which carries
  * its own free_cb.
  *
  * @version 0.1
@@ -24,6 +24,7 @@
 #define __TKL_MEDIA_BUF_H__
 
 #include "tuya_cloud_types.h"
+#include "tkl_media_types.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -52,32 +53,32 @@ typedef enum {
  *       close() can drain.
  * @note Keep this list short: one static thunk is generated per entry.
  */
-#define TKL_MEDIA_BUF_OWNER_LIST(X)             \
-    X(TKL_MEDIA_BUF_OWNER_CAMERA_DISPLAY, "cam.disp") \
-    X(TKL_MEDIA_BUF_OWNER_CAMERA_STREAM,  "cam.strm") \
-    X(TKL_MEDIA_BUF_OWNER_CAMERA_FRAME,   "cam.frm")  \
-    X(TKL_MEDIA_BUF_OWNER_UVC_DISPLAY,    "uvc.disp") \
-    X(TKL_MEDIA_BUF_OWNER_UVC_STREAM,     "uvc.strm") \
-    X(TKL_MEDIA_BUF_OWNER_UVC_FRAME,      "uvc.frm")  \
-    X(TKL_MEDIA_BUF_OWNER_DVP_DISPLAY,    "dvp.disp") \
-    X(TKL_MEDIA_BUF_OWNER_DVP_STREAM,     "dvp.strm") \
-    X(TKL_MEDIA_BUF_OWNER_OSD,            "osd")      \
-    X(TKL_MEDIA_BUF_OWNER_IMAGE,          "image")    \
-    X(TKL_MEDIA_BUF_OWNER_STREAM,         "stream")   \
-    X(TKL_MEDIA_BUF_OWNER_VENC,           "venc")     \
-    X(TKL_MEDIA_BUF_OWNER_VDEC,           "vdec")     \
-    X(TKL_MEDIA_BUF_OWNER_GPU,            "gpu")      \
-    X(TKL_MEDIA_BUF_OWNER_TEST,           "test")
+#define TUYA_MEDIA_BUF_OWNER_LIST(X)             \
+    X(TUYA_MEDIA_BUF_OWNER_CAMERA_DISPLAY, "cam.disp") \
+    X(TUYA_MEDIA_BUF_OWNER_CAMERA_STREAM,  "cam.strm") \
+    X(TUYA_MEDIA_BUF_OWNER_CAMERA_FRAME,   "cam.frm")  \
+    X(TUYA_MEDIA_BUF_OWNER_UVC_DISPLAY,    "uvc.disp") \
+    X(TUYA_MEDIA_BUF_OWNER_UVC_STREAM,     "uvc.strm") \
+    X(TUYA_MEDIA_BUF_OWNER_UVC_FRAME,      "uvc.frm")  \
+    X(TUYA_MEDIA_BUF_OWNER_DVP_DISPLAY,    "dvp.disp") \
+    X(TUYA_MEDIA_BUF_OWNER_DVP_STREAM,     "dvp.strm") \
+    X(TUYA_MEDIA_BUF_OWNER_OSD,            "osd")      \
+    X(TUYA_MEDIA_BUF_OWNER_IMAGE,          "image")    \
+    X(TUYA_MEDIA_BUF_OWNER_STREAM,         "stream")   \
+    X(TUYA_MEDIA_BUF_OWNER_VENC,           "venc")     \
+    X(TUYA_MEDIA_BUF_OWNER_VDEC,           "vdec")     \
+    X(TUYA_MEDIA_BUF_OWNER_GPU,            "gpu")      \
+    X(TUYA_MEDIA_BUF_OWNER_TEST,           "test")
 
 typedef enum {
-#define TKL_MEDIA_BUF_OWNER_ENUM(sym, name) sym,
-    TKL_MEDIA_BUF_OWNER_LIST(TKL_MEDIA_BUF_OWNER_ENUM)
-#undef TKL_MEDIA_BUF_OWNER_ENUM
-    TKL_MEDIA_BUF_OWNER_MAX,
-} TKL_MEDIA_BUF_OWNER_E;
+#define TUYA_MEDIA_BUF_OWNER_ENUM(sym, name) sym,
+    TUYA_MEDIA_BUF_OWNER_LIST(TUYA_MEDIA_BUF_OWNER_ENUM)
+#undef TUYA_MEDIA_BUF_OWNER_ENUM
+    TUYA_MEDIA_BUF_OWNER_MAX,
+} TUYA_MEDIA_BUF_OWNER_E;
 
 /** Release callback signature; identical to tkl_mipi_dsi_flush_frame_t.free_cb. */
-typedef VOID_T (*TKL_MEDIA_BUF_FREE_CB)(UINT8_T *buffer);
+typedef VOID_T (*TUYA_MEDIA_BUF_FREE_CB)(UINT8_T *buffer);
 
 /**
  * @brief Bring up the backing slab pools.
@@ -97,7 +98,7 @@ VOID_T tkl_media_buf_init(VOID_T);
  *
  * @param[in] use   pool and cache policy, see TKL_BUF_USE_E
  * @param[in] size  byte count; rounded up internally when @p use requires it
- * @param[in] owner accounting bucket, see TKL_MEDIA_BUF_OWNER_E
+ * @param[in] owner accounting bucket, see TUYA_MEDIA_BUF_OWNER_E
  *
  * @note TKL_BUF_USE_PIXEL_WT rounds @p size up to 64 bytes: the vendor pool
  *       refuses a write-through mapping whose requested size is not 64-byte
@@ -106,7 +107,7 @@ VOID_T tkl_media_buf_init(VOID_T);
  *
  * @return buffer pointer on success, NULL on error
  */
-VOID_T *tkl_media_buf_alloc(TKL_BUF_USE_E use, UINT32_T size, TKL_MEDIA_BUF_OWNER_E owner);
+VOID_T *tkl_media_buf_alloc(TKL_BUF_USE_E use, UINT32_T size, TUYA_MEDIA_BUF_OWNER_E owner);
 
 /**
  * @brief Release a buffer obtained from tkl_media_buf_alloc().
@@ -117,7 +118,7 @@ VOID_T *tkl_media_buf_alloc(TKL_BUF_USE_E use, UINT32_T size, TKL_MEDIA_BUF_OWNE
  * @note Safe from any context the vendor pool is safe from, including the GPU
  *       flexa thread and the encoder worker thread.
  */
-VOID_T tkl_media_buf_free(TKL_MEDIA_BUF_OWNER_E owner, VOID_T *buffer);
+VOID_T tkl_media_buf_free(TUYA_MEDIA_BUF_OWNER_E owner, VOID_T *buffer);
 
 /**
  * @brief Get the release callback to embed in a frame handed to business.
@@ -127,7 +128,7 @@ VOID_T tkl_media_buf_free(TKL_MEDIA_BUF_OWNER_E owner, VOID_T *buffer);
  * @return a stable function pointer that frees the buffer and settles the
  *         owner's in-flight count; NULL if @p owner is out of range
  */
-TKL_MEDIA_BUF_FREE_CB tkl_media_buf_free_cb(TKL_MEDIA_BUF_OWNER_E owner);
+TUYA_MEDIA_BUF_FREE_CB tkl_media_buf_free_cb(TUYA_MEDIA_BUF_OWNER_E owner);
 
 /**
  * @brief Number of buffers this owner allocated but has not got back yet.
@@ -136,7 +137,7 @@ TKL_MEDIA_BUF_FREE_CB tkl_media_buf_free_cb(TKL_MEDIA_BUF_OWNER_E owner);
  *
  * @return in-flight count, 0 if @p owner is out of range
  */
-UINT32_T tkl_media_buf_inflight(TKL_MEDIA_BUF_OWNER_E owner);
+UINT32_T tkl_media_buf_inflight(TUYA_MEDIA_BUF_OWNER_E owner);
 
 /**
  * @brief Wait for an owner's in-flight buffers to come back.
@@ -159,7 +160,7 @@ UINT32_T tkl_media_buf_inflight(TKL_MEDIA_BUF_OWNER_E owner);
  *         OPRT_TIMEOUT if more than that are still out, OPRT_INVALID_PARM if
  *         @p owner is out of range
  */
-OPERATE_RET tkl_media_buf_drain(TKL_MEDIA_BUF_OWNER_E owner,
+OPERATE_RET tkl_media_buf_drain(TUYA_MEDIA_BUF_OWNER_E owner,
                                 UINT32_T expect_residual,
                                 UINT32_T timeout_ms);
 
@@ -167,6 +168,56 @@ OPERATE_RET tkl_media_buf_drain(TKL_MEDIA_BUF_OWNER_E owner,
  * @brief Log every owner that still holds buffers. Leak-hunting aid.
  */
 VOID_T tkl_media_buf_dump(VOID_T);
+
+/* ---------------------------------------------------------------------------
+ * Media hardware arbitration
+ *
+ * GPU (display pipeline) and VPU encoder are single-instance on T9: only one
+ * peripheral may run a pipeline on each at a time. A peripheral claims before
+ * it opens its ch2/ch3 pipeline (open and resume), and releases on cancel,
+ * stop and deinit. The decoder needs no arbiter - its sessions coexist and
+ * the vendor hw_decoder_ctlr serializes decode jobs on the shared hardware.
+ * ------------------------------------------------------------------------- */
+
+/** Which media hardware instance. */
+typedef enum {
+    TUYA_MEDIA_HW_GPU = 0,      /**< display pipeline (every peripheral's ch2) */
+    TUYA_MEDIA_HW_VPU_ENC = 1,  /**< H264 encoder (every peripheral's ch3) */
+    TUYA_MEDIA_HW_MAX,
+} TUYA_MEDIA_HW_E;
+
+/** Who holds the hardware; appears in conflict logs. */
+typedef enum {
+    TUYA_MEDIA_HW_CLAIM_NONE = 0,
+    TUYA_MEDIA_HW_CLAIM_CSI  = 1,
+    TUYA_MEDIA_HW_CLAIM_UVC  = 2,
+    TUYA_MEDIA_HW_CLAIM_MAX,
+} TUYA_MEDIA_HW_CLAIMANT_E;
+
+/**
+ * @brief Take one media hardware instance for a claimant.
+ *
+ * Re-claim by the current holder succeeds (idempotent resume). A conflicting
+ * claim is refused with a log naming the holder.
+ *
+ * @return OPRT_OK, or OPRT_RESOURCE_NOT_READY when the other claimant holds it
+ */
+OPERATE_RET tkl_media_hw_claim(TUYA_MEDIA_HW_E hw, TUYA_MEDIA_HW_CLAIMANT_E who);
+
+/**
+ * @brief Give one media hardware instance back.
+ *
+ * Releasing while the other claimant holds it logs a mismatch and changes
+ * nothing.
+ */
+VOID_T tkl_media_hw_release(TUYA_MEDIA_HW_E hw, TUYA_MEDIA_HW_CLAIMANT_E who);
+
+/**
+ * @brief Bitrate (bps) for one TUYA_ENCODE_BITRATE_LEVEL_E on T9.
+ *
+ * LOW 0.75 / MEDIUM 1.5 / HIGH 3 Mbps; MAX or out-of-range yields MEDIUM.
+ */
+UINT32_T tkl_media_bitrate_from_level(TUYA_ENCODE_BITRATE_LEVEL_E level);
 
 #ifdef __cplusplus
 }

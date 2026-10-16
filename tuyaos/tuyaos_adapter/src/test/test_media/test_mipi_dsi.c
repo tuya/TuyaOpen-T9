@@ -13,7 +13,9 @@
 #include "gpio_driver.h"
 
 #include "cli_tuya_test.h"
-#include "tkl_camera_mipi.h"
+#include "modules/pm.h"
+#include "tkl_image_codec.h"
+#include "tkl_mipi_csi.h"
 #include "tkl_mipi_dsi.h"
 #include "tkl_output.h"
 #include "tkl_system.h"
@@ -21,7 +23,7 @@
 
 #define MIPI_TEST_TASK_NAME         "mipi_test"
 #define MIPI_TEST_TASK_STACK_SIZE   (4 * 1024)
-#define MIPI_TEST_RESET_PIN         GPIO_16
+#define MIPI_TEST_RESET_PIN         GPIO_21
 #define MIPI_TEST_BACKLIGHT_PIN     GPIO_20
 #define MIPI_TEST_INVALID_PIN       (-1)
 #define MIPI_TEST_PANEL_NAME_LEN    64
@@ -36,7 +38,16 @@ typedef struct {
     TUYA_GPIO_CTRL_T power_ctrl;
 } test_mipi_display_cfg_t;
 
-static test_mipi_display_cfg_t s_mipi_display_cfg;
+/* TUYA_GPIO_NUM_MAX is the "not wired" sentinel, and it has to be set here:
+ * zero-initialising would leave bl.pin == 0, which is a *real* pin, so
+ * backlight_set() would pass its range check and unmap whatever owns GPIO 0 -
+ * on this board that is P0, and the console died when 'xmipi dsi close' ran
+ * before any open had called test_mipi_runtime_reset(). */
+static test_mipi_display_cfg_t s_mipi_display_cfg = {
+    .bl.pin = TUYA_GPIO_NUM_MAX,
+    .reset.pin = TUYA_GPIO_NUM_MAX,
+    .power_ctrl.pin = TUYA_GPIO_NUM_MAX,
+};
 static TUYA_MIPI_BASE_CFG_T s_mipi_base_cfg;
 static tkl_mipi_dsi_flush_frame_t s_mipi_flush_frame;
 static TKL_THREAD_HANDLE s_mipi_task = NULL;
@@ -690,6 +701,15 @@ static OPERATE_RET test_mipi_lcd_close(void)
     OPERATE_RET ret;
     OPERATE_RET stop_ret;
 
+    /* Nothing was opened, so there is nothing to close - and running the
+     * teardown anyway is actively harmful: backlight_set() would act on the
+     * not-yet-configured pin, and tkl_mipi_dsi_deinit() would tear down DPU
+     * state it never built. Idempotent by contract, so report success. */
+    if (s_mipi_lcd_opened != true) {
+        tkl_log_output("mipi close: not open, nothing to do\r\n");
+        return OPRT_OK;
+    }
+
     if (s_mipi_task_running == true || s_mipi_task != NULL) {
         stop_ret = test_mipi_task_stop();
         if (stop_ret != OPRT_OK) {
@@ -724,6 +744,195 @@ void test_mipi_lcd_get_geometry(UINT16_T *width, UINT16_T *height)
     }
 }
 
+/*
+ * Cycle-accurate timing for the paste report. The DWT counter ticks at the CPU
+ * clock; the frequency comes from the PM module (the max frequency voted in),
+ * so the conversion survives a clock-policy change. An unlisted setting falls
+ * back to the BK7259 AP's top speed, which is what a display-active system
+ * normally runs at.
+ */
+#define MIPI_TEST_PROF_CPU_MHZ_FALLBACK  480U
+
+static uint32_t test_mipi_dwt_cycles(void)
+{
+    extern void dwt_init_cycle_counter(void);
+    extern uint32_t dwt_get_cycle_counter_val(void);
+    static bool s_armed = false;
+
+    if (s_armed == false) {
+        s_armed = true;
+        dwt_init_cycle_counter();
+    }
+
+    return dwt_get_cycle_counter_val();
+}
+
+static uint32_t test_mipi_cpu_mhz(void)
+{
+    static uint32_t mhz = 0U;
+
+    if (mhz == 0U) {
+        switch (bk_pm_current_max_cpu_freq_get()) {
+        case PM_CPU_FRQ_60M:  mhz = 60U;  break;
+        case PM_CPU_FRQ_80M:  mhz = 80U;  break;
+        case PM_CPU_FRQ_120M: mhz = 120U; break;
+        case PM_CPU_FRQ_160M: mhz = 160U; break;
+        case PM_CPU_FRQ_240M: mhz = 240U; break;
+        case PM_CPU_FRQ_320M: mhz = 320U; break;
+        case PM_CPU_FRQ_480M: mhz = 480U; break;
+        default:              mhz = MIPI_TEST_PROF_CPU_MHZ_FALLBACK; break;
+        }
+    }
+
+    return mhz;
+}
+
+static uint32_t test_mipi_cycles_to_us(uint32_t cycles)
+{
+    return cycles / test_mipi_cpu_mhz();
+}
+
+/*
+ * Compose two random colours with tkl_image_codec_memcpy() and push the result to the
+ * panel: the destination frame is one solid colour, and the middle of the
+ * source frame - a second solid colour - is pasted into its middle. Both
+ * windows are off-origin, so the read offset and the paste offset are both
+ * exercised, and the pasted rectangle is obvious on the screen.
+ *
+ * Reuses the two flush-pool frames (RGB565, panel geometry). The periodic
+ * refresh is stopped first - it would replace the composed frame with a fresh
+ * colour within a second.
+ */
+static OPERATE_RET test_mipi_paste_mid(uint16_t win_w, uint16_t win_h)
+{
+    OPERATE_RET ret;
+    uint32_t color_src;
+    uint32_t color_dst;
+    uint32_t t0;
+    uint32_t t1;
+    uint16_t x;
+    uint16_t y;
+    TUYA_IMAGE_CODEC_COPY_BUF_T s;
+    TUYA_IMAGE_CODEC_COPY_BUF_T d;
+
+    if (s_mipi_lcd_opened != true) {
+        tkl_log_output("mipi lcd is not open\r\n");
+        return OPRT_RESOURCE_NOT_READY;
+    }
+
+    /* idempotent: succeeds straight away when the refresh is not running */
+    ret = test_mipi_task_stop();
+    if (ret != OPRT_OK) {
+        tkl_log_output("refresh task stop failed: %d\r\n", ret);
+        return ret;
+    }
+
+    if (s_mipi_frame_size == 0U || s_mipi_frames[0] == NULL || s_mipi_frames[1] == NULL) {
+        ret = test_mipi_frame_buffers_prepare();
+        if (ret != OPRT_OK) {
+            tkl_log_output("prepare frame buffers failed: %d\r\n", ret);
+            return ret;
+        }
+    }
+
+    /* zero or oversized window means "half the panel, centred". Two alignment
+     * layers apply here: RGB565 needs an even origin and an even width at the
+     * API (4-byte pixel groups), and the GDMA leg additionally wants every row
+     * start 16-byte aligned - at 2 Bpp that makes the origin a multiple of 8.
+     * Skipping the second layer would not error, it would silently drop the
+     * copy onto the CPU leg. */
+    if (win_w == 0U || win_h == 0U ||
+        win_w > s_mipi_width || win_h > s_mipi_height) {
+        win_w = (uint16_t)(s_mipi_width / 2U);
+        win_h = (uint16_t)(s_mipi_height / 2U);
+    }
+
+    win_w = (uint16_t)(win_w & (uint16_t)~1U);
+    if (win_w == 0U) {
+        win_w = 2U;
+    }
+    x = (uint16_t)(((s_mipi_width - win_w) / 2U) & (uint16_t)~7U);
+    y = (uint16_t)((s_mipi_height - win_h) / 2U);
+
+    color_src = test_mipi_random_color_get();
+    color_dst = test_mipi_random_color_get();
+    test_mipi_fill_frame_rgb565(s_mipi_frames[0], s_mipi_frame_size, color_src);
+    test_mipi_fill_frame_rgb565(s_mipi_frames[1], s_mipi_frame_size, color_dst);
+
+    /* Both operands describe a whole frame; only the windows differ. That is
+     * the picture-in-picture shape tkl_image_codec_memcpy() exists for - the caller
+     * owns both buffers and the geometry stays in the caller's hands. */
+    os_memset(&s, 0, sizeof(s));
+    s.buf.buffer = s_mipi_frames[0];
+    s.buf.length = (UINT32_T)s_mipi_frame_size;
+    s.buf.format = TUYA_FRAME_FMT_RGB565;
+    s.buf.width = s_mipi_width;
+    s.buf.height = s_mipi_height;
+    s.region.x = x;
+    s.region.y = y;
+    s.region.width = win_w;
+    s.region.height = win_h;
+
+    os_memset(&d, 0, sizeof(d));
+    d.buf.buffer = s_mipi_frames[1];
+    d.buf.length = (UINT32_T)s_mipi_frame_size;
+    d.buf.format = TUYA_FRAME_FMT_RGB565;
+    d.buf.width = s_mipi_width;
+    d.buf.height = s_mipi_height;
+    /* same window size on purpose: no scaling in this interface */
+    d.region.x = x;
+    d.region.y = y;
+    d.region.width = win_w;
+    d.region.height = win_h;
+
+    t0 = test_mipi_dwt_cycles();
+    ret = tkl_image_codec_memcpy(&s, &d);
+    t1 = test_mipi_dwt_cycles();
+    if (ret != OPRT_OK) {
+        tkl_log_output("tkl_image_codec_memcpy failed: %d\r\n", ret);
+        return ret;
+    }
+
+    {
+        uint32_t cycles = t1 - t0;
+        uint32_t moved = (uint32_t)win_w * win_h * MIPI_TEST_BYTES_PER_PIXEL;
+        uint32_t us = test_mipi_cycles_to_us(cycles);
+        uint32_t mhz = test_mipi_cpu_mhz();
+
+        if (cycles != 0U) {
+            uint64_t mbps10 = (uint64_t)moved * mhz * 10U / cycles;
+
+            tkl_log_output("paste copy: %u B in %u us (cpu %u MHz, %u.%u MB/s)\r\n",
+                           (unsigned int)moved,
+                           (unsigned int)us,
+                           (unsigned int)mhz,
+                           (unsigned int)(mbps10 / 10U),
+                           (unsigned int)(mbps10 % 10U));
+        }
+    }
+
+    os_memset(&s_mipi_flush_frame, 0, sizeof(s_mipi_flush_frame));
+    s_mipi_flush_frame.buffer = s_mipi_frames[1];
+    s_mipi_flush_frame.free_cb = NULL;
+
+    ret = tkl_mipi_dsi_flush(&s_mipi_flush_frame);
+    if (ret != OPRT_OK) {
+        tkl_log_output("flush failed: %d\r\n", ret);
+        return ret;
+    }
+
+    tkl_log_output("paste ok: canvas=0x%08x patch=0x%08x window=%ux%u at (%u,%u) %u B\r\n",
+                   (unsigned int)color_dst,
+                   (unsigned int)color_src,
+                   (unsigned int)win_w,
+                   (unsigned int)win_h,
+                   (unsigned int)x,
+                   (unsigned int)y,
+                   (unsigned int)((UINT32_T)win_w * win_h * MIPI_TEST_BYTES_PER_PIXEL));
+
+    return OPRT_OK;
+}
+
 void cli_tuya_mipi_dsi_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv)
 {
     OPERATE_RET ret;
@@ -736,7 +945,8 @@ void cli_tuya_mipi_dsi_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, c
 
     if (argc < 2) {
         snprintf(pcWriteBuffer, xWriteBufferLen,
-                 "Usage: xmipi dsi <open [panel]|open_gpu [panel] [compress]|flush|stop_flush|close>");
+                 "Usage: xmipi dsi <open [panel]|open_gpu [panel] [compress]|flush|paste [w] [h]|"
+                 "stop_flush|close>");
         return;
     }
 
@@ -779,6 +989,20 @@ void cli_tuya_mipi_dsi_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, c
         ret = test_mipi_lcd_flush(panel_name);
         snprintf(pcWriteBuffer, xWriteBufferLen,
                  "xmipi dsi flush %s (%d)\r\n", (ret == OPRT_OK) ? "ok" : "failed", ret);
+    } else if (os_strcmp(cmd, "paste") == 0) {
+        uint16_t win_w = 0U;
+        uint16_t win_h = 0U;
+
+        if (argc >= 3) {
+            win_w = (uint16_t)os_strtoul(argv[2], NULL, 10);
+        }
+        if (argc >= 4) {
+            win_h = (uint16_t)os_strtoul(argv[3], NULL, 10);
+        }
+
+        ret = test_mipi_paste_mid(win_w, win_h);
+        snprintf(pcWriteBuffer, xWriteBufferLen,
+                 "xmipi dsi paste %s (%d)\r\n", (ret == OPRT_OK) ? "ok" : "failed", ret);
     } else if (os_strcmp(cmd, "stop_flush") == 0) {
         ret = test_mipi_lcd_stop_flush();
         snprintf(pcWriteBuffer, xWriteBufferLen,
@@ -789,6 +1013,7 @@ void cli_tuya_mipi_dsi_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, c
                  "xmipi dsi close %s (%d)\r\n", (ret == OPRT_OK) ? "ok" : "failed", ret);
     } else {
         snprintf(pcWriteBuffer, xWriteBufferLen,
-                 "Usage: xmipi dsi <open [panel]|open_gpu [panel] [compress]|flush|stop_flush|close>");
+                 "Usage: xmipi dsi <open [panel]|open_gpu [panel] [compress]|flush|paste [w] [h]|"
+                 "stop_flush|close>");
     }
 }

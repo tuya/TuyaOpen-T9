@@ -42,7 +42,7 @@ static bk_display_dsi_panel_t s_dsi_panel_desc;
 
 typedef struct {
     UINT8_T *buffer;
-    void (*free_cb)(UINT8_T *frame_buff);
+    void (*free_cb)(void *frame_buff);
 } tkl_mipi_dsi_flush_slot_t;
 
 static tkl_mipi_dsi_flush_slot_t s_flush_slots[TKL_MIPI_DSI_FLUSH_SLOTS];
@@ -54,7 +54,7 @@ static tkl_mipi_dsi_flush_slot_t s_flush_slots[TKL_MIPI_DSI_FLUSH_SLOTS];
  * @return TRUE when recorded
  * @note Re-flushing a buffer that is still pending just refreshes its callback.
  */
-static BOOL_T tkl_mipi_dsi_flush_slot_add(UINT8_T *buffer, void (*free_cb)(UINT8_T *))
+static BOOL_T tkl_mipi_dsi_flush_slot_add(UINT8_T *buffer, void (*free_cb)(void *))
 {
     UINT32_T i;
     INT_T free_idx = -1;
@@ -92,10 +92,10 @@ static BOOL_T tkl_mipi_dsi_flush_slot_add(UINT8_T *buffer, void (*free_cb)(UINT8
  * @param[in] buffer buffer the DPU reported as done
  * @return its free_cb, or NULL when the buffer is unknown
  */
-static void (*tkl_mipi_dsi_flush_slot_take(UINT8_T *buffer))(UINT8_T *)
+static void (*tkl_mipi_dsi_flush_slot_take(UINT8_T *buffer))(void *)
 {
     UINT32_T i;
-    void (*cb)(UINT8_T *) = NULL;
+    void (*cb)(void *) = NULL;
     UINT32_T flags = rtos_disable_int();
 
     for (i = 0U; i < TKL_MIPI_DSI_FLUSH_SLOTS; i++) {
@@ -181,10 +181,10 @@ static bk_pixel_format_t tkl_mipi_dpu_pixel_format_convert(DISPLAY_PIXEL_FORMAT_
 
 static OPERATE_RET tkl_mipi_dsi_flush_done(void *args)
 {
-    void (*free_cb)(UINT8_T *) = tkl_mipi_dsi_flush_slot_take((UINT8_T *)args);
+    void (*free_cb)(void *) = tkl_mipi_dsi_flush_slot_take(args);
 
     if (free_cb != NULL) {
-        free_cb((UINT8_T *)args);
+        free_cb(args);
     }
 
     return OPRT_OK;
@@ -457,7 +457,7 @@ OPERATE_RET tkl_mipi_dsi_flush(tkl_mipi_dsi_flush_frame_t *frame)
          * which empties the slot. A still-occupied slot means the failure
          * happened earlier and nobody released it - do it here, so the caller
          * never has to guess. */
-        void (*free_cb)(UINT8_T *) = tkl_mipi_dsi_flush_slot_take(frame->buffer);
+        void (*free_cb)(void *) = tkl_mipi_dsi_flush_slot_take(frame->buffer);
 
         if (free_cb != NULL) {
             free_cb(frame->buffer);

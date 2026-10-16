@@ -428,7 +428,9 @@ int bk_mem_slab_overflow_check(fb_block_used *head)
         return MEM_SLAB_ERR_OVERFLOW_HEAD_BACK;
     }
 
-    if (head->size - head->user_size > 4)
+    // Modified by TUYA Start
+    if (head->size - sizeof(fb_block_used) - head->user_size > 4)
+    // Modified by TUYA End
     {
         if (*padding != FB_ALLOCATED_PATTERN)
         {

@@ -76,7 +76,7 @@ extern INT_T test_fs_mount(CONST CHAR_T *path, FS_DEV_TYPE_T dev_type);
 static void test_record_ring_free(void)
 {
     if (s_rec.ring != NULL) {
-        tkl_media_buf_free(TKL_MEDIA_BUF_OWNER_TEST, s_rec.ring);
+        tkl_media_buf_free(TUYA_MEDIA_BUF_OWNER_TEST, s_rec.ring);
         s_rec.ring = NULL;
     }
 }
@@ -257,7 +257,7 @@ OPERATE_RET test_record_start(CONST CHAR_T *tag, CONST CHAR_T *path, UINT32_T se
      * well under a megabyte left, while the coded pool this bitstream came from
      * is 14.25 MB. */
     s_rec.ring = (uint8_t *)tkl_media_buf_alloc(TKL_BUF_USE_STREAM, s_rec.ring_bytes,
-                                                TKL_MEDIA_BUF_OWNER_TEST);
+                                                TUYA_MEDIA_BUF_OWNER_TEST);
     if (s_rec.ring == NULL) {
         tkl_log_output("record: ring alloc failed (%u bytes)\r\n",
                        (unsigned int)s_rec.ring_bytes);

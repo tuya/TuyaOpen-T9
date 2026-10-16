@@ -5,17 +5,15 @@
  * @file blend.h
  * @brief OSD asset declarations and layout (ported from draw_osd_example)
  *
- * @note Raw asset data plus its placement, which is what TKL_OSD_ELEM_T
- *       consumes. The one platform dependency is the emWin glyph table type
- *       (modules/lcd_font.h) - that *is* the asset format, and TKL never looks
- *       inside it: TKL_OSD_ELEM_T::font is a const void *.
+ * @note Raw asset data plus placement constants for the business-side bitmap
+ *       composer. TKL receives only the resulting ARGB8888 bitmap.
  */
 
 /* modules/lcd_font.h uses uint32_t and NULL but includes neither header itself;
  * components/bk_draw_osd.h used to drag them in before the wrappers were removed. */
 #include <stdint.h>
 #include <stddef.h>
-#include "modules/lcd_font.h"   /* gui_font_digit_struct, GUI_CONST_STORAGE */
+#include "modules/lcd_font.h"   /* retained for the raw asset translation unit */
 
 /* ---------------- OSD 元素坐标空间 ----------------
  * 面板固定 1024x600（jd9165t_mipi_1024x600）。元素 x/y 落在哪个坐标系，

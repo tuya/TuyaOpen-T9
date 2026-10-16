@@ -116,8 +116,8 @@ else()
         src/driver/tkl_i2c.c
         src/driver/tkl_timer.c
         src/driver/tkl_mipi_dsi.c
-        src/driver/tkl_camera_mipi.c
-        src/driver/tkl_image.c
+        src/driver/tkl_mipi_csi.c
+        src/driver/tkl_image_codec.c
         src/driver/tkl_uvc.c
         # src/driver/tkl_i2s_v2.c
         src/driver/tkl_aud_dmic.c
@@ -144,6 +144,7 @@ else()
         src/misc/tkl_gpu.c
         src/misc/tkl_venc.c
         src/misc/tkl_vdec.c
+        src/misc/tkl_hwjpeg.c
         src/misc/tkl_mftest.c
         src/misc/mf_test/mt_mipi.c
         src/misc/mf_test/mt_adc.c
@@ -204,7 +205,7 @@ else()
             src/test/test_media/test_mipi.c
             src/test/test_media/osd_assets/bk_font.c
             src/test/test_media/osd_assets/bk_img.c
-            src/test/test_media/osd_assets/blend_dsc.c
+            src/test/test_media/test_osd.c
             src/test/test_media/test_overlay.c
             src/test/test_media/test_record.c
             src/test/test_media/test_image.c
