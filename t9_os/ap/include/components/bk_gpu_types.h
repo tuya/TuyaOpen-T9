@@ -28,7 +28,7 @@ extern "C" {
 
 typedef enum
 {
-    BK_GPU_IOCTL_SET_FLEXA_LINES_READY,
+    BK_GPU_IOCTL_DEC_FLEXA_READY,
     BK_GPU_IOCTL_SET_NOTIFY,
     BK_GPU_IOCTL_REGISTER_BOND,
     BK_GPU_IOCTL_UNREGISTER_BOND,
@@ -36,16 +36,30 @@ typedef enum
     BK_GPU_IOCTL_FLEXA_ADDR_UNMAPPING,
     BK_GPU_IOCTL_LOCK,
     BK_GPU_IOCTL_UNLOCK,
-    BK_GPU_IOCTL_SET_FLEXA_EVENT_READY,
+    BK_GPU_IOCTL_FLEXA_FRAME_LOCK,
+    BK_GPU_IOCTL_FLEXA_FRAME_UNLOCK,
+    BK_GPU_IOCTL_ISP_FLEXA_READY,
     /* args = bool*: false = frame-end OSD blit; true = per flexa block. */
     BK_GPU_IOCTL_SET_OSD_BY_FLEXA,
+    BK_GPU_IOCTL_GET_OUTPUT_INFO,  /** query hardware output geometry/format (bk_gpu_output_info_t *) */
+    BK_GPU_IOCTL_REFRESH_DIRTY,    /** re-compose dirty layers onto a bg frame during a stall (void *bg_frame) */
 } bk_gpu_ioctl_cmd_t;
+
+/* Hardware output frame descriptor, as produced by the GPU controller. */
+typedef struct
+{
+    uint16_t width;
+    uint16_t height;
+    bk_pixel_format_t format;
+    bool is_flexa;
+    bool is_compressed;
+} bk_gpu_output_info_t;
 
 typedef struct
 {
     uint32_t frame_seq;
     uint32_t line_cnt;
-} bk_gpu_flexa_event_t;
+} bk_gpu_isp_flexa_event_t;
 
 typedef struct
 {
@@ -74,6 +88,8 @@ typedef struct
     void *flexa_line_done_args;
     void (*frame_done)(void *frame, uint32_t frame_size, void *args);
     void *frame_done_args;
+    /* true: frame_done callback owns face/UI composition before display. */
+    bool client_compose_frame;
 } bk_gpu_ctlr_config_t;
 
 typedef struct
@@ -138,8 +154,6 @@ struct bk_gpu_ctlr_t
     avdk_err_t (*del)(bk_gpu_ctlr_t *controller);
     avdk_err_t (*draw_path_clear)(bk_gpu_ctlr_t *controller);
     avdk_err_t (*draw_path_build)(bk_gpu_ctlr_t *controller, bk_gpu_draw_path_set_t *path_set);
-    avdk_err_t (*blit_set)(bk_gpu_ctlr_t *controller, void *src_buffer, bk_gpu_blit_config_t *blit_config);
-    avdk_err_t (*blit_clear)(bk_gpu_ctlr_t *controller);
 };
 
 

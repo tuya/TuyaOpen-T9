@@ -205,7 +205,10 @@ static void secure_xip_log_progress(void)
 		return;
 	}
 	pct = (int)(((uint64_t)s_secure_xip.payload_written * 100) / s_secure_xip.payload_total);
-	if ((pct - s_secure_xip.last_log_pct) >= 10 || pct == 100) {
+	/* Coarse 10% steps for the bulk of the download; switch to fine 1% steps from
+	 * 95% onward so testers get frequent feedback near the end (95/96/.../100). */
+	int step = (pct >= 95) ? 1 : 10;
+	if ((pct - s_secure_xip.last_log_pct) >= step || pct == 100) {
 		OTA_LOGI("secure xip: staged %d%%\r\n", pct);
 		s_secure_xip.last_log_pct = pct;
 	}
@@ -261,8 +264,6 @@ static int secure_xip_init(f_ota_t *ota_ptr)
 	ota_ptr->received_total_size = 0;
 	ota_ptr->fd                  = -1;
 	ota_ptr->init_flag           = 1;
-	ota_ptr->protect_type        = bk_flash_get_protect_type();
-	bk_flash_set_protect_type(FLASH_PROTECT_NONE);
 
 	OTA_LOGI("secure xip: run slot %u -> stage slot %u @0x%x size 0x%x\r\n",
 			 running, s_secure_xip.update_slot,
@@ -372,7 +373,6 @@ static int secure_xip_deinit(f_ota_t *ota_ptr)
 	OTA_FREE(ota_ptr->wr_buf);
 	OTA_FREE(ota_ptr->wr_tmp_buf);
 	OTA_FREE(ota_ptr->rd_buf);
-	bk_flash_set_protect_type(ota_ptr->protect_type);
 	ota_ptr->init_flag = 0;
 	return BK_OK;
 }

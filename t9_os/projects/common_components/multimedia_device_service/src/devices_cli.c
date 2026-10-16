@@ -7,8 +7,6 @@
 
 #include "devices_mgmt.h"
 #include <components/bk_frame_buffer.h>
-#include <components/bk_isp_camera.h>
-#include <components/bk_camera_sensor.h>
 
 #include <avdk_utils.h>
 
@@ -59,10 +57,10 @@ void cli_avdk_doorbell_isp_cmd(char *pcWriteBuffer, int xWriteBufferLen, int arg
 
     LOGI("%s, %d, argc=%d\n", __func__, __LINE__, argc);
     
-    // Parse command from argv[1]: "isp_dump", "cproc", "open", or "close"
+    // Parse command from argv[1]: "isp_dump", "open", or "close"
     if (argc < 2 || argv[1] == NULL)
     {
-        LOGE("Usage: isp [isp_dump|cproc|open|close] ...\n");
+        LOGE("Usage: isp [isp_dump|open|close] [mipi|dvp|dual] [width] [height] [isp_output_width] [isp_output_height]\n");
         return;
     }
 
@@ -70,97 +68,6 @@ void cli_avdk_doorbell_isp_cmd(char *pcWriteBuffer, int xWriteBufferLen, int arg
     if (os_strcmp(argv[1], "isp_dump") == 0)
     {
         isp_reg_dump_new();
-        return;
-    }
-
-    if (os_strcmp(argv[1], "cproc") == 0)
-    {
-        /* isp cproc sat 0 | isp cproc sat default | isp cproc get */
-        bk_isp_camera_ctlr_handle_t camera = app_isp_camera_ctlr_handle_get();
-        if (camera == NULL)
-        {
-            bk_printf("[RESULT][FAIL] cproc camera_not_ready\r\n");
-            return;
-        }
-
-        if (argc < 3 || argv[2] == NULL)
-        {
-            LOGE("Usage: isp cproc sat <0|default> | isp cproc get\n");
-            return;
-        }
-
-        if (os_strcmp(argv[2], "get") == 0)
-        {
-            bk_isp_cproc_attr_t cproc = {0};
-            ret = bk_isp_camera_ctlr_ioctl(camera, BK_CAM_IOCTL_GET_CPROC, &cproc);
-            if (ret != AVDK_ERR_OK)
-            {
-                bk_printf("[RESULT][FAIL] cproc get ret=%d\r\n", ret);
-                return;
-            }
-            bk_printf("[RESULT][PASS] cproc enable=%u opType=%u bri=%d con=%u sat=%u hue=%d\r\n",
-                      cproc.enable, cproc.op_type,
-                      cproc.manual.brightness, cproc.manual.contrast,
-                      cproc.manual.saturation, cproc.manual.hue);
-            return;
-        }
-
-        if (os_strcmp(argv[2], "sat") == 0)
-        {
-            if (argc < 4 || argv[3] == NULL)
-            {
-                LOGE("Usage: isp cproc sat <0|default>\n");
-                return;
-            }
-
-            bk_isp_cproc_attr_t cproc = {0};
-
-            if (os_strcmp(argv[3], "default") == 0)
-            {
-                bk_camera_sensor_handle_t sensor = app_isp_camera_sensor_handle_get();
-                if (sensor == NULL)
-                {
-                    bk_printf("[RESULT][FAIL] cproc sat default sensor_not_ready\r\n");
-                    return;
-                }
-
-                ret = bk_camera_sensor_ioctl(sensor, BK_CAMERA_SENSOR_IOCTL_GET_DEFAULT_CPROC, &cproc);
-                if (ret != AVDK_ERR_OK)
-                {
-                    bk_printf("[RESULT][FAIL] cproc get default ret=%d\r\n", ret);
-                    return;
-                }
-            }
-            else if (os_strcmp(argv[3], "0") == 0)
-            {
-                ret = bk_isp_camera_ctlr_ioctl(camera, BK_CAM_IOCTL_GET_CPROC, &cproc);
-                if (ret != AVDK_ERR_OK)
-                {
-                    bk_printf("[RESULT][FAIL] cproc get ret=%d\r\n", ret);
-                    return;
-                }
-                cproc.enable = 1;
-                cproc.op_type = 1; /* OP_TYPE_MANUAL */
-                cproc.manual.saturation = 0;
-            }
-            else
-            {
-                LOGE("Usage: isp cproc sat <0|default>\n");
-                return;
-            }
-
-            ret = bk_isp_camera_ctlr_ioctl(camera, BK_CAM_IOCTL_SET_CPROC, &cproc);
-            if (ret != AVDK_ERR_OK)
-            {
-                bk_printf("[RESULT][FAIL] cproc set sat ret=%d\r\n", ret);
-                return;
-            }
-
-            bk_printf("[RESULT][PASS] cproc sat=%u\r\n", cproc.manual.saturation);
-            return;
-        }
-
-        LOGE("Usage: isp cproc sat <0|default> | isp cproc get\n");
         return;
     }
 
@@ -1291,7 +1198,7 @@ static void cli_avdk_doorbell_h264_qp_cmd(char *pcWriteBuffer, int xWriteBufferL
 
 static const struct cli_command s_devices_cli_commands[] =
 {
-    {"isp", "isp [isp_dump|cproc|open|close] ...; cproc: sat <0|default> | get", cli_avdk_doorbell_isp_cmd},
+    {"isp", "isp...", cli_avdk_doorbell_isp_cmd},
     {"display", "display...", cli_avdk_doorbell_display_cmd},
     {"joint_test", "joint_test open mipi [720p|1080p] [fps] [h264e] | open uvc [h264e] | test | close uvc|mipi", cli_avdk_doorbell_joint_test_cmd},
     {"uvc", "uvc...", cli_avdk_doorbell_uvc_cmd},

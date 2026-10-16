@@ -13,6 +13,10 @@ typedef enum
     PM_AP_CORE_PSRAM_STATE_NOTIFY,
     PM_AP_CORE_SLEEP_DEMO_HANDLE,
     PM_AP_CORE_CPU3_ONLINE,
+#if CONFIG_PM_AP_FAST_BOOT_ENABLE
+    PM_AP_CORE_FAST_SUSPEND_ABORT,
+    PM_AP_CORE_APP_RESUME,
+#endif
 	PM_AP_CORE_STATE_MAX
 }pm_ap_core_state_e;
 
@@ -279,6 +283,15 @@ bk_err_t bk_pm_ap_thread_main(void);
  * - others: other errors.
  */
 bk_err_t bk_pm_ap_core_send_msg(pm_ap_core_msg_t *msg);
+#if CONFIG_PM_AP_FAST_BOOT_ENABLE
+/**
+ * @brief Get the active CP recovery request sequence.
+ *
+ * The CPU2 idle path publishes this sequence through pm_shared_info.param2
+ * after all prepare_power_off callbacks report ready.
+ */
+uint32_t bk_pm_ap_recovery_request_seq_get(void);
+#endif
 /**
  * @brief rtc unregsiter wakeup
  *

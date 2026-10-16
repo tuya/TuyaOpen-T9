@@ -6,13 +6,13 @@ if(NOT "${target}" STREQUAL "bk7259")
 endif()
 
 set(incs
-	soc
-	hal
-	./
-	./misc
+	${CMAKE_CURRENT_LIST_DIR}/soc
+	${CMAKE_CURRENT_LIST_DIR}/hal
+	${CMAKE_CURRENT_LIST_DIR}
+	${CMAKE_CURRENT_LIST_DIR}/misc
 	../../../components/bk_pm/include
 	)
-set(srcs "misc/stub.c")
+set(srcs)
 
 list(APPEND incs
 	$ENV{PROJECT_DIR}/partitions/${target}/
@@ -99,8 +99,7 @@ list(APPEND srcs
 
 if(CONFIG_AUDIO AND CONFIG_SOC_BK7259)
 	list(APPEND srcs
-		#"hal/aud_hal.c"
-		"hal/aud_hal_bk7259.c"
+		"hal/aud_hal.c"
 	)
 endif()
 

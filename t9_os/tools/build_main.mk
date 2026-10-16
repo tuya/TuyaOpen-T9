@@ -79,6 +79,52 @@ export CONFIG_SUBTITUTE_FILE := $(BK_CONFIG_FILE).config
 export PROJECT_NAME := $(PROJECT_NAME)_$(BK_CONFIG_FILE)
 endif
 
+# Flash capacity variant. Default 8M uses auto_partitions.csv and
+# build/<soc>/<project>/package. 16M uses auto_partitions_16M.csv and
+# build/<soc>/<project>_16M/package so the two images do not overwrite.
+# Select with FLASH_CAPACITY=16M on the make command line, or set
+# CONFIG_FLASH_CAPACITY_16M=y in the project CP defconfig (menuconfig [D]).
+ifndef FLASH_CAPACITY
+  _FC_DEFCONFIG := $(PROJECT_DIR)/cp/config/$(ARMINO_SOC_NAME)/defconfig
+  ifneq ($(wildcard $(_FC_DEFCONFIG)),)
+    ifneq ($(shell grep -E '^CONFIG_FLASH_CAPACITY_16M=y' $(_FC_DEFCONFIG) 2>/dev/null),)
+      FLASH_CAPACITY := 16M
+    endif
+  endif
+endif
+FLASH_CAPACITY ?= 8M
+export FLASH_CAPACITY
+ifeq ($(FLASH_CAPACITY),16M)
+  ifeq ($(wildcard $(PROJECT_DIR)/partitions/$(ARMINO_SOC_NAME)/auto_partitions_16M.csv),)
+    $(error FLASH_CAPACITY=16M but $(PROJECT_DIR)/partitions/$(ARMINO_SOC_NAME)/auto_partitions_16M.csv not found)
+  endif
+  export PROJECT_NAME := $(PROJECT_NAME)_16M
+endif
+
+# PSRAM capacity variant. Default 16M uses ram_regions.csv and the
+# existing build dir. 32M uses ram_regions_32M.csv (high 16MB reserved
+# per chip) and appends _psram32M so images do not overwrite.
+# Select with PSRAM_CAPACITY=32M on the make command line, or set
+# CONFIG_PSRAM_CAPACITY_32M=y in the project CP defconfig (menuconfig [D]).
+# Independent of FLASH_CAPACITY: e.g. FLASH_CAPACITY=16M PSRAM_CAPACITY=32M
+# yields build/<soc>/<project>_16M_psram32M/.
+ifndef PSRAM_CAPACITY
+  _PC_DEFCONFIG := $(PROJECT_DIR)/cp/config/$(ARMINO_SOC_NAME)/defconfig
+  ifneq ($(wildcard $(_PC_DEFCONFIG)),)
+    ifneq ($(shell grep -E '^CONFIG_PSRAM_CAPACITY_32M=y' $(_PC_DEFCONFIG) 2>/dev/null),)
+      PSRAM_CAPACITY := 32M
+    endif
+  endif
+endif
+PSRAM_CAPACITY ?= 16M
+export PSRAM_CAPACITY
+ifeq ($(PSRAM_CAPACITY),32M)
+  ifeq ($(wildcard $(PROJECT_DIR)/partitions/$(ARMINO_SOC_NAME)/ram_regions_32M.csv),)
+    $(error PSRAM_CAPACITY=32M but $(PROJECT_DIR)/partitions/$(ARMINO_SOC_NAME)/ram_regions_32M.csv not found)
+  endif
+  export PROJECT_NAME := $(PROJECT_NAME)_psram32M
+endif
+
 ifneq ("$(BUILD_DIR)", "")
 	export PROJECT_BUILD_DIR := $(BUILD_DIR)/$(ARMINO_SOC_NAME)/$(PROJECT_NAME)
 else
@@ -119,6 +165,8 @@ help:
 	@echo " make smp_doc - generate smp doc"
 	@echo " make bkxxxx_ap_menuconfig - ap sdk config"
 	@echo " make bkxxxx_cp_menuconfig - cp sdk config"
+	@echo " FLASH_CAPACITY=8M|16M     - select partition CSV; 16M images go to <project>_16M/"
+	@echo " PSRAM_CAPACITY=16M|32M    - select ram_regions CSV; 32M images go to <project>_psram32M/"
 	@echo ""
 
 common:
@@ -128,6 +176,8 @@ common:
 	@echo "armino ap path=$(ARMINO_AP_DIR)"
 	@echo "armino cp path=$(ARMINO_CP_DIR)"
 	@echo "armino build path=$(PROJECT_BUILD_DIR)"
+	@echo "FLASH_CAPACITY=$(FLASH_CAPACITY)"
+	@echo "PSRAM_CAPACITY=$(PSRAM_CAPACITY)"
 
 
 all: $(soc_targets) $(ARMINO_SOC)_cp
@@ -150,10 +200,10 @@ RUN_PYTHON3 = python3
 endif
 
 $(ARMINO_SOC)_ap: common build_prepare
-	@make $(ARMINO_SOC)_ap ARMINO_TOOLS_PATH=$(ARMINO_TOOLS_PATH) PROJECT_DIR=$(PROJECT_DIR) BUILD_DIR=$(PROJECT_BUILD_DIR) APP_NAME=$(APP_NAME) APP_VERSION=$(APP_VERSION) -C $(ARMINO_AP_DIR)
+	@ARMINO_DEFER_SECURE_PACK=1 make $(ARMINO_SOC)_ap ARMINO_TOOLS_PATH=$(ARMINO_TOOLS_PATH) PROJECT_DIR=$(PROJECT_DIR) BUILD_DIR=$(PROJECT_BUILD_DIR) APP_NAME=$(APP_NAME) APP_VERSION=$(APP_VERSION) -C $(ARMINO_AP_DIR)
 
 $(ARMINO_SOC)_cp: common build_prepare
-	@make $(ARMINO_SOC) ARMINO_TOOLS_PATH=$(ARMINO_TOOLS_PATH) PROJECT_DIR=$(PROJECT_DIR) BUILD_DIR=$(PROJECT_BUILD_DIR) APP_NAME=$(APP_NAME) APP_VERSION=$(APP_VERSION) -C $(ARMINO_CP_DIR)
+	@ARMINO_DEFER_SECURE_PACK=1 make $(ARMINO_SOC) ARMINO_TOOLS_PATH=$(ARMINO_TOOLS_PATH) PROJECT_DIR=$(PROJECT_DIR) BUILD_DIR=$(PROJECT_BUILD_DIR) APP_NAME=$(APP_NAME) APP_VERSION=$(APP_VERSION) -C $(ARMINO_CP_DIR)
 
 # Parallel AP+CP with fail-fast (see build_smp_parallel.sh). Windows keeps legacy make -j behavior.
 ifeq ($(WIN32),1)
@@ -164,6 +214,7 @@ build_smp_firmware: common build_prepare
 		PROJECT_DIR=$(PROJECT_DIR) BUILD_DIR=$(PROJECT_BUILD_DIR) \
 		APP_NAME=$(APP_NAME) APP_VERSION=$(APP_VERSION) \
 		ARMINO_AP_DIR=$(ARMINO_AP_DIR) ARMINO_CP_DIR=$(ARMINO_CP_DIR) \
+		ARMINO_DEFER_SECURE_PACK=1 \
 		PYTHONPATH=$(BK_PY_LIBS_PATH):$$PYTHONPATH \
 		bash $(BUILD_SMP_PARALLEL_SCRIPT)
 
@@ -198,7 +249,10 @@ print_partitions: $(auto_partition_out)
 ram_partition_script := $(ARMINO_AVDK_DIR)/tools/build_tools/build_process/bk_build_ram_regions.py
 RAM_REGIONS_DIR := $(PROJECT_DIR)/partitions/$(ARMINO_SOC_NAME)
 RAM_REGIONS_TABLE := $(RAM_REGIONS_DIR)/ram_regions.csv
-RAM_REGIONS_MPU_POLICY := $(wildcard $(RAM_REGIONS_DIR)/ram_regions_mpu.json)
+ifeq ($(PSRAM_CAPACITY),32M)
+RAM_REGIONS_TABLE := $(RAM_REGIONS_DIR)/ram_regions_32M.csv
+endif
+RAM_REGIONS_MPU_POLICY := $(wildcard $(RAM_REGIONS_TABLE:.csv=_mpu.json))
 ram_regions_out := $(PARTITIONS_DIR)/ram_regions.h
 ram_regions_setting := $(firstword \
 	$(wildcard $(ARMINO_AVDK_DIR)/tools/build_tools/build_process/bk_sdk/smp_ram_setting_$(ARMINO_SOC_NAME).json) \
@@ -207,14 +261,23 @@ $(ram_regions_out): $(RAM_REGIONS_DIR) $(RAM_REGIONS_TABLE) $(RAM_REGIONS_MPU_PO
 	@mkdir -p $(PARTITIONS_DIR)
 	@$(RUN_PYTHON3) $(ram_partition_script)
 
+# Secure firmware detection: when the project enables CONFIG_SECURITY_FIRMWARE,
+# BL2 is built by TF-M/MCUBoot; the non-secure aboot arm_bootloader is unused.
+SECURITY_CONFIG_FILE := $(PROJECT_DIR)/config/$(ARMINO_SOC_NAME)/config
+IS_SECURITY_FIRMWARE := $(shell test -f $(SECURITY_CONFIG_FILE) && grep -q '^CONFIG_SECURITY_FIRMWARE=y' $(SECURITY_CONFIG_FILE) && echo y)
+
 # Clean bootloader once before the AP/CP build to ensure a full rebuild.
 NORMAL_BOOTLOADER_DIR := $(ARMINO_CP_DIR)/properties/modules/bootloader/aboot/arm_bootloader
 .PHONY: bootloader_fullclean
 bootloader_fullclean:
+ifeq ($(IS_SECURITY_FIRMWARE),y)
+	@echo "[full-build] secure firmware: skip aboot bootloader clean (BL2 from TF-M/MCUBoot)"
+else
 	@echo "[full-build] clean bootloader once for a reproducible full build"
 	@if [ -d "$(NORMAL_BOOTLOADER_DIR)" ]; then \
-		$(MAKE) -C $(NORMAL_BOOTLOADER_DIR) SOC_TYPE=$(ARMINO_SOC) clean; \
+		MAKEFLAGS= $(MAKE) -C $(NORMAL_BOOTLOADER_DIR) SOC_TYPE=$(ARMINO_SOC) clean; \
 	fi
+endif
 
 build_prepare: $(auto_partition_out) print_partitions $(ram_regions_out) bootloader_fullclean
 
@@ -223,15 +286,10 @@ package_dir := $(PROJECT_BUILD_DIR)/package
 package_json := $(PARTITIONS_DIR)/bk_package.json
 build_summary := $(package_dir)/build_summary.txt
 
-# Secure firmware detection: when the project enables CONFIG_SECURITY_FIRMWARE,
-# the per-subsystem secure pack (board wrapper -> beken_utils) already produces
-# the signed/encrypted all-app.bin + bootloader.bin during build_smp_firmware.
-# The generic SMP packager (bk_build_package.py) would re-combine raw
-# per-partition bins (primary_tfm_s.bin ...) and is incompatible with the
-# secure flow, so skip it for secure builds.
-SECURITY_CONFIG_FILE := $(PROJECT_DIR)/config/$(ARMINO_SOC_NAME)/config
-IS_SECURITY_FIRMWARE := $(shell test -f $(SECURITY_CONFIG_FILE) && grep -q '^CONFIG_SECURITY_FIRMWARE=y' $(SECURITY_CONFIG_FILE) && echo y)
+# Secure pack uses the board wrapper (TF-M/MCUBoot BL2); skip generic SMP packager.
 secure_install_dir := $(PROJECT_BUILD_DIR)/$(ARMINO_SOC)/install
+secure_build_dir := $(PROJECT_BUILD_DIR)/$(ARMINO_SOC)
+secure_wrapper := $(ARMINO_CP_DIR)/middleware/boards/$(ARMINO_SOC)/$(ARMINO_SOC).wrapper
 
 ifeq ($(WIN32),1)
 package: $(package_script) $(ARMINO_SOC)_cp $(ARMINO_SOC)_ap
@@ -239,6 +297,18 @@ else
 package: $(package_script) build_smp_firmware
 endif
 ifeq ($(IS_SECURITY_FIRMWARE),y)
+	@echo "Secure firmware: packing after AP/CP builds completed."
+	@if [ ! -f "$(secure_wrapper)" ]; then \
+		echo "ERROR: secure wrapper not found: $(secure_wrapper)"; \
+		exit 1; \
+	fi
+	@cd $(secure_build_dir) && \
+		ARMINO_PATH=$(ARMINO_CP_DIR) \
+		ARMINO_AVDK_DIR=$(ARMINO_AVDK_DIR) \
+		ARMINO_SOC=$(ARMINO_SOC) \
+		PROJECT=$(PROJECT) \
+		PROJECT_DIR=$(PROJECT_DIR) \
+		$(RUN_PYTHON3) $(secure_wrapper) pack
 	@echo "Secure firmware: staging $(secure_install_dir) -> $(package_dir) (generic SMP packager skipped)."
 	@if [ ! -d "$(secure_install_dir)" ]; then \
 		echo "ERROR: secure install dir not found: $(secure_install_dir)"; \
@@ -306,10 +376,14 @@ clean:
 	@rm -rf ./build
 	@rm -rf $(ARMINO_AP_DIR)/build
 	@rm -rf $(ARMINO_CP_DIR)/build
+ifeq ($(IS_SECURITY_FIRMWARE),y)
+	@echo "secure firmware: skip aboot bootloader clean"
+else
 	@echo "clean bootloader output"
 	@if [ -d "$(NORMAL_BOOTLOADER_DIR)" ]; then \
-		$(MAKE) -C $(NORMAL_BOOTLOADER_DIR) SOC_TYPE=$(ARMINO_SOC) clean; \
+		MAKEFLAGS= $(MAKE) -C $(NORMAL_BOOTLOADER_DIR) SOC_TYPE=$(ARMINO_SOC) clean; \
 	fi
+endif
 	@mv .tmp_build build
 
 distclean: clean

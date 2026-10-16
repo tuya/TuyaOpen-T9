@@ -105,6 +105,9 @@ static dma_chnl_pool_t s_dma_chnl_pool = {0};
 
 static void dma_id_init_common(dma_id_t id)
 {
+    /* Deep-LV drops BAKP; leftover channel regs are not guaranteed zero.
+     * Reset this channel only (do not touch CP 0-3) before reconfiguring. */
+    dma_hal_reset_config_to_default(&s_dma.hal, id);
     dma_hal_set_cachable(&s_dma.hal, id, 1);
     s_dma.id_init_bits |= BIT(id);
 }
@@ -226,7 +229,7 @@ bk_err_t bk_dma_driver_init(void)
 
 	bk_int_isr_register(INT_SRC_GDMA0, dma_isr, NULL);
 
-    for (uint32_t uint_id = 0; uint_id < SOC_DMA_UNIT_NUM; uint_id++) {
+	for (uint32_t uint_id = 0; uint_id < SOC_DMA_UNIT_NUM; uint_id++) {
 	    s_dma.hal.id = uint_id;
 		dma_hal_init(&s_dma.hal);
 	}

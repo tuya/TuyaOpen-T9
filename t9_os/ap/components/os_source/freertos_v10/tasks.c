@@ -741,62 +741,71 @@ static void prvAddNewTaskToReadyList( TCB_t * pxNewTCB ) PRIVILEGED_FUNCTION;
 /*-----------------------------------------------------------*/
 
 #include <os/mem.h>
-
-#if defined(CONFIG_OS_MALLOC_EXT_SRAM_FALLBACK) && defined(CONFIG_AP_EXT_SRAM_HEAP_ADDR)
-#define TASK_MALLOC_EXT_SRAM_FALLBACK_ENABLED    1
-#else
-#define TASK_MALLOC_EXT_SRAM_FALLBACK_ENABLED    0
-#endif
-
-static inline void *task_malloc_ext_sram_on_fail(size_t size, void *ptr)
-{
-#if TASK_MALLOC_EXT_SRAM_FALLBACK_ENABLED
-    if ((ptr == NULL) && (size != 0U)) {
-        return ext_sram_malloc(size);
-    }
-#else
-    (void)size;
-#endif
-    return ptr;
-}
-
 static inline void *task_malloc(size_t size, beken_mem_type_t eMemType)
 {
-    void *ptr = NULL;
-
     switch (eMemType)
     {
     case HEAP_MEM_TYPE_PSRAM:
 #if CONFIG_PSRAM_AS_SYS_MEMORY
-        ptr = psram_malloc(size);
+        /*
+         * This helper is used for task-owned allocations. A PSRAM task should
+         * use the cacheable PSRAM task heap, while normal application buffers
+         * continue to use psram_malloc() outside of the task creation path.
+         */
+        return psram_cache_malloc(size);
 #else
-        ptr = NULL;
+        return NULL;
 #endif
-        break;
     case HEAP_MEM_TYPE_HSRAM:
 #if CONFIG_AP_HSRAM_HEAP_ADDR
-        ptr = hsram_malloc(size);
+        return hsram_malloc(size);
 #else
-        ptr = NULL;
+        return NULL;
 #endif
-        break;
-    case HEAP_MEM_TYPE_EXT_SRAM:
-#if CONFIG_AP_EXT_SRAM_HEAP_ADDR
-        ptr = ext_sram_malloc(size);
-#else
-        ptr = NULL;
-#endif
-        break;
     case HEAP_MEM_TYPE_SRAM:
-        ptr = os_sram_malloc(size);
-        ptr = task_malloc_ext_sram_on_fail(size, ptr);
-        break;
+        return os_sram_malloc(size);
     default:
-        ptr = os_malloc(size);
-        break;
+    {
+        void *ptr = os_sram_malloc(size);
+        if (ptr != NULL) {
+            return ptr;
+        }
+
+#if CONFIG_TASK_STACK_IN_PSRAM && CONFIG_PSRAM_AS_SYS_MEMORY
+        return psram_cache_malloc(size);
+#else
+        return NULL;
+#endif
+    }
+    }
+}
+
+static inline void *task_stack_malloc(size_t size, beken_mem_type_t eMemType)
+{
+    if (eMemType == HEAP_MEM_TYPE_PSRAM) {
+#if CONFIG_PSRAM_AS_SYS_MEMORY
+        return psram_cache_malloc(size);
+#else
+        return NULL;
+#endif
     }
 
-    return ptr;
+    return task_malloc(size, eMemType);
+}
+
+static inline void *task_tcb_malloc(size_t size, beken_mem_type_t eMemType)
+{
+#if CONFIG_PM_AP_FAST_BOOT_ENABLE
+    /*
+     * Preserve the existing fast-boot rule: keep scheduler metadata in the
+     * default heap even when the task stack is allocated from PSRAM.
+     */
+    if (eMemType == HEAP_MEM_TYPE_PSRAM) {
+        return task_malloc(size, HEAP_MEM_TYPE_DEFAULT);
+    }
+#endif
+
+    return task_malloc(size, eMemType);
 }
 
 #if ( configSUPPORT_DYNAMIC_ALLOCATION == 1 )
@@ -821,7 +830,7 @@ static inline void *task_malloc(size_t size, beken_mem_type_t eMemType)
                  * the implementation of the port malloc function and whether or not static
                  * allocation is being used. */
 
-                pxNewTCB = ( TCB_t * ) task_malloc( sizeof( TCB_t ), eMemType );
+                pxNewTCB = ( TCB_t * ) task_tcb_malloc( sizeof( TCB_t ), eMemType );
 
                 if( pxNewTCB != NULL )
                 {
@@ -829,7 +838,7 @@ static inline void *task_malloc(size_t size, beken_mem_type_t eMemType)
                     /* Allocate space for the stack used by the task being created.
                      * The base of the stack memory stored in the TCB so the task can
                      * be deleted later if required. */
-                    pxNewTCB->pxStack = ( StackType_t * ) task_malloc( ( ( ( size_t ) usStackDepth ) * sizeof( StackType_t ) ), eMemType ); /*lint !e961 MISRA exception as the casts are only redundant for some ports. */
+                    pxNewTCB->pxStack = ( StackType_t * ) task_stack_malloc( ( ( ( size_t ) usStackDepth ) * sizeof( StackType_t ) ), eMemType ); /*lint !e961 MISRA exception as the casts are only redundant for some ports. */
 
                     if( pxNewTCB->pxStack == NULL )
                     {
@@ -845,12 +854,12 @@ static inline void *task_malloc(size_t size, beken_mem_type_t eMemType)
                 StackType_t * pxStack;
 
                 /* Allocate space for the stack used by the task being created. */
-                pxStack = task_malloc( ( ( ( size_t ) usStackDepth ) * sizeof( StackType_t ) ), eMemType ); /*lint !e9079 All values returned by pvPortMalloc() have at least the alignment required by the MCU's stack and this allocation is the stack. */
+                pxStack = task_stack_malloc( ( ( ( size_t ) usStackDepth ) * sizeof( StackType_t ) ), eMemType ); /*lint !e9079 All values returned by pvPortMalloc() have at least the alignment required by the MCU's stack and this allocation is the stack. */
 
                 if( pxStack != NULL )
                 {
                     /* Allocate space for the TCB. */
-                    pxNewTCB = ( TCB_t * ) task_malloc( sizeof( TCB_t ), eMemType ); /*lint !e9087 !e9079 All values returned by pvPortMalloc() have at least the alignment required by the MCU's stack, and the first member of TCB_t is always a pointer to the task's stack. */
+                    pxNewTCB = ( TCB_t * ) task_tcb_malloc( sizeof( TCB_t ), eMemType ); /*lint !e9087 !e9079 All values returned by pvPortMalloc() have at least the alignment required by the MCU's stack, and the first member of TCB_t is always a pointer to the task's stack. */
 
                     if( pxNewTCB != NULL )
                     {
@@ -939,16 +948,6 @@ static inline void *task_malloc(size_t size, beken_mem_type_t eMemType)
                             TaskHandle_t * const pxCreatedTask )
     {
         return xTaskCreate_ex(pxTaskCode, pcName, usStackDepth, pvParameters, uxPriority, pxCreatedTask, HEAP_MEM_TYPE_HSRAM);
-    }
-
-    BaseType_t xTaskCreateInExtSram( TaskFunction_t pxTaskCode,
-                            const char * const pcName, /*lint !e971 Unqualified char types are allowed for strings and single characters only. */
-                            const configSTACK_DEPTH_TYPE usStackDepth,
-                            void * const pvParameters,
-                            UBaseType_t uxPriority,
-                            TaskHandle_t * const pxCreatedTask )
-    {
-        return xTaskCreate_ex(pxTaskCode, pcName, usStackDepth, pvParameters, uxPriority, pxCreatedTask, HEAP_MEM_TYPE_EXT_SRAM);
     }
 
 #endif /* configSUPPORT_DYNAMIC_ALLOCATION */

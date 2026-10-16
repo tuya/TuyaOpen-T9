@@ -32,21 +32,16 @@
 #define MODULE_DEBUG_LOG_ENABLE 1
 
 #include <string.h>
+#include "security.h"
 #include "boot_param.h"
 #include "tfm_flash_partition.h"
 #include "partitions.h"
-#include "components/log.h"
+#include "bk_tfm_log.h"
 
-#define TAG "boot_param"
+#define TAG "bp"
 
-/* Line-mode bracket for post-boot_go commits. The low-level op_sw erase/PP are
- * ignored while the device is in QUAD continuous-read (the XIP path leaves it in
- * that state after boot_go), so a commit must drop to TWO first and restore QUAD
- * afterwards. Kept here (not in flash_min.c) so the shared download/flash driver
- * behaviour is untouched. TEMPORARY: fold into the flash driver once the A/B OTA
- * write path is finalized. */
-extern void bk_flash_min_switch_line_mode_two(void);
-extern void bk_flash_min_restore_line_mode(void);
+/* Force: A/B decision trace always emitted, even with BL2 log level lowered. */
+#define BP_FORCE(fmt, ...) BK_LOG_FORCE(TAG ": " fmt, ##__VA_ARGS__)
 
 typedef struct {
 	int8_t           latest_sector_idx; /* ping-pong sector 0/1 holding `active`; -1=virgin */
@@ -89,7 +84,7 @@ int boot_param_load(void)
 		return -1;
 	}
 
-	BK_LOGI(TAG, "active idx=%d seq=%u exec=%d update=%d state=%x dl=%x try(pmu)=%u/%u\r\n",
+	BP_FORCE("idx=%d seq=%u exec=%d upd=%d st=%x dl=%x try=%u/%u\r\n",
 		s_ab.latest_sector_idx, s_ab.latest_record.seq, s_ab.latest_record.exec_slot,
 		s_ab.latest_record.update_slot, s_ab.latest_record.boot_state, s_ab.latest_record.dl_state,
 		boot_param_pmu_try_get(), s_ab.latest_record.try_max);
@@ -106,7 +101,7 @@ uint8_t boot_param_decide_slot(void)
 	/* Virgin / invalid record -> deterministic fallback to slot A. */
 	if (s_ab.latest_sector_idx < 0) {
 		s_ab.preferred_slot = AB_SLOT_A;
-		BK_LOGW(TAG, "decide: virgin -> slot A\r\n");
+		BP_FORCE("decide: virgin -> slot A\r\n");
 		return s_ab.preferred_slot;
 	}
 
@@ -131,7 +126,7 @@ uint8_t boot_param_decide_slot(void)
 
 		if (try_cnt < try_max) {
 			preferred = rec.update_slot;
-			BK_LOGI(TAG, "decide: TRIAL try=%u/%u -> update_slot %d\r\n",
+			BP_FORCE("decide: TRIAL %u/%u -> slot %d\r\n",
 				try_cnt, try_max, preferred);
 		} else {
 			/* Exhausted: roll back to exec_slot, settle to NORMAL (one commit)
@@ -141,7 +136,7 @@ uint8_t boot_param_decide_slot(void)
 			rec.update_slot = rec.exec_slot;
 			memset(rec.rsvd0, 0, sizeof(rec.rsvd0));
 			need_commit = true;
-			BK_LOGW(TAG, "decide: TRIAL exhausted (%u/%u) -> rollback exec_slot %d, state=NORMAL\r\n",
+			BP_FORCE("decide: TRIAL done %u/%u -> rollback slot %d\r\n",
 				try_cnt, try_max, preferred);
 		}
 		break;
@@ -151,12 +146,12 @@ uint8_t boot_param_decide_slot(void)
 	default:
 		/* Stable boot: touch neither flash nor PMU (counter already 0). */
 		preferred = rec.exec_slot;
-		BK_LOGI(TAG, "decide: NORMAL -> exec_slot %d\r\n", preferred);
+		BP_FORCE("decide: NORMAL -> slot %d\r\n", preferred);
 		break;
 	}
 
 	if (preferred != AB_SLOT_A && preferred != AB_SLOT_B) {
-		BK_LOGW(TAG, "decide: bad slot %d -> force A\r\n", preferred);
+		BP_FORCE("decide: bad slot %d -> force A\r\n", preferred);
 		preferred = AB_SLOT_A;
 	}
 
@@ -193,18 +188,15 @@ int boot_param_commit(const ab_flag_record_t *rec)
 		return -1;
 	}
 
-	/* Drop out of QUAD continuous-read so the op_sw erase/PP below are accepted
-	 * (post-boot_go the flash is left in continuous-read by the XIP path). */
-	bk_flash_min_switch_line_mode_two();
-
-	/* Shared ping-pong commit: stamps magic/ver/size, bumps seq, computes CRC
-	 * and writes the OPPOSITE sector so the current copy survives a torn write. */
+	/* BK7259SW-2937 defers unprotect out of flash init. Nothing to bracket here:
+	 * the ab_record_commit erase/PP go through flash_core, which per-op drops to
+	 * two-line (post-boot_go the XIP path leaves the device in QUAD
+	 * continuous-read) and self-unprotects -> op -> re-protect -> restores the
+	 * line mode, so protect stays applied between ops, TRIAL still settles to
+	 * NORMAL across reboot, and a subsequent do_boot XIP fetch runs in the
+	 * ambient QUAD mode. */
 	ab_flag_record_t out = *rec;
 	int write_idx = ab_record_commit(boot_param_partition_base(), &boot_param_ops, &out);
-
-	/* Restore QUAD continuous-read so a subsequent do_boot XIP fetch runs in the
-	 * same mode as the normal (no-commit) boot path. */
-	bk_flash_min_restore_line_mode();
 
 	if (write_idx < 0) {
 		BK_LOGE(TAG, "commit failed: %d\r\n", write_idx);
@@ -226,6 +218,7 @@ int boot_param_commit(const ab_flag_record_t *rec)
 int boot_get_active_slot_hook(int img_index, uint32_t *slot)
 {
 	(void)img_index;
+
 	*slot = (uint32_t)boot_param_preferred_slot();
 	return 0;
 }
@@ -280,6 +273,6 @@ void boot_param_reconcile_booted(uint32_t image_off)
 	}
 	s_ab.preferred_slot = booted;
 
-	BK_LOGW(TAG, "reconcile: preferred slot[%d] failed, booted slot[%d] -> commit NORMAL\r\n",
+	BP_FORCE("reconcile: pref[%d] failed, booted[%d] -> NORMAL\r\n",
 		preferred, booted);
 }

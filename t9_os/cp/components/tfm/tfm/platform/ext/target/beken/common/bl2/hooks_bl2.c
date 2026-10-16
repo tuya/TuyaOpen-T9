@@ -12,31 +12,36 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-/* Define MODULE_DEBUG_LOG_ENABLE (before components/log.h) to raise BK_LOG_LEVEL
- * to DEBUG and turn the dump_image_header() / offset diagnostics (BK_LOGD) back
- * on. Left off by default so BL2 only prints genuine errors. */
-#define MODULE_DEBUG_LOG_ENABLE
+/* BL2 log verbosity (BL2_HOOK_LOGD dumps included) follows MCUBOOT_LOG_LEVEL,
+ * driven by CONFIG_TFM_BL2_LOG_LEVEL: the DEBUG diagnostics compile in only when
+ * the bootloader level is DEBUG, otherwise BL2 prints genuine errors only. */
 
 #include <assert.h>
+#include <string.h>
 #include "bootutil/image.h"
 #include "bootutil/bootutil.h"
 #include "bootutil/fault_injection_hardening.h"
 #include "flash_map_backend/flash_map_backend.h"
-#include "components/log.h"
+#include "reg_base.h"
 #include "bk_tfm_log.h"
+#include "driver/flash.h"
+#include "bk_efuse.h"
+#include "bk_boot_verify.h"
 
-#define TAG "hook"
+#define TAG "hk"
 #define BL2_HOOK_LOGD BK_LOGD
 #define BL2_HOOK_LOGI BK_LOGI
 #define BL2_HOOK_LOGW BK_LOGW
 #define BL2_HOOK_LOGE BK_LOGE
+/* Force: always emitted regardless of the BL2 log level. */
+#define BL2_HOOK_LOGF(fmt, ...) BK_LOG_FORCE(TAG ": " fmt, ##__VA_ARGS__)
 #define BL2_HOOK_DEBUG 0
 
 #define BL2_HOOK_IMG_READ_DEBUG_LEN 0x100
 
 static void dump_image_header(struct image_header *hdr)
 {
-	BL2_HOOK_LOGD(TAG, "magic=%x\r\n", hdr->ih_magic);
+	BL2_HOOK_LOGF("magic=%x\r\n", hdr->ih_magic);
 	BL2_HOOK_LOGD(TAG, "load_addr=%x\r\n", hdr->ih_load_addr);
 	BL2_HOOK_LOGD(TAG, "hdr_size=%x\r\n", hdr->ih_hdr_size);
 	BL2_HOOK_LOGD(TAG, "protect_tlv_size=%x\r\n", hdr->ih_protect_tlv_size);
@@ -61,7 +66,7 @@ boot_is_header_valid(const struct image_header *hdr, const struct flash_area *fa
     uint32_t size;
 
     if (hdr->ih_magic != IMAGE_MAGIC) {
-        BL2_HOOK_LOGE(TAG, "invalid img magic: %x\r\n", hdr->ih_magic);
+        BL2_HOOK_LOGE(TAG, "bad magic: %x\r\n", hdr->ih_magic);
         return false;
     }   
 
@@ -151,12 +156,12 @@ int boot_read_image_header_hook(int img_index, int slot,
 	}
 
 	if (boot_is_header_valid(&hdr, fap) == false) {
-		BL2_HOOK_LOGE(TAG, "invalid image header\r\n");
-        }
-
-	BL2_HOOK_LOGD(TAG, "read image=%d, slot=%d hdr\r\n", img_index, slot);
-	dump_image_header(&hdr);
-	BL2_HOOK_LOGD(TAG, "tlv off=%x\r\n", boot_tlv_off(fap, &hdr));
+		BL2_HOOK_LOGE(TAG, "bad hdr s=%d\r\n", slot);
+	} else {
+		BL2_HOOK_LOGD(TAG, "read image=%d, slot=%d hdr\r\n", img_index, slot);
+		dump_image_header(&hdr);
+		BL2_HOOK_LOGD(TAG, "tlv off=%x\r\n", boot_tlv_off(fap, &hdr));
+	}
 	flash_area_close(fap);
 	return BOOT_HOOK_REGULAR;
 }
@@ -231,4 +236,40 @@ int flash_area_read_post_hook(const struct flash_area *area, uint32_t off, void 
 #endif
 
 	return 0;
+}
+
+/* BootROM / BL2 signature-verify magic at flash 0x100 (plaintext, after AES):
+ *   "BK.SB\n" (42 4B 2E 53 42 0A) -> require signature
+ *   anything else (e.g. "BEKEN\n") -> skip signature (BL2 still checks hash)
+ * Kept in sync with tools/env_tools/beken_utils/scripts/partition.py
+ * add_magic_code(), which selects it from security.csv sig_verify_en. */
+static const uint8_t BK_BOOT_VERIFY_MAGIC[6] = {0x42, 0x4B, 0x2E, 0x53, 0x42, 0x0A};
+#define BK_BOOT_VERIFY_MAGIC_OFFSET  (0x100)
+
+bool bk_boot_flash_sig_magic_enabled(void)
+{
+	uint8_t magic[sizeof(BK_BOOT_VERIFY_MAGIC)] = {0};
+
+	if (bk_flash_read_bytes(BK_BOOT_VERIFY_MAGIC_OFFSET, magic, sizeof(magic)) != BK_OK) {
+		/* Fail safe: treat unread magic as "signature required". */
+		return true;
+	}
+
+	return (memcmp(magic, BK_BOOT_VERIFY_MAGIC, sizeof(BK_BOOT_VERIFY_MAGIC)) == 0);
+}
+
+bool bk_boot_verify_required(void)
+{
+	/* efuse bit3 (secure_boot_supported) forces signature verification once
+	 * burned and outranks the flash magic. When BL2_VALIDATE_ENABLED_BY_EFUSE
+	 * is off this returns true unconditionally, preserving the always-verify
+	 * behaviour. Image hash is always validated regardless of this return. */
+	if (efuse_is_secureboot_enabled()) {
+		return true;
+	}
+
+	/* Not locked by efuse: fall back to the 0x100 magic. The magic is
+	 * plaintext even in encrypted (FIXED) images, so the compare holds for
+	 * both NONE and FIXED builds. */
+	return bk_boot_flash_sig_magic_enabled();
 }

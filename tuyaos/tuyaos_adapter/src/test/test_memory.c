@@ -98,40 +98,21 @@ static const memory_slab_region_t s_memory_slab_regions[] = {
 };
 #endif
 
-#if (CONFIG_CPU_INDEX == 1) && defined(CONFIG_AP_EXT_SRAM_HEAP_ADDR)
-extern size_t xPortGetExtSramTotalHeapSize(void);
-extern size_t xPortGetExtSramFreeHeapSize(void);
-extern size_t xPortGetExtSramMinimumFreeHeapSize(void);
-#define MEMORY_EXT_SRAM_ENABLED 1
-#else
-#define MEMORY_EXT_SRAM_ENABLED 0
-#endif
-
 #define MEMORY_ALLOC_TEST_DEFAULT_SIZE      (4096U)
 #define MEMORY_ALLOC_TEST_DEFAULT_COUNT     (1000U)
-#define MEMORY_FALLBACK_MAX_BLOCKS          (256U)
 
 typedef void *(*memory_alloc_func_t)(size_t size);
 typedef void (*memory_free_func_t)(void *ptr);
 
 static void *s_memory_os_test_ptr;
-#if MEMORY_EXT_SRAM_ENABLED
-static void *s_memory_ext_test_ptr;
-static void *s_memory_fallback_ptrs[MEMORY_FALLBACK_MAX_BLOCKS];
-#endif
 
 static void memory_cli_usage(void)
 {
     bk_printf("Usage:\r\n");
     bk_printf("  xmem show\r\n");
-    bk_printf("  xmem ext\r\n");
-    bk_printf("  xmem ext_malloc [bytes]\r\n");
-    bk_printf("  xmem ext_free\r\n");
-    bk_printf("  xmem ext_loop [bytes] [count]\r\n");
     bk_printf("  xmem os_malloc [bytes]\r\n");
     bk_printf("  xmem os_free\r\n");
     bk_printf("  xmem os_loop [bytes] [count]\r\n");
-    bk_printf("  xmem os_fallback [block_bytes] [max_blocks]\r\n");
     bk_printf("  xmem dump [seconds_since_malloc] [start_tick] [task]\r\n");
     bk_printf("  xmem sum [func|task] [seconds_since_malloc] [start_tick] [task]\r\n");
     bk_printf("  xmem mark [name]\r\n");
@@ -155,8 +136,6 @@ typedef struct {
     uint32_t psram_min_free_bytes;
     uint32_t hsram_free_bytes;
     uint32_t hsram_min_free_bytes;
-    uint32_t ext_sram_free_bytes;
-    uint32_t ext_sram_min_free_bytes;
 } memory_snapshot_t;
 
 static memory_snapshot_t s_memory_snapshot;
@@ -188,11 +167,6 @@ static void memory_read_snapshot(memory_snapshot_t *snapshot, const char *name)
     snapshot->hsram_free_bytes = (uint32_t)rtos_get_hsram_free_heap_size();
     snapshot->hsram_min_free_bytes = (uint32_t)rtos_get_hsram_minimum_free_heap_size();
 #endif
-
-#if MEMORY_EXT_SRAM_ENABLED
-    snapshot->ext_sram_free_bytes = (uint32_t)xPortGetExtSramFreeHeapSize();
-    snapshot->ext_sram_min_free_bytes = (uint32_t)xPortGetExtSramMinimumFreeHeapSize();
-#endif
 }
 
 static void memory_show_heap(void)
@@ -216,16 +190,6 @@ static void memory_show_heap(void)
                            (uint32_t)rtos_get_hsram_total_heap_size(),
                            (uint32_t)rtos_get_hsram_free_heap_size(),
                            (uint32_t)rtos_get_hsram_minimum_free_heap_size());
-#endif
-
-#if MEMORY_EXT_SRAM_ENABLED
-    memory_print_heap_line("ext_sram",
-                           (uint32_t)xPortGetExtSramTotalHeapSize(),
-                           (uint32_t)xPortGetExtSramFreeHeapSize(),
-                           (uint32_t)xPortGetExtSramMinimumFreeHeapSize());
-    bk_printf("ext_sram range: [0x%08x, 0x%08x)\r\n",
-              (uint32_t)SOC_SRAM_CPU_ADDR(CONFIG_AP_EXT_SRAM_HEAP_ADDR),
-              (uint32_t)SOC_SRAM_CPU_ADDR(CONFIG_AP_EXT_SRAM_HEAP_ADDR + CONFIG_AP_EXT_SRAM_HEAP_SIZE));
 #endif
 }
 
@@ -519,94 +483,6 @@ static void memory_test_single_free(const char *name, memory_free_func_t free_fn
     memory_show_heap();
 }
 
-#if MEMORY_EXT_SRAM_ENABLED
-static void *memory_ext_sram_malloc_wrapper(size_t size)
-{
-    return ext_sram_malloc(size);
-}
-
-static void memory_ext_sram_free_wrapper(void *ptr)
-{
-    ext_sram_free(ptr);
-}
-
-static uint8_t memory_ptr_in_ext_sram(const void *ptr)
-{
-    uintptr_t addr = (uintptr_t)ptr;
-    uintptr_t start = (uintptr_t)SOC_SRAM_CPU_ADDR(CONFIG_AP_EXT_SRAM_HEAP_ADDR);
-    uintptr_t end = (uintptr_t)SOC_SRAM_CPU_ADDR(CONFIG_AP_EXT_SRAM_HEAP_ADDR + CONFIG_AP_EXT_SRAM_HEAP_SIZE);
-
-    return ((addr >= start) && (addr < end)) ? 1U : 0U;
-}
-
-static void memory_test_os_fallback(uint32_t block_size, uint32_t max_blocks)
-{
-    uint32_t alloc_count = 0;
-    uint32_t ext_count = 0;
-    uint32_t ext_index = UINT32_MAX;
-    uint32_t fail_index = UINT32_MAX;
-    uint64_t start_us;
-    uint64_t elapsed_us;
-    uint32_t before_sram = (uint32_t)rtos_get_free_heap_size();
-    uint32_t before_ext = (uint32_t)xPortGetExtSramFreeHeapSize();
-
-    if (block_size == 0U) {
-        block_size = MEMORY_ALLOC_TEST_DEFAULT_SIZE;
-    }
-
-    if ((max_blocks == 0U) || (max_blocks > MEMORY_FALLBACK_MAX_BLOCKS)) {
-        max_blocks = MEMORY_FALLBACK_MAX_BLOCKS;
-    }
-
-    os_memset(s_memory_fallback_ptrs, 0, sizeof(s_memory_fallback_ptrs));
-
-    start_us = bk_aon_rtc_get_us();
-    for (uint32_t i = 0; i < max_blocks; i++) {
-        void *ptr = os_malloc(block_size);
-
-        if (ptr == NULL) {
-            fail_index = i;
-            break;
-        }
-
-        memory_touch_block(ptr, block_size);
-        s_memory_fallback_ptrs[i] = ptr;
-        alloc_count++;
-
-        if (memory_ptr_in_ext_sram(ptr)) {
-            ext_count++;
-            if (ext_index == UINT32_MAX) {
-                ext_index = i;
-            }
-        }
-    }
-    elapsed_us = bk_aon_rtc_get_us() - start_us;
-
-    bk_printf("os_fallback block=%u max=%u alloc=%u ext_alloc=%u first_ext_index=%d fail_index=%d elapsed=%llu us\r\n",
-              block_size, max_blocks, alloc_count, ext_count,
-              (ext_index == UINT32_MAX) ? -1 : (int32_t)ext_index,
-              (fail_index == UINT32_MAX) ? -1 : (int32_t)fail_index, elapsed_us);
-    bk_printf("before: sram_free=%u ext_free=%u\r\n", before_sram, before_ext);
-    bk_printf("during: sram_free=%u ext_free=%u\r\n",
-              (uint32_t)rtos_get_free_heap_size(), (uint32_t)xPortGetExtSramFreeHeapSize());
-
-    for (uint32_t i = 0; i < alloc_count; i++) {
-        os_free(s_memory_fallback_ptrs[i]);
-        s_memory_fallback_ptrs[i] = NULL;
-    }
-
-    bk_printf("after:  sram_free=%u ext_free=%u\r\n",
-              (uint32_t)rtos_get_free_heap_size(), (uint32_t)xPortGetExtSramFreeHeapSize());
-    if (ext_index == UINT32_MAX) {
-        bk_printf("os_fallback result: ext_sram was not used. Try larger block or max_blocks.\r\n");
-    } else if (fail_index != UINT32_MAX) {
-        bk_printf("os_fallback result: os_malloc used AP_EXT_SRAM_HEAP, then failed when both heaps could not satisfy block.\r\n");
-    } else {
-        bk_printf("os_fallback result: os_malloc used AP_EXT_SRAM_HEAP, max_blocks reached before allocation failure.\r\n");
-    }
-}
-#endif
-
 static void memory_mark(const char *name)
 {
     memory_read_snapshot(&s_memory_snapshot, name);
@@ -645,11 +521,6 @@ static void memory_diff(void)
 #if (CONFIG_CPU_INDEX == 1) && defined(CONFIG_AP_HSRAM_HEAP_ADDR)
     memory_print_diff_line("hsram", s_memory_snapshot.hsram_free_bytes, current.hsram_free_bytes,
                            s_memory_snapshot.hsram_min_free_bytes, current.hsram_min_free_bytes);
-#endif
-
-#if MEMORY_EXT_SRAM_ENABLED
-    memory_print_diff_line("ext_sram", s_memory_snapshot.ext_sram_free_bytes, current.ext_sram_free_bytes,
-                           s_memory_snapshot.ext_sram_min_free_bytes, current.ext_sram_min_free_bytes);
 #endif
 }
 
@@ -708,54 +579,6 @@ void cli_memory_test_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, cha
         return;
     }
 
-    if ((os_strcmp(argv[1], "ext") == 0) || (os_strcmp(argv[1], "extra") == 0)) {
-#if MEMORY_EXT_SRAM_ENABLED
-        memory_print_heap_line("ext_sram",
-                               (uint32_t)xPortGetExtSramTotalHeapSize(),
-                               (uint32_t)xPortGetExtSramFreeHeapSize(),
-                               (uint32_t)xPortGetExtSramMinimumFreeHeapSize());
-        bk_printf("ext_sram range: [0x%08x, 0x%08x)\r\n",
-                  (uint32_t)SOC_SRAM_CPU_ADDR(CONFIG_AP_EXT_SRAM_HEAP_ADDR),
-                  (uint32_t)SOC_SRAM_CPU_ADDR(CONFIG_AP_EXT_SRAM_HEAP_ADDR + CONFIG_AP_EXT_SRAM_HEAP_SIZE));
-#else
-        bk_printf("AP_EXT_SRAM_HEAP is not configured.\r\n");
-#endif
-        return;
-    }
-
-    if (os_strcmp(argv[1], "ext_malloc") == 0) {
-#if MEMORY_EXT_SRAM_ENABLED
-        memory_test_single_alloc("ext_sram", memory_ext_sram_malloc_wrapper, memory_ext_sram_free_wrapper,
-                                 &s_memory_ext_test_ptr,
-                                 memory_arg_u32(argc, argv, 2, MEMORY_ALLOC_TEST_DEFAULT_SIZE));
-#else
-        bk_printf("AP_EXT_SRAM_HEAP is not configured.\r\n");
-#endif
-        return;
-    }
-
-    if (os_strcmp(argv[1], "ext_free") == 0) {
-#if MEMORY_EXT_SRAM_ENABLED
-        memory_test_single_free("ext_sram", memory_ext_sram_free_wrapper, &s_memory_ext_test_ptr);
-#else
-        bk_printf("AP_EXT_SRAM_HEAP is not configured.\r\n");
-#endif
-        return;
-    }
-
-    if (os_strcmp(argv[1], "ext_loop") == 0) {
-#if MEMORY_EXT_SRAM_ENABLED
-        memory_run_alloc_loop("ext_sram malloc/free",
-                              memory_ext_sram_malloc_wrapper,
-                              memory_ext_sram_free_wrapper,
-                              memory_arg_u32(argc, argv, 2, MEMORY_ALLOC_TEST_DEFAULT_SIZE),
-                              memory_arg_u32(argc, argv, 3, MEMORY_ALLOC_TEST_DEFAULT_COUNT));
-#else
-        bk_printf("AP_EXT_SRAM_HEAP is not configured.\r\n");
-#endif
-        return;
-    }
-
     if (os_strcmp(argv[1], "os_malloc") == 0) {
         memory_test_single_alloc("os", memory_os_malloc_wrapper, memory_os_free_wrapper,
                                  &s_memory_os_test_ptr,
@@ -774,20 +597,6 @@ void cli_memory_test_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, cha
                               memory_os_free_wrapper,
                               memory_arg_u32(argc, argv, 2, MEMORY_ALLOC_TEST_DEFAULT_SIZE),
                               memory_arg_u32(argc, argv, 3, MEMORY_ALLOC_TEST_DEFAULT_COUNT));
-        return;
-    }
-
-    if (os_strcmp(argv[1], "os_fallback") == 0) {
-#if MEMORY_EXT_SRAM_ENABLED
-#if defined(CONFIG_OS_MALLOC_EXT_SRAM_FALLBACK)
-        memory_test_os_fallback(memory_arg_u32(argc, argv, 2, MEMORY_ALLOC_TEST_DEFAULT_SIZE),
-                                memory_arg_u32(argc, argv, 3, 128U));
-#else
-        bk_printf("CONFIG_OS_MALLOC_EXT_SRAM_FALLBACK is disabled.\r\n");
-#endif
-#else
-        bk_printf("AP_EXT_SRAM_HEAP is not configured.\r\n");
-#endif
         return;
     }
 

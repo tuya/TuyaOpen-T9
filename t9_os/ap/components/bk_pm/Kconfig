@@ -35,15 +35,22 @@ menu "PM"
 
 	config PM_CPU_FRQ_HIGHEST
 		int "config highest cpu frequency"
-		default 4
+		default 3
 		help
-		   config highest cpu frequency(0:xtal;1:60M;2:80M;3:120M;4:160M;5:240M;)
+		   config highest cpu frequency(0:xtal;1:80M;2:120M;3:160M;4:240M;5:320M;6:480M;)
 
 	config PM_CPU_FRQ_DEFAULT
 		int "config default cpu frequency"
-		default 3
+		default 2
 		help
-		   config default cpu frequency(0:xtal;1:60M;2:80M;3:120M;4:160M;5:240M;)
+		   config default cpu frequency(0:xtal;1:80M;2:120M;3:160M;4:240M;5:320M;6:480M;)
+
+	config PM_AP_CPU_FRQ_DEFAUL
+		bool "Vote default cpu frequency during AP init"
+		default n
+		help
+			When enabled, AP bk_init votes CONFIG_PM_CPU_FRQ_DEFAULT
+			via bk_pm_module_vote_cpu_freq() at the end of initialization.
 
 	config PM_PROTECT_TIME_CHECK
 		bool "Primarily protect time check"
@@ -75,6 +82,22 @@ menu "PM"
 		bool "Power down ap when sleep"
 		default n
 
+	config PM_AP_WFI_ENABLE
+		bool "Enable AP idle WFI"
+		default n
+		help
+			Execute arch_sleep()/WFI in sys_hal_enter_cpu_wfi() when CP is
+			not requesting AP sleep, and on non-CPU0 cores. Keep this
+			disabled unless the project explicitly needs those idle WFI
+			paths.
+
+	config PM_AP_SUBPOWER_DOMAIN_DEFAULT_DISABLE
+		bool "Disable AP sub-power domains by default"
+		default n
+		help
+			Power off the VIDEO_POST, H26E, ISP and NPU power domains
+			during AP power-management hardware initialization.
+
 	config PM_AP_FAST_BOOT_ENABLE
 		bool "Restore AP FreeRTOS execution point after AP power cycle"
 		depends on SOC_SMP && PSRAM_DATA_RETENTION_ENABLE
@@ -85,6 +108,25 @@ menu "PM"
 			from the reset vector using retained AP SRAM. Back up power-gated
 			DTCM into retained AP SRAM and restore it before re-enabling
 			interrupts. The secondary AP core must be offline before capture.
+
+	config PM_AP_FAST_BOOT_VERBOSE_TRACE
+		bool "Enable verbose AP fast boot transition trace"
+		depends on PM_AP_FAST_BOOT_ENABLE
+		default n
+		help
+			Print detailed mailbox, callback and transition logs. Keep this
+			disabled normally to reduce UART backlog and power-transition
+			latency. Errors, timeouts and summary logs remain enabled.
+
+	config PM_AP_SRAM_RETENTION_CHECK
+		bool "Generate AP SRAM baseline for CP retention checks"
+		depends on PM_AP_FAST_BOOT_ENABLE && PSRAM_DATA_RETENTION_ENABLE
+		default n
+		help
+			Generate CRC32 values and a retained PSRAM snapshot for
+			SMEM3-SMEM6 before AP power-off. CP checks the banks after AP
+			reaches WFI and again before releasing AP reset. Idle-task and
+			AP main stacks are excluded.
 
 endmenu
 

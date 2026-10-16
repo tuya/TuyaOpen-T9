@@ -38,18 +38,22 @@ bk_err_t netif_wifi_event_cb(void *arg, event_module_t event_module,
 	switch (event_id) {
 	case EVENT_WIFI_STA_CONNECTED:
 #if CONFIG_NETIF_LWIP
+#ifndef CONFIG_WFA_CERT
 		if (sta_static_ip_flag != 0) {
 			sta_ip_mode_set(0);
 			BK_LOG_ON_ERR(bk_netif_set_ip4_config(NETIF_IF_STA, &static_ip));
 		}
+#endif
 		sta_ip_start();
 #endif
 		break;
 	case EVENT_WIFI_STA_DISCONNECTED:
 #if CONFIG_NETIF_LWIP
 		sta_ip_down();
+#ifndef CONFIG_WFA_CERT
 		sta_static_ip_flag = 0;
 		sta_ip_mode_set(1);
+#endif /* CONFIG_WFA_CERT */
 #endif
 		break;
 #if CONFIG_P2P
@@ -127,10 +131,6 @@ bk_err_t bk_netif_get_ip4_config(netif_if_t ifx, netif_ip4_config_t *ip4_config)
 		net_get_if_addr(&addr, net_get_sta_handle());
 	} else if (ifx == NETIF_IF_AP) {
 		net_get_if_addr(&addr, net_get_uap_handle());
-#ifdef CONFIG_ETH
-	} else if (ifx == NETIF_IF_ETH) {
-		net_get_if_addr(&addr, net_get_eth_handle());
-#endif
 #if CONFIG_BRIDGE
 	} else if (ifx == NETIF_IF_BRIDGE) {
 		net_get_if_addr(&addr, net_get_br_handle());

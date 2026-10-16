@@ -27,6 +27,15 @@ menu "Bk_ble"
 		depends on (BLUETOOTH_HOST_ONLY || BLUETOOTH_SUPPORT_AP_PWD_ALL)
 		default y
 
+	config BLE_BOARDING_JSON_PROFILE
+		bool "Use BLE boarding JSON profile"
+		depends on BLE
+		default n
+		help
+			Use the BLE boarding JSON profile instead of the legacy opcode
+			profile. Pass received provisioning data directly to the
+			registered upper-layer handler.
+
 	config BLE_LE_AUDIO
 		bool "Enable LE Audio"
 		depends on BLE && BLUETOOTH_BTDM_COMPONENT_ENABLE
@@ -92,15 +101,36 @@ menu "Bk_ble"
         bool "auto ble discover. Only used when single ble host"
         default y
 
+    config BLUETOOTH_HCI_HOST_FLOW_CONTROL
+        bool "enable HCI controller-to-host ACL flow control at runtime"
+        default n
+
     config BLUETOOTH_SUPPORT_IPC
         bool "bt support ipc"
 		depends on BLUETOOTH_AP
         default y
 
+    config SUPPORT_BLE_RECONNECTION_STRATEGY
+        bool "automatically initialize ble reconnection due to connection establishment failed"
+        default y
+
+    config BLE_MAX_LATENCY
+        int "max latency."
+        default 20
+        range 0 499
+
     config BLUETOOTH_SUPPORT_AP_PWD_ALL
         bool "bluetooth support ap power down all"
 		depends on BLUETOOTH_SUPPORT_IPC
         default n
+
+    config BLUETOOTH_SUPPORT_AP_PWD_RETENTION
+        bool "bluetooth support ap power down with RAM retention"
+		depends on BLUETOOTH_SUPPORT_IPC
+        default n
+        help
+            AP powers down but its RAM is retained. On resume the AP does not
+            re-init the stack; it is distinct from BLUETOOTH_SUPPORT_AP_PWD_ALL (AP RAM is lost).
 
 	menu "BK_MESH"
 		depends on BLE && BLUETOOTH_HOST_ONLY && BLUETOOTH_SUPPORT_IPC
@@ -290,5 +320,36 @@ menu "Bk_ble"
 				addition to SBC. This links the FDK-AAC encoder library which
 				adds roughly 230 KB of flash, so it is disabled by default to
 				keep code size down. When disabled, the A2DP source is SBC-only.
+
+		config BLUETOOTH_BTDM_COMPONENT_HFP_AG
+			bool "Enable HFP AG (Audio Gateway) role service"
+			default n
+			help
+				Build the componentized HFP AG service (bk_hfp_ag_service +
+				hfp_ag_audio) so the device can act as the Audio Gateway
+				(phone/gateway side) of a Hands-Free call. Needs the HFP AG
+				host support enabled too (CONFIG_HFP_AG). Disabled by default;
+				enable it in the project that needs the AG role (e.g.
+				bluetooth/central).
+	endmenu
+
+	menu "bluetooth CTKD Modules"
+		depends on BLUETOOTH_BTDM_COMPONENT_ENABLE
+		depends on BLE && BT
+
+		config BLUETOOTH_CTKD_BLE_TO_BT
+			bool "Enable BLE to BR/EDR CTKD"
+			default n
+			help
+				Enable Cross-Transport Key Derivation from a BLE LTK key
+				to a BR/EDR link key.
+
+		config BLUETOOTH_CTKD_BT_TO_BLE
+			bool "Enable BR/EDR to BLE CTKD"
+			depends on !BLUETOOTH_MULTI_CONTROLLER
+			default n
+			help
+				Enable Cross-Transport Key Derivation from a BR/EDR link
+				key to a BLE LTK key.
 	endmenu
 endmenu

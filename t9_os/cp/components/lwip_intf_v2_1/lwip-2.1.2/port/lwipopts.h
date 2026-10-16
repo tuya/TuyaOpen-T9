@@ -352,6 +352,7 @@ u32_t beken_random(void);
 #ifdef CONFIG_IPV6
 #define LWIP_IPV6                        1
 #define LWIP_NETIF_EXT_STATUS_CALLBACK  1
+#define LWIP_ND6_RDNSS_MAX_DNS_SERVERS  DNS_MAX_SERVERS
 #endif
 
 /* Enable IPv4 Auto IP	*/
@@ -535,11 +536,6 @@ The STM32F107 allows computing and verifying the IP, UDP, TCP and ICMP checksums
   #define CHECKSUM_CHECK_UDP              1
   /* CHECKSUM_CHECK_TCP==1: Check checksums in software for incoming TCP packets.*/
   #define CHECKSUM_CHECK_TCP              1
-#endif
-
-#if CONFIG_ETH
-/* Enable Checksum Per Interface, ETH has HW csum module */
-#define LWIP_CHECKSUM_CTRL_PER_NETIF      1
 #endif
 
 /**

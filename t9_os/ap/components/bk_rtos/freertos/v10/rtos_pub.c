@@ -28,6 +28,7 @@
 #include <os/mem.h>
 #include "bk_uart.h"
 #include "bk_arch.h"
+#include <modules/pm.h>
 #include <components/system.h>
 #include <driver/gpio.h>
 #include "rtos_impl.h"
@@ -85,13 +86,6 @@ BaseType_t xTaskCreateInHsram( TaskFunction_t pxTaskCode,
                         TaskHandle_t * const pxCreatedTask );
 
 BaseType_t xTaskCreateInSram( TaskFunction_t pxTaskCode,
-                        const char * const pcName, /*lint !e971 Unqualified char types are allowed for strings and single characters only. */
-                        const configSTACK_DEPTH_TYPE usStackDepth,
-                        void * const pvParameters,
-                        UBaseType_t uxPriority,
-                        TaskHandle_t * const pxCreatedTask );
-
-BaseType_t xTaskCreateInExtSram( TaskFunction_t pxTaskCode,
                         const char * const pcName, /*lint !e971 Unqualified char types are allowed for strings and single characters only. */
                         const configSTACK_DEPTH_TYPE usStackDepth,
                         void * const pvParameters,
@@ -204,29 +198,6 @@ bk_err_t rtos_create_hsram_thread( beken_thread_t* thread, uint8_t priority, con
     if( pdPASS == xTaskCreateInHsram( (native_thread_t)function, name, 
             (unsigned short) (stack_size/sizeof( portSTACK_TYPE )), 
             (void *)arg, BK_PRIORITY_TO_NATIVE_PRIORITY(priority), 
-            (TaskHandle_t *)thread ) )
-    {
-        return kNoErr;
-    }
-    else
-    {
-        return kGeneralErr;
-    }
-}
-
-bk_err_t rtos_create_ext_sram_thread( beken_thread_t* thread, uint8_t priority, const char* name,
-                        beken_thread_function_t function, uint32_t stack_size, beken_thread_arg_t arg )
-{
-    RTOS_ASSERT_INT_ENABLED_WITH_SCHEDULER();
-
-    if ( priority > RTOS_HIGHEST_PRIORITY )
-    {
-        priority = RTOS_HIGHEST_PRIORITY;
-    }
-
-    if( pdPASS == xTaskCreateInExtSram( (native_thread_t)function, name,
-            (unsigned short) (stack_size/sizeof( portSTACK_TYPE )),
-            (void *)arg, BK_PRIORITY_TO_NATIVE_PRIORITY(priority),
             (TaskHandle_t *)thread ) )
     {
         return kNoErr;
@@ -1481,6 +1452,9 @@ void vApplicationGetIdleTaskMemory( StaticTask_t **ppxIdleTaskTCBBuffer, StackTy
 
     /* Pass out the array that will be used as the Idle task's stack. */
     *ppxIdleTaskStackBuffer = uxIdleTaskStack;
+	bk_pm_ap_sram_retention_check_set_idle_stack(
+		uxIdleTaskStack,
+		uxIdleTaskStack + configMINIMAL_STACK_SIZE);
 
     /* Pass out the size of the array pointed to by *ppxIdleTaskStackBuffer.
     Note that, as the array is necessarily of type StackType_t,

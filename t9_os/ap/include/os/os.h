@@ -273,20 +273,6 @@ bk_err_t rtos_create_psram_thread(beken_thread_t *thread, uint8_t priority, cons
   */
 bk_err_t rtos_create_hsram_thread(beken_thread_t *thread, uint8_t priority, const char *name, beken_thread_function_t function, uint32_t stack_size, beken_thread_arg_t arg);
 
-/** @brief Creates and starts a new thread on AP_EXT_SRAM_HEAP (extended SRAM between CP and HSRAM)
-  *
-  * @param thread     : Pointer to variable that will receive the thread handle (can be null)
-  * @param priority   : A priority number.
-  * @param name       : a text name for the thread (can be null)
-  * @param function   : the main thread function
-  * @param stack_size : stack size for this thread
-  * @param arg        : argument which will be passed to thread function
-  *
-  * @return    kNoErr          : on success.
-  * @return    kGeneralErr     : if an error occurred
-  */
-bk_err_t rtos_create_ext_sram_thread(beken_thread_t *thread, uint8_t priority, const char *name, beken_thread_function_t function, uint32_t stack_size, beken_thread_arg_t arg);
-
 
 /** @brief Creates and starts a new thread,the task will be dynamically created in sram(default)
   *         

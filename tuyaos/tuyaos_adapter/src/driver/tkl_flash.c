@@ -4,6 +4,8 @@
 #include "tkl_output.h"
 #include <common/bk_typedef.h>
 #include "driver/flash.h"
+/* 4.0.1.11 moved flash protection into the shared flash core (flash_core_*). */
+#include "bk_flash_core.h"
 #include "tkl_mutex.h"
 
 typedef struct
@@ -85,17 +87,23 @@ static OPERATE_RET __tkl_flash_opt_unlock(void)
  *
  * @return OPRT_OK
  */
+/* 4.0.1.11 removed bk_flash_get/set_protect_type() and moved protection into the
+ * flash core: it re-asserts this "runtime" type around every op (PER_OP
+ * re-protect) and there is no getter, so the requested type is tracked here. */
+static unsigned int s_flash_protect_type = FLASH_PROTECT_ALL;
+
 OPERATE_RET tkl_flash_set_protect(const BOOL_T enable)
 {
     unsigned int  param;
 
     if (enable) {
         param = FLASH_PROTECT_ALL;
-        bk_flash_set_protect_type(param);
     } else {
         param = FLASH_PROTECT_NONE;
-        bk_flash_set_protect_type(param);
     }
+
+    s_flash_protect_type = param;
+    flash_core_set_runtime_protect_type((flash_protect_type_t)param);
 
     return OPRT_OK;
 }
@@ -131,9 +139,8 @@ OPERATE_RET tkl_flash_read(UINT_T addr, UCHAR_T *dst, UINT_T size)
 
 static unsigned int __uni_flash_is_protect_all(void)
 {
-    unsigned int param;
-    param = bk_flash_get_protect_type();
-    return (FLASH_PROTECT_ALL == param || FLASH_UNPROTECT_LAST_BLOCK == param);
+    return (FLASH_PROTECT_ALL == s_flash_protect_type ||
+            FLASH_UNPROTECT_LAST_BLOCK == s_flash_protect_type);
 }
 
 /**
@@ -156,9 +163,8 @@ OPERATE_RET tkl_flash_write(UINT_T addr, CONST UCHAR_T *src, UINT_T size)
     /* TODO: need to consider whether to use locks at the TKL layer*/
     __tkl_flash_opt_lock();
 
-    bk_flash_set_protect_type(FLASH_PROTECT_NONE);
+    /* 4.0.1.11: the flash core brackets protection per op; no manual unprotect. */
     bk_flash_write_bytes(addr, (const uint8_t *)src, size);
-    bk_flash_set_protect_type(FLASH_UNPROTECT_LAST_BLOCK);
 
     /* TODO: need to consider whether to use locks at the TKL layer*/
     __tkl_flash_opt_unlock();
@@ -186,13 +192,12 @@ OPERATE_RET tkl_flash_erase(UINT_T addr, UINT_T size)
     /* TODO: need to consider whether to use locks at the TKL layer*/
     __tkl_flash_opt_lock();
 
-    bk_flash_set_protect_type(FLASH_PROTECT_NONE);
+    /* 4.0.1.11: the flash core brackets protection per op; no manual unprotect. */
     for (i = start_sec; i <= end_sec; i++) {
         sector_addr = PARTITION_SIZE * i;
         bk_flash_erase_sector(sector_addr);
         tkl_system_sleep(2);
     }
-    bk_flash_set_protect_type(FLASH_UNPROTECT_LAST_BLOCK);
 
     /* TODO: need to consider whether to use locks at the TKL layer*/
     __tkl_flash_opt_unlock();

@@ -17,6 +17,7 @@
 #include <common/bk_include.h>
 #include <driver/sd_card_types.h>
 
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -186,6 +187,7 @@ bk_err_t bk_sd_card_set_present_cb(bk_sd_card_present_cb_t cb);
  *         unknown), 0 when the registered predicate reports the card absent.
  */
 uint8_t bk_sd_card_is_present(void);
+
 
 #ifdef __cplusplus
 }

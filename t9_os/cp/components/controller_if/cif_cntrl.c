@@ -2,6 +2,13 @@
 #include "net.h"
 #include "bk_wifi_types.h"
 #include "modules/wifi.h"
+#if CONFIG_IPV6
+#include "lwip/netif.h"
+#include "lwip/ip6_addr.h"
+#include "lwip/dns.h"
+#include "lwip/ip_addr.h"
+#include "lwip/priv/nd6_priv.h"
+#endif
 #include "bk_wifi.h"
 #include <stdlib.h>
 #include <string.h>
@@ -18,10 +25,6 @@
 #if CONFIG_SUPPORT_CACHEABLE_SRAM
 #include "cache.h"
 #endif
-#endif
-#ifdef CONFIG_IPV6
-#include "lwip/netif.h"
-#include "lwip/ip6_addr.h"
 #endif
 
 extern int bmsg_tx_sender(struct pbuf *p, uint32_t vif_idx);
@@ -105,6 +108,18 @@ bk_err_t cif_bk_send_event(uint16_t event_id, uint8_t *event_data, uint16_t even
     struct ctrl_cmd_hdr * buf = NULL;
     bk_err_t ret = BK_OK;
 
+#if (defined(CONFIG_QUICK_TRACK) && CONFIG_QUICK_TRACK) || (defined(CONFIG_WFA_CERT) && CONFIG_WFA_CERT)
+    if ((event_id == BK_EVT_IPV4_IND) ||
+        (event_id == BK_EVT_IPV6_IND) ||
+        (event_id == BK_EVT_WIFI_EVENT_IND) ||
+        (event_id == BK_EVT_CUSTOMER_IND) ||
+        ((event_id >= BK_EVT_WIFI_API_START) && (event_id <= BK_EVT_WIFI_API_END)))
+    {
+        CIF_LOGD("%s skip event 0x%x for WFA/QuickTrack CP local handling\n", __func__, event_id);
+        return BK_OK;
+    }
+#endif
+
     if (!cif_env.host_powerup)
     {
         CIF_LOGD("%s skip event 0x%x, host not power up\n", __func__, event_id);
@@ -163,6 +178,9 @@ bk_err_t cif_handle_bk_cmd_connect_req(struct bk_msg_hdr *msg)
 }
 bk_err_t cif_handle_bk_cmd_connect_ind(char *ssid, uint8_t rssi, uint32_t ip, uint32_t gw, uint32_t mk, uint32_t dns, uint8_t vif_idx)
 {
+#if (defined(CONFIG_QUICK_TRACK) && CONFIG_QUICK_TRACK) || (defined(CONFIG_WFA_CERT) && CONFIG_WFA_CERT)
+    return BK_OK;
+#endif
     struct bk_msg_connect_ind ind = {0};
 
     os_strcpy((char *)ind.ussid, ssid);
@@ -176,13 +194,110 @@ bk_err_t cif_handle_bk_cmd_connect_ind(char *ssid, uint8_t rssi, uint32_t ip, ui
 }
 
 #ifdef CONFIG_IPV6
+static void cif_fill_ipv6_dns_and_gateway(struct netif *netif, struct bk_msg_ipv6_ind *ind)
+{
+	int i;
+#if LWIP_DNS
+	const ip_addr_t *dns_addr;
+#endif
+
+	if (!netif || !ind)
+		return;
+
+#if LWIP_DNS
+	for (i = 0; i < MAX_IPV6_DNS_SERVERS_IN_MSG; i++) {
+		dns_addr = dns_getserver(i);
+		if (dns_addr && IP_IS_V6(dns_addr) && !ip_addr_isany(dns_addr)) {
+			os_memcpy(ind->dns_addr[ind->dns_count], ip_2_ip6(dns_addr)->addr, 16);
+			CIF_LOGD("IPv6 DNS server %d: %s\n", ind->dns_count, ipaddr_ntoa(dns_addr));
+			ind->dns_count++;
+		}
+	}
+	if (!ind->dns_count)
+		CIF_LOGD("no IPv6 DNS server learned\n");
+#endif
+
+	for (i = 0; i < LWIP_ND6_NUM_ROUTERS; i++) {
+		struct nd6_neighbor_cache_entry *neighbor = default_router_list[i].neighbor_entry;
+
+		if (neighbor && neighbor->netif == netif && neighbor->isrouter &&
+		    neighbor->state != ND6_NO_ENTRY && neighbor->state != ND6_INCOMPLETE) {
+			os_memcpy(ind->gateway, neighbor->next_hop_address.addr, 16);
+			os_memcpy(ind->gateway_mac, neighbor->lladdr, IPV6_GATEWAY_MAC_LEN);
+			ind->gateway_lifetime = default_router_list[i].invalidation_timer;
+			ind->gw_valid = 1;
+			CIF_LOGD("IPv6 gateway: %s lifetime=%u\n",
+				 ip6addr_ntoa(&neighbor->next_hop_address),
+				 ind->gateway_lifetime);
+			break;
+		}
+	}
+	if (!ind->gw_valid)
+		CIF_LOGD("no IPv6 gateway learned\n");
+}
+
+static int cif_fill_ipv6_global_ind_from_netif(struct netif *netif,
+		struct bk_msg_ipv6_ind *ind, uint8_t vif_idx)
+{
+	int i;
+	int valid_count = 0;
+	u8 *ipv6_addr;
+
+	(void)vif_idx;
+	if (!netif || !ind)
+		return 0;
+
+	os_memset(ind, 0, sizeof(*ind));
+
+	for (i = 0; i < LWIP_IPV6_NUM_ADDRESSES && valid_count < MAX_IPV6_ADDRESSES_IN_MSG; i++) {
+		if (ip6_addr_isvalid(netif_ip6_addr_state(netif, i)) &&
+		    !ip6_addr_islinklocal(ip_2_ip6(&netif->ip6_addr[i]))) {
+			ipv6_addr = (u8 *)(ip_2_ip6(&netif->ip6_addr[i]))->addr;
+			os_memcpy(ind->ipv6_addr[valid_count].address, ipv6_addr, 16);
+			ind->ipv6_addr[valid_count].addr_state = netif->ip6_addr_state[i];
+			ind->ipv6_addr[valid_count].addr_type = netif->ip6_addr[i].type;
+			valid_count++;
+		}
+	}
+	ind->addr_count = (uint8_t)valid_count;
+	cif_fill_ipv6_dns_and_gateway(netif, ind);
+	return valid_count;
+}
+
+bk_err_t cif_send_ipv6_clear_ind(uint8_t vif_idx)
+{
+	struct bk_msg_ipv6_ind ind = {0};
+
+	(void)vif_idx;
+	return cif_bk_send_event(BK_EVT_IPV6_IND, (uint8_t *)&ind, sizeof(ind));
+}
+
+bk_err_t cif_get_sta_ipv6_config(struct bk_msg_ipv6_ind *ind)
+{
+	struct netif *sta_netif;
+
+	if (!ind)
+		return BK_ERR_NULL_PARAM;
+
+	sta_netif = (struct netif *)net_get_sta_handle();
+	if (!sta_netif)
+		return BK_ERR_STATE;
+
+	cif_fill_ipv6_global_ind_from_netif(sta_netif, ind, 0);
+	return BK_OK;
+}
+
 bk_err_t cif_handle_bk_cmd_ipv6_ind(void *n)
 {
+#if (defined(CONFIG_QUICK_TRACK) && CONFIG_QUICK_TRACK) || (defined(CONFIG_WFA_CERT) && CONFIG_WFA_CERT)
+    return BK_OK;
+#endif
     struct bk_msg_ipv6_ind ind = {0};
     int i;
     u8 *ipv6_addr;
     int valid_count = 0;
     struct netif *netif = (struct netif *)n;
+
     for (i = 0; i < MAX_IPV6_ADDRESSES_IN_MSG; i++) {
         if (ip6_addr_isvalid(netif_ip6_addr_state(netif, i))) {
             ipv6_addr = (u8 *)(ip_2_ip6(&netif->ip6_addr[i]))->addr;
@@ -193,6 +308,7 @@ bk_err_t cif_handle_bk_cmd_ipv6_ind(void *n)
         }
     }
     ind.addr_count = valid_count;
+    cif_fill_ipv6_dns_and_gateway(netif, &ind);
 
     if (valid_count > 0) {
         return cif_bk_send_event(BK_EVT_IPV6_IND, (uint8_t *)&ind, sizeof(ind));
@@ -471,6 +587,10 @@ bk_err_t cif_handle_bk_cmd_at_rsp(void *payload, uint16_t len, struct bk_msg_hdr
 }
 bk_err_t cif_handle_bk_cmd_at_ind(void *payload, uint16_t len)
 {
+#if (defined(CONFIG_QUICK_TRACK) && CONFIG_QUICK_TRACK) || (defined(CONFIG_WFA_CERT) && CONFIG_WFA_CERT)
+    return BK_OK;
+#endif
+
     uint32_t buf_len = sizeof(struct cpdu_t) + sizeof(struct bk_rx_msg_hdr) + len;
     struct ctrl_cmd_hdr * buf = NULL;
 
@@ -547,6 +667,10 @@ bk_err_t cif_handle_bk_cmd_wifi_mmd_cfg_req(struct bk_msg_hdr *msg)
 
 bk_err_t cif_handle_bk_cmd_set_netinfo_req(struct bk_msg_hdr *msg)
 {
+#if (defined(CONFIG_QUICK_TRACK) && CONFIG_QUICK_TRACK) || (defined(CONFIG_WFA_CERT) && CONFIG_WFA_CERT)
+    cif_bk_cmd_confirm(msg, NULL, 0);
+    return BK_OK;
+#endif
     int32_t ret = 0;
     struct bk_msg_net_info_req *req = (struct bk_msg_net_info_req *)(msg + 1);
     netif_ip4_config_t config = {0};
@@ -705,8 +829,8 @@ static __IRAM2 bool cif_tx_flow_mem_recovered(void)
     heap_free = rtos_get_free_heap_size();
     heap_min_rsv = g_wifi_mac_config.min_rsv_mem;
 
-    return ((tx_pct < 75) &&
-            (mem_pct <= 80) &&
+    return ((tx_pct < TX_MEM_RESUME_THRES) &&
+            (mem_pct < TOTAL_MEM_RESUME_THRES) &&
             (heap_free > (heap_min_rsv + heap_min_rsv / 4)));
 #else
     return false;

@@ -612,7 +612,6 @@ static OPERATE_RET cam_mipi_sensor_detect_and_check(TUYA_MIPI_CSI_HW_CFG_T *cfg)
 
     sensor_cfg.pin_reset = (uint8_t)cfg->pin_reset;
     sensor_cfg.pin_pwdn = (uint8_t)cfg->pin_pwdn;
-    sensor_cfg.pin_xclk = (uint8_t)cfg->pin_xclk;
     sensor_cfg.bus = s_cam_ctx.bus_handle;
 
     s_cam_ctx.sensor_handle = bk_camera_sensor_auto_detect(&sensor_cfg, CSI_CAMERA_PORT);
@@ -790,6 +789,8 @@ STATIC OPERATE_RET cam_mipi_init(TUYA_MIPI_CSI_HW_CFG_T *config)
     bus_cfg.timeout_ms = 2000U;
     bus_cfg.mipi_port_en = 1U;
     bus_cfg.dvp_port_en = 0U;
+    /* 4.0.1.11 moved pin_xclk from bk_camera_sensor_config_t to bk_camera_bus_config_t. */
+    bus_cfg.pin_xclk = (uint8_t)s_cam_ctx.cfg.pin_xclk;
 
     s_cam_ctx.bus_handle = bk_camera_bus_new(&bus_cfg);
     if (s_cam_ctx.bus_handle == NULL) {

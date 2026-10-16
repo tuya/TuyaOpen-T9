@@ -223,8 +223,12 @@ static void ntwk_udp_ctrl_server_thread(beken_thread_arg_t data)
 
     LOGD("%s: start listen \n", __func__);
 
-    while (1)
+    while (!ntwl_udp_ctrl_info->stop_req)
     {
+        if (ntwl_udp_ctrl_info->server_fd < 0)
+        {
+            break;
+        }
         FD_ZERO(&watchfd);
         FD_SET(ntwl_udp_ctrl_info->server_fd, &watchfd);
 
@@ -234,6 +238,10 @@ static void ntwk_udp_ctrl_server_thread(beken_thread_arg_t data)
         if (ret <= 0)
         {
             LOGE("select ret:%d\n", ret);
+            if (ntwl_udp_ctrl_info->stop_req)
+            {
+                break;
+            }
             continue;
         }
         else
@@ -274,7 +282,8 @@ static void ntwk_udp_ctrl_server_thread(beken_thread_arg_t data)
                     ntwk_msg_event_report(NTWK_TRANS_EVT_CONNECTED, ntwl_udp_ctrl_info->remote_address, NTWK_TRANS_CHAN_CTRL);
                 }
 
-                while (ntwl_udp_ctrl_info->server_state == BK_TRUE)
+                while (ntwl_udp_ctrl_info->server_state == BK_TRUE &&
+                       !ntwl_udp_ctrl_info->stop_req)
                 {
                     rcv_len = recv(ntwl_udp_ctrl_info->client_fd, rcv_buf, NTWK_TRANS_CMD_BUFFER, 0);
                     if (rcv_len > 0)
@@ -341,6 +350,7 @@ bk_err_t ntwk_udp_ctrl_chan_start(void *param)
 
     if (!ntwl_udp_ctrl_info->thread)
     {
+        ntwl_udp_ctrl_info->stop_req = 0;
         ret = rtos_create_thread(&ntwl_udp_ctrl_info->thread,
                                  4,
                                  "ntwl_udp_ctrl_srv",
@@ -365,6 +375,8 @@ bk_err_t ntwk_udp_ctrl_chan_stop(void)
     }
 
     ntwl_udp_ctrl_info->chan_state = NTWK_TRANS_CHAN_STOP;
+    ntwl_udp_ctrl_info->stop_req = 1;
+    ntwl_udp_ctrl_info->server_state = BK_FALSE;
     ntwk_msg_event_report(NTWK_TRANS_EVT_STOP, 0 , NTWK_TRANS_CHAN_CTRL);
 
 
@@ -1163,7 +1175,7 @@ bk_err_t ntwk_udp_ctrl_client_chan_stop(void)
 
     if (ntwk_udp_ctrl_client_info->thread != NULL)
     {
-        rtos_thread_join(ntwk_udp_ctrl_client_info->thread);
+        rtos_thread_join(&ntwk_udp_ctrl_client_info->thread);
         ntwk_udp_ctrl_client_info->thread = NULL;
     }
 
@@ -1470,7 +1482,7 @@ bk_err_t ntwk_udp_video_client_chan_stop(void)
 
     if (video_udp_client_service->thd != NULL)
     {
-        rtos_thread_join(video_udp_client_service->thd);
+        rtos_thread_join(&video_udp_client_service->thd);
         video_udp_client_service->thd = NULL;
     }
 
@@ -1764,7 +1776,7 @@ bk_err_t ntwk_udp_audio_client_chan_stop(void)
 
     if (aud_udp_client_service->thd != NULL)
     {
-        rtos_thread_join(aud_udp_client_service->thd);
+        rtos_thread_join(&aud_udp_client_service->thd);
         aud_udp_client_service->thd = NULL;
     }
 

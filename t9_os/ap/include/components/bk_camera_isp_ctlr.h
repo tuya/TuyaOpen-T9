@@ -64,19 +64,27 @@ typedef struct
 
 typedef struct
 {
-    uint8_t read_register;
     uint8_t read_enable;
     uint8_t thread_enable;
     uint32_t read_timeout;
+    uint8_t channel;
+    beken_semaphore_t sem;
+    beken_thread_t thread;
+    void *controller;
+    uint8_t *frame;
+    uint32_t size;
+    uint32_t frame_size;
+    uint8_t port_id;
+} isp_channel_read_ctx_t;
 
+typedef struct
+{
+    uint8_t read_register;
     uint8_t chnl;
     uint8_t state;
     uint8_t sensor_ctlr;
-    beken_semaphore_t sem;
-    beken_thread_t thread;
     void *isp_handle;
-    uint8_t *frame;
-    uint32_t size;
+    isp_channel_read_ctx_t read_ctx[ISP_CHANNEL_INSTANCE_MAX];
     bk_isp_camera_channel_state_t channel_state[ISP_CHANNEL_INSTANCE_MAX];
     uint8_t skip_frames[ISP_CHANNEL_INSTANCE_MAX];
     ISP_PUB_ATTR_S attr[ISP_PORT_CNT];
@@ -91,6 +99,13 @@ typedef struct
  */
 avdk_err_t bk_camera_isp_ctlr_new(bk_isp_camera_ctlr_handle_t *handle);
 
+/**
+ * @brief Create an ISP camera VC mux controller attached to an existing camera controller
+ * @param handle Output VC mux handle
+ * @param camera ISP camera controller handle from bk_camera_isp_ctlr_new
+ * @return AVDK error code
+ */
+avdk_err_t bk_camera_isp_vc_mux_new(bk_isp_camera_vc_mux_handle_t *handle, bk_isp_camera_ctlr_handle_t camera);
 
 #ifdef __cplusplus
 }

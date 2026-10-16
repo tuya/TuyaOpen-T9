@@ -167,6 +167,8 @@ typedef struct {
 	bk_err_t (*_bk_pm_low_voltage_register)(void *enter_config_cb,void *exit_config_cb);
 	void (*_bk_pm_wifi_rtc_set)(uint32_t tick, void *callback);
 	void (*_bk_pm_wifi_rtc_clear)(void);
+	void (*_bk_wifi_set_bk_timer)(uint32_t time_ms, void *callback);
+	void (*_bk_wifi_clear_bk_timer)(void);
 	void (* _wifi_vote_rf_ctrl)(uint8_t cmd);
 	void (* _wifi_phy_clk_open)(uint8_t is_wifi);
 	void (* _wifi_phy_clk_close)(uint8_t is_wifi);
@@ -325,6 +327,8 @@ typedef struct {
 	void (*_rwnx_rc_phyclkrst_cntl_unpack)(uint8_t *rfadcclkinv, uint8_t *rfdacclkinv, uint8_t *fedacclkfreqsel, uint8_t *feclkfreqsel, uint8_t *dacclkfreqsel, uint8_t *adcclkfreqsel);
 	int (*_bk_feature_wifi_dsss_only_enable)(void);
 	bk_err_t (*_bk_pm_clock_ctrl)(uint32_t module, uint32_t clock_state);
+	bool (*_bk_pm_wifi_rtc_is_registered)(void);
+	void (*_sys_hal_wifi_enter_sleep_status_set)(uint32_t status);
 } wifi_os_funcs_t;
 extern wifi_os_funcs_t g_wifi_os_funcs;
 

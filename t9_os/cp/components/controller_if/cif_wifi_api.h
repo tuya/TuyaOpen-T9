@@ -47,6 +47,7 @@ enum CIF_WIFI_API_CMD_TYPE
     STA_GET_NETIF_IP4_CONFIG            = 0x31D,
     STA_NETIF_IP4_CONFIG                = 0x31E,
     STA_GET_ARP_TABLE                   = 0x31F,
+    STA_GET_NETIF_IPV6_CONFIG           = 0x374,
 
     // AP management command section
     AP_SET_CONFIG                       = 0x320,
@@ -139,6 +140,7 @@ enum CIF_WIFI_API_CMD_TYPE
     P2P_GET_GC_NETIF_IP4_CONFIG         = 0x3D9,
     P2P_GET_GO_NETIF_IP4_CONFIG         = 0x3DA,
     P2P_GET_GROUP_CHANNEL               = 0x3DB,
+    P2P_SET_GO_NOA                      = 0x3DC,
 
     // RLK command section
     RLK_REGISTER_SEND_CB                = 0x400,

@@ -28,6 +28,7 @@
 #include <driver/int.h>
 #include <driver/aud_dac_types.h>
 #include <driver/aud_dac.h>
+#include <driver/aud_dac_drc.h>
 #include <timer/timer_driver.h>
 
 //#include <modules/pm.h>
@@ -56,6 +57,24 @@ extern void delay(int num);
 bk_err_t bk_aud_dac_dacl_disable_int(void);
 bk_err_t bk_aud_dac_dacr_disable_int(void);
 
+static aud_dac_a2dp_rate_policy_t s_a2dp_rate_policy = AUD_DAC_A2DP_RATE_NATIVE;
+
+bk_err_t bk_aud_dac_set_a2dp_rate_policy(aud_dac_a2dp_rate_policy_t policy)
+{
+	if (policy > AUD_DAC_A2DP_RATE_HW_TO_48K) {
+		return BK_ERR_PARAM;
+	}
+	s_a2dp_rate_policy = policy;
+	return BK_OK;
+}
+
+bk_err_t bk_aud_dac_get_a2dp_rate_policy(aud_dac_a2dp_rate_policy_t *policy)
+{
+	BK_RETURN_ON_NULL(policy);
+	*policy = s_a2dp_rate_policy;
+	return BK_OK;
+}
+
 bk_err_t bk_aud_dac_init(aud_dac_config_t *dac_config)
 {
 	bk_err_t ret = BK_OK;
@@ -66,6 +85,7 @@ bk_err_t bk_aud_dac_init(aud_dac_config_t *dac_config)
 		return BK_OK;
 	}
 	bk_aud_set_module_init_sta(AUD_MODULE_DAC, true);
+	s_a2dp_rate_policy = dac_config->a2dp_rate_policy;
 	/* audio common driver init */
 	if (BK_OK != bk_aud_driver_init()) {
 		LOGE("%s, audio driver init fail, line: %d \n", __func__, __LINE__);
@@ -110,7 +130,24 @@ bk_err_t bk_aud_dac_init(aud_dac_config_t *dac_config)
 			audio_reg_hal_set_dac_cfg_stereo_en(0x0);
 		}
 	}
+#if CONFIG_AUD_DAC_DRC
+	/* Single path: enable → apply a2dp_drc; disable → bypass. */
+	if (dac_config->a2dp_drc_en) {
+		ret = bk_aud_dac_drc_apply_param_cfg(&dac_config->a2dp_drc);
+		if (ret != BK_OK) {
+			LOGE("%s, apply a2dp_drc fail, %d\n", __func__, ret);
+			goto fail;
+		}
+	} else {
+		ret = bk_aud_dac_drc_disable();
+		if (ret != BK_OK) {
+			LOGE("%s, disable a2dp_drc fail, %d\n", __func__, ret);
+			goto fail;
+		}
+	}
+#else
 	audio_reg_hal_set_dac_cfg_drc_bypass(1);
+#endif
 
 	//enable dacl and dacr
 #if 0
@@ -153,7 +190,14 @@ bk_err_t bk_aud_dac_init(aud_dac_config_t *dac_config)
 	}
 
 	bk_aud_dac_set_dig_gain_db(dac_config->dig_gain);
-    bk_aud_dac_set_ana_gain_db(dac_config->ana_gain);
+	bk_aud_dac_set_ana_gain_db(dac_config->ana_gain);
+
+	bk_aud_dac_spk0_set_source_gain_db(AUD_DAC_SOURCE_A2DP, 0.0f);
+	bk_aud_dac_spk1_set_source_gain_db(AUD_DAC_SOURCE_A2DP, 0.0f);
+	bk_aud_dac_spk0_set_source_gain_db(AUD_DAC_SOURCE_CALL, 0.0f);
+	bk_aud_dac_spk1_set_source_gain_db(AUD_DAC_SOURCE_CALL, 0.0f);
+	bk_aud_dac_spk0_set_source_gain_db(AUD_DAC_SOURCE_HINT, 0.0f);
+	bk_aud_dac_spk1_set_source_gain_db(AUD_DAC_SOURCE_HINT, 0.0f);
 
 	audio_reg_hal_set_dac_cfg_clk_dac_inv(dac_config->dac_clk_invert);
 
@@ -215,6 +259,7 @@ bk_err_t bk_aud_dac_deinit(void)
 	//bk_aud_dac_set_sample_rate(8000);
 	/* reset */
 	//TODO
+	s_a2dp_rate_policy = AUD_DAC_A2DP_RATE_NATIVE;
 	bk_err_t ret = bk_aud_set_module_init_sta(AUD_MODULE_DAC, false);
 	bk_aud_driver_deinit();
 	return ret;
@@ -229,8 +274,8 @@ bk_err_t bk_aud_dac_set_sample_rate(aud_dac_source_t source, uint32_t sample_rat
     uint32_t lpf_bps3  = 0;
     uint32_t resample_bypass = 1;
     uint32_t spl_sel  = 0;
-
     uint32_t srindex  = 0;
+    bool use_441_apll = (sample_rate / 44100 * 44100 == sample_rate);
 
     switch (source)
     {
@@ -251,7 +296,13 @@ bk_err_t bk_aud_dac_set_sample_rate(aud_dac_source_t source, uint32_t sample_rat
                 case 48000:
                     break;
                 case 44100:
-                    resample_bypass = 1;
+                    if (s_a2dp_rate_policy == AUD_DAC_A2DP_RATE_HW_TO_48K) {
+                        /* Keep 44.1k input, enable HW resample into 48k clock domain */
+                        resample_bypass = 0;
+                        use_441_apll = false;
+                    } else {
+                        resample_bypass = 1;
+                    }
                     break;
                 default:
                     LOGW("%s, %d, music a2dp channel not support sample_rate: %d, use default 48000\n", __func__, __LINE__, sample_rate);
@@ -293,7 +344,7 @@ bk_err_t bk_aud_dac_set_sample_rate(aud_dac_source_t source, uint32_t sample_rat
     }
 
     /* config apll frequency */
-    bk_aud_apll_config((sample_rate / 44100 * 44100 == sample_rate) ? AUD_APLL_FREQ_90P3168_MHZ : AUD_APLL_FREQ_98P3040_MHZ);
+    bk_aud_apll_config(use_441_apll ? AUD_APLL_FREQ_90P3168_MHZ : AUD_APLL_FREQ_98P3040_MHZ);
 
     return BK_OK;
 }

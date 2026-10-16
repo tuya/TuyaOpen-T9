@@ -87,7 +87,15 @@ typedef struct {
 
 static const flash_partition_map_t s_partition_map[] = {
 	{ FLASH_MAP_IMAGE_PRIMARY_ALL, PARTITION_PRIMARY_ALL },
+#if CONFIG_OTA_OVERWRITE
+	/* Compressed-overwrite: MCUboot's "secondary slot" is the ota staging
+	 * partition. BL2 reads the received compressed image from here and, when
+	 * ota_control holds OVERWRITE_CONFIRM, decompresses it into primary_all.
+	 * decompress_bl2.c uses get_flash_map_offset/size(FLASH_MAP_IMAGE_SECONDARY_ALL). */
+	{ FLASH_MAP_IMAGE_SECONDARY_ALL, PARTITION_OTA },
+#else
 	{ FLASH_MAP_IMAGE_SECONDARY_ALL, PARTITION_SECONDARY_ALL },
+#endif
 	{ FLASH_MAP_IMAGE_PRIMARY_MANIFEST, PARTITION_PRIMARY_MANIFEST },
 	{ FLASH_MAP_IMAGE_PRIMARY_PARTITION, PARTITION_PARTITION },
 	{ FLASH_MAP_IMAGE_PRIMARY_BL2, PARTITION_BL2 },
@@ -112,17 +120,37 @@ static void flash_area_set_partition(flash_map_e flash_map_id, uint32_t partitio
 	flash_map[flash_map_id].fa_phy_size = size;
 }
 
+#if CONFIG_DIRECT_XIP
+/* Direct-XIP A/B slot remap programming. Guarded by CONFIG_DIRECT_XIP because it
+ * calls the flash_set_*() XIP remap APIs (declared above under the same guard).
+ * The compressed-overwrite project (CONFIG_OTA_OVERWRITE, DIRECT_XIP=0) has a
+ * single execute slot (primary_all) and never programs A/B remap. */
 static void flash_area_config_direct_xip(void)
 {
 	uint32_t primary_start = flash_map[FLASH_MAP_IMAGE_PRIMARY_ALL].fa_off;
-	uint32_t secondary_start = flash_map[FLASH_MAP_IMAGE_SECONDARY_ALL].fa_off;
+	uint32_t primary_size = flash_map[FLASH_MAP_IMAGE_PRIMARY_ALL].fa_size;
+	/* Use partition table size, not flash_map[] — single-slot init may
+	 * synthesize a non-zero secondary fa_size for MCUboot sector checks. */
+	uint32_t secondary_size = partition_get_phy_size(PARTITION_SECONDARY_ALL);
 
 	/* Clear stale slot-B remap before BL2 reads A/B images. */
 	flash_set_excute_enable(0);
-	flash_set_xip_offset(primary_start, secondary_start,flash_map[FLASH_MAP_IMAGE_PRIMARY_ALL].fa_size);
 
+	/* Single-slot layouts (e.g. secureboot_ai) have no secondary_all.
+	 * Do not program A/B XIP remap with secondary_start=0 — that corrupts
+	 * remap state. Keep primary window only and disable OTA remap. */
+	if (secondary_size == 0u) {
+		flash_set_xip_offset(primary_start, primary_start, primary_size);
+		flash_set_ota_enable(false);
+		return;
+	}
+
+	flash_set_xip_offset(primary_start,
+			     flash_map[FLASH_MAP_IMAGE_SECONDARY_ALL].fa_off,
+			     primary_size);
 	flash_set_ota_enable(true);
 }
+#endif /* CONFIG_DIRECT_XIP */
 
 uint32_t get_flash_map_offset(uint32_t index)
 {
@@ -145,6 +173,29 @@ int flash_map_init(void)
 		flash_area_set_partition(s_partition_map[i].flash_map_id,
 					 s_partition_map[i].partition_id);
 	}
+
+	/* MCUboot always opens both slots and compares sector layouts. When
+	 * secondary_all is absent, give the secondary flash_area the same
+	 * geometry as primary so sector checks pass; flash_area_read() returns
+	 * erased content for that slot so it never looks like a valid image.
+	 *
+	 * Skip this for CONFIG_OTA_OVERWRITE: there the secondary flash_area is
+	 * deliberately mapped onto the (smaller) ota staging partition, which is
+	 * the real source of the compressed image; overwriting it with primary
+	 * geometry would point BL2 at the wrong offset. */
+#if !CONFIG_OTA_OVERWRITE
+	if ((!CONFIG_DIRECT_XIP ||
+	     partition_get_phy_size(PARTITION_SECONDARY_ALL) == 0u) &&
+	    flash_map[FLASH_MAP_IMAGE_PRIMARY_ALL].fa_size != 0u) {
+		flash_map[FLASH_MAP_IMAGE_SECONDARY_ALL].fa_off =
+			flash_map[FLASH_MAP_IMAGE_PRIMARY_ALL].fa_off;
+		flash_map[FLASH_MAP_IMAGE_SECONDARY_ALL].fa_size =
+			flash_map[FLASH_MAP_IMAGE_PRIMARY_ALL].fa_size;
+		flash_map[FLASH_MAP_IMAGE_SECONDARY_ALL].fa_phy_size =
+			flash_map[FLASH_MAP_IMAGE_PRIMARY_ALL].fa_phy_size;
+	}
+#endif /* !CONFIG_OTA_OVERWRITE */
+
 #if CONFIG_DIRECT_XIP
 	flash_area_config_direct_xip();
 #endif /* CONFIG_DIRECT_XIP */

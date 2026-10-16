@@ -5,8 +5,10 @@
 #include <common/bk_include.h>
 #include <components/log.h>
 #include <driver/sys_pm.h>
+#include <modules/pm.h>
 #include "sys_driver.h"
 #include <modules/vg_lite_gpu/vg_lite_platform.h>
+#include <modules/vg_lite_gpu/vg_lite.h>
 
 #define TAG "gpu_core"
 
@@ -15,18 +17,124 @@
 #define LOGE(...) BK_LOGE(TAG, ##__VA_ARGS__)
 #define LOGD(...) BK_LOGD(TAG, ##__VA_ARGS__)
 
+static uint32_t s_gpu_driver_ref_cnt = 0;
+static beken_mutex_t s_gpu_driver_lock = NULL;
+static beken_mutex_t s_gpu_global_lock = NULL;
 
-static bool gpu_driver_is_init = false;
+static bk_err_t gpu_driver_lock_init(void)
+{
+    beken_mutex_t lock = NULL;
+    GLOBAL_INT_DECLARATION();
+
+    if (s_gpu_driver_lock != NULL)
+    {
+        return BK_OK;
+    }
+
+    if (rtos_init_mutex(&lock) != BK_OK)
+    {
+        return BK_FAIL;
+    }
+
+    GLOBAL_INT_DISABLE();
+    if (s_gpu_driver_lock == NULL)
+    {
+        s_gpu_driver_lock = lock;
+        lock = NULL;
+    }
+    GLOBAL_INT_RESTORE();
+
+    if (lock != NULL)
+    {
+        rtos_deinit_mutex(&lock);
+    }
+
+    return BK_OK;
+}
+
+static bk_err_t gpu_driver_lock(void)
+{
+    if (rtos_is_in_interrupt_context())
+    {
+        return BK_FAIL;
+    }
+
+    if (gpu_driver_lock_init() != BK_OK)
+    {
+        return BK_FAIL;
+    }
+
+    return rtos_lock_mutex(&s_gpu_driver_lock);
+}
+
+uint32_t bk_gpu_vg_lite_apply_mem_config(uint32_t tess_width, uint32_t tess_height)
+{
+    vg_lite_mem_config_t cfg;
+    uint32_t max_w = 0;
+    uint32_t max_h = 0;
+
+    os_memset(&cfg, 0, sizeof(cfg));
+#ifdef CONFIG_VG_LITE_GPU_BASE_ADDRESS
+    cfg.gpu_base_addr = (uint32_t)CONFIG_VG_LITE_GPU_BASE_ADDRESS;
+#endif
+#ifdef CONFIG_VG_LITE_GPU_COMMAND_BUFFER_SIZE
+    cfg.command_buffer_size = (uint32_t)CONFIG_VG_LITE_GPU_COMMAND_BUFFER_SIZE;
+#endif
+#ifdef CONFIG_VG_LITE_GPU_TESS_WIDTH
+    max_w = (uint32_t)CONFIG_VG_LITE_GPU_TESS_WIDTH;
+#endif
+#ifdef CONFIG_VG_LITE_GPU_TESS_HEIGHT
+    max_h = (uint32_t)CONFIG_VG_LITE_GPU_TESS_HEIGHT;
+#endif
+
+    /* Non-zero Kconfig tess is the reserved maximum for all GPU scenes.
+     * Always size the contiguous heap for that maximum so a later
+     * vg_lite_init() cannot grow a previously allocated small buffer. */
+    if ((max_w != 0) && (max_h != 0)) {
+        if ((tess_width > max_w) || (tess_height > max_h)) {
+            LOGE("vg_lite tess %u x %u exceeds CONFIG max %u x %u\r\n",
+                 tess_width, tess_height, max_w, max_h);
+            return 0;
+        }
+        tess_width = max_w;
+        tess_height = max_h;
+    }
+
+    /* When the Kconfig max is 0, the first call latches this tess into OSI
+     * so vsios_gpu_vg_lite_tess_width/height stay stable for later scenes. */
+    cfg.tess_width = tess_width;
+    cfg.tess_height = tess_height;
+    return vg_lite_set_mem_config(&cfg);
+}
 
 void bk_gpu_driver_init(void)
 {
-    if (gpu_driver_is_init == true)
+    if (gpu_driver_lock() != BK_OK)
     {
-        LOGW("%s has inited %x\r\n", __func__);
+        if (!rtos_is_in_interrupt_context())
+        {
+            LOGE("%s gpu driver lock failed\r\n", __func__);
+        }
+        return;
+    }
+
+    if (s_gpu_driver_ref_cnt > 0)
+    {
+        s_gpu_driver_ref_cnt++;
+        LOGD("%s ref_cnt=%u\r\n", __func__, s_gpu_driver_ref_cnt);
+        rtos_unlock_mutex(&s_gpu_driver_lock);
+        return;
+    }
+
+    if ((s_gpu_global_lock == NULL) && (rtos_init_mutex(&s_gpu_global_lock) != BK_OK))
+    {
+        rtos_unlock_mutex(&s_gpu_driver_lock);
+        LOGE("%s gpu global lock init failed\r\n", __func__);
         return;
     }
 
     bk_pm_module_vote_power_ctrl(PM_POWER_SUB_DOMAIN_GPU, PM_POWER_MODULE_STATE_ON);
+    bk_pm_module_vote_cpu_freq(PM_DEV_ID_GPU, PM_CPU_FRQ_480M);
 
     sys_drv_gpu_cksel_clkdiv_set(CKSEL_GPU_480M, 0);
 
@@ -40,14 +148,34 @@ void bk_gpu_driver_init(void)
     sys_drv_set_int_en(rtos_get_core_id(), INT_SRC_GPU, 1);
 #endif
 
-    gpu_driver_is_init = true;
+    s_gpu_driver_ref_cnt = 1;
+    LOGI("%s done, ref_cnt=%u\r\n", __func__, s_gpu_driver_ref_cnt);
+    rtos_unlock_mutex(&s_gpu_driver_lock);
 }
 
 void bk_gpu_driver_deinit(void)
 {
-    if (gpu_driver_is_init == false)
+    if (gpu_driver_lock() != BK_OK)
     {
-        LOGW("%s has inited %x\r\n", __func__);
+        if (!rtos_is_in_interrupt_context())
+        {
+            LOGE("%s gpu driver lock failed\r\n", __func__);
+        }
+        return;
+    }
+
+    if (s_gpu_driver_ref_cnt == 0)
+    {
+        rtos_unlock_mutex(&s_gpu_driver_lock);
+        LOGW("%s has deinit\r\n", __func__);
+        return;
+    }
+
+    if (s_gpu_driver_ref_cnt > 1)
+    {
+        s_gpu_driver_ref_cnt--;
+        LOGD("%s ref_cnt=%u\r\n", __func__, s_gpu_driver_ref_cnt);
+        rtos_unlock_mutex(&s_gpu_driver_lock);
         return;
     }
 
@@ -60,7 +188,36 @@ void bk_gpu_driver_deinit(void)
 
     bk_pm_clock_ctrl(PM_CLK_ID_GPU, PM_CLK_CTRL_PWR_DOWN);
 
+    bk_pm_module_vote_cpu_freq(PM_DEV_ID_GPU, PM_CPU_FRQ_DEFAULT);
     bk_pm_module_vote_power_ctrl(PM_POWER_SUB_DOMAIN_GPU, PM_POWER_MODULE_STATE_OFF);
 
-    gpu_driver_is_init = false;
+    if (s_gpu_global_lock)
+    {
+        rtos_deinit_mutex(&s_gpu_global_lock);
+        s_gpu_global_lock = NULL;
+    }
+
+    s_gpu_driver_ref_cnt = 0;
+    LOGI("%s done, ref_cnt=%u\r\n", __func__, s_gpu_driver_ref_cnt);
+    rtos_unlock_mutex(&s_gpu_driver_lock);
+}
+
+bk_err_t bk_gpu_global_lock(void)
+{
+    if (s_gpu_global_lock == NULL)
+    {
+        return BK_FAIL;
+    }
+
+    return rtos_lock_mutex(&s_gpu_global_lock);
+}
+
+bk_err_t bk_gpu_global_unlock(void)
+{
+    if (s_gpu_global_lock == NULL)
+    {
+        return BK_FAIL;
+    }
+
+    return rtos_unlock_mutex(&s_gpu_global_lock);
 }

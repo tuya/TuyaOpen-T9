@@ -32,6 +32,10 @@ extern "C" {
 #define PM_CP1_PSRAM_MALLOC_STATE_CMD        (0x8)
 #define PM_CP1_DUMP_PSRAM_MALLOC_INFO_CMD    (0x9)
 #define PM_CP1_RECOVERY_CMD                  (0xa)
+#if CONFIG_PM_AP_FAST_BOOT_ENABLE
+#define PM_AP_RECOVERY_ACTION_PREPARE        (0x0)
+#define PM_AP_RECOVERY_ACTION_ABORT          (0x1)
+#endif
 
 #define PM_ENTER_DEEP_SLEEP_CMD              (0xb)
 #define PM_GET_PM_DATA_CMD                   (0xc)
@@ -40,6 +44,9 @@ extern "C" {
 #define PM_WAKEUP_CONFIG_CMD                 (0xf)
 
 #define PM_SLEEP_WAKEUP_NOTIFY_CMD           (0x10)
+#if CONFIG_PM_AP_FAST_BOOT_ENABLE
+#define PM_AP_APP_RESUME_NOTIFY_CMD           (0x11)
+#endif
 
 #define PM_AON_RTC_DEFAULT_TICK_COUNT        (32)//only for cp1 using aon rtc
 
@@ -564,6 +571,7 @@ bk_err_t bk_pm_module_vote_psram_ctrl(pm_power_psram_module_name_e module,pm_pow
  * -module:boot cp1 module name;power_state:PM_POWER_MODULE_STATE_ON;PM_POWER_MODULE_STATE_OFF
  * @return
  * - BK_OK: succeed
+ * - BK_ERR_TIMEOUT: AP mailbox drain, sleep-ready, or abort-ready wait timed out
  * - others: other errors.
  *
  */

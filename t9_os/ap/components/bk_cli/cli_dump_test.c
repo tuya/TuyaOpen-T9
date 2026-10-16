@@ -793,10 +793,7 @@ static void app_dump_flash_task(beken_thread_arg_t arg)
 		(unsigned)request->length);
 
 	for (cycle = 0; cycle < APP_DUMP_FLASH_MAX_CYCLES; cycle++) {
-		ret = bk_flash_set_protect_type(FLASH_PROTECT_NONE);
-		if (ret != BK_OK) {
-			break;
-		}
+		ret = BK_OK;
 
 		for (offset = 0; offset < request->length;
 			offset += APP_DUMP_FLASH_SECTOR_SIZE) {
@@ -825,7 +822,6 @@ static void app_dump_flash_task(beken_thread_arg_t arg)
 			}
 		}
 
-		(void)bk_flash_set_protect_type(FLASH_UNPROTECT_LAST_BLOCK);
 		if (ret != BK_OK) {
 			break;
 		}

@@ -33,6 +33,13 @@
 #define PSRAM_4M_SIZE  (0x00400000)
 #define PSRAM_8M_SIZE  (0x00800000)
 #define PSRAM_16M_SIZE (0x01000000)
+#define PSRAM_32M_SIZE (0x02000000)
+
+/* APS256 spec Rev 1.2 §7.7 Table 3: MR2 MA=0x02. Table 12: MR2[2:0] density. */
+#define PSRAM_MR2_ADDR            (0x00000002)
+#define PSRAM_MR2_DENSITY_MASK    (0x7)
+#define PSRAM_MR2_DENSITY_128MB   (0x5) /* 128Mb = 16MB */
+#define PSRAM_MR2_DENSITY_256MB   (0x7) /* 256Mb = 32MB */
 
 #define PSRAM_THREAD_STACK_SIZE    3072
 #define PSRAM_THREAD_PRIORITY      4
@@ -189,6 +196,41 @@ uint32_t bk_psram_get_psram_id(void)
 	return s_psram_id.psram_id;
 }
 
+/* Spec Table 12: density is MR2[2:0]. cmd_read may return 16-bit; prefer
+ * a 16M/32M code in the low byte, else the high byte. */
+static uint32_t psram_mr2_density_bits(uint32_t mr2_raw)
+{
+	uint32_t lo = mr2_raw & PSRAM_MR2_DENSITY_MASK;
+	uint32_t hi = (mr2_raw >> 8) & PSRAM_MR2_DENSITY_MASK;
+
+	if ((lo == PSRAM_MR2_DENSITY_128MB) || (lo == PSRAM_MR2_DENSITY_256MB)) {
+		return lo;
+	}
+	if ((hi == PSRAM_MR2_DENSITY_128MB) || (hi == PSRAM_MR2_DENSITY_256MB)) {
+		return hi;
+	}
+	return lo;
+}
+
+static uint32_t psram_size_from_mr2_density(uint32_t density)
+{
+	if ((density & PSRAM_MR2_DENSITY_MASK) == PSRAM_MR2_DENSITY_256MB) {
+		return PSRAM_32M_SIZE;
+	}
+	return PSRAM_16M_SIZE;
+}
+
+static uint32_t psram_length_from_mr2(psram_id_t psram_id)
+{
+	uint32_t mr2 = psram_hal_cmd_read_with_id(psram_id, PSRAM_MR2_ADDR);
+	uint32_t density = psram_mr2_density_bits(mr2);
+	uint32_t size = psram_size_from_mr2_density(density);
+
+	MEM_STATIC_LOGI("id=0x%x mr2=0x%x density=0x%x size=0x%x\r\n",
+			 PSRAM_APS128XXO_OB9_ID, mr2, density, size);
+	return size;
+}
+
 uint32_t bk_psram_get_psram_data_length(uint32_t id)
 {
 	switch (id) {
@@ -197,7 +239,7 @@ uint32_t bk_psram_get_psram_data_length(uint32_t id)
 		case PSRAM_APS6408L_ID:
 			return PSRAM_8M_SIZE;
 		case PSRAM_APS128XXO_OB9_ID:
-			return PSRAM_16M_SIZE;
+			return psram_length_from_mr2(PSRAM_ID_0);
 		default:
 			return CONFIG_PSRAM_CAPACITY;
 	}
@@ -491,7 +533,8 @@ start_init:
 	else
 		psram_hal_set_default_clk_with_id(psram_id);
 
-	MEM_STATIC_LOGD("%s, %x-%x\r\n", __func__, actual_id, chip_id);
+	MEM_STATIC_LOGI("%s, actual_id=0x%x expected=0x%x cap=0x%x\r\n",
+			 __func__, actual_id, chip_id, CONFIG_PSRAM_CAPACITY);
 
 	switch (actual_id) {
 		case PSRAM_W955D8MKY_5J_ID:
@@ -503,9 +546,14 @@ start_init:
 				MEM_STATIC_LOGW("psram type(8MB) not match CONFIG_PSRAM_CAPACITY 0X%08X\r\n", CONFIG_PSRAM_CAPACITY);
 			break;
 		case PSRAM_APS128XXO_OB9_ID:
-			if (CONFIG_PSRAM_CAPACITY != PSRAM_16M_SIZE)
-				MEM_STATIC_LOGW("psram type(16MB) not match CONFIG_PSRAM_CAPACITY 0X%08X\r\n", CONFIG_PSRAM_CAPACITY);
+		{
+			uint32_t mr2_size = psram_length_from_mr2(psram_id);
+
+			if (CONFIG_PSRAM_CAPACITY != mr2_size)
+				MEM_STATIC_LOGW("psram MR2 size 0x%08X not match CONFIG_PSRAM_CAPACITY 0x%08X\r\n",
+						 mr2_size, CONFIG_PSRAM_CAPACITY);
 			break;
+		}
 		case PSRAM_SCB18X128XX_OAF_ID:
 			if (CONFIG_PSRAM_CAPACITY != PSRAM_16M_SIZE)
 				MEM_STATIC_LOGW("psram type(16MB) not match CONFIG_PSRAM_CAPACITY 0X%08X\r\n", CONFIG_PSRAM_CAPACITY);
@@ -599,10 +647,9 @@ bk_err_t bk_psram_deinit_with_id(psram_id_t psram_id)
  *      controller sequence equivalent to the reference
  *      psram_recovery():
  *        - clock-gating bypass (REG2 bit1)
- *        - reselect 320M source, /2 divider, enable controller clock
+ *        - restore snapshotted clock source / divider
+ *        - restore snapshotted REG4 (mode) and REG5 (drive/delay)
  *        - soft-reset controller (REG2 bit0)
- *        - re-load mode register with PSRAM_MODE9 (the chip-mode
- *          value matching the current PSRAM die / clock).
  *
  * NOTE: this path assumes the PSRAM voltage rail was NOT cut. It
  * is the caller's responsibility to ensure that. With the standard
@@ -610,8 +657,14 @@ bk_err_t bk_psram_deinit_with_id(psram_id_t psram_id)
  * domain is gated; the PSRAM voltage and AHBP_PSRAM stay alive.
  * ============================================================ */
 
-#define PSRAM_RETENTION_FLUSH_BIT      (0x1U << 3)
 #define PSRAM_RETENTION_CKG_BYPASS_BIT (0x1U << 1)
+#define PSRAM_RETENTION_SF_RESET_BIT (0x1U << 0)
+#if 0//CONFIG_PM_AP_FAST_BOOT_ENABLE
+#define PSRAM_RETENTION_MR0_ADDR       (0x00000000U)
+#else
+#define PSRAM_RETENTION_FLUSH_BIT      (0x1U << 3)
+#define PSRAM_RETENTION_FLUSH_TIMEOUT  (1000000U)
+#endif
 /* Fallback mode register value used only when no snapshot was taken
  * (e.g. retention helper called before any real PSRAM access). The
  * normal path always restores the snapshotted REG4 read live from
@@ -619,6 +672,9 @@ bk_err_t bk_psram_deinit_with_id(psram_id_t psram_id)
  * matches the SCB18X128XX 240MHz setting used by bk7259 default
  * init flow (see psram_hal.c). */
 #define PSRAM_RETENTION_MODE_REG_FALLBACK   (PSRAM_MODE9)
+/* Fallback REG5 (drive strength / delay) used only when no snapshot
+ * was taken. 0x380 matches the SCB18X128XX / default init path. */
+#define PSRAM_RETENTION_REG5_FALLBACK       (0x380)
 
 /* TEMP / LOCAL VERIFICATION SWITCH:
  *
@@ -632,8 +688,9 @@ bk_err_t bk_psram_deinit_with_id(psram_id_t psram_id)
  * Set this to 0 to skip the (presumably redundant) clock re-setup
  * and verify locally that PSRAM still recovers correctly. Keep it
  * as 1 for production / when AHBP_PSRAM may also be cycled, since
- * the writes are then required for a clean controller comeback and
- * also match the reference psram_recovery() exactly.
+ * the writes are then required for a clean controller comeback.
+ * Recovery restores the live cksel / ckdiv snapshot rather than a
+ * fixed reference frequency, so fast boot matches cold boot.
  *
  * After verification, either:
  *   - leave it 1 (defensive, matches reference, ~no cost), or
@@ -647,20 +704,52 @@ bk_err_t bk_psram_deinit_with_id(psram_id_t psram_id)
 static volatile bool     s_psram_retention_active[PSRAM_ID_MAX]    = {false};
 static uint32_t          s_psram_retention_saved_mode[PSRAM_ID_MAX] = {0};
 static bool              s_psram_retention_mode_valid[PSRAM_ID_MAX] = {false};
+static uint32_t          s_psram_retention_saved_clk_sel[PSRAM_ID_MAX] = {0};
+static uint32_t          s_psram_retention_saved_clk_div[PSRAM_ID_MAX] = {0};
+static bool              s_psram_retention_clock_valid[PSRAM_ID_MAX] = {false};
+static uint32_t          s_psram_retention_saved_reg5[PSRAM_ID_MAX] = {0};
+static bool              s_psram_retention_reg5_valid[PSRAM_ID_MAX] = {false};
 
-static void psram_retention_flush(psram_id_t psram_id)
+static bk_err_t psram_cache_flush_before_power_down(psram_id_t psram_id)
 {
-	uint32_t v = psram_hal_get_reg8_value_with_id(psram_id);
-	psram_hal_set_reg8_value_with_id(psram_id, v | PSRAM_RETENTION_FLUSH_BIT);
-	while (psram_hal_get_reg8_value_with_id(psram_id) & PSRAM_RETENTION_FLUSH_BIT) {
-		/* spin until controller clears flush bit */
+	uint32_t reg8 = psram_hal_get_reg8_value_with_id(psram_id);
+	uint32_t timeout = PSRAM_RETENTION_FLUSH_TIMEOUT;
+
+	psram_hal_set_reg8_value_with_id(psram_id,
+		reg8 | PSRAM_RETENTION_FLUSH_BIT);
+	while ((psram_hal_get_reg8_value_with_id(psram_id) &
+		PSRAM_RETENTION_FLUSH_BIT) != 0U) {
+		if (--timeout == 0U) {
+			return BK_ERR_TIMEOUT;
+		}
 	}
+	bk_delay_us(100);
+	/* Latch PSRAM I/O pads at 3V. Covers PSRAM0 + PSRAM1. */
+	sys_drv_set_psram_pad_latch(1);
+	/* REG2[0] Soft_Reset: 0 holds the PSRAM controller in reset. */
+	psram_hal_set_sf_reset_with_id(psram_id, 0);
+
+	return BK_OK;
 }
 
 static void psram_retention_save_mode(psram_id_t psram_id)
 {
 	s_psram_retention_saved_mode[psram_id] = psram_hal_get_mode_value_with_id(psram_id);
 	s_psram_retention_mode_valid[psram_id] = true;
+}
+
+static void psram_retention_save_clock(psram_id_t psram_id)
+{
+	sys_drv_psram_get_clk_config_with_id((uint32_t)psram_id,
+		&s_psram_retention_saved_clk_sel[psram_id],
+		&s_psram_retention_saved_clk_div[psram_id]);
+	s_psram_retention_clock_valid[psram_id] = true;
+}
+
+static void psram_retention_save_reg5(psram_id_t psram_id)
+{
+	s_psram_retention_saved_reg5[psram_id] = psram_hal_get_reg5_value_with_id(psram_id);
+	s_psram_retention_reg5_valid[psram_id] = true;
 }
 
 static uint32_t psram_retention_get_restore_mode(psram_id_t psram_id)
@@ -678,54 +767,112 @@ static void psram_retention_recovery_one(psram_id_t psram_id)
 
 	/* PSRAM REG2 bit1 = 1 : clock-gating bypass before clk re-select. */
 	v = psram_hal_get_reg2_value_with_id(psram_id);
-	v |= PSRAM_RETENTION_CKG_BYPASS_BIT;
+	v |= PSRAM_RETENTION_CKG_BYPASS_BIT;//0:low power mode;1:normal power mode
 	psram_hal_set_reg2_value_with_id(psram_id, v);
 
 #if PM_PSRAM_RECOVER_RESET_CLOCK
-	/* Restore PSRAMx bus clock: 320M source / (1+1) = 160MHz.
-	 * All three writes go through sys_drv layer (id-routed, with
-	 * critical-section). Enabled by default as a defensive recovery
-	 * step; see PM_PSRAM_RECOVER_RESET_CLOCK comment for the rationale. */
-	sys_drv_psram_clk_sel_with_id((uint32_t)psram_id, 0);    /* 320M source */
-	sys_drv_psram_set_clkdiv_with_id((uint32_t)psram_id, 1); /* /(1+1) -> 160MHz */
+	/* Restore the exact source/divider used before retention. This keeps
+	 * fast-boot frequency aligned with cold boot even if the normal init
+	 * clock policy changes later. An active retention instance always has
+	 * a snapshot; use the HAL default only as a defensive fallback. */
+	if (s_psram_retention_clock_valid[psram_id]) {
+		sys_drv_psram_clk_sel_with_id((uint32_t)psram_id,
+			s_psram_retention_saved_clk_sel[psram_id]);
+		sys_drv_psram_set_clkdiv_with_id((uint32_t)psram_id,
+			s_psram_retention_saved_clk_div[psram_id]);
+	} else {
+		psram_hal_set_default_clk_with_id(psram_id);
+	}
 	sys_drv_psram_disckg_with_id((uint32_t)psram_id, 1);     /* bus clk enable */
 #endif
-
-	/* PSRAM REG2 bit0 = 1 : soft-reset controller. */
-	psram_hal_set_sf_reset_with_id(psram_id, 1);
 
 	/* Re-load the snapshotted REG4 so the controller comes back with
 	 * the exact same mode/latency setting it had before retention,
 	 * regardless of which PSRAM die / clock was in use. */
 	psram_hal_set_mode_value_with_id(psram_id, mode);
+
+	/* Restore the snapshotted REG5 (drive strength / delay) so recovery
+	 * matches the die-specific value written at init, not a hardcoded
+	 * 0x380 that only fits some PSRAM types. */
+	if (s_psram_retention_reg5_valid[psram_id]) {
+		psram_hal_set_reg5_value_with_id(psram_id,
+			s_psram_retention_saved_reg5[psram_id]);
+	} else {
+		psram_hal_set_reg5_value_with_id(psram_id,
+			PSRAM_RETENTION_REG5_FALLBACK);
+	}
+	/* PSRAM REG2 bit0 = 1 : soft-reset controller. */
+	psram_hal_set_sf_reset_with_id(psram_id, 1);
 }
 
 bk_err_t bk_psram_data_retention(void)
 {
+#if !CONFIG_PM_AP_FAST_BOOT_ENABLE
+	bk_err_t ret;
+#endif
+	GLOBAL_INT_DECLARATION();
+
+#if CONFIG_PM_AP_FAST_BOOT_ENABLE && CONFIG_PM_AP_FAST_BOOT_VERBOSE_TRACE
+	MEM_STATIC_LOGI("psram_data_retention begin: init0=%d init1=%d\r\n",
+		s_psram_init_done[PSRAM_ID_0], s_psram_init_done[PSRAM_ID_1]);
+#endif
+
+	/*
+	 * AP has already quiesced CPU2/CPU3 and DMA. Keep CP from scheduling an
+	 * ISR or another task which could issue a new PSRAM transaction between
+	 * the controller snapshots and pad latch.
+	 */
+	GLOBAL_INT_DISABLE();
 	for (int i = 0; i < (int)PSRAM_ID_MAX; i++) {
 		if (!s_psram_init_done[i]) {
 			s_psram_retention_active[i] = false;
 			s_psram_retention_mode_valid[i] = false;
+			s_psram_retention_clock_valid[i] = false;
+			s_psram_retention_reg5_valid[i] = false;
 			continue;
 		}
 
-		/* Snapshot the live PSRAM mode register BEFORE we flush /
-		 * latch / gate clocks, so the recovery path can restore the
-		 * exact same value. */
+		/* Snapshot the live controller mode, clock and REG5 BEFORE
+		 * draining traffic / latching pads, so recovery exactly matches
+		 * the cold-boot configuration. */
 		psram_retention_save_mode((psram_id_t)i);
+		psram_retention_save_clock((psram_id_t)i);
+		psram_retention_save_reg5((psram_id_t)i);
 
-		psram_retention_flush((psram_id_t)i);
+#if !CONFIG_PM_AP_FAST_BOOT_ENABLE
+		/*
+		 * Fast boot flushes both controllers on AP after its final
+		 * L1/L2 clean and before publishing sleep-ready. Reissuing the
+		 * command here can race a controller whose AP command path is
+		 * already quiesced. Non-fast-boot callers still flush locally.
+		 */
+		ret = psram_cache_flush_before_power_down((psram_id_t)i);
+		if (ret != BK_OK) {
+			for (int j = 0; j <= i; j++) {
+				s_psram_retention_active[j] = false;
+			}
+			GLOBAL_INT_RESTORE();
+			MEM_STATIC_LOGE("psram cache flush timeout: id=%d reg2=0x%08x reg8=0x%08x\r\n",
+				i,
+				psram_hal_get_reg2_value_with_id((psram_id_t)i),
+				psram_hal_get_reg8_value_with_id((psram_id_t)i));
+			return ret;
+		}
+#endif
 		s_psram_retention_active[i] = true;
 	}
+	__asm volatile("dsb sy" ::: "memory");
+	GLOBAL_INT_RESTORE();
 
-	/* Latch PSRAM I/O pads at 3V. Covers PSRAM0 + PSRAM1. */
-	sys_drv_set_psram_pad_latch(1);
-
-	MEM_STATIC_LOGI("psram_data_retention: pads latched, p0=%d p1=%d, mode0=0x%08x mode1=0x%08x\r\n",
+#if !CONFIG_PM_AP_FAST_BOOT_ENABLE || CONFIG_PM_AP_FAST_BOOT_VERBOSE_TRACE
+	MEM_STATIC_LOGI("psram_data_retention: pads latched, p0=%d p1=%d, mode0=0x%08x mode1=0x%08x, reg5_0=0x%08x reg5_1=0x%08x\r\n",
 				   s_psram_retention_active[PSRAM_ID_0],
 				   s_psram_retention_active[PSRAM_ID_1],
 				   s_psram_retention_saved_mode[PSRAM_ID_0],
-				   s_psram_retention_saved_mode[PSRAM_ID_1]);
+				   s_psram_retention_saved_mode[PSRAM_ID_1],
+				   s_psram_retention_saved_reg5[PSRAM_ID_0],
+				   s_psram_retention_saved_reg5[PSRAM_ID_1]);
+#endif
 	return BK_OK;
 }
 
@@ -746,7 +893,7 @@ bk_err_t bk_psram_data_retention_recover(void)
 
 	/* Release PSRAM pad latch before the controller drives them again. */
 	sys_drv_set_psram_pad_latch(0);
-	bk_delay_us(50);
+	bk_delay_us(1000);
 
 	for (int i = 0; i < (int)PSRAM_ID_MAX; i++) {
 		if (!s_psram_retention_active[i]) {
@@ -755,9 +902,14 @@ bk_err_t bk_psram_data_retention_recover(void)
 		psram_retention_recovery_one((psram_id_t)i);
 		s_psram_init_done[i] = true;
 		s_psram_retention_active[i] = false;
+		s_psram_retention_mode_valid[i] = false;
+		s_psram_retention_clock_valid[i] = false;
+		s_psram_retention_reg5_valid[i] = false;
 	}
 
+#if CONFIG_PM_AP_FAST_BOOT_VERBOSE_TRACE
 	MEM_STATIC_LOGI("psram_data_retention_recover: done\r\n");
+#endif
 	return BK_OK;
 }
 

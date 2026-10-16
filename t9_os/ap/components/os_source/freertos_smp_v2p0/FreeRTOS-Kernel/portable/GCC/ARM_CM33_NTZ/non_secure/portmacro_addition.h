@@ -147,10 +147,11 @@ typedef spinlock_t                          portMUX_TYPE;               /**< Spi
  * @note This function is made non-inline on purpose to reduce code size
  * @param mux Spinlock
  * @param timeout Timeout to wait for spinlock in number of CPU cycles.
- *                Use portMUX_NO_TIMEOUT to wait indefinitely
- *                Use portMUX_TRY_LOCK to only getting the spinlock a single time
+ *                Current spinlock_acquire() ignores this argument and always
+ *                waits until the lock is acquired.
  * @retval pdPASS Critical section entered (spinlock taken)
- * @retval pdFAIL If timed out waiting for spinlock (will not occur if using portMUX_NO_TIMEOUT)
+ * @retval pdFAIL Reserved for a future spinlock_acquire() implementation that
+ *                 returns an acquisition status.
  */
 BaseType_t xPortEnterCriticalTimeout(portMUX_TYPE *mux, BaseType_t timeout);
 
@@ -226,7 +227,7 @@ void vPortYield( void );
  * @note [refactor-todo] Put this into private macros as its only called from task.c and is not public API
  * @param coreid ID of core to yield
  */
-//void vPortYieldOtherCore(BaseType_t coreid);	//@cyg:TODO:
+//void vPortYieldOtherCore(BaseType_t coreid);
 
 /**
  * @brief Checks if the current core can yield
@@ -237,7 +238,7 @@ void vPortYield( void );
  * @return true Core can yield
  * @return false Core cannot yield
  */
-///FORCE_INLINE_ATTR bool xPortCanYield(void);	//@cyg:TODO:
+///FORCE_INLINE_ATTR bool xPortCanYield(void);
 
 // ------------------- Hook Functions ----------------------
 

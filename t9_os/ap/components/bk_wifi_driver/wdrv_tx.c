@@ -275,10 +275,15 @@ bool wdrv_cp_mem_tx_allowed(void)
 
     /* memory is tight when the lwIP TX pool OR the lwIP total heap crosses the
      * high water mark, OR the CP OS heap drops to/below its reserve */
-    mem_tight = (lwip_avail && ((tx_pct >= 75) || (mem_pct > 80))) || heap_low;
+    mem_tight = (lwip_avail &&
+                 ((tx_pct >= TX_MEM_STOP_THRES) ||
+                  (mem_pct > TOTAL_MEM_STOP_THRES))) ||
+                heap_low;
     /* memory has eased only when BOTH lwIP metrics are below the low water mark
      * AND the CP OS heap is comfortably above its reserve */
-    mem_eased = (((tx_pct < 75) && (mem_pct <= 80)) && heap_ok);
+    mem_eased = (((tx_pct < TX_MEM_RESUME_THRES) &&
+                  (mem_pct < TOTAL_MEM_RESUME_THRES)) &&
+                 heap_ok);
 
     WDRV_IPC_LOCK(&wdrv_ipc_env[IPC_DATA], int_level);
     was_controlled = AP_TX_FLOW_STATE_CONTROLLED(wdrv_env.is_controlled);
@@ -350,8 +355,8 @@ int wdrv_special_txdata_sender(void *head, uint32_t vif_idx)
 
     if(!cpdu->co_hdr.need_free)
     {
+        WDRV_STATS_SMP_INC(tx_alloc_num,1);
         WDRV_STATS_INC(wdrv_tx_cnt,1);
-        WDRV_STATS_INC(tx_alloc_num,1);
     }
     else
     {
@@ -362,7 +367,8 @@ int wdrv_special_txdata_sender(void *head, uint32_t vif_idx)
 	if (kNoErr != ret) {
 		WDRV_LOGE("%s failed, ret=%d\r\n",__func__, ret);
         WDRV_STATS_INC(wdrv_tx_snder_fail,1);
-		os_free(head);
+        if(!cpdu->co_hdr.need_free)
+            WDRV_STATS_SMP_DEC(tx_alloc_num);
 	}
 
 	return ret;
@@ -396,6 +402,10 @@ int wdrv_txdata_sender(struct pbuf *p, uint32_t vif_idx)
 	cpdu->next = NULL;
     if(!cpdu->co_hdr.need_free)
         cpdu->co_hdr.special_type = 0;
+    if(!cpdu->co_hdr.need_free)
+    {
+        WDRV_STATS_SMP_INC(tx_alloc_num,1);
+    }
 #if CONFIG_CONTROLLER_AP_BUFFER_COPY
     if(!cpdu->co_hdr.need_free)
     {
@@ -408,6 +418,7 @@ int wdrv_txdata_sender(struct pbuf *p, uint32_t vif_idx)
         {
             WDRV_EXIT_TXMSG_CRITICAL(int_level);
             WDRV_STATS_INC(tx_pending_drop_cnt,1);
+            WDRV_STATS_SMP_DEC(tx_alloc_num);
             return BK_ERR_NO_MEM;
         }
         wdrv_env.tx_pending_count++;
@@ -422,7 +433,6 @@ int wdrv_txdata_sender(struct pbuf *p, uint32_t vif_idx)
     if(!cpdu->co_hdr.need_free)
     {
         WDRV_STATS_INC(wdrv_tx_cnt,1);
-        WDRV_STATS_INC(tx_alloc_num,1);
     }
     else
     {
@@ -453,7 +463,7 @@ int wdrv_txdata_sender(struct pbuf *p, uint32_t vif_idx)
             WDRV_LOGE("%s failed, ret=%d\r\n",__func__, ret);
             WDRV_STATS_INC(wdrv_tx_snder_fail,1);
             pbuf_free(p);
-            WDRV_STATS_DEC(tx_alloc_num);
+            WDRV_STATS_SMP_DEC(tx_alloc_num);
 #if CONFIG_CONTROLLER_DEBUG
             TRACK_PBUF_FREE(p);
 #endif
@@ -470,6 +480,8 @@ int wdrv_txdata_sender(struct pbuf *p, uint32_t vif_idx)
 	if (kNoErr != ret) {
 		WDRV_LOGE("%s failed, ret=%d\r\n",__func__, ret);
         WDRV_STATS_INC(wdrv_tx_snder_fail,1);
+        if(!cpdu->co_hdr.need_free)
+            WDRV_STATS_SMP_DEC(tx_alloc_num);
 		pbuf_free(p);
 	}
 
@@ -663,7 +675,7 @@ void wdrv_tx_pending_flush(void)
             TRACK_PBUF_FREE(p);
 #endif
             pbuf_free(p);
-            WDRV_STATS_DEC(tx_alloc_num);
+            WDRV_STATS_SMP_DEC(tx_alloc_num);
         }
     }
 

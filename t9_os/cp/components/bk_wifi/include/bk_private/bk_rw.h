@@ -305,6 +305,9 @@ extern int rw_msg_send_config_monitor_req(struct mac_chan_op *chan,
 		struct me_config_monitor_cfm *cfm);
 extern int rwnx_monitor_open();
 extern int rwnx_monitor_close();
+#if defined(CONFIG_WFA_CERT) && CONFIG_WFA_CERT
+extern int rwnx_msg_send_wfa_twt_setup(uint8_t setup_type, struct twt_conf_tag *twt_conf);
+#endif
 extern int rwnx_msg_send_twt_setup(uint8_t setup_type, uint16_t mantissa, uint8_t min_twt);
 extern int rwnx_msg_send_twt_teardown();
 extern int rw_msg_set_default_ac(uint32_t ac);
@@ -376,6 +379,9 @@ int rw_msg_send_csi_start_req(uint8_t work_type,uint8_t mode,uint8_t identity,ui
 
 int rw_msg_send_csi_stop_req(uint8_t vif_idx);
 int rw_msg_send_csi_static_param_reset_req(uint8_t update_cali_mode,uint32_t cali_cnt);
+#endif
+#if CONFIG_P2P
+extern int rw_msg_send_p2p_go_noa_set_enabled(uint8_t enabled);
 #endif
 extern int rwnx_handle_dynparams();
 

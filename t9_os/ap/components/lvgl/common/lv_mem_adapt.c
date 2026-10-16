@@ -1,8 +1,11 @@
+#include <os/os.h>
 #include <os/mem.h>
 
 #if CONFIG_LVGL_V9
 #include "src/stdlib/lv_mem.h"
 #endif
+
+#if !CONFIG_LVGL_V9 || LV_USE_STDLIB_MALLOC == LV_STDLIB_CUSTOM
 
 void *lv_malloc_core(size_t size)
 {
@@ -31,6 +34,12 @@ void lv_free_core(void *ptr)
 #endif
 }
 
+/*
+ * The rest of the v9 lv_stdlib contract. v8 has no such API, so the v8 client
+ * of the guard above takes only the three malloc/realloc/free functions and
+ * stops here. All stubs: the underlying heap is the system one, which needs no
+ * init and reports through its own rtos_get_*_free_heap_size().
+ */
 #if CONFIG_LVGL_V9
 
 void lv_mem_init(void)
@@ -65,4 +74,6 @@ lv_result_t lv_mem_test_core(void)
     return LV_RESULT_OK;
 }
 
-#endif
+#endif /* CONFIG_LVGL_V9 */
+
+#endif /* !CONFIG_LVGL_V9 || LV_USE_STDLIB_MALLOC == LV_STDLIB_CUSTOM */

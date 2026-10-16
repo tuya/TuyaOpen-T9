@@ -4,11 +4,7 @@
 #include <os/str.h>
 #include "bk_uart.h"
 #include <os/mem.h>
-#if CONFIG_FLASH_ORIGIN_API
-#include "BkDriverFlash.h"
-#else
 #include <driver/flash_partition.h>
-#endif
 
 #include "bk_sys_ctrl.h"
 #include <components/system.h>
@@ -37,7 +33,7 @@
 #include "sys_driver.h"
 #include "bk_rf_internal.h"
 
-#define WIFI_AGC_TEST  0
+#define WIFI_AGC_TEST  1
 extern bk_err_t uart_write_byte(uart_id_t id, uint8_t data);
 extern void manual_cal_show_txpwr_tab_simple(void);
 extern UINT32 manual_cal_fitting_txpwr_tab(void);
@@ -611,11 +607,7 @@ static int bkreg_run_command_implement(const char *content, int cnt)
 
 		rx_param        = (REGISTER_PARAM *)pHCIrxBuf->param;
 
-#if CONFIG_FLASH_ORIGIN_API
-		bk_logic_partition_t *pt = bk_flash_get_info(BK_PARTITION_SYS_RF);
-#else
 		bk_logic_partition_t *pt = bk_flash_partition_get_info(BK_PARTITION_SYS_RF);
-#endif
 		len_left = rx_param->value;
 		addr = rx_param->addr - pt->partition_start_addr;//0xFA000;
 
@@ -748,7 +740,8 @@ static int bkreg_run_command_implement(const char *content, int cnt)
 	case BEKEN_GET_AUD_DBG_INFO:
 	case BEKEN_SET_EQ_CONFIG_VOICE_PARA:
 	case BEKEN_SET_AEC_CONFIG_VOICE_PARA:
-	case BEKEN_SET_SYS_CONFIG_VOICE_PARA: {
+	case BEKEN_SET_SYS_CONFIG_VOICE_PARA:
+	case BEKEN_SET_DRC_CONFIG_VOICE_PARA: {
 		shell_cmd_forward((char *)&pHCIrxBuf->param[0], pHCIrxBuf->total);
 		found = 0;
 	}

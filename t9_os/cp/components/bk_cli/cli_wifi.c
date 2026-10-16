@@ -105,11 +105,9 @@ static int fast_connect_cb(void *arg, event_module_t event_module,
 	} else
 		return -1;
 
-	bk_flash_set_protect_type(FLASH_PROTECT_NONE);
 	bk_flash_erase_sector(pt->partition_start_addr + pt->partition_length -4096);
 	bk_flash_write_bytes(pt->partition_start_addr + pt->partition_length -4096,
 						(uint8_t *)&info_tmp, sizeof(BK_FAST_CONNECT_T));
-	bk_flash_set_protect_type(FLASH_UNPROTECT_LAST_BLOCK);
 
 	return 0;
 }
@@ -280,11 +278,9 @@ void cli_wifi_ap_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **
 						(uint8_t *)&info_t, sizeof(BK_FAST_CONNECT_T));
 			if (info_t.flag == 0x72l || info_t.flag == 0x73l) {
 				info_t.flag &= ~0x2l;
-				bk_flash_set_protect_type(FLASH_PROTECT_NONE);
 				bk_flash_erase_sector(pt->partition_start_addr + pt->partition_length -4096);
 				bk_flash_write_bytes(pt->partition_start_addr + pt->partition_length -4096,
 									(uint8_t *)&info_t, sizeof(BK_FAST_CONNECT_T));
-				bk_flash_set_protect_type(FLASH_UNPROTECT_LAST_BLOCK);
 			}
 		}
 #endif
@@ -997,10 +993,8 @@ void cli_wifi_sta_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char *
 						(uint8_t *)&info_t, sizeof(BK_FAST_CONNECT_T));
 			if (info_t.flag == 0x71l || info_t.flag == 0x73l) {
 				info_t.flag &= ~0x1l;
-				bk_flash_set_protect_type(FLASH_PROTECT_NONE);
 				bk_flash_write_bytes(pt->partition_start_addr + pt->partition_length -4096,
 									(uint8_t *)&info_t, sizeof(BK_FAST_CONNECT_T));
-				bk_flash_set_protect_type(FLASH_UNPROTECT_LAST_BLOCK);
 			}
 		}
 #endif
@@ -1314,7 +1308,7 @@ error:
 }
 #endif
 
-#if CONFIG_COMPONENTS_WFA_CA
+#if CONFIG_WFA_CA
 extern void wfa_ca_start();
 extern void wfa_ca_stop();
 
@@ -1636,14 +1630,16 @@ int cli_netif_event_cb(void *arg, event_module_t event_module,
 
 	switch (event_id) {
 	case EVENT_NETIF_GOT_IP4:
-	case EVENT_NETIF_GOT_IP6:
+	case EVENT_NETIF_GOT_IP6_LL:
+	case EVENT_NETIF_GOT_IP6_GLOBAL:
 		if (wifi_cmd_sema != NULL) {
 			wifi_cmd_status = 1;
 			rtos_set_semaphore(&wifi_cmd_sema);
 		}
 		got_ip = (netif_event_got_ip4_t *)event_data;
-		CLI_LOGI("%s got ip%d\n", got_ip->netif_if == NETIF_IF_STA ? "BK STA" : "unknown netif",
-			event_id== EVENT_NETIF_GOT_IP4 ? 4 : 6);
+		CLI_LOGI("%s got ip%s\n", got_ip->netif_if == NETIF_IF_STA ? "BK STA" : "unknown netif",
+			event_id == EVENT_NETIF_GOT_IP4 ? "4" :
+			(event_id == EVENT_NETIF_GOT_IP6_LL ? "6-ll" : "6-global"));
 		break;
 	default:
 		CLI_LOGD("rx event <%d %d>\n", event_module, event_id);
@@ -2674,7 +2670,7 @@ static const struct cli_command s_wifi_commands[] = {
 	{"twt", "twt {setup|teardown}", cli_wifi_twt_cmd},
 #endif
 
-#if CONFIG_COMPONENTS_WFA_CA
+#if CONFIG_WFA_CA
 	{"wfa_ca", "wfa_ca <start|stop>", cli_wifi_wfa_ca_cmd},
 #endif
 
@@ -2717,10 +2713,32 @@ static const struct cli_command s_wifi_commands[] = {
 	#endif
 };
 
+static bool s_cli_wifi_event_cbs_registered;
+
+bk_err_t cli_wifi_register_event_cbs(void)
+{
+	bk_err_t ret;
+
+	if (s_cli_wifi_event_cbs_registered)
+		return BK_OK;
+
+	ret = bk_event_register_cb(EVENT_MOD_WIFI, EVENT_ID_ALL, cli_wifi_event_cb, NULL);
+	if (ret != BK_OK)
+		return ret;
+
+	ret = bk_event_register_cb(EVENT_MOD_NETIF, EVENT_ID_ALL, cli_netif_event_cb, NULL);
+	if (ret != BK_OK)
+		return ret;
+
+	s_cli_wifi_event_cbs_registered = true;
+	return BK_OK;
+}
+
 int cli_wifi_init(void)
 {
-	BK_LOG_ON_ERR(bk_event_register_cb(EVENT_MOD_WIFI, EVENT_ID_ALL, cli_wifi_event_cb, NULL));
-	BK_LOG_ON_ERR(bk_event_register_cb(EVENT_MOD_NETIF, EVENT_ID_ALL, cli_netif_event_cb, NULL));
+	bk_err_t ret = cli_wifi_register_event_cbs();
+	if (ret != BK_OK && ret != BK_ERR_EVENT_NOT_INIT)
+		BK_LOG_ON_ERR(ret);
 	return cli_register_commands(s_wifi_commands, WIFI_CMD_CNT);
 }
 

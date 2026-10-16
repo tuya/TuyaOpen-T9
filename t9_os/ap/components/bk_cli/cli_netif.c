@@ -313,7 +313,12 @@ void cli_ping_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **arg
 		cnt = os_strtoul(argv[2], NULL, 10);
 
 	BK_LOGD(NULL, "ping IP address:%s\n", argv[1]);
-	ping_start(argv[1], cnt, 0);
+#ifdef CONFIG_IPV6
+	if (argv[0] && (os_strcmp(argv[0], "ping6") == 0))
+		ping6_start(argv[1], cnt, 0);
+	else
+#endif
+		ping_start(argv[1], cnt, 0);
 
 	if (!ret) {
 		msg = WIFI_CMD_RSP_SUCCEED;
@@ -375,6 +380,142 @@ void cli_ali_mqtt_send_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, c
 	}
 
 	BK_LOGD(NULL, "send mqtt topic...%d.\n", ret);
+}
+#endif
+
+#if CONFIG_PAHO_MQTT
+extern void test_paho_mqtt_start(const char *host_name, const char *username,
+				 const char *password, const char *topic);
+
+void cli_paho_mqtt_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv)
+{
+	char *msg = NULL;
+	int ret = 0;
+
+	BK_LOGD(NULL, "start paho mqtt...\n");
+	if (argc == 4) {
+		test_paho_mqtt_start(argv[1], argv[2], argv[3], NULL);
+	} else if (argc == 5) {
+		test_paho_mqtt_start(argv[1], argv[2], argv[3], argv[4]);
+	} else {
+		// mqttpaho 222.71.10.2 aclsemi ****** /aclsemi/bk7256/cmd/changyun
+		CLI_LOGE("usage: mqttpaho [host name|ip] [username] [password] [topic]\n");
+		goto error;
+	}
+
+	if (!ret) {
+		msg = WIFI_CMD_RSP_SUCCEED;
+		os_memcpy(pcWriteBuffer, msg, os_strlen(msg));
+		return;
+	}
+
+error:
+	msg = WIFI_CMD_RSP_ERROR;
+	os_memcpy(pcWriteBuffer, msg, os_strlen(msg));
+	return;
+}
+
+int paho_mqtt_cmd_msg_send(char *topic, char *msg);
+
+void cli_paho_mqtt_send_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv)
+{
+	int ret = 0;
+
+	if (argc == 3) {
+		ret = paho_mqtt_cmd_msg_send(argv[1], argv[2]);
+	} else {
+		// mqttpahopub /aclsemi/bk7256/cmd/changyun hello
+		CLI_LOGE("usage: mqttpahopub [topic] [msg]\n");
+		return;
+	}
+
+	BK_LOGD(NULL, "send paho mqtt topic...%d.\n", ret);
+}
+#endif
+
+#if CONFIG_COREMQTT
+#include "core_mqtt_test.h"
+
+void cli_mqtt_connect_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv)
+{
+	char *msg = NULL;
+	int ret = -1;
+
+	BK_LOGD(NULL, "core mqtt connect...\n");
+	if (argc == 4) {
+		ret = core_mqtt_connect(argv[1], argv[2], argv[3]);
+	} else {
+		CLI_LOGE("usage: coremqttconnect [host|mqtts://host|host:port] [username] [password]\n");
+		CLI_LOGE("       password=%s uses built-in JWT\r\n",
+			 CORE_MQTT_JWT_PASSWORD_PLACEHOLDER);
+		goto error;
+	}
+
+	if (ret == 0) {
+		msg = WIFI_CMD_RSP_SUCCEED;
+		os_memcpy(pcWriteBuffer, msg, os_strlen(msg));
+		return;
+	}
+
+error:
+	msg = WIFI_CMD_RSP_ERROR;
+	os_memcpy(pcWriteBuffer, msg, os_strlen(msg));
+}
+
+void cli_mqtt_subscribe_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv)
+{
+	char *msg = NULL;
+	int ret = -1;
+
+	if (argc == 2) {
+		ret = core_mqtt_subscribe(argv[1]);
+	} else {
+		CLI_LOGE("usage: coremqttsub [topic]\n");
+		goto error;
+	}
+
+	if (ret == 0) {
+		msg = WIFI_CMD_RSP_SUCCEED;
+		os_memcpy(pcWriteBuffer, msg, os_strlen(msg));
+		return;
+	}
+
+error:
+	msg = WIFI_CMD_RSP_ERROR;
+	os_memcpy(pcWriteBuffer, msg, os_strlen(msg));
+}
+
+void cli_mqtt_publish_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv)
+{
+	int ret = -1;
+
+	if (argc == 3) {
+		ret = core_mqtt_publish(argv[1], argv[2]);
+	} else {
+		CLI_LOGE("usage: coremqttpub [topic] [msg]\n");
+		return;
+	}
+
+	BK_LOGD(NULL, "core mqtt publish ret=%d\n", ret);
+}
+
+void cli_mqtt_destroy_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv)
+{
+	char *msg = NULL;
+	int ret;
+
+	(void)argc;
+	(void)argv;
+
+	ret = core_mqtt_destroy();
+	if (ret == 0) {
+		msg = WIFI_CMD_RSP_SUCCEED;
+		os_memcpy(pcWriteBuffer, msg, os_strlen(msg));
+		return;
+	}
+
+	msg = WIFI_CMD_RSP_ERROR;
+	os_memcpy(pcWriteBuffer, msg, os_strlen(msg));
 }
 #endif
 
@@ -626,6 +767,16 @@ static const struct cli_command s_netif_commands[] = {
 #if CONFIG_ALI_MQTT
 	{"mqttali", "ali mqtt test", cli_ali_mqtt_cmd},
 	{"mqttsend", "mqttsend [topic] [msg]", cli_ali_mqtt_send_cmd},	
+#endif
+#if CONFIG_PAHO_MQTT
+	{"mqttpaho", "mqttpaho [host] [user] [password] [topic]", cli_paho_mqtt_cmd},
+	{"mqttpahopub", "mqttpahopub [topic] [msg]", cli_paho_mqtt_send_cmd},
+#endif
+#if CONFIG_COREMQTT
+	{"coremqttconnect", "coremqttconnect [host] [user] [password]", cli_mqtt_connect_cmd},
+	{"coremqttsub", "coremqttsub [topic]", cli_mqtt_subscribe_cmd},
+	{"coremqttpub", "coremqttpub [topic] [msg]", cli_mqtt_publish_cmd},
+	{"coremqttdestroy", "coremqttdestroy", cli_mqtt_destroy_cmd},
 #endif
 #if CONFIG_OTA_HTTP
 	{"httplog", "httplog [1|0].", cli_http_debug_cmd},

@@ -16,12 +16,6 @@ CONFIG_PSRAM=y
 CONFIG_PSRAM_TEST=y
 CONFIG_PSRAM_AS_SYS_MEMORY=y
 
-# GDMA registers live in the CP domain; this core is forced Non-Secure on the
-# cross-bus master path, so disable the general DMA driver during bring-up.
-# SPI then runs in non-DMA (CPU) mode.
-# CONFIG_GENERAL_DMA is not set
-# CONFIG_SPI_DMA is not set
-
 # The L2 cache controller is a secure resource; a Non-Secure master cannot reach
 # its control registers, so its maintenance loop would spin forever during
 # bring-up. Disable L2 management here so all cache maintenance uses the core's
@@ -31,13 +25,26 @@ CONFIG_PSRAM_AS_SYS_MEMORY=y
 # Use the CPU-direct SRAM alias for AP memory access.
 CONFIG_SRAM_DIRECT_ADDR=y
 
-CONFIG_SLAVE_HEART_BEAT=n
+CONFIG_SLAVE_HEART_BEAT=y
 
-# Bring-up: disable AP window watchdog. HW period is 16-bit (timeout_ms*32); values
-# above ~2047ms wrap and fire in ~1.3s. Heartbeat tasks feed task_wdt explicitly.
-# CONFIG_SUPPORT_WWDT is not set
+CONFIG_SUPPORT_WWDT=y
 
 CONFIG_SECURE_OTA_XIP=y
+
+# HTTPS OTA transport for secure XIP A/B: CLI `https_ota <url>` downloads
+# package/ota.bin over TLS; ota_do_init_operation() routes writes into
+# ota_secure_xip backend (inactive slot + boot_param TRIAL). Needs CONFIG_HTTPS
+# (bk_https) + CONFIG_PSA_MBEDTLS (TLS). Keep OTA_HTTP for plain-HTTP bring-up.
+CONFIG_OTA_FUNCTION=y
+CONFIG_HTTPS=y
+CONFIG_OTA_HTTPS=y
+CONFIG_PSA_MBEDTLS=y
+
+# NTP sync so the RTC has real UTC for the HTTPS cert validity check (without it
+# the clock defaults to ~2021 and TLS fails). Depends on CONFIG_AON_RTC.
+CONFIG_NTP_SYNC_RTC=y
+# 0 = store UTC in RTC (correct for x509 checks); use 8 for local UTC+8.
+CONFIG_RTC_NTP_TIMEZONE=0
 
 # A/B slots are writable; keep partition validation enabled.
 CONFIG_FLASH_PARTITION_CHECK_VALID=y
@@ -59,3 +66,17 @@ CONFIG_FATFS_SDCARD=y
 CONFIG_VFS=y
 CONFIG_LITTLEFS=y
 CONFIG_VFS_TEST=y
+
+#pm
+CONFIG_FREERTOS_USE_TICKLESS_IDLE=2
+CONFIG_GPIO_WAKEUP_SUPPORT=y
+CONFIG_GPIO_DYNAMIC_WAKEUP_SUPPORT=y
+CONFIG_PM_AP_SUBPOWER_DOMAIN_DEFAULT_DISABLE=y
+CONFIG_PM_AP_CPU_FRQ_DEFAUL=y
+
+#BLE
+CONFIG_BLUETOOTH_HOST_ONLY=n
+CONFIG_BLUETOOTH_SUPPORT_AP_PWD_ALL=y
+
+#easy flash
+CONFIG_EASY_FLASH_V4=y

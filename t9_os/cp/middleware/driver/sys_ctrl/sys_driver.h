@@ -167,9 +167,9 @@ int32 sys_drv_rosc_calibration(uint32_t rosc_cali_mode, uint32_t cali_interval);
 int32 sys_drv_bandgap_cali_set(uint32_t value);//increase or decrease the dvdddig voltage
 int sys_drv_rosc_test_mode(bool enabled);
 uint32_t sys_drv_bandgap_cali_get();
-bk_err_t sys_drv_switch_cpu_bus_freq(pm_cpu_freq_e cpu_bus_freq);
-bk_err_t sys_drv_switch_cpu_bus_freq_unlocked(pm_cpu_freq_e cpu_bus_freq);
-bk_err_t sys_drv_core_bus_clock_ctrl(uint32_t cksel_core, uint32_t ckdiv_core,uint32_t ckdiv_bus, uint32_t ckdiv_cpu0,uint32_t ckdiv_cpu1);
+__IRAM_SEC bk_err_t sys_drv_switch_cpu_bus_freq(pm_cpu_freq_e cpu_bus_freq);
+__IRAM_SEC bk_err_t sys_drv_switch_cpu_bus_freq_unlocked(pm_cpu_freq_e cpu_bus_freq);
+__IRAM_SEC bk_err_t sys_drv_core_bus_clock_ctrl(uint32_t cksel_core, uint32_t ckdiv_core,uint32_t ckdiv_bus, uint32_t ckdiv_cpu0,uint32_t ckdiv_cpu1);
 
 /*for  low power  function end*/
 uint32 sys_drv_get_device_id(void); // CMD_GET_DEVICE_ID
@@ -221,7 +221,8 @@ void sys_drv_sadc_int_disable(void);
 void sys_drv_sadc_pwr_up(void);
 void sys_drv_sadc_pwr_down(void);
 void sys_drv_en_tempdet(uint32_t value);
-
+void sys_drv_set_temp_mode(bool high_volt_mode);
+uint32_t sys_drv_get_temp_mode_flag(void);
 /**  Platform End **/
 
 
@@ -330,6 +331,9 @@ uint32_t  sys_drv_aud_select_clock(uint32_t value);
 #if CONFIG_SOC_BK7259
 uint32_t sys_drv_aud_set_ckdiv(uint32_t value);
 uint32_t sys_drv_aud_dac_diffen_en(uint32_t value);
+uint32_t sys_drv_aud_dac_ldcoc_en(uint32_t value);
+uint32_t sys_drv_aud_dac_rdcoc_en(uint32_t value);
+uint32_t sys_drv_aud_dac_enbs_en(uint32_t value);
 uint32_t sys_drv_aud_micbias_voc_en(uint32_t value);
 uint32_t sys_drv_aud_micbias_trm_set(uint32_t value);
 uint32_t sys_drv_aud_mic1_en(uint32_t value);
@@ -412,6 +416,9 @@ uint32_t sys_drv_i2s3_int_en(uint32_t value);
 uint32_t sys_drv_i2s4_int_en(uint32_t value);
 #endif
 uint32_t sys_drv_apll_en(uint32_t value);
+uint32_t sys_drv_apll_ref_acquire(void);
+uint32_t sys_drv_apll_ref_release(void);
+uint32_t sys_drv_apll_ref_get(void);
 uint32_t sys_drv_cb_manu_val_set(uint32_t value);
 uint32_t sys_drv_ana_reg11_vsel_set(uint32_t value);
 uint32_t sys_drv_apll_cal_val_set(uint32_t value);
@@ -419,6 +426,14 @@ uint32_t sys_drv_apll_spi_trigger_set(uint32_t value);
 uint32_t sys_drv_i2s0_ckdiv_set(uint32_t value);
 uint32_t sys_drv_apll_config_set(uint32_t value);
 uint32_t sys_drv_dmic_clk_div_set(uint32_t value);
+uint32_t sys_drv_aud_looprst0v9_en(uint32_t value);
+uint32_t sys_drv_set_ana_reg20_value(uint32_t value);
+uint32_t sys_drv_set_ana_reg21_value(uint32_t value);
+uint32_t sys_drv_set_ana_reg25_value(uint32_t value);
+uint32_t sys_drv_set_ana_reg27_value(uint32_t value);
+uint32_t sys_drv_set_ana_reg28_value(uint32_t value);
+uint32_t sys_drv_set_ana_reg29_value(uint32_t value);
+uint32_t sys_drv_set_ana_reg30_value(uint32_t value);
 /**  I2S End  **/
 
 
@@ -495,6 +510,7 @@ uint32_t sys_drv_psram_dpll_enable(uint32_t value);
 uint32_t sys_drv_psram_ldo_enable(uint32_t value);
 uint32_t sys_drv_psram_clk_sel_with_id(uint32_t id, uint32_t value);
 uint32_t sys_drv_psram_set_clkdiv_with_id(uint32_t id, uint32_t value);
+uint32_t sys_drv_psram_get_clk_config_with_id(uint32_t id, uint32_t *clk_sel, uint32_t *clk_div);
 uint32_t sys_drv_psram_psldo_vsel(uint32_t value);
 uint32_t sys_drv_psram_psldo_vset(uint32_t psldo_swb, uint32_t vpsramsel);
 uint32_t sys_drv_psram_psram0_disckg(uint32_t value);
@@ -683,4 +699,3 @@ void sys_drv_set_base_addr(uint32_t addr);
 
 #endif //_SYS_DRV_H_
 // eof
-

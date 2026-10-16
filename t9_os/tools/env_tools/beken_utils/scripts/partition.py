@@ -17,6 +17,7 @@ from .common import *
 from .security import *
 from .ota import *
 from .parse_csv import *
+from .compress import COMPRESS_BLOCK_SZ, OTA_RESUME_MAX_FULL_BLOCKS
 
 SZ_16M = 0x1000000
 FLASH_BASE_ADDR = 0x04000000
@@ -561,9 +562,20 @@ class Partition:
         return self.partitions.is_last_bin_verified_by_bl2(self.partition_name)
 
     def add_magic_code(self, bin_file):
-        print(f'Add magic code BK.SB to {bin_file}')
-        # 42 4B 2E 53 42 0A => "BK.SB" + 0x0A
-        binary_magic = bytes([0x42, 0x4B, 0x2E, 0x53, 0x42, 0x0A])
+        # BootROM/BL2 magic at flash 0x100 selects signature policy.
+        # Controlled by security.csv sig_verify_en:
+        #   TRUE  -> "BK.SB" (42 4B 2E 53 42 0A) : require signature
+        #   FALSE -> "BEKEN" (42 45 4B 45 4E 0A) : skip signature (BL2 still
+        #            verifies image hash for OTA / boot integrity)
+        # The magic is written in plaintext at 0x100 (after AES), so it is valid
+        # for both NONE and FIXED (encrypted) builds.
+        if self.partitions.sig_verify_en:
+            magic_name = 'BK.SB'
+            binary_magic = bytes([0x42, 0x4B, 0x2E, 0x53, 0x42, 0x0A])
+        else:
+            magic_name = 'BEKEN'
+            binary_magic = bytes([0x42, 0x45, 0x4B, 0x45, 0x4E, 0x0A])
+        print(f'Add magic code {magic_name} to {bin_file}')
         with open(bin_file, 'r+b') as f:
             f.seek(0x100)
             f.write(binary_magic)
@@ -589,7 +601,7 @@ class Partition:
                     start_address = hex(self.vir_code_offset)
                 logging.debug(f'encrypt {self.partition_name}, startaddress={start_address}, out={self.aes_bin_name}')
                 #print(f'aes_key {aes_key} aes_bits {aes_bits}')
-                cmd = f'python3 {aes_tool} encrypt -infile {self.bin_name} -keywords {aes_key}  -aes {aes_bits} -outfile {self.aes_bin_name} -startaddress {start_address}'
+                cmd = f'{get_python_exe()} {aes_tool} encrypt -infile {self.bin_name} -keywords {aes_key}  -aes {aes_bits} -outfile {self.aes_bin_name} -startaddress {start_address}'
                 run_cmd_not_check_ret(cmd)
             else:
                 self.aes_bin_name = self.bin_name
@@ -605,23 +617,14 @@ class Partition:
 
             partition_hdr_pad_size = self.partition_hdr_pad_size
 
-            if self.is_xip() and self.is_primary:
-                all_bin_pack = self.crc_bin_name
-                with open(all_bin_pack,'rb+') as f:
-                    xip_status_phy_offset = ceil_align((self.partition_offset + self.partition_size - 4096), CRC_UNIT_TOTAL_SZ)
-                    print(f'xip_status_phy_offset {xip_status_phy_offset}')
-                    phy_bin_offset = xip_status_phy_offset - self.phy_partition_offset
-                    print(f'phy_bin_offset {phy_bin_offset}')
-                    f.seek(0, os.SEEK_END)  # set file pointer to the end of file.
-                    end_pos = f.tell()      # get postion of end of file
-                    offset = phy_bin_offset - end_pos
-                    print(f'offset {offset}, end pos {end_pos}')
-                    if offset < 0:
-                        raise RuntimeError(f"file {self.file_name_prefix} don't have enough space.")
-                    f.write(bytes([0xff]) * offset) # padding 0xff
-                    f.write(b'\xEF\xBE\xAD\xDE')
-                    f.seek(phy_bin_offset + 32)
-                    f.write(b'\xEF\xBE\xAD\xDE')
+            # NOTE: the legacy XIP "status magic" (0xDEADBEEF, written twice at the
+            # last 4KB of the primary_all slot) has been removed. It is dead on
+            # BK7259: A/B slot selection uses the boot_param partition (ABF1 record,
+            # boot_get_active_slot_hook -> boot_param_preferred_slot), and the only
+            # consumer of that magic was DIRECT_XIP_REVERT's boot_select_or_erase(),
+            # which is compiled out (MCUBOOT_DIRECT_XIP_REVERT=OFF). No source reads
+            # the XIP_SET macro. Dropping it also stops padding primary_all to the
+            # full slot in all_app.bin, shrinking the factory image.
 
         self.bin_size = os.path.getsize(self.crc_bin_name) + partition_hdr_pad_size
         logging.debug(f'{self.bin_name}: bin_size={self.bin_size}, pad_hdr_size={partition_hdr_pad_size} {self.partition_hdr_pad_size}')
@@ -727,7 +730,7 @@ class Partitions:
         all_partition.Dbus_en = True
         all_partition.is_all_partition = True
 
-        if (partition_name == 'primary_all'):
+        if partition_name == 'primary_all':
             all_partition.partition_hdr_pad_size = partition_1st.phy_partition_offset - partition_1st.partition_offset
             all_partition.partition_tail_pad_size = (all_partition.partition_offset+all_partition.partition_size) - floor_align(all_partition.partition_offset+all_partition.partition_size, CRC_UNIT_TOTAL_SZ)
 
@@ -890,6 +893,19 @@ class Partitions:
             primary_all = self.find_partition_by_name("primary_all")
             if(primary_all and primary_all.partition_size % (4096) != 0):
                 logging.error("total size of all primary partition should be 4k aligned!")
+                exit(1)
+            # Journal limit only applies when packing a compressed ota image.
+            if p is not None and primary_all:
+                full_blocks = primary_all.partition_size // COMPRESS_BLOCK_SZ
+                if full_blocks > OTA_RESUME_MAX_FULL_BLOCKS:
+                    max_kb = (OTA_RESUME_MAX_FULL_BLOCKS * COMPRESS_BLOCK_SZ) // 1024
+                    logging.error(
+                        f'primary_all size 0x{primary_all.partition_size:x} requires '
+                        f'{full_blocks} full 64KB blocks, but ota_control resume journal '
+                        f'only holds {OTA_RESUME_MAX_FULL_BLOCKS} entries '
+                        f'(max 0x{OTA_RESUME_MAX_FULL_BLOCKS * COMPRESS_BLOCK_SZ:x}, {max_kb}K). '
+                        f'Shrink primary_all or enlarge the journal in BL2/ota_control.')
+                    exit(1)
         elif(self.is_xip()):
             logging.debug("TODO")
         else:
@@ -1029,12 +1045,15 @@ class Partitions:
             for row in rows:
                 print(row)
 
-    def __init__(self, partition_csv, ota_type, boot_ota, bl1_secureboot_en, crc_en):
+    def __init__(self, partition_csv, ota_type, boot_ota, bl1_secureboot_en, crc_en, sig_verify_en=False):
         self.bl1_secureboot_en = bl1_secureboot_en
         self.partition_csv = partition_csv
         self.ota_type = ota_type
         self.boot_ota = boot_ota
         self.crc_en = crc_en
+        # sig_verify_en selects the BootROM/BL2 magic at flash 0x100:
+        # TRUE -> "BK.SB" (require signature), FALSE -> "BEKEN" (hash only in BL2).
+        self.sig_verify_en = sig_verify_en
 
         self.secondary_all_partitions_cnt = 0
         self.csv = Csv(partition_csv, True, partition_keys_v2, partition_keys_v1)
@@ -1177,6 +1196,27 @@ class Partitions:
 
         p.bin_name = 'boot_param.bin'
         logging.debug(f'create new {p.bin_name}: record crc=0x{crc:08x}, size=0x{size:x}')
+        with open(p.bin_name, 'wb+') as f:
+            f.write(content)
+
+    def process_ota_control(self, aes_type):
+        # Pre-provision the OVERWRITE ota_control partition as virgin flash
+        # (all 0xFF). The resume journal grows from the start and the
+        # OVERWRITE_CONFIRM record lives in the last sector (ota_confirm.h);
+        # both stay empty until the device receiver arms an update. Packs into
+        # all-app.bin via pack.json, mirroring XIP process_boot_param.
+        p = self.find_partition_by_name('ota_control')
+        if p == None:
+            return
+
+        size = p.partition_size
+        if size < 0x1000:
+            raise RuntimeError(
+                f'ota_control size 0x{size:x} < 4K, need room for resume/confirm')
+
+        content = bytes([0xFF]) * size
+        p.bin_name = 'ota_control.bin'
+        logging.debug(f'create new {p.bin_name}: virgin 0xFF, size=0x{size:x}')
         with open(p.bin_name, 'wb+') as f:
             f.write(content)
 
@@ -1578,7 +1618,7 @@ class Partitions:
             aes_tool = f'{self.tools_dir}/packager_tools/xts_aes.py'
             aes_bits = get_xts_aes_bits(aes_key)
             start_address = hex(phy2virtual(ota_partition.phy_partition_offset, CRC_EN))
-            cmd = f'python3 {aes_tool} encrypt -infile {ota_sign_bin} -keywords {aes_key} -aes {aes_bits} -outfile {aes_bin_name} -startaddress {start_address}'
+            cmd = f'{get_python_exe()} {aes_tool} encrypt -infile {ota_sign_bin} -keywords {aes_key} -aes {aes_bits} -outfile {aes_bin_name} -startaddress {start_address}'
 
             run_cmd_not_check_ret(cmd)
             if CRC_EN == True:
@@ -1650,6 +1690,7 @@ class Partitions:
         self.parse_and_validate_pack_json(pack_json)
         self.process_boot_flag(aes_type)
         self.process_boot_param(aes_type)
+        self.process_ota_control(aes_type)
         self.process_bl1_control(aes_type, boot_ota)
         self.create_partition_partition(aes_type, aes_key)
         self.process_aes_crc(aes_type, aes_key)

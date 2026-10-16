@@ -211,10 +211,10 @@ static avdk_err_t isp_dump_init_mipi_camera(uint16_t width, uint16_t height, uin
     avdk_err_t ret = AVDK_ERR_OK;
     bk_camera_bus_t *bus = NULL;
     bk_camera_bus_config_t bus_config = (bk_camera_bus_config_t)CSI_CAM_BUS_I2C1_8BIT_2000TIMEOUT();
+    bus_config.pin_xclk = GPIO_59;
     bk_camera_sensor_config_t sensor_config = {
         .pin_reset = GPIO_71,
         .pin_pwdn = 0xFF,
-        .pin_xclk = GPIO_59,
     };
 
     bus = bk_camera_bus_new(&bus_config);

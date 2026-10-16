@@ -6,6 +6,7 @@
  */
 
 #include <stdbool.h>
+#include <string.h>
 /* BK7259: pull in security.h FIRST so CONFIG_DIRECT_XIP (from _ota.h,
  * strategy=XIP) is visible in flash_area_read() below, enabling the CBUS
  * (DBUS-decrypted) read path for the primary slot. Without it the DIRECT_XIP
@@ -29,6 +30,10 @@
 
 /* SDK flash offset(remap)-enable setter; getter is already visible via flash.h. */
 extern void flash_set_excute_enable(int enable);
+
+/* Raw SPI (DBUS) read; used for the compressed-overwrite `ota` staging slot,
+ * which holds raw plaintext outside the primary XIP window (see flash_area_read). */
+extern bk_err_t bk_flash_read_bytes(uint32_t address, uint8_t *user_buf, uint32_t size);
 
 #define FLASH_PROGRAM_UNIT    TFM_HAL_FLASH_PROGRAM_UNIT
 
@@ -127,16 +132,40 @@ void flash_area_close(const struct flash_area *area)
 int flash_area_read(const struct flash_area *area, uint32_t off, void *dst,
                     uint32_t len)
 {
-    /* Primary slot (fa_id 0): read via the CBUS XIP view so the flash HW
+#if CONFIG_OTA_OVERWRITE
+    /* Compressed-overwrite: the secondary slot (fa_id 1) is mapped onto the real
+     * `ota` staging partition (flash_map.c s_partition_map), which holds the
+     * received compressed+signed image as raw plaintext (v1, flash_aes_type=NONE)
+     * and lives OUTSIDE the primary XIP window. It must be read with a raw SPI
+     * (DBUS) read - the same path bk_boot_read_ota_confirm() uses successfully.
+     * This must precede the "placeholder secondary -> 0xFF" and CBUS/XTS paths
+     * below: without it MCUboot (boot_validate_slot / boot_read_image_headers)
+     * and boot_copy_region (decompress_bl2.c) saw the ota slot as all-0xFF and
+     * forced BOOT_SWAP_TYPE_NONE, so the OVERWRITE_CONFIRM install never ran. */
+        /* Primary slot (fa_id 0): read via the CBUS XIP view so the flash HW
      * XTS-decrypts on the fly and MCUboot sees the plaintext image. A raw SPI
      * read would return ciphertext -> "Image not found". */
-#if CONFIG_OTA_OVERWRITE
+
     if (area->fa_id == 0) {
         uint32_t fa_off = FLASH_PHY2VIRTUAL(CEIL_ALIGN_34(area->fa_off));
         bk_flash_read_cbus(fa_off + off, dst, len);
         return 0;
+    }else if (area->fa_id == 1) {
+        bk_flash_read_bytes(area->fa_off + off, dst, len);
+        return 0;
+    }else{
+        return -1;
     }
 #endif
+
+    /* Primary-only / placeholder secondary: never present a valid slot-B image
+     * (synthesized secondary geometry may alias primary). */
+    if (area->fa_id == 1 &&
+        (!CONFIG_DIRECT_XIP ||
+         partition_get_phy_size(PARTITION_SECONDARY_ALL) == 0u)) {
+        memset(dst, 0xFF, len);
+        return 0;
+    }
 
 #if CONFIG_DIRECT_XIP
     uint32_t fa_size = (FLASH_PHY2VIRTUAL(partition_get_phy_size(PARTITION_PRIMARY_ALL))) / 4096 * 4096;

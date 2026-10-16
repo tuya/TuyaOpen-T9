@@ -188,9 +188,6 @@ static avdk_err_t h264_encode_msg_callback(void *param)
     h264_encode_osd_finish_frame(ctrl->osd_slots);
     ctrl->enc_param.update_flag = 0;
     if (venc_ret != VCENC_FRAME_READY && venc_ret != VCENC_OK) {
-        /* A frame killed on purpose by vcenc_h264_abort() is not a fault: report it
-         * quietly so a clean teardown does not read like a hardware failure. Only the
-         * two codes an abort can produce qualify (VCENC_ERROR -1, VCENC_HW_RESET -16). */
         bool expected_abort = ctrl->aborting &&
                               (venc_ret == VCENC_ERROR || venc_ret == VCENC_HW_RESET);
         ctrl->aborting = false;
@@ -554,6 +551,13 @@ static avdk_err_t h264_encode_ctlr_set_rate_ctrl(private_h264_encode_hw_flexa_ct
         vcenc_rc.qp_max_pb = qp_p;
         vcenc_rc.qp_hdr = (int)qp_i;
         vcenc_rc.picture_rc = 0;
+        vcenc_rc.vbr = 0;
+        vcenc_rc.ctb_rc = H264_ENCODE_CTB_RC_DISABLE;
+        vcenc_rc.block_rc_size = 0;
+        vcenc_rc.cpb_max_rate = 0;
+        vcenc_rc.filler_data = 0;
+        vcenc_rc.hrd = 0;
+        vcenc_rc.hrd_cpb_size = 0;
         vcenc_rc.bit_per_second = 0;
     } else {
         vcenc_rc.qp_min_i = rate_ctrl->qp_min_i;
@@ -568,7 +572,16 @@ static avdk_err_t h264_encode_ctlr_set_rate_ctrl(private_h264_encode_hw_flexa_ct
             return AVDK_ERR_INVAL;
         }
         vcenc_rc.qp_hdr = -1;
+        vcenc_rc.intra_qp_delta = H264_ENCODE_VBR_INTRA_QP_DELTA;
         vcenc_rc.picture_rc = 1;
+        vcenc_rc.vbr = 1;
+        vcenc_rc.ctb_rc = H264_ENCODE_CTB_RC_SUBJECTIVE;
+        vcenc_rc.block_rc_size = 0;
+        vcenc_rc.cpb_max_rate = 0;
+        vcenc_rc.filler_data = 0;
+        vcenc_rc.hrd = 0;
+        vcenc_rc.hrd_cpb_size = 0;
+        vcenc_rc.bitrate_window = h264_encode_vbr_bitrate_window_frames(&vcenc_rc);
         vcenc_rc.bit_per_second = rate_ctrl->bitrate;
     }
 
@@ -602,6 +615,63 @@ static avdk_err_t h264_encode_ctlr_get_rate_ctrl(private_h264_encode_hw_flexa_ct
     rate_ctrl->qp_min_p = (uint8_t)vcenc_rc.qp_min_pb;
     rate_ctrl->qp_max_p = (uint8_t)vcenc_rc.qp_max_pb;
     rate_ctrl->bitrate = vcenc_rc.picture_rc ? vcenc_rc.bit_per_second : 0U;
+    return AVDK_ERR_OK;
+}
+
+static avdk_err_t h264_encode_ctlr_set_frame_rate(private_h264_encode_hw_flexa_ctlr_t *control,
+                                                  uint32_t frame_rate)
+{
+    if (frame_rate == 0U) {
+        LOGE("invalid frame rate: %u\r\n", frame_rate);
+        return AVDK_ERR_INVAL;
+    }
+    if (!control->encoder_inited) {
+        LOGE("h264 encoder is not opened\r\n");
+        return AVDK_ERR_INVAL;
+    }
+
+    vcenc_rate_ctrl_t vcenc_rc;
+    if (vcenc_h264_get_rate_ctrl(&control->enc_param, &vcenc_rc) != VCENC_OK) {
+        LOGE("vcenc_h264_get_rate_ctrl failed\r\n");
+        return AVDK_ERR_GENERIC;
+    }
+
+    vcenc_rc.frame_rate_num = frame_rate;
+    vcenc_rc.frame_rate_denom = 1U;
+    if (vcenc_rc.vbr != 0) {
+        vcenc_rc.bitrate_window = h264_encode_vbr_bitrate_window_frames(&vcenc_rc);
+    }
+
+    if (vcenc_h264_set_rate_ctrl(&control->enc_param, &vcenc_rc) != VCENC_OK) {
+        LOGE("vcenc_h264_set_rate_ctrl failed\r\n");
+        return AVDK_ERR_GENERIC;
+    }
+
+    LOGI("H.264 frame rate set, fps=%u\r\n", frame_rate);
+    return AVDK_ERR_OK;
+}
+
+static avdk_err_t h264_encode_ctlr_set_rc_qp_delta_range(private_h264_encode_hw_flexa_ctlr_t *control,
+                                                         uint32_t rc_qp_delta_range)
+{
+    if (!control->encoder_inited) {
+        LOGE("h264 encoder is not opened\r\n");
+        return AVDK_ERR_INVAL;
+    }
+
+    vcenc_rate_ctrl_t vcenc_rc;
+    if (vcenc_h264_get_rate_ctrl(&control->enc_param, &vcenc_rc) != VCENC_OK) {
+        LOGE("vcenc_h264_get_rate_ctrl failed\r\n");
+        return AVDK_ERR_GENERIC;
+    }
+
+    vcenc_rc.rc_qp_delta_range = rc_qp_delta_range;
+    if (vcenc_h264_set_rate_ctrl(&control->enc_param, &vcenc_rc) != VCENC_OK) {
+        LOGE("vcenc_h264_set_rate_ctrl failed\r\n");
+        return AVDK_ERR_GENERIC;
+    }
+
+    LOGI("H.264 rc_qp_delta_range set, range=%u\r\n", rc_qp_delta_range);
     return AVDK_ERR_OK;
 }
 
@@ -694,6 +764,18 @@ static avdk_err_t h264_encode_ctlr_ioctl(bk_h264_encode_ctlr_handle_t handle, ui
             return h264_encode_ctlr_set_rate_ctrl(control, (bk_h264_encode_rate_ctrl_t *)arg);
         case BK_H264_ENCODE_IOCTL_GET_RATE_CTRL:
             return h264_encode_ctlr_get_rate_ctrl(control, (bk_h264_encode_rate_ctrl_t *)arg);
+        case BK_H264_ENCODE_IOCTL_SET_FRAME_RATE:
+            if (arg == NULL) {
+                LOGE("frame rate arg is NULL\r\n");
+                return AVDK_ERR_INVAL;
+            }
+            return h264_encode_ctlr_set_frame_rate(control, *(uint32_t *)arg);
+        case BK_H264_ENCODE_IOCTL_SET_RC_QP_DELTA_RANGE:
+            if (arg == NULL) {
+                LOGE("rc_qp_delta_range arg is NULL\r\n");
+                return AVDK_ERR_INVAL;
+            }
+            return h264_encode_ctlr_set_rc_qp_delta_range(control, *(uint32_t *)arg);
         case BK_H264_ENCODE_IOCTL_SET_OSD:
             return h264_encode_set_osd_common(&control->enc_param, control->encoder_inited,
                                               control->osd_slots, (bk_h264_encode_osd_t *)arg);
@@ -733,9 +815,6 @@ static avdk_err_t h264_encode_ctlr_ioctl(bk_h264_encode_ctlr_handle_t handle, ui
                 return AVDK_ERR_INVAL;
             }
             if (control->bond == bond) {
-                /* Kill any in-flight encode before the bond goes away, or the encoder
-                 * thread sits on enc_done_sem for the full 5 s timeout. Mirrors
-                 * bk_h264_encode_sw_flexa_ctlr.c:774. */
                 if (control->encoder_inited) {
                     control->aborting = true;
                     (void)vcenc_h264_abort(&control->enc_param);

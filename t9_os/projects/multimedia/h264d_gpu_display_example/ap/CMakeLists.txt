@@ -21,6 +21,7 @@ set(priv_req
     bk_gpu
     avdk_utils
     bk_peripheral
+    avdk_driver
 )
 
 if (CONFIG_H264D_GPU_DISPLAY_ENABLE_MIPI_DISPLAY)
@@ -40,7 +41,11 @@ list(APPEND srcs
 # transitively via media_service + bk_camera (already in priv_req above).
 endif()
 
-if (CONFIG_H264D_GPU_DISPLAY_TEST_STREAM_1280X720)
+if (CONFIG_H264D_GPU_DISPLAY_TEST_STREAM_1920X1080)
+list(APPEND srcs
+    src/h264_decode_stream_1920x1080.c
+)
+elseif (CONFIG_H264D_GPU_DISPLAY_TEST_STREAM_1280X720)
 list(APPEND srcs
     src/h264_decode_stream_1280x720.c
 )

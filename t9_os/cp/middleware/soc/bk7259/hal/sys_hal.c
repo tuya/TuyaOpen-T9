@@ -46,7 +46,9 @@
 #define PM_VDDDIG_H_VOL_0V825               (0x9)
 #define PM_VDDDIG_H_VOL_0V85                (0xA)
 #define PM_VDDDIG_H_VOL_0v9                 (0xC)
-#define PM_VDDDIG_H_VOL_0V95                (0xE)
+#define PM_VDDDIG_H_VOL_0V95                (0xE)//0.6+0.025*0xE=0.95v
+#define PM_VDDDIG_REG_VALUE_TO_VOLT(value)  ((value) * 0.025f + 0.6f)
+#define PM_AP_VDDDIG_REG_VALUE_TO_VOLT(value) ((value) * 0.025f + 0.7f)
 #define PM_CLKDV_CPU1_1                     (0x1)
 #define PM_CLKDV_CPU0_0                     (0x0)
 #define SYS_SWITCH_VDDDIG_VOL_DELAY_TIME    (2600)
@@ -93,7 +95,7 @@ typedef struct {
 } sys_hal_cpu_bus_freq_cfg_t;
 
 
-static const sys_hal_cpu_bus_freq_cfg_t s_cpu_bus_freq_cfg[] = {
+static sys_hal_cpu_bus_freq_cfg_t s_cpu_bus_freq_cfg[] = {
 	{PM_CPU_FRQ_XTAL, PM_CLKSEL_CORE_26M, 0x0, 0x0, 0x0, 0x0, PM_VDDDIG_H_VOL_0V85},
 	{PM_CPU_FRQ_60M, PM_CLKSEL_CORE_480M, 0x7, 0x0, 0x0, 0x0, PM_VDDDIG_H_VOL_0V85},
 	{PM_CPU_FRQ_80M, PM_CLKSEL_CORE_480M, 0x5, 0x0, 0x0, 0x0, PM_VDDDIG_H_VOL_0V85},
@@ -104,14 +106,22 @@ static const sys_hal_cpu_bus_freq_cfg_t s_cpu_bus_freq_cfg[] = {
 
 // static pm_cpu_freq_e s_pre_cpu_freq = PM_CPU_FRQ_120M;
 uint32 sys_hal_get_int_group2_status(uint32_t core_id);
-bk_err_t sys_hal_ctrl_vddd_h_vol(uint32_t vol_value);
-bk_err_t sys_hal_ctrl_vdddig_h_vol(uint32_t vol_value);
+__IRAM_SEC bk_err_t sys_hal_ctrl_vddd_h_vol(uint32_t vol_value);
+__IRAM_SEC bk_err_t sys_hal_ctrl_vdddig_h_vol(uint32_t vol_value);
 uint32_t sys_hal_vdddig_h_vol_get();
 static void sys_hal_delay(volatile uint32_t times);
 static bk_err_t sys_hal_m55_clock_power_init();
 static bk_err_t sys_hal_m55_clock_power_init();
 __IRAM_SEC int32 sys_hal_module_power_state_get(power_module_name_t module);
 bk_err_t sys_hal_ap_clock_power_ctrl(power_module_state_t power_state);
+
+#if CONFIG_TFM_AP_BOOT_NSC
+/* TF-M secure veneer: after CP NS powers the AP domain, the secure world applies
+ * the AP MPC/PPHS so the AP SYS/AHBP region becomes Non-secure and CP NS can
+ * program the AP SysCfg through the NS alias. Resolved from libtfm_s_veneers.a
+ * at NS link time. */
+int psa_ap_secure_sys_open(void);
+#endif
 
 bk_err_t sys_hal_init()
 {
@@ -199,7 +209,7 @@ bk_err_t sys_hal_phy_ctrl(power_module_name_t module,power_module_state_t power_
 
 		if (0x0 == sys_hal_module_power_state_get(module))
 		{
-			if((bk_pm_vote_power_module_get() == PM_POWER_SUB_DOMAIN_PHY) || 
+			if((bk_pm_vote_power_module_get() == PM_POWER_SUB_DOMAIN_PHY) ||
 			(bk_pm_vote_power_module_get() == PM_POWER_SUB_DOMAIN_BTDM))
 			{
 				#if CONFIG_WIFI_ENABLE
@@ -521,7 +531,7 @@ uint32_t sys_hal_bandgap_cali_get()
 {
 	return 0;
 }
-bk_err_t sys_hal_core_bus_clock_ctrl(uint32_t cksel_core, uint32_t ckdiv_core,uint32_t ckdiv_bus, uint32_t ckdiv_cpu0,uint32_t ckdiv_cpu1)
+__IRAM_SEC bk_err_t sys_hal_core_bus_clock_ctrl(uint32_t cksel_core, uint32_t ckdiv_core,uint32_t ckdiv_bus, uint32_t ckdiv_cpu0,uint32_t ckdiv_cpu1)
 {
 	uint32_t clk_param;
 	uint32_t next_clk_param;
@@ -529,18 +539,15 @@ bk_err_t sys_hal_core_bus_clock_ctrl(uint32_t cksel_core, uint32_t ckdiv_core,ui
 	uint32_t target_ckdiv_core = ckdiv_core << PM_CLKDIV_CORE_POS;
 	if(cksel_core > PM_CLKSEL_CORE_MAX)
 	{
-		os_printf("Set dvfs cksel core > %d invalid\r\n",PM_CLKSEL_CORE_MAX);
 		return BK_FAIL;
 	}
 
 	if((ckdiv_core > PM_FREQUNCY_DIV_MAX))
 	{
-		os_printf("Set dvfs ckdiv_core > %d invalid\r\n",PM_FREQUNCY_DIV_MAX);
 		return BK_FAIL;
 	}
 	if(((cksel_core == PM_CLKSEL_CORE_320M)&&(ckdiv_core == PM_CLKDIV_CORE_0))||((cksel_core == PM_CLKSEL_CORE_480M)&&(ckdiv_core == PM_CLKDIV_CORE_0)))
 	{
-		os_printf("unsupport the cpu freq setting %d %d \r\n",cksel_core,ckdiv_core);
 		return BK_FAIL;
 	}
 
@@ -583,7 +590,7 @@ bk_err_t sys_hal_core_bus_clock_ctrl(uint32_t cksel_core, uint32_t ckdiv_core,ui
 	return BK_OK;
 }
 
-bk_err_t sys_hal_ctrl_vddd_h_vol(uint32_t vol_value)
+__IRAM_SEC bk_err_t sys_hal_ctrl_vddd_h_vol(uint32_t vol_value)
 {
 	/*TODO: implement the function; default:1.0v*/
 	return BK_OK;
@@ -621,7 +628,7 @@ uint32_t sys_hal_vdddig_h_vol_get()
 	return sys_ll_get_ana_reg10_vcorehsel();
 }
 
-static const sys_hal_cpu_bus_freq_cfg_t *sys_hal_get_cpu_bus_freq_cfg(pm_cpu_freq_e cpu_bus_freq)
+__IRAM_SEC static sys_hal_cpu_bus_freq_cfg_t *sys_hal_get_cpu_bus_freq_cfg(pm_cpu_freq_e cpu_bus_freq)
 {
 	if((cpu_bus_freq < PM_CPU_FRQ_XTAL) || (cpu_bus_freq > PM_CPU_FRQ_240M))
 		return NULL;
@@ -629,7 +636,7 @@ static const sys_hal_cpu_bus_freq_cfg_t *sys_hal_get_cpu_bus_freq_cfg(pm_cpu_fre
 	return &s_cpu_bus_freq_cfg[cpu_bus_freq];
 }
 
-static bk_err_t sys_hal_set_cpu_bus_freq_clock(const sys_hal_cpu_bus_freq_cfg_t *cfg)
+__IRAM_SEC static bk_err_t sys_hal_set_cpu_bus_freq_clock(const sys_hal_cpu_bus_freq_cfg_t *cfg)
 {
 #if CONFIG_DCO_CLK_ENABLE
 	if(cfg->freq == PM_CPU_FRQ_60M)
@@ -653,7 +660,51 @@ static bk_err_t sys_hal_set_cpu_bus_freq_clock(const sys_hal_cpu_bus_freq_cfg_t 
 		cfg->ckdiv_cpu0, cfg->ckdiv_cpu1);
 }
 
-bk_err_t sys_hal_switch_cpu_bus_freq_high_to_low(pm_cpu_freq_e cpu_bus_freq)
+static pm_cpu_freq_e s_pre_cpu_freq = PM_CPU_FRQ_120M;
+
+__IRAM_SEC static void sys_hal_set_ram_speed_by_cpu_freq(pm_cpu_freq_e cpu_bus_freq)
+{
+	if(cpu_bus_freq < PM_CPU_FRQ_160M)
+	{
+		sys_hal_set_ram_low_speed();
+	}
+	else
+	{
+		sys_hal_set_ram_high_speed();
+	}
+}
+
+__IRAM_SEC bk_err_t sys_hal_switch_cpu_bus_freq_prepare(pm_cpu_freq_e cpu_bus_freq)
+{
+	const sys_hal_cpu_bus_freq_cfg_t *cfg = sys_hal_get_cpu_bus_freq_cfg(cpu_bus_freq);
+	pm_cpu_freq_e prev_freq = s_pre_cpu_freq;
+	bk_err_t ret;
+
+	if(cfg == NULL)
+		return BK_FAIL;
+
+	if(prev_freq == cpu_bus_freq)
+		return BK_OK;
+
+	if(prev_freq < cpu_bus_freq)
+	{
+		ret = sys_hal_ctrl_vddd_h_vol(PM_VDDD_H_VOL_1V);
+		if(ret != BK_OK)
+			return ret;
+
+		ret = sys_hal_ctrl_vdddig_h_vol(cfg->vdddig_vol);
+		if(ret != BK_OK)
+			return ret;
+
+		SYS_PM_HAL_CPU_BARRIER();
+		sys_hal_set_ram_speed_by_cpu_freq(cpu_bus_freq);
+		SYS_PM_HAL_CPU_BARRIER();
+	}
+
+	return BK_OK;
+}
+
+__IRAM_SEC bk_err_t sys_hal_switch_cpu_bus_freq_clock(pm_cpu_freq_e cpu_bus_freq)
 {
 	const sys_hal_cpu_bus_freq_cfg_t *cfg = sys_hal_get_cpu_bus_freq_cfg(cpu_bus_freq);
 	bk_err_t ret;
@@ -661,59 +712,77 @@ bk_err_t sys_hal_switch_cpu_bus_freq_high_to_low(pm_cpu_freq_e cpu_bus_freq)
 	if(cfg == NULL)
 		return BK_FAIL;
 
+	if(s_pre_cpu_freq == cpu_bus_freq)
+		return BK_OK;
+
 	ret = sys_hal_set_cpu_bus_freq_clock(cfg);
 	SYS_PM_HAL_CPU_BARRIER();
 
+	return ret;
+}
+
+__IRAM_SEC bk_err_t sys_hal_switch_cpu_bus_freq_finish(pm_cpu_freq_e cpu_bus_freq)
+{
+	const sys_hal_cpu_bus_freq_cfg_t *cfg = sys_hal_get_cpu_bus_freq_cfg(cpu_bus_freq);
+	pm_cpu_freq_e prev_freq = s_pre_cpu_freq;
+	bk_err_t ret;
+
+	if(cfg == NULL)
+		return BK_FAIL;
+
+	if(prev_freq == cpu_bus_freq)
+		return BK_OK;
+
+	if(prev_freq > cpu_bus_freq)
+	{
+		sys_hal_set_ram_speed_by_cpu_freq(cpu_bus_freq);
+		SYS_PM_HAL_CPU_BARRIER();
+
+		ret = sys_hal_ctrl_vddd_h_vol(PM_VDDD_H_VOL_1V);
+		if(ret != BK_OK)
+			return ret;
+
+		ret = sys_hal_ctrl_vdddig_h_vol(cfg->vdddig_vol);
+		if(ret != BK_OK)
+			return ret;
+
+		SYS_PM_HAL_CPU_BARRIER();
+	}
+
+	s_pre_cpu_freq = cpu_bus_freq;
+	return BK_OK;
+}
+
+__IRAM_SEC bk_err_t sys_hal_switch_cpu_bus_freq_high_to_low(pm_cpu_freq_e cpu_bus_freq)
+{
+	bk_err_t ret;
+
+	ret = sys_hal_switch_cpu_bus_freq_prepare(cpu_bus_freq);
 	if(ret != BK_OK)
 		return ret;
 
-	if(cpu_bus_freq < PM_CPU_FRQ_160M)
-	{
-		sys_hal_set_ram_low_speed();
-	}
-	else
-	{
-		sys_hal_set_ram_high_speed();
-	}
-	SYS_PM_HAL_CPU_BARRIER();
+	ret = sys_hal_switch_cpu_bus_freq_clock(cpu_bus_freq);
+	if(ret != BK_OK)
+		return ret;
 
-	sys_hal_ctrl_vddd_h_vol(PM_VDDD_H_VOL_1V);
-	sys_hal_ctrl_vdddig_h_vol(cfg->vdddig_vol);
-	SYS_PM_HAL_CPU_BARRIER();
-
-	return ret;
+	return sys_hal_switch_cpu_bus_freq_finish(cpu_bus_freq);
 }
-bk_err_t sys_hal_switch_cpu_bus_freq_low_to_high(pm_cpu_freq_e cpu_bus_freq)
+__IRAM_SEC bk_err_t sys_hal_switch_cpu_bus_freq_low_to_high(pm_cpu_freq_e cpu_bus_freq)
 {
-	const sys_hal_cpu_bus_freq_cfg_t *cfg = sys_hal_get_cpu_bus_freq_cfg(cpu_bus_freq);
 	bk_err_t ret;
 
-	if(cfg == NULL)
-		return BK_FAIL;
+	ret = sys_hal_switch_cpu_bus_freq_prepare(cpu_bus_freq);
+	if(ret != BK_OK)
+		return ret;
 
-	sys_hal_ctrl_vddd_h_vol(PM_VDDD_H_VOL_1V);
-	sys_hal_ctrl_vdddig_h_vol(cfg->vdddig_vol);
+	ret = sys_hal_switch_cpu_bus_freq_clock(cpu_bus_freq);
+	if(ret != BK_OK)
+		return ret;
 
-	SYS_PM_HAL_CPU_BARRIER();
-
-	if(cpu_bus_freq < PM_CPU_FRQ_160M)
-	{
-		sys_hal_set_ram_low_speed();
-	}
-	else
-	{
-		sys_hal_set_ram_high_speed();
-	}
-	SYS_PM_HAL_CPU_BARRIER();
-
-	ret = sys_hal_set_cpu_bus_freq_clock(cfg);
-	SYS_PM_HAL_CPU_BARRIER();
-
-	return ret;
+	return sys_hal_switch_cpu_bus_freq_finish(cpu_bus_freq);
 }
 
-static pm_cpu_freq_e s_pre_cpu_freq = PM_CPU_FRQ_120M;
-bk_err_t sys_hal_switch_cpu_bus_freq(pm_cpu_freq_e cpu_bus_freq)
+__IRAM_SEC bk_err_t sys_hal_switch_cpu_bus_freq(pm_cpu_freq_e cpu_bus_freq)
 {
 	bk_err_t ret = BK_OK;
 
@@ -801,7 +870,7 @@ __IRAM_SEC void sys_hal_set_ram_high_speed(void)
      sys_hal_set_ram_tpl_cfg(0xA5 << 24 | ram_tpl_cfg); ///Default: Low-speed configuration
 }
 
-void sys_hal_set_ram_low_speed(void)
+__IRAM_SEC void sys_hal_set_ram_low_speed(void)
 {
 
 	/* When running at high frequency (more than half of the maximum frequency),
@@ -1968,6 +2037,24 @@ void sys_hal_en_tempdet(uint32_t value)
 {
 	sys_ll_set_ana_reg5_en_temp(value);
 }
+
+void sys_hal_set_temp_mode(uint32_t value)
+{
+    if (value)
+    {
+        sys_ll_set_ana_reg5_temp_gsel(0);
+    } 
+    else
+    {
+        sys_ll_set_ana_reg5_temp_gsel(1);
+    }
+}
+
+uint32_t sys_hal_get_temp_mode(void)
+{
+    return sys_ll_get_ana_reg5_temp_gsel();
+}
+
 uint32_t sys_hal_mclk_mux_get(void)
 {
 	uint32_t ret = 0;
@@ -2607,6 +2694,14 @@ void sys_hal_aud_dcoc_en(uint32_t value)
 {
     sys_ll_set_ana_reg29_lendcoc(value);
 }
+void sys_hal_aud_dac_ldcoc_en(uint32_t value)
+{
+    sys_ll_set_ana_reg29_lendcoc(value);
+}
+void sys_hal_aud_dac_rdcoc_en(uint32_t value)
+{
+    sys_ll_set_ana_reg29_rendcoc(value);
+}
 void sys_hal_aud_lmdcin_set(uint32_t value)
 {
 	return;
@@ -2624,6 +2719,10 @@ void sys_hal_aud_micbias_en(uint32_t value)
     sys_ll_set_ana_reg20_enmicbias(value);
 }
 void sys_hal_aud_dac_bias_en(uint32_t value)
+{
+    sys_ll_set_ana_reg30_enbs(value);
+}
+void sys_hal_aud_dac_enbs_en(uint32_t value)
 {
     sys_ll_set_ana_reg30_enbs(value);
 }
@@ -2830,6 +2929,10 @@ void sys_hal_apll_cal_val_set(uint32_t value)  /// modify - 260105
 void sys_hal_apll_spi_trigger_set(uint32_t value)
 {
     sys_ll_set_ana_reg25_spi_trigger(value);
+}
+void sys_hal_aud_looprst0v9_en(uint32_t value)
+{
+	sys_ll_set_ana_reg30_looprst0v9(value);
 }
 void sys_hal_i2s0_ckdiv_set(uint32_t value)
 {
@@ -3085,6 +3188,20 @@ void sys_hal_psram_set_clkdiv_with_id(uint32_t id, uint32_t value)
 	}
 }
 
+void sys_hal_psram_get_clk_config_with_id(uint32_t id, uint32_t *clk_sel, uint32_t *clk_div)
+{
+	if (id == PSRAM_ID_0)
+	{
+		*clk_sel = sys_ahbp_ll_get_reg8_cksel_pram0();
+		*clk_div = sys_ahbp_ll_get_reg8_ckdiv_pram0();
+	}
+	else
+	{
+		*clk_sel = sys_ahbp_ll_get_reg9_cksel_pram1();
+		*clk_div = sys_ahbp_ll_get_reg9_ckdiv_pram1();
+	}
+}
+
 void sys_hal_psram_psldo_vsel(uint32_t value)
 {
 	return;
@@ -3132,20 +3249,6 @@ __IRAM_SEC void sys_hal_set_sys2flsh_2wire(uint32_t value)
 {
 	return;
 }
-/** Ethernet start **/
-#ifdef CONFIG_ETH
-void sys_hal_enable_eth_int(uint32_t value)
-{
-	return;
-}
-
-void sys_hal_set_eth_clk_en(uint32_t value)
-{
-	sys_aonp_regd_t *r = (sys_aonp_regd_t *)(SOC_SYS_AONP_REG_BASE + (0xd << 2));
-	r->auxs_enet_cken = value;
-}
-#endif
-/** Ethernet End**/
 void sys_hal_set_ana_trxt_tst_enable(uint32_t value)
 {
 	return;
@@ -3409,6 +3512,10 @@ bk_err_t sys_hal_ap_clock_power_ctrl(power_module_state_t power_state)
 	if(power_state == POWER_MODULE_STATE_ON)
 	{
 		sys_ll_set_ana_reg10_spi_latch1v(1);
+		sys_ll_set_ana_reg9_hsldo_hp(1);
+		bk_delay_us(10);
+		sys_ll_set_ana_reg9_enfast_hsldo(1);
+		bk_delay_us(10);
 		sys_ll_set_ana_reg9_pwd_hsldo(1);
 		bk_delay_us(20);
 		sys_ll_set_ana_reg9_pwd_hsldo(0);
@@ -3420,6 +3527,14 @@ bk_err_t sys_hal_ap_clock_power_ctrl(power_module_state_t power_state)
 		sys_ll_set_ana_reg10_spi_latch1v(0);
 
 	#if 1
+
+		/*
+		 * Fast resume retains M55 SRAM/cache SRAM while AP is off. Do not run
+		 * the cold-boot power sequence here: it briefly asserts
+		 * mem4/5/6/cache PWD and destroys retained contents. Cold boot still
+		 * powers these banks in multicore_hal_m55_core_init_common().
+		 */
+	#if 0//!CONFIG_PM_AP_FAST_BOOT_ENABLE
 		regData = REG_READ(SOC_AON_PMU_REG_BASE + 0x2*4);
 		regData &= ~((0x1F<<21)|(0x1<<19));
 		regData |=  ((0x1F<<21)|(  0<<19));
@@ -3450,6 +3565,7 @@ bk_err_t sys_hal_ap_clock_power_ctrl(power_module_state_t power_state)
 		regData |=  ((0x00<<21)|(  0<<19));
 		REG_WRITE(SOC_AON_PMU_REG_BASE + 0x2*4, regData);
 		//bk_delay_us(20);
+	#endif
 		regData = REG_READ(SOC_AON_PMU_REG_BASE + 0x2*4);
 		regData &= ~((0x1<<18));
 		regData |=  ((  1<<18));
@@ -3478,14 +3594,25 @@ bk_err_t sys_hal_ap_clock_power_ctrl(power_module_state_t power_state)
 		REG_WRITE(SOC_AON_PMU_REG_BASE + 0x2*4, regData);
 
 #if CONFIG_SPE
-		/*"M55S Access Secure*/
+		/* Non-secure project: AP master accesses stay Secure. PPRO is a Secure
+		 * register; for the secure project the AP master security attribute is set
+		 * by the TF-M secure world before CP enters NS. */
 		regData  = REG_READ(SOC_PPRO_REG_BASE + 0xF*4);
 		regData &= ~((0x1<<3)|(0x1<<2));
 		regData |=  ((  0<<3)|(  0<<2));
 		REG_WRITE(SOC_PPRO_REG_BASE + 0xF*4, regData);
 #endif
+#if CONFIG_TFM_AP_BOOT_NSC
+		/* Secure project: the AP SYS/AHBP region is Secure until the AP-side PPHS
+		 * marks it Non-secure. Now that CP NS has powered the AP domain, ask the
+		 * secure world to apply the AP MPC/PPHS so the AP SysCfg accesses below
+		 * (EMA/clock/freq via the NS alias) do not fault. */
+		if (psa_ap_secure_sys_open() != 0) {
+			os_printf("ap secure sys open failed\r\n");
+		}
+#endif
 		/*PSRAM Enable*/
-		sys_ll_set_ana_reg14_enpsram(1);
+		//sys_ll_set_ana_reg14_enpsram(1);
 		//bk_delay_us(10);
 		/*M55S Memory EMA switch to 1*/
 		REG_WRITE(SOC_SYS_AHBP_REG_BASE + 0x50*4,  (0x5A<<24) | (0x441<<10) | (0x241));
@@ -3498,9 +3625,10 @@ bk_err_t sys_hal_ap_clock_power_ctrl(power_module_state_t power_state)
 		REG_WRITE(SOC_SYS_AHBP_REG_BASE + 0x53*4,  (0xA5<<24) |               (0x901));
 		bk_delay_us(10);
 	#endif
+	    #if !CONFIG_PM_CP_PERI_CLK_DEFAULT_OFF
 		/*M55:Default enable all the clock source for bringup */
 		REG_WRITE(SOC_SYS_AHBP_REG_BASE + 0xA*4, 0xFFFFFFFF);
-
+        #endif
 		/*M55 cpu freq and bus 480M, subbus 240M */
 		regData = REG_READ(SOC_SYS_AHBP_REG_BASE + 0x8*4);
 		regData |= 0x1 << 4;
@@ -3514,15 +3642,20 @@ bk_err_t sys_hal_ap_clock_power_ctrl(power_module_state_t power_state)
 	}
 	else
 	{
-		//aon_pmu_ll_set_r2_m55_rstn(1); // rstn release
-		//aon_pmu_ll_set_r2_m55_clk_en(0); // clk enable
+		aon_pmu_ll_set_r2_m55_clk_en(0); // clk disable
+		aon_pmu_ll_set_r2_m55_iso_en(1);
+		aon_pmu_ll_set_r2_m55_rstn(0);
+		aon_pmu_ll_set_r2_m55_mem_ret(0);
 
-		//sys_ll_set_ana_reg14_enpsram(0);
-
-		sys_ahbp_ll_set_rege_pwd_m55(1);
+		//sys_ahbp_ll_set_rege_pwd_m55(1);
 
 		sys_ll_set_ana_reg10_spi_latch1v(1);
+		sys_ll_set_ana_reg9_hsldo_hp(0);
+		bk_delay_us(10);
+		sys_ll_set_ana_reg9_enfast_hsldo(0);
+		bk_delay_us(10);
 		sys_ll_set_ana_reg16_enhspw(0);
+		bk_delay_us(10);
 		sys_ll_set_ana_reg9_pwd_hsldo(1);
 		sys_ll_set_ana_reg10_spi_latch1v(0);
 	}
@@ -3533,20 +3666,19 @@ static bk_err_t sys_hal_m55_clock_power_init()
 {
 	uint32_t regData = 0;
 	sys_ll_set_ana_reg10_spi_latch1v(1);
+	sys_ll_set_ana_reg9_hsldo_hp(1);
+	timer_hal_early_delay_us(10);
+	sys_ll_set_ana_reg9_enfast_hsldo(1);
+	timer_hal_early_delay_us(10);
 	sys_ll_set_ana_reg9_pwd_hsldo(1);
-	//bk_delay_us(20);
+	timer_hal_early_delay_us(10);
 	sys_ll_set_ana_reg9_pwd_hsldo(0);
-	//bk_delay_us(200);
+	timer_hal_early_delay_us(10);
 	sys_ll_set_ana_reg16_enhspw(1);
-	//bk_delay_us(200);
+	timer_hal_early_delay_us(10);
 	sys_ll_set_ana_reg16_vcorehssel(0xA);//0.7+0.025*0xA=0.95v
-	//bk_delay_us(200);
+	timer_hal_early_delay_us(10);
 	sys_ll_set_ana_reg10_spi_latch1v(0);
-
-	/* AON_PMU AP power sequence + PPRO AP secure access are secure-only
-	 * registers. In the secure-boot flow TFM (ap_power_domain_on) owns the AP
-	 * power-up, so the Non-Secure world (CONFIG_SPE=0) must not touch them; app /
-	 * secure builds (CONFIG_SPE=1) still run the full sequence here. */
 #if CONFIG_SPE
 	regData = REG_READ(SOC_AON_PMU_REG_BASE + 0x2*4);
 	regData &= ~((0x1F<<21)|(0x1<<19));
@@ -3605,12 +3737,18 @@ static bk_err_t sys_hal_m55_clock_power_init()
 	regData |=  ((0<<16));
 	REG_WRITE(SOC_AON_PMU_REG_BASE + 0x2*4, regData);
 
+	/* PPRO is a Secure register. Only the non-secure project (CONFIG_SPE=1, no
+	 * TrustZone split) may set the AP master security attribute here; in the
+	 * secure project (CONFIG_SPE=0) the AP master attribute is owned by the TF-M
+	 * secure world, so the CP Non-Secure world must not touch PPRO or it faults. */
+
 	/*"M55S Access Secure*/
 	regData  = REG_READ(SOC_PPRO_REG_BASE + 0xF*4);
 	regData &= ~((0x1<<3)|(0x1<<2));
 	regData |=  ((  0<<3)|(  0<<2));
 	REG_WRITE(SOC_PPRO_REG_BASE + 0xF*4, regData);
 #endif
+
 	/*PSRAM Enable*/
 	sys_ll_set_ana_reg14_enpsram(1);
 	//bk_delay_us(10);
@@ -3624,9 +3762,10 @@ static bk_err_t sys_hal_m55_clock_power_init()
 	REG_WRITE(SOC_SYS_AHBP_REG_BASE + 0x53*4,  (0x5A<<24) |               (0x901));
 	REG_WRITE(SOC_SYS_AHBP_REG_BASE + 0x53*4,  (0xA5<<24) |               (0x901));
 	//bk_delay_us(10);
+	#if !CONFIG_PM_CP_PERI_CLK_DEFAULT_OFF
 	/*M55:Default enable all the clock source for bringup */
 	REG_WRITE(SOC_SYS_AHBP_REG_BASE + 0xA*4, 0xFFFFFFFF);
-
+	#endif
 	/*M55 cpu freq and bus 480M, subbus 240M */
 	regData = REG_READ(SOC_SYS_AHBP_REG_BASE + 0x8*4);
 	regData |= 0x1 << 4;
@@ -3710,13 +3849,7 @@ void sys_hal_early_init(void)
 	sys_hal_analog_set(ANALOG_REG2, 0x04248050); //wangjian20221110 xtal=0x50
 	sys_hal_analog_set(ANALOG_REG3, 0xC5F00B88); //ronghui20241226 <10>=1 for xtal
 	sys_hal_analog_set(ANALOG_REG4, 0x9FC9A7F0);
-#if CONFIG_SPE
-	/* ana_reg9 carries the AP HS-LDO power-down bit (pwd_hsldo). On NS
-	 * (CONFIG_SPE=0) TFM already brought the AP HS domain up; re-writing this
-	 * table value (pwd_hsldo=1) powers it down and breaks PSRAM/AHBP, so only
-	 * the app/secure monolithic build writes it. */
 	sys_hal_analog_set(ANALOG_REG9, 0x57E627E6); //shuguang20241226 <8:6>=7 for EVM
-#endif
 
 	//if ((chip_id & PM_CHIP_ID_MASK) == (PM_CHIP_ID_BK7259 & PM_CHIP_ID_MASK))
 	{
@@ -3727,11 +3860,7 @@ void sys_hal_early_init(void)
 		sys_hal_analog_set(ANALOG_REG14, 0x74E670EE);
 		sys_hal_analog_set(ANALOG_REG15, 0);
 
-#if CONFIG_SPE
-		/* ana_reg16 carries the AP HS power-switch enable (enhspw) + vcorehssel.
-		 * Same reason as ana_reg9: NS must not clobber TFM's HS-domain bring-up. */
 		sys_hal_analog_set(ANALOG_REG16, 0x9E436000);
-#endif
 		sys_hal_analog_set(ANALOG_REG19, 0xEE1D8033);//tenglong20251231 bit[24:22] = 0 for evm;siqing20260202 bit[13:9] = 0 for Reduce buck ripple
 	}
 
@@ -3740,10 +3869,14 @@ void sys_hal_early_init(void)
 	/*early init cpu flash time*/
 	sys_hal_dpll_cpu_flash_time_early_init(chip_id);
 
+#if CONFIG_SPE
 	/*M55: clock power init*/
 	#if !CONFIG_PM_ONLY_CP_ENABLE && !CONFIG_PM_AP_POWERDOWN_WHEN_LV
 	sys_hal_m55_clock_power_init();
 	#endif
+#else
+	sys_hal_m55_clock_power_init();
+#endif
 }
 void sys_hal_early_init_sleep(void)
 {
@@ -3817,6 +3950,52 @@ void sys_hal_set_cpu_power_sleep_wakeup_ticktimer_32k_enable(uint32_t value)
 	return sys_ll_set_cpu_power_sleep_wakeup_cpu0_ticktimer_32k_enable(value);
 }
 
+bk_err_t sys_hal_ap_cpu_freq_dump()
+{
+	enum {
+		AP_CLKSEL_CORE_160M = 0,
+		AP_CLKSEL_CORE_480M,
+		AP_CLKSEL_CORE_640M,
+		AP_CLKSEL_CORE_DCO,
+	};
+	uint32_t value_8;
+	uint32_t cksel_core;
+	uint32_t ap_div;
+
+	if (!bk_pm_ap_boot_success_get()) {
+		return BK_OK;
+	}
+
+	/* AP(M55) clock is configured by SYS_AHBP reg8, not CP SYS reg8. */
+	value_8 = REG_READ(SOC_SYS_AHBP_REG_BASE + (0x8 << 2));
+	cksel_core = value_8 & 0x3;
+	ap_div = ((value_8 >> 2) & 0x3) + 1;
+
+	switch (cksel_core) {
+	case AP_CLKSEL_CORE_160M:
+		os_printf("Cur freq: AP:(160/%d)M,VDDDIG:%fV\r\n", ap_div,
+			PM_AP_VDDDIG_REG_VALUE_TO_VOLT(sys_ll_get_ana_reg16_vcorehssel()));
+		break;
+	case AP_CLKSEL_CORE_480M:
+		os_printf("Cur freq: AP:(480/%d)M,VDDDIG:%fV\r\n", ap_div,
+			PM_AP_VDDDIG_REG_VALUE_TO_VOLT(sys_ll_get_ana_reg16_vcorehssel()));
+		break;
+	case AP_CLKSEL_CORE_640M:
+		os_printf("Cur freq: AP:(640/%d)M,VDDDIG:%fV\r\n", ap_div,
+			PM_AP_VDDDIG_REG_VALUE_TO_VOLT(sys_ll_get_ana_reg16_vcorehssel()));
+		break;
+	case AP_CLKSEL_CORE_DCO:
+		os_printf("Cur freq: AP:(240/%d)M,VDDDIG:%fV\r\n", ap_div,
+			PM_AP_VDDDIG_REG_VALUE_TO_VOLT(sys_ll_get_ana_reg16_vcorehssel()));
+		break;
+	default:
+		break;
+	}
+	os_printf("AP_Freq_reg:0x%x\r\n", value_8);
+
+	return BK_OK;
+}
+
 bk_err_t sys_hal_cpu_freq_dump()
 {
 	uint32_t value_8 = REG_READ(PM_SYS_REG_0x8);
@@ -3826,21 +4005,26 @@ bk_err_t sys_hal_cpu_freq_dump()
 
 	switch (cksel_core) {
 	case PM_CLKSEL_CORE_26M:
-		os_printf("Cur freq: CP:(26/%d)M\r\n", cp0_div);
+		os_printf("Cur freq: CP:(26/%d)M,VDDDIG:%fV\r\n", cp0_div,
+			PM_VDDDIG_REG_VALUE_TO_VOLT(sys_ll_get_ana_reg10_vcorehsel()));
 		break;
 	case PM_CLKSEL_CORE_DCO:
-		os_printf("Cur freq: CP:(240/%d)M\r\n", cp0_div);
+		os_printf("Cur freq: CP:(240/%d)M,VDDDIG:%fV\r\n", cp0_div,
+			PM_VDDDIG_REG_VALUE_TO_VOLT(sys_ll_get_ana_reg10_vcorehsel()));
 		break;
 	case PM_CLKSEL_CORE_320M:
-		os_printf("Cur freq: CP:(320/%d)M\r\n", cp0_div);
+		os_printf("Cur freq: CP:(320/%d)M,VDDDIG:%fV\r\n", cp0_div,
+			PM_VDDDIG_REG_VALUE_TO_VOLT(sys_ll_get_ana_reg10_vcorehsel()));
 		break;
 	case PM_CLKSEL_CORE_480M:
-		os_printf("Cur freq: CP:(480/%d)M\r\n", cp0_div);
+		os_printf("Cur freq: CP:(480/%d)M,VDDDIG:%fV\r\n", cp0_div,
+			PM_VDDDIG_REG_VALUE_TO_VOLT(sys_ll_get_ana_reg10_vcorehsel()));
 		break;
 	default:
 		break;
 	}
 	os_printf("Freq_reg:0x%x\r\n", value_8);
+	//sys_hal_ap_cpu_freq_dump();
 
 	return BK_OK;
 }

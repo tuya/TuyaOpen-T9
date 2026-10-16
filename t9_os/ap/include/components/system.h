@@ -54,6 +54,14 @@ typedef enum {
 
     RESET_SOURCE_FORCE_DEEPSLEEP = 0x19,
 
+    RESET_SOURCE_SLEEP_GPIO = 0x1a,
+    RESET_SOURCE_SLEEP_RTC = 0x1b,
+    RESET_SOURCE_SLEEP_WIFI = 0x1c,
+    RESET_SOURCE_SLEEP_BT = 0x1d,
+    RESET_SOURCE_SLEEP_TOUCH = 0x1e,
+    RESET_SOURCE_SLEEP_VAD = 0x1f,
+    RESET_SOURCE_DEEPPS_VAD = 0x20,
+
     RESET_SOURCE_UNKNOWN = 0xff,
 } RESET_SOURCE_STATUS;
 
@@ -140,7 +148,6 @@ void bk_reboot_callback_register(reboot_callback_func func);
 int bk_tick_init(void);
 int bk_tick_reload(uint32_t time_ms);
 void bk_tick_handle(uint8_t arg);
-int bk_update_tick(uint32_t tick);
 uint64_t bk_get_tick(void);
 uint32_t bk_get_second(void);
 uint32_t bk_get_ms_per_tick(void);

@@ -65,6 +65,7 @@ typedef struct
     uint8_t start_frame_count;
     uint8_t playback_unmuted;
 #endif
+    onboard_speaker_pa_ctrl_t pa_ctrl;
 } bk_a2dp_audio_ctx_t;
 
 static audio_play_t *s_audio_play_obj = NULL;
@@ -265,6 +266,11 @@ static bk_a2dp_audio_player_open_result_t a2dp_sink_audio_player_open(uint8_t op
     cfg.pool_size = cfg.frame_size * 2;
     cfg.decoder_type = decoder_type;
     cfg.dac_source_bitmap = ONBOARD_SPEAKER_STREAM_DAC_SOURCE_A2DP_BIT;
+    cfg.pa_ctrl_en   = s_a2dp_audio.pa_ctrl.pa_ctrl_en;
+    cfg.pa_ctrl_gpio = s_a2dp_audio.pa_ctrl.pa_ctrl_gpio;
+    cfg.pa_on_level  = s_a2dp_audio.pa_ctrl.pa_on_level;
+    cfg.pa_on_delay  = s_a2dp_audio.pa_ctrl.pa_on_delay;
+    cfg.pa_off_delay = s_a2dp_audio.pa_ctrl.pa_off_delay;
 
 #if A2DP_EQ_ENABLE && CONFIG_ADK_EQ_ALGORITHM
     {
@@ -282,6 +288,7 @@ static bk_a2dp_audio_player_open_result_t a2dp_sink_audio_player_open(uint8_t op
 #endif
 
 #if CONFIG_ADK_ONBOARD_SPEAKER_STREAM_SUPPORT_MULTIPLE_SOURCE
+    spk_service_set_pa_ctrl(&s_a2dp_audio.pa_ctrl);
     if (BK_OK != spk_service_init())
     {
         LOGE("%s spk_service init err\n", __func__);
@@ -483,6 +490,22 @@ void a2dp_sink_audio_set_config(const bk_a2dp_mcc_t *codec)
     {
         s_a2dp_audio.codec = *codec;
     }
+}
+
+void a2dp_sink_audio_set_pa_ctrl(const onboard_speaker_pa_ctrl_t *pa)
+{
+    if (pa)
+    {
+        s_a2dp_audio.pa_ctrl = *pa;
+    }
+    else
+    {
+        onboard_speaker_pa_ctrl_t off = DEFAULT_ONBOARD_SPEAKER_PA_CTRL();
+        s_a2dp_audio.pa_ctrl = off;
+    }
+#if CONFIG_ADK_ONBOARD_SPEAKER_STREAM_SUPPORT_MULTIPLE_SOURCE
+    spk_service_set_pa_ctrl(pa);
+#endif
 }
 
 static bk_err_t a2dp_sink_audio_prepare(const bk_a2dp_mcc_t *codec)

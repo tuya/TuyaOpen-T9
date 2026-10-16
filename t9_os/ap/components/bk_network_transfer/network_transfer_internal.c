@@ -74,8 +74,11 @@ static void ntwk_msg_message_handle(void)
                 case NTWK_TRANS_EVT_DISCONNECTED:
                 case NTWK_TRANS_EVT_STOP:
                 {
-                    if ((msg.code == NTWK_TRANS_EVT_DISCONNECTED) ||
-                        (msg.code == NTWK_TRANS_EVT_STOP))
+                    bool clear_rx_cache = (msg.code == NTWK_TRANS_EVT_STOP);
+#if !(CONFIG_CS2_P2P_SERVER || CONFIG_CS2_P2P_CLIENT)
+                    clear_rx_cache = clear_rx_cache || (msg.code == NTWK_TRANS_EVT_DISCONNECTED);
+#endif
+                    if (clear_rx_cache)
                     {
                         ntwk_pack_clear_ccount(msg.chan_type);
 #if CONFIG_NTWK_CTRL_CHAN_JSON
@@ -83,8 +86,9 @@ static void ntwk_msg_message_handle(void)
 #endif
                     }
 
-                    // Call user registered event callback
-                    if (ntwk_in_cfg && ntwk_in_cfg->event_cb != NULL)
+                    ntwk_trans_msg_event_cb_t event_cb =
+                        (ntwk_in_cfg != NULL) ? ntwk_in_cfg->event_cb : NULL;
+                    if (event_cb != NULL)
                     {
                         LOGW("%s, event:%d, param:%d, chan_type:%d\n", __func__, msg.code, msg.param, msg.chan_type);
                         // Convert internal msg format to ntwk_trans_event_t
@@ -92,7 +96,7 @@ static void ntwk_msg_message_handle(void)
                         event.chan_type = msg.chan_type;
                         event.code = msg.code;
                         event.param = msg.param;
-                        ntwk_in_cfg->event_cb(&event);
+                        event_cb(&event);
                     }
                     else
                     {
@@ -171,9 +175,6 @@ bk_err_t ntwk_msg_stop(void)
         return BK_FAIL;
     }
 
-    /* clear event callback first */
-    ntwk_in_cfg->event_cb = NULL;
-
     /* delete message queue - this will wake up the thread waiting on rtos_pop_from_queue */
     if (ntwk_in_cfg->queue)
     {
@@ -191,6 +192,8 @@ bk_err_t ntwk_msg_stop(void)
         rtos_thread_join(ntwk_in_cfg->thd);
         ntwk_in_cfg->thd = NULL;
     }
+
+    ntwk_in_cfg->event_cb = NULL;
 
     LOGV("%s complete\n", __func__);
     return BK_OK;
@@ -340,6 +343,19 @@ bk_err_t ntwk_in_register_audio_stop_cb(ntwk_in_stop_cb_t cb)
     return BK_OK;
 }
 
+bk_err_t ntwk_in_register_stop_all_cb(ntwk_in_stop_cb_t cb)
+{
+    if (ntwk_in_cfg == NULL)
+    {
+        LOGE("%s, ntwk_in_cfg is NULL\n", __func__);
+        return BK_FAIL;
+    }
+
+    ntwk_in_cfg->stop_all = cb;
+
+    return BK_OK;
+}
+
 bk_err_t ntwk_in_start(chan_type_t chan_type, void *param)
 {
     if (ntwk_in_cfg == NULL)
@@ -401,4 +417,23 @@ bk_err_t ntwk_in_stop(chan_type_t chan_type)
     }
 
     return BK_FAIL;
+}
+
+bk_err_t ntwk_in_stop_all(void)
+{
+    if (ntwk_in_cfg == NULL)
+    {
+        LOGE("%s, ntwk_in_cfg is NULL\n", __func__);
+        return BK_FAIL;
+    }
+
+    if (ntwk_in_cfg->stop_all != NULL)
+    {
+        return ntwk_in_cfg->stop_all();
+    }
+
+    (void)ntwk_in_stop(NTWK_TRANS_CHAN_CTRL);
+    (void)ntwk_in_stop(NTWK_TRANS_CHAN_VIDEO);
+    (void)ntwk_in_stop(NTWK_TRANS_CHAN_AUDIO);
+    return BK_OK;
 }

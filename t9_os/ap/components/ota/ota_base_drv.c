@@ -1,3 +1,4 @@
+#include <components/log.h>
 #include <components/system.h>
 #include <os/os.h>
 #include <os/mem.h>
@@ -37,8 +38,9 @@ extern int ble_callback_deal_handler(uint32_t deal_flash_time);
  */
 static void ota_log_progress_throttled(f_ota_t *ota_ptr)
 {
-    static int last_pct = -5;
+    static int last_pct = -10;
     int cur_pct;
+    int step;
 
     if (ota_ptr == NULL || ota_ptr->image_size == 0) {
         return;
@@ -48,9 +50,15 @@ static void ota_log_progress_throttled(f_ota_t *ota_ptr)
                      / ota_ptr->image_size) * 100);
 
     if (cur_pct < last_pct) {
-        last_pct = -5;
+        last_pct = -10;
     }
-    if ((cur_pct - last_pct) >= 5 || cur_pct == 100) {
+    /* Kept consistent with the secure world (ota_secure_xip/ota_secure_overwrite):
+     * coarse 10% steps for the bulk of the download, then fine 1% steps from 95%
+     * onward so testers get frequent feedback near the end (95/96/.../100).
+     * Covers both the AB-partition and compressed non-secure paths (both call
+     * this from ota_base_drv data_process). */
+    step = (cur_pct >= 95) ? 1 : 10;
+    if ((cur_pct - last_pct) >= step || cur_pct == 100) {
         OTA_LOGI("cyg_recvlen_per:(%d%%)\r\n", cur_pct);
         last_pct = cur_pct;
     }
@@ -97,8 +105,6 @@ static int ota_do_init(f_ota_t* ota_ptr)
     ota_ptr->wr_err               = 0;
     ota_ptr->ota_crc.crc          = 0xFFFFFFFF;
     ota_ptr->wr_address           = ota_ptr->pt->partition_start_addr;
-    ota_ptr->protect_type         = bk_flash_get_protect_type();
-    bk_flash_set_protect_type(FLASH_PROTECT_NONE);
     ota_ptr->fd                   = -1;
     ota_ptr->init_flag            = 1;
     OTA_LOGD("ota write to :0x%x \r\n", ota_ptr->wr_address);
@@ -209,13 +215,13 @@ static int ota_do_write_flash(f_ota_t* ota_ptr, uint16_t len)
                                      ota_ptr->wr_address, len, mis,
                                      (mis < len) ? ota_ptr->wr_buf[mis] : 0,
                                      (mis < len) ? ota_ptr->rd_buf[mis] : 0);
-                            /* Diagnostic: erase/write driver return codes + the
-                             * live protect type. got==0xff with erase/write ret
-                             * OK strongly implies the block is write-protected
-                             * (e.g. last-block protection covering the A-slot
-                             * tail next to the running B slot at 0x285000). */
-                            OTA_LOGE("wr flash write err erase_ret:%d write_ret:%d protect:%d\n",
-                                     erase_ret, write_ret, bk_flash_get_protect_type());
+                            /* Diagnostic: erase/write driver return codes.
+                             * got==0xff with erase/write ret OK strongly implies
+                             * the block is write-protected (e.g. last-block
+                             * protection covering the A-slot tail next to the
+                             * running B slot at 0x285000). */
+                            OTA_LOGE("wr flash write err erase_ret:%d write_ret:%d\n",
+                                     erase_ret, write_ret);
                             ota_ptr->wr_err = 1;
                             return BK_FAIL;
                         }
@@ -285,6 +291,8 @@ static int ota_do_process_data_wifi(f_ota_t *ota_ptr, uint16_t len, ota_wr_callb
             if (wr_callback(ota_ptr, ota_ptr->wr_last_len) == BK_OK)
             {
                 OTA_LOGI("wr the last remain data \r\n");
+                OTA_LOGI("download complete, size:0x%x\r\n", ota_ptr->image_size);
+                BK_LOG_FLUSH();
                 ret = BK_OK;
             }
             else
@@ -581,7 +589,6 @@ static int ota_do_deinit(f_ota_t* ota_ptr)
     OTA_FREE(ota_ptr->wr_buf);
     OTA_FREE(ota_ptr->wr_tmp_buf);
     OTA_FREE(ota_ptr->rd_buf);
-    bk_flash_set_protect_type(ota_ptr->protect_type);
 #if (CONFIG_REMOTE_VFS_CLIENT || CONFIG_VFS)
     if(ota_ptr->fd > 0)
     {

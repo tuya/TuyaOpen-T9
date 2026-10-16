@@ -16,6 +16,9 @@
 #include <modules/wifi.h>
 #include <components/netif.h>
 #include <components/event.h>
+#if (CONFIG_CLI)
+#include "cli.h"
+#endif
 #if CONFIG_WIFI_ENABLE
 #include "bk_netif.h"
 #endif
@@ -132,6 +135,9 @@ static int app_wifi_init(void)
 #if (CONFIG_WIFI_ENABLE)
 	wifi_init_config_t wifi_config = WIFI_DEFAULT_INIT_CONFIG();
 	BK_LOG_ON_ERR(bk_event_init());
+#if (CONFIG_CLI) && (CLI_CFG_WIFI == 1)
+	BK_LOG_ON_ERR(cli_wifi_register_event_cbs());
+#endif
 	BK_LOG_ON_ERR(bk_netif_init());
 	BK_LOG_ON_ERR(bk_wifi_init(&wifi_config));
 
@@ -245,16 +251,6 @@ static int app_uart_debug_init_todo(void)
 	return BK_OK;
 }
 
-#if CONFIG_ETH
-extern int net_eth_start();
-static int app_eth_init(void)
-{
-	BK_LOGD(TAG, "ETH init\n");
-	net_eth_start();
-	return BK_OK;
-}
-#endif
-
 #if CONFIG_ENABLE_WIFI_DEFAULT_CONNECT
 extern void demo_wifi_fast_connect(void);
 #endif
@@ -299,10 +295,6 @@ int bk_init(void)
 #endif
 	app_usb_charge_init();
 
-#if CONFIG_SAVE_BOOT_TIME_POINT
-	save_mtime_point(CPU_START_WIFI_INIT_TIME);
-#endif
-
 #if CONFIG_ATE_TEST
 	/*not init the wifi, in order to save the boot time in ATE test after deepsleep(note:at the wifi ate test not enter power save)*/
 	/*it need first finish test the wifi, at the end test deepsleep, wait wakeup(deepsleep), then test low voltage */
@@ -338,14 +330,6 @@ int bk_init(void)
 #endif
 #endif //CONFIG_ATE_TEST
 
-#if CONFIG_ETH
-	app_eth_init();
-#endif
-
-#if CONFIG_SAVE_BOOT_TIME_POINT
-	save_mtime_point(CPU_FINISH_WIFI_INIT_TIME);
-#endif
-
 #if (CONFIG_TEMP_DETECT || CONFIG_VOLT_DETECT)
 	bk_sensor_start();
 #endif
@@ -366,12 +350,6 @@ int bk_init(void)
 	extern int atsvr_app_init(void);
 	if(0 != atsvr_app_init())
 		return -1;
-#endif
-
-#if (CONFIG_FREERTOS)
-#if CONFIG_SEMI_HOSTED
-	semi_host_init();
-#endif
 #endif
 
 #if CONFIG_UDISK_MP3

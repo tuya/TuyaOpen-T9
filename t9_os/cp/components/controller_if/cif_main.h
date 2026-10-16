@@ -81,6 +81,10 @@ void cif_stats_exit_critical(uint32_t flags);
 #define CP_MEM_SNAPSHOT_VERSION        1U
 #define AP_TX_FLOW_CONTROLLED_MASK     0x1U
 #define AP_TX_FLOW_CNT_SHIFT           1U
+#define TX_MEM_STOP_THRES       75U
+#define TX_MEM_RESUME_THRES     60U
+#define TOTAL_MEM_STOP_THRES    80U
+#define TOTAL_MEM_RESUME_THRES  70U
 
 typedef struct ap_tx_flow_state {
     volatile uint32_t value;
@@ -372,14 +376,24 @@ struct bk_msg_connect_ind
 };
 
 #define MAX_IPV6_ADDRESSES_IN_MSG 3
+#define MAX_IPV6_DNS_SERVERS_IN_MSG 2
+#define IPV6_GATEWAY_MAC_LEN 6
+/* Layout must match AP wdrv_ipv6_ind */
 struct bk_msg_ipv6_ind
 {
     uint8_t addr_count;
+    uint8_t dns_count;
+    uint8_t gw_valid;
+    uint8_t reserved;
     struct {
         uint8_t address[16];  // (128 bits = 16 bytes)
         uint8_t addr_state;
         uint8_t addr_type;
     } ipv6_addr[MAX_IPV6_ADDRESSES_IN_MSG];
+    uint8_t dns_addr[MAX_IPV6_DNS_SERVERS_IN_MSG][16];
+    uint8_t gateway[16];
+    uint8_t gateway_mac[IPV6_GATEWAY_MAC_LEN];
+    uint32_t gateway_lifetime;
 };
 
 struct bk_msg_connect_req

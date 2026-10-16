@@ -661,6 +661,13 @@ static void lv_partial_flush_compress(lv_vnd_data_t *vnd_data, lv_partial_flush_
     vg_lite_clear(&lv_dst_buf, &clear_rect, lv_partial_get_default_clear_color());
 
     lv_partial_set_compress_matrix(vnd_data, ctx);
+
+    /*
+     * Clear leftover HW scissor from VG-Lite draw before compress blit into
+     * the full-frame DEC buffer. (-1,-1,-1,-1) disables scissor.
+     */
+    vg_lite_set_scissor(-1, -1, -1, -1);
+
     vg_lite_error_t ret = vg_lite_blit_rect(&lv_dst_buf, &lv_src_buf, &rect, &lv_matrix,
                                             VG_LITE_BLEND_NONE, 0, VG_LITE_FILTER_POINT);
     if (ret != VG_LITE_SUCCESS) {
@@ -674,6 +681,13 @@ static void lv_partial_flush_compress(lv_vnd_data_t *vnd_data, lv_partial_flush_
 
 static void lv_partial_copy_compressed_last_frame(lv_vnd_data_t *vnd_data)
 {
+#if (CONFIG_LVGL_FRAME_BUFFER_NUM > 2)
+    uint32_t line_bytes = vnd_data->config.disp_width * LV_COMPRESSED_TILE_HEIGHT;
+    uint32_t band_count = vnd_data->config.disp_height / LV_COMPRESSED_TILE_HEIGHT;
+
+    lv_hpdma_copy_area(vnd_data->disp_buf, vnd_data->copy_buf,
+                       line_bytes, band_count, 0, 0, false);
+#else
     uint32_t x1 = (uint32_t)lv_partial_align_down(vnd_data->d_area.x1, LV_COMPRESSED_TILE_WIDTH);
     uint32_t y1 = (uint32_t)lv_partial_align_down(vnd_data->d_area.y1, LV_COMPRESSED_TILE_HEIGHT);
     uint32_t x2 = (uint32_t)lv_partial_align_up(vnd_data->d_area.x2 + 1, LV_COMPRESSED_TILE_WIDTH);
@@ -703,6 +717,7 @@ static void lv_partial_copy_compressed_last_frame(lv_vnd_data_t *vnd_data)
     void *dst_start = (uint8_t *)vnd_data->copy_buf + offset;
 
     lv_hpdma_copy_area(src_start, dst_start, line_bytes, band_count, step_bytes, step_bytes, false);
+#endif
 }
 
 static void lv_partial_copy_last_frame(lv_vnd_data_t *vnd_data, lv_coord_t lv_hor)
@@ -712,6 +727,15 @@ static void lv_partial_copy_last_frame(lv_vnd_data_t *vnd_data, lv_coord_t lv_ho
         return;
     }
 
+#if (CONFIG_LVGL_FRAME_BUFFER_NUM > 2)
+    uint32_t lv_ver = (vnd_data->config.rotation == ROTATE_NONE ||
+                       vnd_data->config.rotation == ROTATE_180) ?
+                       LV_VER_RES : LV_HOR_RES;
+    uint32_t line_bytes = lv_hor * LV_FRAME_COLOR_SIZE;
+
+    lv_hpdma_copy_area(vnd_data->disp_buf, vnd_data->copy_buf,
+                       line_bytes, lv_ver, 0, 0, false);
+#else
     uint32_t area_width = lv_area_get_width(&vnd_data->d_area);
     uint32_t area_height = lv_area_get_height(&vnd_data->d_area);
     uint32_t line_bytes = area_width * LV_FRAME_COLOR_SIZE;
@@ -720,6 +744,7 @@ static void lv_partial_copy_last_frame(lv_vnd_data_t *vnd_data, lv_coord_t lv_ho
     void *dst_start = (uint8_t *)vnd_data->copy_buf + (vnd_data->d_area.y1 * lv_hor + vnd_data->d_area.x1) * LV_FRAME_COLOR_SIZE;
 
     lv_hpdma_copy_area(src_start, dst_start, line_bytes, area_height, step_bytes, step_bytes, false);
+#endif
 }
 
 static void lv_disp_flush_for_partial_mode(lv_disp_drv_t * disp_drv, const lv_area_t * area, lv_color_t * color_p)
