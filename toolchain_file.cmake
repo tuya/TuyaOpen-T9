@@ -38,7 +38,8 @@ SET (CMAKE_CXX_COMPILER_WORKS 1)
 
 set(CMAKE_FIND_ROOT_PATH ${TOOLCHAIN_DIR}/bin)
 
-# Flags for GCC 14 / Cortex-M33. Extra -Wno-error=*
+# Flags for GCC 14 / Cortex-M55, matching the AP core in
+# t9_os/ap/middleware/soc/bk7259_ap/toolchain-bk7259_ap.cmake. Extra -Wno-error=*
 # because GCC 14 treats several TuyaOpen sources as errors that 10.3 did not.
-set(CMAKE_C_FLAGS "-g -Os -std=c99 -nostdlib -mthumb -Wall -Wno-format -Wno-unknown-pragmas -Wno-address-of-packed-member -ffunction-sections -fsigned-char -fdata-sections -fno-strict-aliasing -ggdb -std=gnu99 -Wno-old-style-declaration -mcpu=cortex-m33 -mfpu=fpv5-sp-d16 -mfloat-abi=hard -mcmse -Wno-error=incompatible-pointer-types -Wno-error=implicit-function-declaration -Wno-error=int-conversion -Wno-error=implicit-int -Wno-error=return-mismatch -end-group")
-set(CMAKE_CXX_FLAGS "-g -Os -std=gnu++17 -nostdlib -mthumb -Wno-format -Wno-unknown-pragmas -Wno-address-of-packed-member -Wno-deprecated-declarations -mno-unaligned-access -fno-threadsafe-statics -Wno-unused-function -ffunction-sections -fdata-sections -fno-strict-aliasing -mcpu=cortex-m33 -mfpu=fpv5-sp-d16 -mfloat-abi=hard -mcmse -mthumb -fno-exceptions -Wno-error=incompatible-pointer-types -Wno-error=implicit-function-declaration -Wno-error=int-conversion -Wno-error=return-mismatch")
+set(CMAKE_C_FLAGS "-g -Os -std=c99 -nostdlib -mthumb -Wall -Wno-format -Wno-unknown-pragmas -Wno-address-of-packed-member -ffunction-sections -fsigned-char -fdata-sections -fno-strict-aliasing -ggdb -std=gnu99 -Wno-old-style-declaration -mcpu=cortex-m55 -mfpu=fpv5-sp-d16 -mfloat-abi=hard -mcmse -Wno-error=incompatible-pointer-types -Wno-error=implicit-function-declaration -Wno-error=int-conversion -Wno-error=implicit-int -Wno-error=return-mismatch -end-group")
+set(CMAKE_CXX_FLAGS "-g -Os -std=gnu++17 -nostdlib -mthumb -Wno-format -Wno-unknown-pragmas -Wno-address-of-packed-member -Wno-deprecated-declarations -mno-unaligned-access -fno-threadsafe-statics -Wno-unused-function -ffunction-sections -fdata-sections -fno-strict-aliasing -mcpu=cortex-m55 -mfpu=fpv5-sp-d16 -mfloat-abi=hard -mcmse -mthumb -fno-exceptions -Wno-error=incompatible-pointer-types -Wno-error=implicit-function-declaration -Wno-error=int-conversion -Wno-error=return-mismatch")
