@@ -100,7 +100,7 @@ def main():
     project_path = os.environ.get("TUYA_PROJECT_DIR", "").strip()
     if project_path:
         tuya_package_path = os.path.join(
-            project_path, "vendor/T9/t9_os/projects/tuya_app/tuya_scripts"
+            project_path, "t9_os/projects/tuya_app/tuya_scripts"
         )
         if os.path.isdir(tuya_package_path):
             sys.path.insert(0, tuya_package_path)
