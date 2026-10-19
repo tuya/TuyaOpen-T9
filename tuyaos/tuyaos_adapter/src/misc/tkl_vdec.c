@@ -13,7 +13,7 @@
 #include <components/bk_decode/bk_jpeg_decode_ctlr.h>
 #include "tkl_memory.h"
 #include "tkl_media_buf.h"
-#include "tkl_hwjpeg_internal.h"
+#include "tkl_codec_gate_internal.h"
 #include "tkl_vdec_internal.h"
 
 #define TKL_VDEC_DEFAULT_TIMEOUT_MS 1000U
@@ -306,9 +306,9 @@ static OPERATE_RET tkl_vdec_backend_create(TUYA_VDEC_CTX_T *ctx)
 
     /* The hardware JPEG decoder serves one session at a time. A second one does
      * not queue behind this one - it takes over the interrupt routing and both
-     * stall for good (see tkl_hwjpeg_internal.h). Hold the gate for the whole
+     * stall for good (see tkl_codec_gate_internal.h). Hold the gate for the whole
      * life of this decoder; backend_destroy() releases it. */
-    op_ret = tkl_hwjpeg_acquire(TKL_VDEC_HWJPEG_WAIT_MS);
+    op_ret = tkl_codec_gate_acquire(TKL_CODEC_GATE_DEC, TKL_VDEC_HWJPEG_WAIT_MS);
     if (op_ret != OPRT_OK) {
         return op_ret;
     }
@@ -370,7 +370,7 @@ static OPERATE_RET tkl_vdec_backend_create(TUYA_VDEC_CTX_T *ctx)
 
 err_release:
     ctx->hwjpeg_held = FALSE;
-    tkl_hwjpeg_release();
+    tkl_codec_gate_release(TKL_CODEC_GATE_DEC);
     return op_ret;
 }
 
@@ -446,7 +446,7 @@ static OPERATE_RET tkl_vdec_backend_destroy(TUYA_VDEC_CTX_T *ctx)
     /* The hardware session is gone, so let the next one in. */
     if (ctx->hwjpeg_held == TRUE) {
         ctx->hwjpeg_held = FALSE;
-        tkl_hwjpeg_release();
+        tkl_codec_gate_release(TKL_CODEC_GATE_DEC);
     }
 
     return op_ret;

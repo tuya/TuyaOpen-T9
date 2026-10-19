@@ -144,7 +144,7 @@ else()
         src/misc/tkl_gpu.c
         src/misc/tkl_venc.c
         src/misc/tkl_vdec.c
-        src/misc/tkl_hwjpeg.c
+        src/misc/tkl_codec_gate.c
         src/misc/tkl_mftest.c
         src/misc/mf_test/mt_mipi.c
         src/misc/mf_test/mt_adc.c

@@ -941,7 +941,7 @@ typedef struct {
      * streaming one and they corrupt each other ("codec mismatch", decode
      * timeout, then a lost heartbeat). Board-verified 2026-10-08: the
      * streaming session never recovers, not even after the second is closed.
-     * tkl_hwjpeg_internal.h holds the gate that keeps that from happening.
+     * tkl_codec_gate_internal.h holds the gate that keeps that from happening.
      *
      * That copy is a full frame per frame, executed inside the decoder's PP
      * ISR, and only a pull ever needs it - so it runs on demand: a pull arms
@@ -2505,7 +2505,7 @@ STATIC VOID_T tkl_uvc_out_frame_free(TUYA_MEDIA_BUF_T *frame)
  *       struct). A second decoder session next to a running one is NOT safe -
  *       board-verified 2026-10-08: it logs "dec isr codec mismatch", then both
  *       sessions time out forever and the streaming one never recovers, even
- *       after the second is closed. The gate in tkl_hwjpeg_internal.h is what
+ *       after the second is closed. The gate in tkl_codec_gate_internal.h is what
  *       enforces that now: this call fails cleanly (or runs on the software
  *       decoder, once one is wired in) rather than reaching the hardware.
  *       Output geometry is the ch1 entry's, resolved at init().

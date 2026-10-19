@@ -7,8 +7,9 @@
  * created, used and destroyed inside the call.
  *
  * Frame-mode limits on this part: the post-processor scales and converts (NV12
- * in only) but cannot rotate or mirror, and H264 is stateful so it belongs to
- * tkl_stream.
+ * in only) but cannot rotate or mirror, and only a self-contained H264 IDR
+ * access unit decodes here - anything needing earlier pictures belongs to
+ * tkl_vdec.
  *
  * @version 0.3
  * @date 2026-09-10
@@ -20,7 +21,7 @@
 #include "tkl_media_buf.h"
 #include "tkl_media_fmt.h"
 #include "tkl_pp.h"
-#include "tkl_hwjpeg_internal.h"
+#include "tkl_codec_gate_internal.h"
 #include "tkl_memory.h"
 #include "tkl_output.h"
 #include "tkl_semaphore.h"
@@ -32,6 +33,8 @@
 #include <components/avdk_utils/avdk_error.h>
 #include <components/bk_decode/bk_jpeg_decode_ctlr.h>
 #include <components/bk_decode/bk_jpeg_decode_types.h>
+#include <components/bk_decode/bk_h264_decode_ctlr.h>
+#include <components/bk_decode/bk_h264_decode_types.h>
 #include <components/bk_encode/bk_jpeg_encode_ctlr.h>
 #include <components/bk_encode/bk_jpeg_encode_types.h>
 #include <driver/dma.h>
@@ -122,6 +125,114 @@ STATIC UINT32_T tkl_image_codec_need_size(TUYA_FRAME_FMT_E format, UINT16_T widt
     }
 
     return tkl_pp_output_size(tkl_media_fmt_to_bk(format), width, height);
+}
+
+/* ---------------------------------------------------------------------------
+ * H264 access-unit validation
+ *
+ * Read the bitstream without decoding it, the same way the probe below does for
+ * JPEG. Pure byte work - no vendor types, no hardware.
+ * ------------------------------------------------------------------------- */
+
+/* H.264 NAL unit types this validator cares about (H.264 Table 7-1). */
+#define TKL_H264_NAL_SLICE   1U   /* coded slice of a non-IDR picture */
+#define TKL_H264_NAL_IDR     5U   /* coded slice of an IDR picture */
+#define TKL_H264_NAL_SPS     7U
+#define TKL_H264_NAL_PPS     8U
+
+typedef enum {
+    TKL_H264_AU_OK = 0,
+    TKL_H264_AU_EMPTY,
+    TKL_H264_AU_NO_START_CODE,
+    TKL_H264_AU_NO_SPS,
+    TKL_H264_AU_NO_PPS,
+    TKL_H264_AU_NO_VCL,
+    TKL_H264_AU_MULTI_VCL,
+    TKL_H264_AU_NOT_IDR,
+} TKL_H264_AU_REASON_E;
+
+/**
+ * @brief Is this buffer exactly one self-contained IDR access unit?
+ *
+ * @param[in] buf bitstream bytes
+ * @param[in] len how many of them are valid
+ *
+ * @note "Self-contained" means SPS + PPS + exactly one IDR slice, because every
+ *       tkl_image_codec_convert() call builds a fresh decoder: parameter sets
+ *       seen by an earlier call are gone, so an access unit that leans on them
+ *       cannot be decoded at all. Requiring them turns that into a named error
+ *       instead of a garbage picture.
+ *
+ * @note Scanning for 00 00 01 is safe without a full parser: H.264 forbids that
+ *       byte sequence inside a NAL payload (it must be escaped as 00 00 03), so
+ *       every occurrence is a real start code. A 4-byte 00 00 00 01 start code
+ *       contains the 3-byte form at offset +1, so matching the 3-byte form
+ *       covers both.
+ *
+ * @return TKL_H264_AU_OK, or the first reason the buffer is not one
+ */
+STATIC TKL_H264_AU_REASON_E tkl_image_codec_h264_au_check(CONST UINT8_T *buf, UINT32_T len)
+{
+    UINT32_T i = 0U;
+    UINT32_T sps = 0U;
+    UINT32_T pps = 0U;
+    UINT32_T vcl = 0U;
+    UINT32_T vcl_type = 0U;
+    BOOL_T saw_start = FALSE;
+
+    if (buf == NULL || len == 0U) {
+        return TKL_H264_AU_EMPTY;
+    }
+
+    while ((i + 3U) <= len) {
+        if (buf[i] != 0U || buf[i + 1U] != 0U || buf[i + 2U] != 1U) {
+            i++;
+            continue;
+        }
+
+        saw_start = TRUE;
+
+        if ((i + 3U) >= len) {
+            /* start code with no NAL header behind it - nothing more to read */
+            break;
+        }
+
+        {
+            UINT8_T nal_type = (UINT8_T)(buf[i + 3U] & 0x1FU);
+
+            if (nal_type == TKL_H264_NAL_SPS) {
+                sps++;
+            } else if (nal_type == TKL_H264_NAL_PPS) {
+                pps++;
+            } else if (nal_type == TKL_H264_NAL_SLICE || nal_type == TKL_H264_NAL_IDR) {
+                vcl++;
+                vcl_type = (UINT32_T)nal_type;
+            }
+        }
+
+        i += 3U;
+    }
+
+    if (saw_start != TRUE) {
+        return TKL_H264_AU_NO_START_CODE;
+    }
+    if (sps == 0U) {
+        return TKL_H264_AU_NO_SPS;
+    }
+    if (pps == 0U) {
+        return TKL_H264_AU_NO_PPS;
+    }
+    if (vcl == 0U) {
+        return TKL_H264_AU_NO_VCL;
+    }
+    if (vcl > 1U) {
+        return TKL_H264_AU_MULTI_VCL;
+    }
+    if (vcl_type != TKL_H264_NAL_IDR) {
+        return TKL_H264_AU_NOT_IDR;
+    }
+
+    return TKL_H264_AU_OK;
 }
 
 /* ---------------------------------------------------------------------------
@@ -221,9 +332,9 @@ STATIC OPERATE_RET tkl_image_codec_decode_one(CONST TUYA_IMAGE_CODEC_BUF_T *in, 
 
     /* The hardware JPEG decoder serves one session at a time, and a live UVC
      * stream holds it for its whole session - so this decode has to run
-     * somewhere else. See tkl_hwjpeg_internal.h for why "wait and take turns"
+     * somewhere else. See tkl_codec_gate_internal.h for why "wait and take turns"
      * is not an option here. */
-    if (tkl_hwjpeg_acquire(0) != OPRT_OK) {
+    if (tkl_codec_gate_acquire(TKL_CODEC_GATE_DEC, 0U) != OPRT_OK) {
         return tkl_image_codec_decode_sw(in, out);
     }
 
@@ -258,12 +369,12 @@ STATIC OPERATE_RET tkl_image_codec_decode_one(CONST TUYA_IMAGE_CODEC_BUF_T *in, 
 
     if (ret != AVDK_ERR_OK) {
         tkl_log_output("tkl_image: jpeg decode failed: %d\r\n", ret);
-        tkl_hwjpeg_release();
+        tkl_codec_gate_release(TKL_CODEC_GATE_DEC);
         return tkl_image_codec_map_err(ret);
     }
 
     out->length = need_size;
-    tkl_hwjpeg_release();
+    tkl_codec_gate_release(TKL_CODEC_GATE_DEC);
     return OPRT_OK;
 }
 
@@ -388,6 +499,110 @@ STATIC OPERATE_RET tkl_image_codec_nv16_to_yuyv(UINT16_T width,
 }
 
 /**
+ * @brief Decode one self-contained H264 IDR access unit into the caller's buffer.
+ *
+ * @param[in]     in  one access unit: SPS + PPS + a single IDR slice
+ * @param[in,out] out destination; format, geometry and capacity already set by
+ *                    the caller, @c length receives the bytes produced
+ *
+ * @note P and B frames are not decodable here and never will be: they reference
+ *       pictures this one-shot call never had. That is tkl_vdec's job.
+ *
+ * @note The decode core is shared with the JPEG decoder and serves one session
+ *       at a time - see tkl_codec_gate_internal.h. There is no software H264
+ *       decoder to fall back on, so a busy core fails here rather than queueing.
+ *
+ * @return OPRT_OK on success; OPRT_INVALID_PARM for a malformed access unit, a
+ *         zero geometry or an undersized destination; OPRT_NOT_SUPPORTED for
+ *         an output format the hardware cannot write; OPRT_TIMEOUT when the
+ *         decode core is held by another session
+ */
+STATIC OPERATE_RET tkl_image_codec_decode_h264(CONST TUYA_IMAGE_CODEC_BUF_T *in,
+                                               TUYA_IMAGE_CODEC_BUF_T *out)
+{
+    TKL_H264_AU_REASON_E reason;
+    bk_h264_decode_frame_config_t cfg;
+    bk_h264_decode_input_t input;
+    bk_h264_decode_ctlr_handle_t handle = NULL;
+    UINT32_T need_size;
+    UINT32_T bk_fmt;
+    avdk_err_t ret;
+
+    if (out->format != (UINT32_T)TUYA_FRAME_FMT_NV12 &&
+        out->format != (UINT32_T)TUYA_FRAME_FMT_RGB565 &&
+        out->format != (UINT32_T)TUYA_FRAME_FMT_RGB888) {
+        tkl_log_output("tkl_image: h264 output format %u unsupported\r\n",
+                       (unsigned int)out->format);
+        return OPRT_NOT_SUPPORTED;
+    }
+
+    if (out->width == 0U || out->height == 0U) {
+        return OPRT_INVALID_PARM;
+    }
+
+    /* Sized before anything touches the hardware: the vendor's own check uses
+     * bk_decode_pp_output_size(), which accepts a number too small for the PP
+     * DMA (see tkl_pp_output_size). */
+    need_size = tkl_image_codec_need_size(out->format, out->width, out->height);
+    if (need_size == 0U || out->length < need_size) {
+        tkl_log_output("tkl_image: h264 out buffer %u < %u needed\r\n",
+                       (unsigned int)out->length, (unsigned int)need_size);
+        return OPRT_INVALID_PARM;
+    }
+
+    reason = tkl_image_codec_h264_au_check(in->buffer, in->length);
+    if (reason != TKL_H264_AU_OK) {
+        tkl_log_output("tkl_image: h264 AU rejected, reason %d "
+                       "(0=ok 1=empty 2=no_start_code 3=no_sps 4=no_pps "
+                       "5=no_vcl 6=multi_vcl 7=not_idr)\r\n", (INT_T)reason);
+        return OPRT_INVALID_PARM;
+    }
+
+    if (tkl_codec_gate_acquire(TKL_CODEC_GATE_DEC, 0U) != OPRT_OK) {
+        tkl_log_output("tkl_image: h264 decode refused, decode core busy\r\n");
+        return OPRT_TIMEOUT;
+    }
+
+    bk_fmt = tkl_media_fmt_to_bk(out->format);
+
+    os_memset(&cfg, 0, sizeof(cfg));
+    cfg.timeout_ms = TUYA_IMAGE_CODEC_DECODE_TIMEOUT_MS;
+    cfg.out_width = out->width;
+    cfg.out_height = out->height;
+    cfg.out_format = bk_fmt;
+
+    os_memset(&input, 0, sizeof(input));
+    input.stream = in->buffer;
+    input.stream_len = in->length;
+    input.out_buffer = out->buffer;
+    input.out_buffer_size = out->length;
+
+    ret = bk_h264_decode_frame_ctlr_new(&handle, &cfg);
+    if (ret == AVDK_ERR_OK) {
+        ret = bk_h264_decode_init(handle);
+        if (ret == AVDK_ERR_OK) {
+            ret = bk_h264_decode_open(handle);
+            if (ret == AVDK_ERR_OK) {
+                ret = bk_h264_decode_frame(handle, &input);
+                (void)bk_h264_decode_close(handle);
+            }
+            (void)bk_h264_decode_deinit(handle);
+        }
+        (void)bk_h264_decode_delete(handle);
+    }
+
+    tkl_codec_gate_release(TKL_CODEC_GATE_DEC);
+
+    if (ret != AVDK_ERR_OK) {
+        tkl_log_output("tkl_image: h264 decode failed: %d\r\n", (INT_T)ret);
+        return tkl_image_codec_map_err(ret);
+    }
+
+    out->length = need_size;
+    return OPRT_OK;
+}
+
+/**
  * @brief Decode a JPEG into pixel output - the JPEG leg of tkl_image_codec_convert().
  *
  * @param[in]     in  JPEG stream
@@ -413,8 +628,12 @@ STATIC OPERATE_RET tkl_image_codec_decode_pixels(CONST TUYA_IMAGE_CODEC_BUF_T *i
         return OPRT_INVALID_PARM;
     }
 
-    if (in->format == (UINT32_T)TUYA_FRAME_FMT_H264) {
-        return OPRT_NOT_SUPPORTED;      /* stateful - see tkl_stream */
+    if (in->format == (UINT32_T)TUYA_FRAME_FMT_H264 ||
+        in->format == (UINT32_T)TUYA_FRAME_FMT_H264_I ||
+        in->format == (UINT32_T)TUYA_FRAME_FMT_H264_P ||
+        in->format == (UINT32_T)TUYA_FRAME_FMT_H264_B) {
+        /* JPEG only in here - convert() routes every H264 format elsewhere */
+        return OPRT_NOT_SUPPORTED;
     }
 
     if (out->width == 0U || out->height == 0U) {
@@ -1019,8 +1238,17 @@ OPERATE_RET tkl_image_codec_convert(CONST TUYA_IMAGE_CODEC_BUF_T *in, TUYA_IMAGE
         return OPRT_INVALID_PARM;
     }
 
-    if (in->format == (UINT32_T)TUYA_FRAME_FMT_H264) {
-        return OPRT_NOT_SUPPORTED;      /* stateful - see tkl_stream */
+    if (in->format == (UINT32_T)TUYA_FRAME_FMT_H264 ||
+        in->format == (UINT32_T)TUYA_FRAME_FMT_H264_I) {
+        return tkl_image_codec_decode_h264(in, out);
+    }
+
+    if (in->format == (UINT32_T)TUYA_FRAME_FMT_H264_P ||
+        in->format == (UINT32_T)TUYA_FRAME_FMT_H264_B) {
+        /* A P or B frame references pictures this one-shot call never had, so
+         * it cannot be decoded here at all - that is tkl_vdec's job, not a
+         * missing feature. */
+        return OPRT_NOT_SUPPORTED;
     }
 
     if (in->format == (UINT32_T)TUYA_FRAME_FMT_NV12 ||

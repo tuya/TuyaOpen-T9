@@ -34,6 +34,7 @@ extern INT_T test_fs_mount(CONST CHAR_T *path, FS_DEV_TYPE_T dev_type);
 /* The camera is brought up by "xmipi cam"; see test_camera.c. */
 extern OPERATE_RET test_camera_get_sp_info(UINT16_T *width, UINT16_T *height,
                                            UINT32_T *format, UINT32_T *timeout_ms);
+extern OPERATE_RET test_camera_capture_h264_i(UINT8_T **buf, UINT32_T *len, UINT32_T timeout_ms);
 
 /**
  * @brief Map a CLI format word to TUYA_FRAME_FMT_E.
@@ -370,8 +371,10 @@ static const char *test_image_ffplay_fmt(UINT32_T fmt)
     case (UINT32_T)TUYA_FRAME_FMT_RGB565:
         return "rgb565le";
     case (UINT32_T)TUYA_FRAME_FMT_RGB888:
-        /* the PP writes 4 bytes per pixel for RGB888, so the file is not rgb24 */
-        return "rgb0";
+        /* 4 bytes per pixel, ordered 0,R,G,B - a leading pad byte, not packed
+         * 24-bit and not RGB0. Board-confirmed 2026-10-14: rgb0 renders green
+         * and bgr0 renders yellow, 0rgb is correct. */
+        return "0rgb";
     default:
         return NULL;
     }
@@ -496,8 +499,8 @@ static OPERATE_RET test_image_decode_file(const char *path, UINT32_T fmt,
                                rows, dst_h);
             }
             if (fmt == (UINT32_T)TUYA_FRAME_FMT_RGB888) {
-                tkl_log_output("  (rgb888 is 4 bytes/pixel here; try bgr0 if the "
-                               "channels come out swapped)\r\n");
+                tkl_log_output("  (rgb888 is 4 bytes/pixel ordered 0,R,G,B - a leading "
+                               "pad byte. Use 0rgb, not rgb0 or rgb24)\r\n");
             }
         }
 
@@ -795,6 +798,132 @@ static OPERATE_RET test_image_transform(UINT16_T dst_w, UINT16_T dst_h,
 
     test_image_buf_free(dst);
     test_image_buf_free(nv12);
+    return ret;
+}
+
+/* ---------------------------------------------------------------------------
+ * ximg h264 - encode/decode round trip on a real I frame from the camera.
+ * ------------------------------------------------------------------------- */
+
+/* How long to wait for the encoder to produce an I frame. The camera's default
+ * gop is 40 at the configured fps, so this is several gops' worth. */
+#define IMG_TEST_H264_IDR_TIMEOUT   10000U
+
+/**
+ * @brief Grab one H264 I frame from the camera and run it back through
+ *        tkl_image_codec_convert().
+ *
+ * @param[in] out_fmt one of NV12 / RGB565 / RGB888
+ * @param[in] out_w   requested output width
+ * @param[in] out_h   requested output height
+ *
+ * @note Bring the camera up first with both the display and the encoder on:
+ *         xmipi cam open display+h264 640 1024 nv12 320 320
+ *
+ * @return OPRT_OK on success
+ */
+static OPERATE_RET test_image_h264_roundtrip(UINT32_T out_fmt, UINT16_T out_w, UINT16_T out_h)
+{
+    TUYA_IMAGE_CODEC_BUF_T in;
+    TUYA_IMAGE_CODEC_BUF_T out;
+    UINT8_T *au = NULL;
+    UINT32_T au_len = 0U;
+    UINT32_T need;
+    OPERATE_RET ret;
+    CHAR_T path[64];
+
+    ret = test_camera_capture_h264_i(&au, &au_len, IMG_TEST_H264_IDR_TIMEOUT);
+    if (ret != OPRT_OK) {
+        /* Name the reason rather than just the code. "no I frame" for every
+         * failure sent a board session after a missing frame when the real
+         * cause was that no camera was streaming H264 at all - the capture
+         * bails before it ever waits. */
+        switch (ret) {
+        case OPRT_RESOURCE_NOT_READY:
+            tkl_log_output("ximg h264: no camera streaming H264. Open one first:\r\n"
+                           "  xmipi cam open h264 <mp_w> <mp_h>\r\n"
+                           "  xmipi cam open display+h264 <mp_w> <mp_h> nv12 <sp_w> <sp_h>\r\n");
+            break;
+        case OPRT_TIMEOUT:
+            tkl_log_output("ximg h264: camera is streaming but no I frame arrived in %u ms.\r\n"
+                           "  Check the encoder is producing them: xmipi cam idr\r\n",
+                           (unsigned int)IMG_TEST_H264_IDR_TIMEOUT);
+            break;
+        case OPRT_MALLOC_FAILED:
+            tkl_log_output("ximg h264: could not allocate a copy of the I frame "
+                           "(stream slab full?)\r\n");
+            break;
+        default:
+            tkl_log_output("ximg h264: capture failed: %d\r\n", ret);
+            break;
+        }
+        return ret;
+    }
+    tkl_log_output("ximg h264: captured AU %u bytes\r\n", (unsigned int)au_len);
+
+    /* The AU's own geometry is not readable without an SPS parser, so the
+     * caller names the size it wants - which is what the contract says. */
+    if (out_w == 0U || out_h == 0U) {
+        tkl_log_output("ximg h264: give the output size explicitly, "
+                       "e.g. 'ximg h264 nv12 640 480'\r\n");
+        test_image_buf_free(au);
+        return OPRT_INVALID_PARM;
+    }
+
+    need = test_image_pixel_bytes(out_fmt, out_w, out_h);
+    out.buffer = test_image_pixel_alloc(need);
+    if (out.buffer == NULL) {
+        test_image_buf_free(au);
+        return OPRT_MALLOC_FAILED;
+    }
+
+    os_memset(&in, 0, sizeof(in));
+    in.buffer = au;
+    in.length = au_len;
+    in.format = TUYA_FRAME_FMT_H264_I;
+
+    out.length = need;
+    out.format = out_fmt;
+    out.width = out_w;
+    out.height = out_h;
+
+    ret = tkl_image_codec_convert(&in, &out);
+    tkl_log_output("ximg h264: convert %s (%d), %u bytes out\r\n",
+                   (ret == OPRT_OK) ? "ok" : "failed", ret,
+                   (unsigned int)out.length);
+
+    /* The adapter logs the detail; these are the two that need a pointer to the
+     * cause, because the code alone does not say which way to look. */
+    if (ret == OPRT_TIMEOUT) {
+        tkl_log_output("  -> the decode core is held by another session (a UVC\r\n"
+                       "     MJPEG/display/h264 stream holds it for its whole life).\r\n"
+                       "     H264 decode never queues - close that stream and retry.\r\n");
+    } else if (ret == OPRT_INVALID_PARM) {
+        tkl_log_output("  -> the access unit was rejected; the adapter logged\r\n"
+                       "     the reason code (3=no_sps 4=no_pps 6=multi_vcl 7=not_idr).\r\n");
+    }
+
+    if (ret == OPRT_OK) {
+        snprintf(path, sizeof(path), "%s/%s_h264.%s", TEST_SDCARD_MOUNT_POINT,
+                 IMG_TEST_DEFAULT_PREFIX, test_image_ffplay_fmt(out_fmt));
+        (void)test_image_write_file(path, out.buffer, out.length);
+        tkl_log_output("ximg h264: wrote %s\r\n", path);
+
+        /* Same advice the decode arm prints: hand over a line that can be
+         * pasted straight into ffplay, and flag the RGB888 channel order,
+         * because the file suffix test_image_ffplay_fmt() picks is not
+         * necessarily the one that renders the colours right. */
+        tkl_log_output("  ffplay -f rawvideo -pixel_format %s -video_size %ux%u %s\r\n",
+                       test_image_ffplay_fmt(out_fmt), out_w,
+                       test_image_stored_rows(out_fmt, out_h), path);
+        if (out_fmt == (UINT32_T)TUYA_FRAME_FMT_RGB888) {
+            tkl_log_output("  (rgb888 is 4 bytes/pixel ordered 0,R,G,B - a leading "
+                           "pad byte. Use 0rgb, not rgb0 or rgb24)\r\n");
+        }
+    }
+
+    test_image_buf_free(out.buffer);
+    test_image_buf_free(au);
     return ret;
 }
 
@@ -1194,6 +1323,7 @@ void cli_tuya_image_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char
         snprintf(pcWriteBuffer, xWriteBufferLen,
                  "Usage: ximg <get_info <file>|decode <file> [fmt] [w] [h] [outfile]|"
                  "encode [hw|sw] [file]|transform <w> <h> <fmt> [file]|dump_sp [prefix]|"
+                 "h264 [fmt] <w> <h>|"
                  "memcpy [bench] [force=cpu|gdma]>\r\n"
                  "  fmt = nv12|yuyv|rgb565|rgb888 (decode: nv12|rgb565|rgb888|yuyv, yuyv native only)\r\n"
                  "  get_info/decode read a JPEG from the card; the rest need the camera\r\n"
@@ -1202,6 +1332,8 @@ void cli_tuya_image_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char
                  "    composition (NV12->YUYV + YUYV->JPEG), byte-comparable with xvenc\r\n"
                  "  dump_sp writes one frame as raw .nv12 AND .yuyv plus a .txt\r\n"
                  "    naming the ffplay line for each - conversion forensics\r\n"
+                 "  h264 decodes one I frame from the camera's encoder channel; needs\r\n"
+                 "    'xmipi cam open display+h264 ...' first, and the output size given\r\n"
                  "  memcpy runs the same-format region copy suite (synthetic frames,\r\n"
                  "    no camera); 'bench' adds a timing table, force=cpu|gdma pins it\r\n");
         return;
@@ -1325,6 +1457,30 @@ void cli_tuya_image_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char
     } else if (os_strcmp(cmd, "dump_sp") == 0) {
         ret = test_image_dump_sp((argc >= 3) ? argv[2] : NULL);
         snprintf(pcWriteBuffer, xWriteBufferLen, "ximg dump_sp %s (%d)\r\n",
+                 (ret == OPRT_OK) ? "ok" : "failed", ret);
+
+    } else if (os_strcmp(cmd, "h264") == 0) {
+        UINT32_T fmt = (UINT32_T)TUYA_FRAME_FMT_NV12;
+        UINT16_T w = 0U;
+        UINT16_T h = 0U;
+        int dim = 0;
+        int i;
+
+        for (i = 2; i < argc; i++) {
+            UINT32_T parsed = test_image_fmt_parse(argv[i]);
+
+            if (parsed != (UINT32_T)TUYA_FRAME_FMT_UNKNOWN) {
+                fmt = parsed;
+            } else if (dim == 0) {
+                w = (UINT16_T)os_strtoul(argv[i], NULL, 10);
+                dim = 1;
+            } else {
+                h = (UINT16_T)os_strtoul(argv[i], NULL, 10);
+            }
+        }
+
+        ret = test_image_h264_roundtrip(fmt, w, h);
+        snprintf(pcWriteBuffer, xWriteBufferLen, "ximg h264 %s (%d)\r\n",
                  (ret == OPRT_OK) ? "ok" : "failed", ret);
 
     } else if (os_strcmp(cmd, "memcpy") == 0) {
