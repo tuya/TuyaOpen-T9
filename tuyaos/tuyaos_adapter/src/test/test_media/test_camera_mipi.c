@@ -266,11 +266,93 @@ static uint16_t s_cam_osd_rotate;
  * single forced keyframe - it reported "ok" while proving nothing. */
 static volatile uint8_t s_cam_idr_trace;
 
+/* One-shot H264 IDR capture for the image codec test. The ch3 callback runs on
+ * the encoder thread and its buffer dies when the callback returns, so the
+ * callback takes its own copy and the waiter picks that up afterwards.
+ *
+ * The copy is allocated at the frame's own size, in the callback. Sizing a
+ * staging block up front cannot work: an I frame is 10-30x a P frame, so any
+ * bound derived from the frames seen so far is a guess that silently drops the
+ * one frame the caller asked for. */
+static volatile uint8_t  s_cam_idr_want;      /* 1 = a capture is armed */
+static volatile uint8_t  s_cam_idr_ready;     /* 1 = s_cam_idr_buf holds one */
+static volatile uint8_t  s_cam_idr_nomem;     /* 1 = the callback could not allocate */
+static uint8_t          *s_cam_idr_buf;       /* owned by the waiter once ready */
+static uint32_t          s_cam_idr_len;
+
 /* H264 capture to card. The ring, the writer thread and the write
  * granularity all live in test_record.c now - xuvc needs the same thing,
  * and the numbers in there were paid for once already. */
 
 extern BOOL_T test_mipi_lcd_is_open(void);
+
+/**
+ * @brief Copy out the next H264 I frame the encoder produces.
+ *
+ * @param[out] buf        receives a freshly allocated copy; caller releases it
+ *                        with tkl_media_buf_free(TUYA_MEDIA_BUF_OWNER_TEST, ...),
+ *                        which is what test_image.c's test_image_buf_free() does
+ * @param[out] len        receives the byte count
+ * @param[in]  timeout_ms how long to wait for an I frame
+ *
+ * @note The returned buffer is exactly one encoder output frame, which for
+ *       tkl_image_codec_convert() is one access unit. Whether it carries SPS
+ *       and PPS is the encoder's business - that is what the AU validator in
+ *       the image codec reports on.
+ *
+ * @note The copy is made in the encoder callback at the frame's own size, so a
+ *       frame can never be dropped for not fitting a pre-sized block. An I
+ *       frame is 10-30x a P frame and the caller is waiting for exactly that
+ *       one, so a bound derived from the frames seen so far would be a guess
+ *       that fails precisely when it matters.
+ *
+ * @return OPRT_OK on success, OPRT_RESOURCE_NOT_READY when the camera is not
+ *         streaming H264, OPRT_TIMEOUT when no I frame arrived in time,
+ *         OPRT_MALLOC_FAILED when the callback could not allocate the copy
+ */
+OPERATE_RET test_camera_capture_h264_i(UINT8_T **buf, UINT32_T *len, UINT32_T timeout_ms)
+{
+    uint32_t waited = 0U;
+
+    if (buf == NULL || len == NULL) {
+        return OPRT_INVALID_PARM;
+    }
+    /* enc_w is the encoder input geometry, 0 when the encoder is off. */
+    if (s_cam.opened != true || s_cam.enc_w == 0U) {
+        return OPRT_RESOURCE_NOT_READY;
+    }
+
+    s_cam_idr_buf = NULL;
+    s_cam_idr_len = 0U;
+    s_cam_idr_ready = 0U;
+    s_cam_idr_nomem = 0U;
+    s_cam_idr_want = 1U;
+
+    while (s_cam_idr_ready == 0U && waited < timeout_ms) {
+        tkl_system_sleep(10U);
+        waited += 10U;
+    }
+
+    s_cam_idr_want = 0U;
+
+    /* Out of memory in the callback is a different failure from "no I frame
+     * arrived", and the caller should be told which one it hit. */
+    if (s_cam_idr_ready == 0U && s_cam_idr_nomem != 0U) {
+        tkl_log_output("xcamera: h264 capture could not allocate a frame copy "
+                       "(stream slab full?)\r\n");
+        return OPRT_MALLOC_FAILED;
+    }
+    if (s_cam_idr_ready == 0U) {
+        return OPRT_TIMEOUT;
+    }
+
+    /* The callback's copy is handed straight over - no second copy, and the
+     * caller releases it with tkl_media_buf_free(TUYA_MEDIA_BUF_OWNER_TEST, ..),
+     * which is what test_image.c's test_image_buf_free() does. */
+    *buf = s_cam_idr_buf;
+    *len = s_cam_idr_len;
+    return OPRT_OK;
+}
 
 /**
  * @brief Display sink: push the composed picture to the panel.
@@ -427,6 +509,25 @@ static VOID_T test_cam_stream_cb(CONST TUYA_MEDIA_BUF_T *buf)
 
     s_cam.stream_frames++;
     s_cam.stream_bytes += buf->length;
+
+    /* Armed capture: copy out the first I frame that arrives. This runs on the
+     * encoder thread - a task, not an ISR - so allocating here is legal, and
+     * sizing the copy from the frame itself is the only way to never drop one. */
+    if (s_cam_idr_want != 0U && s_cam_idr_ready == 0U &&
+        buf->format == TUYA_FRAME_FMT_H264_I) {
+        UINT8_T *copy = (UINT8_T *)tkl_media_buf_alloc(TKL_BUF_USE_STREAM,
+                                                       buf->length,
+                                                       TUYA_MEDIA_BUF_OWNER_TEST);
+
+        if (copy == NULL) {
+            s_cam_idr_nomem = 1U;
+        } else {
+            os_memcpy(copy, buf->buffer, buf->length);
+            s_cam_idr_buf = copy;
+            s_cam_idr_len = buf->length;
+            s_cam_idr_ready = 1U;
+        }
+    }
 
     /* no-op unless a capture is running; the deadline lives in there too */
     test_record_feed(buf->buffer, buf->length);

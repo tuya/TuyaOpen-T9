@@ -74,6 +74,7 @@ void cli_tuya_uvc_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char *
 void cli_tuya_dac_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv);
 void cli_tuya_dmic_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv);
 void cli_tkl_adc_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv);
+void cli_tkl_sleep_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv);
 #if (CONFIG_LVGL && CONFIG_LVGL_V9)
 void cli_tuya_lvgl_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv);
 #endif

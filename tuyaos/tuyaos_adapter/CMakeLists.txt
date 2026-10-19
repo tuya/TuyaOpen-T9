@@ -144,7 +144,7 @@ else()
         src/misc/tkl_gpu.c
         src/misc/tkl_venc.c
         src/misc/tkl_vdec.c
-        src/misc/tkl_hwjpeg.c
+        src/misc/tkl_codec_gate.c
         src/misc/tkl_mftest.c
         src/misc/mf_test/mt_mipi.c
         src/misc/mf_test/mt_adc.c
@@ -198,6 +198,7 @@ else()
             # src/test/test_qspi.c
             # src/test/test_mp3.c
             src/test/test_timer.c
+            src/test/test_sleep.c
             # src/test/test_usb.c
             # src/test/test_spi.c
             src/test/test_ringbuffer/rb.c

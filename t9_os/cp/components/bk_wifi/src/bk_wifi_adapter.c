@@ -48,6 +48,7 @@
 #include "reg_domain.h"
 #include "bk_rw.h"
 #include "bk_wifi_adapter.h"
+#include <driver/timer.h>
 
 #if (CONFIG_CKMN)
 #include <driver/ckmn.h>
@@ -59,6 +60,18 @@
 #endif
 
 #define TAG "wifi_adapter"
+
+#if CONFIG_P2P
+void wlan_p2p_go_noa_set_enabled(uint8_t enabled)
+{
+	rw_msg_send_p2p_go_noa_set_enabled(enabled);
+}
+
+uint8_t wlan_p2p_go_noa_is_enabled(void)
+{
+	return p2p_go_noa_is_enabled();
+}
+#endif
 
 void *
 bk_pbuf_alloc_wrapper(int layer, uint16_t length, int type)
@@ -485,6 +498,39 @@ static void bk_pm_wifi_rtc_clear_wrapper(void)
     bk_pm_wifi_rtc_clear();
 #endif
 }
+
+static bool bk_pm_wifi_rtc_is_registered_wrapper(void)
+{
+#if CONFIG_ANA_RTC || CONFIG_AON_RTC
+	return bk_pm_wifi_rtc_is_registered();
+#else
+	return false;
+#endif
+}
+
+static void sys_hal_wifi_enter_sleep_status_set_wrapper(uint32_t status)
+{
+#if (CONFIG_SOC_BK7259)
+	sys_hal_wifi_enter_sleep_status_set(status);
+#else
+	(void)status;
+#endif
+}
+
+static void bk_wifi_set_bk_timer_wrapper(uint32_t time_ms, void *callback)
+{
+    bk_timer_stop(TIMER_ID4);
+    bk_err_t ret = bk_timer_start(TIMER_ID4, time_ms, (timer_isr_t)callback);
+    if (ret != BK_OK) {
+        BK_LOGE(TAG, "bk_wifi_set_bk_timer_wrapper failed, error code:%x\n", ret);
+    }
+}
+
+static void bk_wifi_clear_bk_timer_wrapper(void)
+{
+    bk_timer_stop(TIMER_ID4);
+}
+
 static void wifi_vote_rf_ctrl_wrapper(uint8_t cmd)
 {
     if (cmd == RF_OPEN)
@@ -1529,6 +1575,8 @@ __attribute__((section(".dtcm_sec_data "))) wifi_os_funcs_t g_wifi_os_funcs = {
 	._rtc_us_to_tick = bk_pm_wifi_rtc_us_to_tick_wrapper,
 	._rtc_tick_to_us = bk_pm_wifi_rtc_tick_to_us_wrapper,
 	._bk_pm_wifi_rtc_clear = bk_pm_wifi_rtc_clear_wrapper,
+	._bk_wifi_set_bk_timer = bk_wifi_set_bk_timer_wrapper,
+	._bk_wifi_clear_bk_timer = bk_wifi_clear_bk_timer_wrapper,
 	._wifi_vote_rf_ctrl = wifi_vote_rf_ctrl_wrapper,
 	._wifi_phy_clk_open = wifi_phy_clk_open_wrapper,
 	._wifi_phy_clk_close = wifi_phy_clk_close_wrapper,
@@ -1694,6 +1742,8 @@ __attribute__((section(".dtcm_sec_data "))) wifi_os_funcs_t g_wifi_os_funcs = {
 	._rwnx_rc_phyclkrst_cntl_unpack = rwnx_rc_phyclkrst_cntl_unpack,
 	._bk_feature_wifi_dsss_only_enable = bk_feature_wifi_dsss_only_wrapper,
 	._bk_pm_clock_ctrl = bk_pm_clock_ctrl_wrapper,
+	._bk_pm_wifi_rtc_is_registered = bk_pm_wifi_rtc_is_registered_wrapper,
+	._sys_hal_wifi_enter_sleep_status_set = sys_hal_wifi_enter_sleep_status_set_wrapper,
 };
 
 __attribute__((section(".dtcm_sec_data "))) wifi_os_variable_t g_wifi_os_variable = {

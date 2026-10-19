@@ -294,7 +294,7 @@ uint32_t bk_pm_get_video_vote_pwr_state(void)
 	return s_pm_video_pm_state ;
 }
 
-uint32_t bk_pm_phy_pm_state_get()
+uint32_t bk_pm_phy_pm_state_get(void)
 {
 	return s_pm_phy_pm_state;
 }
@@ -349,7 +349,7 @@ bk_err_t bk_pm_module_vote_xtal_rx_tx_anabuf_ctrl(pm_xtal_rx_tx_anabuf_module_na
 /*=========================RF POWER CTRL END========================*/
 
 /*=========================SPECIFIC API START========================*/
-bool bk_pm_phy_cali_state_get()
+bool bk_pm_phy_cali_state_get(void)
 {
 	return s_pm_phy_calibration_state;
 }
@@ -359,7 +359,7 @@ bk_err_t bk_pm_phy_cali_state_set(bool cali_state)
 	return BK_OK;
 }
 
-bool bk_pm_phy_reinit_flag_get()
+bool bk_pm_phy_reinit_flag_get(void)
 {
 	return s_pm_is_phy_reinit_flag;
 }
@@ -369,12 +369,12 @@ bk_err_t bk_pm_phy_reinit_flag_set(bool reinit_flag)
 	return BK_OK;
 }
 
-void bk_pm_phy_reinit_flag_clear()
+void bk_pm_phy_reinit_flag_clear(void)
 {
 	s_pm_is_phy_reinit_flag = false;
 }
 
-uint32_t bk_pm_vote_power_module_get()
+uint32_t bk_pm_vote_power_module_get(void)
 {
 	return s_pm_vote_power_module;
 }
@@ -388,7 +388,7 @@ bk_err_t bk_pm_vote_power_module_set(uint32_t vote_power_module)
 /*=========================DEBUG/TEST CTRL START========================*/
 void pm_power_dump(void)
 {
-	LOGD("pm video,audio:0x%x 0x%x \r\n",s_pm_video_pm_state,s_pm_audio_pm_state);
+	//LOGD("pm video,audio:0x%x 0x%x \r\n",s_pm_video_pm_state,s_pm_audio_pm_state);
 	LOGD("pm ahpb,bakp:0x%x 0x%x\r\n",s_pm_ahpb_pm_state,s_pm_bakp_pm_state);
 	LOGD("pm cpu1_bakp_audp:0x%x\r\n",s_pm_cpu1_bakp_audp_state);
 	LOGD("pm vehp_spi_debug:0x%x\r\n",s_pm_vehp_spi_debug_state);
@@ -417,18 +417,18 @@ bk_err_t pm_debug_module_state(void)
 	{
 		LOGI("Bakp not PD[module:0x%x]\r\n",s_pm_bakp_pm_state);
 	}
-	if(s_pm_video_pm_state > 0)
-	{
-		LOGD("Video not PD[modulue:0x%x]\r\n",s_pm_video_pm_state);
-	}
-	if(s_pm_audio_pm_state > 0)
-	{
-		LOGD("Audio not PD[modulue:0x%x]\r\n",s_pm_audio_pm_state);
-	}
+	// if(s_pm_video_pm_state > 0)
+	// {
+	// 	LOGD("Video not PD[modulue:0x%x]\r\n",s_pm_video_pm_state);
+	// }
+	// if(s_pm_audio_pm_state > 0)
+	// {
+	// 	LOGD("Audio not PD[modulue:0x%x]\r\n",s_pm_audio_pm_state);
+	// }
 
-	if(!bk_pm_module_power_state_get(PM_POWER_MODULE_NAME_CPU1))
+	if(!bk_pm_module_power_state_get(PM_POWER_SUB_DOMAIN_AP_CPU))
 	{
-		LOGD("Cp1 not PD[state:0x%x]\r\n",bk_pm_module_power_state_get(PM_POWER_MODULE_NAME_CPU1));
+		LOGD("AP not PD[state:0x%x]\r\n",bk_pm_module_power_state_get(PM_POWER_SUB_DOMAIN_AP_CPU));
 	}
 
 	#if CONFIG_PSRAM && CONFIG_PSRAM_AS_SYS_MEMORY

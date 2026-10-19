@@ -19,7 +19,7 @@
  * RISC-V CP (which earlier produced an ~8 s heartbeat-timeout coredump).
  *
  * bk_analog_layer_usb_sys_related_ops() is defined in
- * CherryUSB_legacy/driver/usb_driver.c (compiled in both stacks). usb_mode:
+ * CherryUSB/driver/usb_driver.c. usb_mode:
  * 0 = USB_HOST_MODE, 1 = USB_DEVICE_MODE. */
 extern void bk_analog_layer_usb_sys_related_ops(uint32_t usb_mode, bool ops);
 #define MTP_USB_DEVICE_MODE 1
@@ -100,6 +100,11 @@ static uint32_t mtp_get_perceived_device_type(void)
 
 #define MTP_BUFFER_SIZE 512
 #define MTP_COPY_BUFFER_SIZE (10*1024)
+#ifndef CONFIG_USBD_MTP_MAX_OBJECT_HANDLES
+#define CONFIG_USBD_MTP_MAX_OBJECT_HANDLES 4096
+#endif
+/* GetObjectHandles is 4+N*4 bytes; do not reuse the 512-byte mtp_buffer. */
+#define MTP_MAX_OBJECT_HANDLES ((uint32_t)CONFIG_USBD_MTP_MAX_OBJECT_HANDLES)
 
 static uint32_t mtp_put_ascii_string(uint8_t *dst, const char *src)
 {
@@ -411,6 +416,36 @@ static void remove_object_recursive_by_handle(uint32_t handle)
     {
         remove_item_form_list_by_handle(&file_list,handle);
     }
+}
+
+/* Recursively delete a directory (and its contents) from the filesystem.
+ * f_unlink/rmdir only removes an EMPTY dir, so the children must be removed
+ * first; otherwise deleting a non-empty folder over MTP silently fails. Child
+ * paths are heap-allocated (not stack) to stay safe on the small worker stack.
+ * Returns 0 on success. */
+static int mtp_rmdir_recursive(const char *path)
+{
+    DIR *dir = opendir(path);
+    if(dir)
+    {
+        struct dirent *de;
+        while((de = readdir(dir)) != NULL)
+        {
+            if(strcmp(de->d_name,".") == 0 || strcmp(de->d_name,"..") == 0)
+                continue;
+            char *child = psram_malloc(strlen(path) + strlen(de->d_name) + 2);
+            if(child == NULL)
+                continue;
+            sprintf(child,"%s/%s",path,de->d_name);
+            if(de->d_type & DT_DIR)
+                mtp_rmdir_recursive(child);
+            else
+                unlink(child);
+            psram_free(child);
+        }
+        closedir(dir);
+    }
+    return unlink(path); /* now empty -> f_unlink removes the directory itself */
 }
 
 static uint32_t map_add_item(uint32_t parent_handle,const char *path,const char* name,uint8_t is_dir,uint8_t storage_id)
@@ -744,6 +779,9 @@ static uint8_t *ep_out_buffer = NULL;//[MAX_PACKET_SIZE];
 static uint8_t *ep_in_buffer = NULL;//[MAX_PACKET_SIZE];
 
 static uint8_t *mtp_buffer = NULL;//[MTP_BUFFER_SIZE];
+#if CONFIG_VFS
+static uint32_t *s_handles_buf = NULL;
+#endif
 
 static uint32_t current_session_id = 0;
 static uint8_t mtp_state;
@@ -752,11 +790,75 @@ static uint32_t current_sending_total_size;
 static uint32_t current_sending_idx;
 
 static usb_osal_thread_t mtp_thread = NULL;
-static usb_osal_sem_t mtp_sem;
+/* Join handshake: the worker gives this as its last act before self-deleting so
+ * usb_mtp_deinit() can block until the worker has truly exited, then own the
+ * sem/thread teardown itself. Previously the worker freed its wakeup object
+ * asynchronously while a later start/stop reused the handle -> xQueueGenericSend
+ * assert on a poisoned (0x55aa55aa) handle. */
+static usb_osal_sem_t mtp_exit_sem = NULL;
 static volatile uint8_t mtp_thread_op;
+/* Authoritative exit request for the worker. Separate from mtp_thread_op because
+ * a late USB SUSPEND/RESET event (mtp_notify_handler) can overwrite mtp_thread_op
+ * after usb_mtp_deinit() asked the worker to quit; the worker must still break
+ * out, otherwise the deinit join on mtp_exit_sem would block forever. */
+static volatile uint8_t mtp_should_exit;
+/* SMP-safe ISR->worker handoff. The old design signalled the worker with a
+ * counting semaphore (max 1) + the shared mtp_thread_op var; under load the
+ * cross-core give/wakeup intermittently failed and the worker stalled (host
+ * spun on empty window). A FreeRTOS queue (depth 8) carries each request
+ * atomically: usb_osal_mq_send uses xQueueSendToBackFromISR from the USB ISR
+ * and the worker blocks on usb_osal_mq_recv, which is the platform's supported
+ * ISR->task wakeup path. */
+static usb_osal_mq_t mtp_op_q = NULL;
 static uint32_t mtp_parameter_backup[5];
 static uint32_t mtp_ep_recive_cnt;
 static uint32_t mtp_ep_recive_total_size;
+
+/* Set while the worker task is actively servicing an operation (including the
+ * blocking SD writes of an in-flight SendObject). GetDeviceStatus reports
+ * Device_Busy while this is set so a host that polls during a paused transfer
+ * keeps waiting instead of treating the pause as a hang. */
+static volatile uint8_t s_mtp_busy;
+
+/* Retry a momentarily-busy SD card during SendObject file open/create/write.
+ * The OUT endpoint stays un-armed for the whole retry window, so the USB host
+ * transparently NAK-waits (progress bar just pauses) until the op lands.
+ * Budget: MTP_SD_RETRY_MAX * MTP_SD_RETRY_MS = 1000 * 10ms = up to 10s of
+ * patience per op -- for a file copy, data integrity beats latency, so we wait
+ * out transient SD contention rather than truncating a file. Only if the card
+ * is genuinely gone (budget fully exhausted) do we give up, and then LOUDLY
+ * (delete the partial file + error response) so the host never silently leaves
+ * a truncated/empty file behind. 10s is the worst-case worker block on a dead
+ * card; tune down if a faster hard-fail is preferred. */
+#define MTP_SD_RETRY_MS   10
+#define MTP_SD_RETRY_MAX  1000
+
+#if CONFIG_VFS
+/* open() a file on the SD card, waiting out a transiently-busy card (see
+ * MTP_SD_RETRY_*). Returns the fd (>=0) on success or the last negative error
+ * once the retry budget is exhausted. The OUT endpoint stays un-armed during
+ * the wait, so the USB host just NAK-pauses. */
+static int mtp_sd_open_retry(const char *path, int flags)
+{
+    int fd;
+    uint32_t tries = 0;
+    while((fd = open(path, flags)) < 0)
+    {
+        if(++tries > MTP_SD_RETRY_MAX)
+            break;
+        usb_osal_msleep(MTP_SD_RETRY_MS);
+    }
+    return fd;
+}
+#endif
+
+/* Post the current op to the worker queue. mtp_thread_op is already set by the
+ * caller (kept for the live in-flight CANCEL check the worker does). */
+static void mtp_wake_worker(void)
+{
+    if (mtp_op_q)
+        (void)usb_osal_mq_send(mtp_op_q, (uintptr_t)mtp_thread_op);
+}
 
 const uint8_t mtp_descriptor[] = {
     USB_DEVICE_DESCRIPTOR_INIT(USB_2_1, 0x00, 0x00, 0x00, USBD_VID, USBD_PID, 0x0200, 0x01),
@@ -1223,7 +1325,7 @@ static void mtp_command_packet_handle(mtp_packet_t *pack)
                     break;
                 }
                 mtp_thread_op = MTP_THREAD_OP_GET_STORAGE_INFO;
-                usb_osal_sem_give(mtp_sem);
+                mtp_wake_worker();
                 #else
                 mtp_send_respond(pack->transaction_id,MTP_RSP_INVALID_STORAGE_ID);
                 #endif
@@ -1241,7 +1343,7 @@ static void mtp_command_packet_handle(mtp_packet_t *pack)
                     }
                 }
                 mtp_thread_op = MTP_THREAD_OP_GET_OBJECT_NUM;
-                usb_osal_sem_give(mtp_sem);
+                mtp_wake_worker();
                 #else
                 mtp_send_respond(pack->transaction_id,MTP_RSP_INVALID_STORAGE_ID);
                 #endif
@@ -1259,7 +1361,7 @@ static void mtp_command_packet_handle(mtp_packet_t *pack)
                     }
                 }
                 mtp_thread_op = MTP_THREAD_OP_GET_OBJECT_HANDLES;
-                usb_osal_sem_give(mtp_sem);
+                mtp_wake_worker();
                 #else
                 mtp_send_respond(pack->transaction_id,MTP_RSP_INVALID_STORAGE_ID);
                 #endif
@@ -1269,7 +1371,7 @@ static void mtp_command_packet_handle(mtp_packet_t *pack)
             {
                 #if CONFIG_VFS
                 mtp_thread_op = MTP_THREAD_OP_GET_OBJECT_INFO;
-                usb_osal_sem_give(mtp_sem);
+                mtp_wake_worker();
                 #else
                 mtp_send_respond(pack->transaction_id,MTP_RSP_INVALID_OBJECT_HANDLE);
                 #endif
@@ -1279,7 +1381,7 @@ static void mtp_command_packet_handle(mtp_packet_t *pack)
             {
                 #if CONFIG_VFS
                 mtp_thread_op = MTP_THREAD_OP_GET_OBJECT;
-                usb_osal_sem_give(mtp_sem);
+                mtp_wake_worker();
                 #else
                 mtp_send_respond(pack->transaction_id,MTP_RSP_INVALID_OBJECT_HANDLE);
                 #endif
@@ -1294,7 +1396,7 @@ static void mtp_command_packet_handle(mtp_packet_t *pack)
                     break;
                 }
                 mtp_thread_op = MTP_THREAD_OP_DELETE_OBJECT;
-                usb_osal_sem_give(mtp_sem);
+                mtp_wake_worker();
                 #else
                 mtp_send_respond(pack->transaction_id,MTP_RSP_INVALID_OBJECT_HANDLE);
                 #endif
@@ -1342,7 +1444,7 @@ static void mtp_command_packet_handle(mtp_packet_t *pack)
                     }
                 }
                 mtp_thread_op = MTP_THREAD_OP_FORMAT_STORAGE;
-                usb_osal_sem_give(mtp_sem);
+                mtp_wake_worker();
                 #else
                 mtp_send_respond(pack->transaction_id,MTP_RSP_INVALID_STORAGE_ID);
                 #endif
@@ -1458,7 +1560,7 @@ static void mtp_command_packet_handle(mtp_packet_t *pack)
                     break;
                 }
                 mtp_thread_op = MTP_THREAD_OP_MOVE_OBJECT;
-                usb_osal_sem_give(mtp_sem);
+                mtp_wake_worker();
                 #else
                 mtp_send_respond(pack->transaction_id,MTP_RSP_DEVICE_BUSY);
                 #endif
@@ -1473,7 +1575,7 @@ static void mtp_command_packet_handle(mtp_packet_t *pack)
                     break;
                 }
                 mtp_thread_op = MTP_THREAD_OP_COPY_OBJECT;
-                usb_osal_sem_give(mtp_sem);
+                mtp_wake_worker();
                 #else
                 mtp_send_respond(pack->transaction_id,MTP_RSP_DEVICE_BUSY);
                 #endif
@@ -1483,7 +1585,7 @@ static void mtp_command_packet_handle(mtp_packet_t *pack)
             {
                 #if CONFIG_VFS
                 mtp_thread_op = MTP_THREAD_OP_GET_OBJECT;
-                usb_osal_sem_give(mtp_sem);
+                mtp_wake_worker();
                 #else
                 mtp_send_respond(pack->transaction_id,MTP_RSP_INVALID_OBJECT_HANDLE);
                 #endif
@@ -1728,7 +1830,7 @@ static void mtp_command_packet_handle(mtp_packet_t *pack)
                 {
                     #if CONFIG_VFS
                     mtp_thread_op = MTP_THREAD_OP_GET_OBJECT_SIZE;
-                    usb_osal_sem_give(mtp_sem);
+                    mtp_wake_worker();
                     #else
                     mtp_send_respond(pack->transaction_id,MTP_RSP_INVALID_OBJECT_PROP_CODE);
                     #endif
@@ -1757,7 +1859,7 @@ static void mtp_command_packet_handle(mtp_packet_t *pack)
                 {
                     #if CONFIG_VFS
                     mtp_thread_op = MTP_THREAD_OP_GET_OBJECT_FILE_NAME;
-                    usb_osal_sem_give(mtp_sem);
+                    mtp_wake_worker();
                     #else
                     mtp_send_respond(pack->transaction_id,MTP_RSP_INVALID_OBJECT_PROP_CODE);
                     #endif
@@ -1836,7 +1938,7 @@ static void mtp_command_packet_handle(mtp_packet_t *pack)
                 break;
             }
             mtp_thread_op = MTP_THREAD_OP_GET_OBJECT_PROPLIST;
-            usb_osal_sem_give(mtp_sem);
+            mtp_wake_worker();
             #else
             mtp_send_respond(pack->transaction_id,MTP_RSP_INVALID_OBJECT_PROP_CODE);
             #endif
@@ -1863,7 +1965,7 @@ static void mtp_data_packet_handle(mtp_packet_t *pack)
         {
             #if CONFIG_VFS
             mtp_thread_op = MTP_THREAD_OP_SET_OBJECT_PROP_VALUE;
-            usb_osal_sem_give(mtp_sem);
+            mtp_wake_worker();
             #endif
         }
         break;
@@ -1871,7 +1973,7 @@ static void mtp_data_packet_handle(mtp_packet_t *pack)
         {
             #if CONFIG_VFS
             mtp_thread_op = MTP_THREAD_OP_SEND_OBJECT_INFO;
-            usb_osal_sem_give(mtp_sem);
+            mtp_wake_worker();
             #endif
         }
         break;
@@ -1889,33 +1991,38 @@ static int mtp_class_interface_request_handler(uint8_t busid, struct usb_setup_p
     switch (setup->bRequest) {
         case MTP_REQUEST_CANCEL:
             mtp_thread_op = MTP_THREAD_OP_CANCEL_REQUEST;
-            usb_osal_sem_give(mtp_sem);
+            mtp_wake_worker();
             break;
         case MTP_REQUEST_GET_EXT_EVENT_DATA:
             break;
         case MTP_REQUEST_RESET:
             mtp_thread_op = MTP_THREAD_OP_RESET;
-            usb_osal_sem_give(mtp_sem);
+            mtp_wake_worker();
             break;
         case MTP_REQUEST_GET_DEVICE_STATUS:
             {
+                uint16_t status;
                 *len = 8;
                 (*data)[0] = 0x08;
                 (*data)[1] = 0x00;
-                if(mtp_thread_op == MTP_THREAD_OP_CANCEL_REQUEST)
+                if(mtp_thread_op == MTP_THREAD_OP_CANCEL_REQUEST
+                   || s_mtp_busy || mtp_ep_recive_total_size != 0
+#if CONFIG_VFS
+                   || open_fd >= 0
+#endif
+                   )
                 {
-                    (*data)[2] = 0x19;
-                    (*data)[3] = 0x20;
+                    status = MTP_RSP_DEVICE_BUSY;
                 }
                 else
                 {
-                    (*data)[2] = 0x01;
-                    (*data)[3] = 0x20;
-
+                    status = MTP_RSP_OK;
                     mtp_ep_recive_total_size = 0;
                     usbd_ep_start_read(mtp_ep_data[MTP_OUT_EP_IDX].ep_addr, ep_out_buffer, MAX_PACKET_SIZE);
                     mtp_state = MTP_STATE_IDLE;
                 }
+                (*data)[2] = status & 0xff;
+                (*data)[3] = (status >> 8) & 0xff;
                 (*data)[4] = 0x00;
                 (*data)[5] = 0x00;
                 (*data)[6] = 0x00;
@@ -1945,7 +2052,7 @@ static void mtp_notify_handler(uint8_t busid, uint8_t event, void *arg)
             break;
         case USBD_EVENT_SUSPEND:
             mtp_thread_op = MTP_THREAD_OP_RESET;
-            usb_osal_sem_give(mtp_sem);
+            mtp_wake_worker();
             USB_LOG_DBG("%s ,line:%d,USBD_EVENT_SUSPEND\r\n",__FILE__,__LINE__);
             break;
         case USBD_EVENT_RESUME:
@@ -1988,9 +2095,36 @@ static void mtp_bulk_in(uint8_t busid, uint8_t ep, uint32_t nbytes)
         else
         {
             mtp_thread_op = MTP_THREAD_OP_GET_OBJECT;
-            usb_osal_sem_give(mtp_sem);
+            mtp_wake_worker();
         }
     }
+}
+
+/* Coalesced OUT receive size for the SendObject data phase. The MUSB device
+ * port (usb_dc_beken_musb_mhdrc.c) accumulates multiple bulk packets into the
+ * supplied buffer and only fires the OUT-complete callback on a short packet or
+ * when the requested length is filled. Arming one large read (instead of one
+ * per 512-byte packet) lets the worker write a big block to the SD card in a
+ * single write(), which is what makes a large-file copy fast enough to beat the
+ * Windows WPD host timeout (the slow 512B-at-a-time path capped throughput at
+ * ~250KB/s and the host aborted mid-transfer -> device-notify chime). */
+#define MTP_RX_CHUNK (32 * 1024)
+
+/* Size of the next OUT read. During an object data phase we know exactly how
+ * many bytes remain, so we request min(chunk, remaining): the read then always
+ * completes deterministically (either a short/last packet or xfer_len hits 0),
+ * so a file whose size is an exact multiple of the packet size never stalls
+ * waiting for bytes that will not come. Outside the data phase the size is
+ * unknown, so fall back to a single max packet. */
+static uint32_t mtp_next_rx_len(void)
+{
+    if(mtp_state == MTP_STATE_RECIVE_OBJ_DATA
+       && mtp_ep_recive_total_size > mtp_ep_recive_cnt)
+    {
+        uint32_t remain = mtp_ep_recive_total_size - mtp_ep_recive_cnt;
+        return (remain > MTP_RX_CHUNK) ? MTP_RX_CHUNK : remain;
+    }
+    return MAX_PACKET_SIZE;
 }
 
 static void mtp_bulk_out(uint8_t busid, uint8_t ep, uint32_t nbytes)
@@ -2021,11 +2155,25 @@ static void mtp_bulk_out(uint8_t busid, uint8_t ep, uint32_t nbytes)
                     mtp_parameter_backup[3] = 0;
                 }
                 mtp_thread_op = MTP_THREAD_OP_SEND_OBJECT;
-                usb_osal_sem_give(mtp_sem);
+                mtp_wake_worker();
+            }
+            else if(mtp_ep_recive_cnt >= mtp_ep_recive_total_size)
+            {
+                /* 0-byte object: the SendObject data phase is a header-only
+                 * container (container_length==12, no payload). The file was
+                 * already created empty by SendObjectInfo, so finish the
+                 * transaction now with OK. Without this the worker is never
+                 * woken and the host hangs forever waiting for the response
+                 * (deterministic 0-byte file copy deadlock). mtp_bulk_in re-arms
+                 * OUT once the SEND_RSP write completes, so the next object in a
+                 * batch proceeds normally. */
+                mtp_ep_recive_cnt = 0;
+                mtp_ep_recive_total_size = 0;
+                mtp_send_respond(mtp_parameter_backup[0], MTP_RSP_OK);
             }
             else
             {
-                usbd_ep_start_read(mtp_ep_data[MTP_OUT_EP_IDX].ep_addr, ep_out_buffer, MAX_PACKET_SIZE);
+                usbd_ep_start_read(mtp_ep_data[MTP_OUT_EP_IDX].ep_addr, ep_out_buffer, mtp_next_rx_len());
             }
             return;
         }
@@ -2045,7 +2193,7 @@ static void mtp_bulk_out(uint8_t busid, uint8_t ep, uint32_t nbytes)
             mtp_parameter_backup[3] = 0;
         }
         mtp_thread_op = MTP_THREAD_OP_SEND_OBJECT;
-        usb_osal_sem_give(mtp_sem);
+        mtp_wake_worker();
         return;
     }
     else if(mtp_ep_recive_total_size > MAX_PACKET_SIZE)
@@ -2094,9 +2242,16 @@ static void mtp_int_in(uint8_t busid, uint8_t ep, uint32_t nbytes)
 static void usbd_mtp_thread(void *argument)
 {
     while (1) {
-        usb_osal_sem_take(mtp_sem, 0xffffffff);
-        if(mtp_thread_op == MTP_THREAD_EXIT)
+        uintptr_t _mqmsg = 0;
+        /* Finite timeout so the worker periodically re-checks the exit request
+         * even if a wakeup is ever missed; a genuine request arrives as a queue
+         * message. */
+        int _rq = usb_osal_mq_recv(mtp_op_q, &_mqmsg, 200);
+        if(mtp_should_exit || mtp_thread_op == MTP_THREAD_EXIT)
             break;
+        if(_rq != 0)
+            continue; /* timeout, nothing queued */
+        s_mtp_busy = 1;
         #if CONFIG_VFS
         switch(mtp_thread_op)
         {
@@ -2221,10 +2376,20 @@ static void usbd_mtp_thread(void *argument)
             case MTP_THREAD_OP_GET_OBJECT_HANDLES:
             {
                 uint32_t handle_cnt = 1;
-                int max_cnt = (MTP_BUFFER_SIZE-4)/4;
-                uint32_t *buf = (uint32_t *)mtp_buffer;
+                int max_cnt = MTP_MAX_OBJECT_HANDLES;
+                uint32_t *buf;
                 mtp_packet_t *pack = (mtp_packet_t*)ep_out_buffer;
                 handle_map_item_t *item;
+                if(s_handles_buf == NULL)
+                {
+                    s_handles_buf = (uint32_t *)psram_malloc((MTP_MAX_OBJECT_HANDLES + 1) * sizeof(uint32_t));
+                    if(s_handles_buf == NULL)
+                    {
+                        mtp_send_respond(pack->transaction_id,MTP_RSP_DEVICE_BUSY);
+                        break;
+                    }
+                }
+                buf = s_handles_buf;
                 if(pack->parameter[2] != 0 && pack->parameter[2] != 0xffffffff)
                 {
                     //check if folder is exist
@@ -2243,7 +2408,6 @@ static void usbd_mtp_thread(void *argument)
                         //search all storage
                         for(int i = 0; i < NUM_OF_STORAGE; i++)
                         {
-                            uint16_t idx = ((pack->parameter[0]>>16) & 0xffff)-1;
                             DIR *dir = opendir(storage_info[i].mount_path);
                             if(dir)
                             {
@@ -2256,8 +2420,7 @@ static void usbd_mtp_thread(void *argument)
                                         USB_LOG_INFO("hidden file:%s\r\n",dir_items->d_name);
                                         continue;
                                     }
-                                    //USB_LOG_ERR("filename:%s,dir:0x%02X\r\n",dir_items->d_name,dir_items->d_type);
-                                    uint32_t hd = map_add_item(0,storage_info[idx].mount_path,dir_items->d_name,(dir_items->d_type & DT_DIR),i+1);
+                                    uint32_t hd = map_add_item(0,storage_info[i].mount_path,dir_items->d_name,(dir_items->d_type & DT_DIR),i+1);
                                     if(hd == 0) continue;
                                     buf[handle_cnt++] = hd;
                                     if(handle_cnt > max_cnt) break;
@@ -2290,7 +2453,6 @@ static void usbd_mtp_thread(void *argument)
                                     USB_LOG_INFO("hidden file:%s\r\n",dir_items->d_name);
                                     continue;
                                 }
-                                //USB_LOG_ERR("filename:%s,dir:0x%02X\r\n",dir_items->d_name,dir_items->d_type);
                                 uint32_t hd = map_add_item(0,storage_info[idx].mount_path,dir_items->d_name,(dir_items->d_type & DT_DIR),idx+1);
                                 if(hd == 0) continue;
                                 buf[handle_cnt++] = hd;
@@ -2316,7 +2478,6 @@ static void usbd_mtp_thread(void *argument)
                         struct dirent *dir_items;
                         while((dir_items = readdir(dir)) != NULL)
                         {
-                            //USB_LOG_ERR("filename:%s,dir:0x%02X\r\n",dir_items->d_name,dir_items->d_type);
                             uint32_t hd = map_add_item(pack->parameter[2],item->str,dir_items->d_name,(dir_items->d_type & DT_DIR),item->storage_id);
                             if(hd == 0) continue;
                             buf[handle_cnt++] = hd;
@@ -2338,7 +2499,7 @@ static void usbd_mtp_thread(void *argument)
                     mtp_send_respond(pack->transaction_id,MTP_RSP_INVALID_PARENT_OBJECT);
                 }
                 buf[0] = handle_cnt-1;
-                mtp_send_data(pack->transaction_id,pack->code,mtp_buffer,handle_cnt*4);
+                mtp_send_data(pack->transaction_id,pack->code,(uint8_t *)buf,handle_cnt*4);
             }
             break;
             case MTP_THREAD_OP_GET_OBJECT_INFO:
@@ -2581,11 +2742,12 @@ static void usbd_mtp_thread(void *argument)
                 }
                 else
                 {
-                    int ret = open(newpath,O_CREAT);
+                    int ret = mtp_sd_open_retry(newpath, O_CREAT);
                     if(ret < 0)
                     {
+                        USB_LOG_ERR("mtp sd create GIVE UP\r\n");
                         psram_free(newpath);
-                        mtp_send_respond(pack->transaction_id,MTP_RSP_ACCESS_DENIED);
+                        mtp_send_respond(pack->transaction_id,MTP_RSP_INCOMPLETE_TRANSFER);
                         break;
                     }
                     close(ret);
@@ -2620,22 +2782,66 @@ static void usbd_mtp_thread(void *argument)
                         mtp_send_respond(mtp_parameter_backup[0],MTP_RSP_DEVICE_BUSY);
                         break;
                     }
-                    open_fd = open(fullpath,O_CREAT|O_WRONLY);
+                    open_fd = mtp_sd_open_retry(fullpath, O_CREAT|O_WRONLY);
                     psram_free(fullpath);
                     if(open_fd < 0)
                     {
-                        mtp_send_respond(mtp_parameter_backup[0],MTP_RSP_ACCESS_DENIED);
+                        USB_LOG_ERR("mtp sd open GIVE UP, drop file\r\n");
+                        mtp_ep_recive_cnt = 0;
+                        mtp_ep_recive_total_size = 0;
+                        mtp_send_respond(mtp_parameter_backup[0],MTP_RSP_INCOMPLETE_TRANSFER);
                         break;
                     }
                 }
                 if(mtp_parameter_backup[2])
                 {
-                    int ret = write(open_fd,(uint8_t*)(mtp_parameter_backup[1]),mtp_parameter_backup[2]);
-                    if(ret < 0)
+                    uint8_t *wp = (uint8_t *)(mtp_parameter_backup[1]);
+                    uint32_t remain = mtp_parameter_backup[2];
+                    uint32_t io_fail = 0;
+                    /* Wait for the SD card instead of dropping data. While the
+                     * card is momentarily busy, write() fails; keep retrying (OUT
+                     * stays un-armed so the host NAK-waits and the bar just
+                     * pauses) until the write lands. A file copy must never
+                     * truncate a file just because the card is briefly busy. */
+                    while(remain)
                     {
+                        int ret = write(open_fd, wp, remain);
+                        if(ret > 0)
+                        {
+                            wp += ret;
+                            remain -= (uint32_t)ret;
+                            io_fail = 0;
+                            continue;
+                        }
+                        io_fail++;
+                        if((io_fail % 100) == 1)
+                            USB_LOG_ERR("mtp sd write busy ret=%d remain=%d try=%d\r\n", ret, remain, io_fail);
+                        if(io_fail > MTP_SD_RETRY_MAX)
+                            break;
+                        usb_osal_msleep(MTP_SD_RETRY_MS);
+                    }
+                    if(remain)
+                    {
+                        /* Card never freed within the (large) budget -- treat as a
+                         * genuine failure (card pulled / FS error), not transient.
+                         * Delete the half-written file and fail LOUDLY so the host
+                         * surfaces an error instead of silently keeping a
+                         * truncated file (silent data loss is the worst outcome
+                         * for a backup copy). */
+                        USB_LOG_ERR("mtp sd write GIVE UP remain=%d, drop file\r\n", remain);
                         close(open_fd);
                         open_fd = -1;
-                        mtp_send_respond(mtp_parameter_backup[0],MTP_RSP_ACCESS_DENIED);
+                        {
+                            handle_map_item_t *fi = get_list_item_by_handle(last_sendinfo_handle);
+                            if(fi)
+                            {
+                                char *fp = get_full_path_by_item(fi);
+                                if(fp){ unlink(fp); psram_free(fp); }
+                            }
+                        }
+                        mtp_ep_recive_cnt = 0;
+                        mtp_ep_recive_total_size = 0;
+                        mtp_send_respond(mtp_parameter_backup[0],MTP_RSP_INCOMPLETE_TRANSFER);
                         break;
                     }
                     if(mtp_parameter_backup[3])
@@ -2646,7 +2852,7 @@ static void usbd_mtp_thread(void *argument)
                     }
                     else
                     {
-                        usbd_ep_start_read(mtp_ep_data[MTP_OUT_EP_IDX].ep_addr, ep_out_buffer, MAX_PACKET_SIZE);
+                        usbd_ep_start_read(mtp_ep_data[MTP_OUT_EP_IDX].ep_addr, ep_out_buffer, mtp_next_rx_len());
                     }
                 }
             }
@@ -2655,11 +2861,16 @@ static void usbd_mtp_thread(void *argument)
             {
                 mtp_packet_t *pack = (mtp_packet_t*)ep_out_buffer;
                 handle_map_item_t *item = get_list_item_by_handle(pack->parameter[0]);
+                if(item == NULL)
+                {
+                    mtp_send_respond(pack->transaction_id,MTP_RSP_INVALID_OBJECT_HANDLE);
+                    break;
+                }
                 if(item->is_dir)
                 {
-                    unlink(item->str);
+                    int ret = mtp_rmdir_recursive(item->str);
                     remove_object_recursive_by_handle(item->handle);
-                    mtp_send_respond(pack->transaction_id,MTP_RSP_OK);
+                    mtp_send_respond(pack->transaction_id, ret == 0 ? MTP_RSP_OK : MTP_RSP_ACCESS_DENIED);
                 }
                 else
                 {
@@ -3232,6 +3443,7 @@ static void usbd_mtp_thread(void *argument)
                 if(mtp_state == MTP_STATE_RECIVE_OBJ_DATA)
                 {
                     mtp_ep_recive_total_size = 0;
+                    mtp_ep_recive_cnt = 0;
                     if(open_fd >= 0)
                     {
                         close(open_fd);
@@ -3255,6 +3467,7 @@ static void usbd_mtp_thread(void *argument)
                 else if(mtp_state == MTP_STATE_SEND_OBJ_DATA)
                 {
                     mtp_ep_recive_total_size = 0;
+                    mtp_ep_recive_cnt = 0;
                     if(open_fd >= 0)
                     {
                         close(open_fd);
@@ -3270,6 +3483,7 @@ static void usbd_mtp_thread(void *argument)
             break;
         }
         #endif
+        s_mtp_busy = 0;
     }
     #if CONFIG_VFS
     if(open_fd >= 0)
@@ -3279,9 +3493,12 @@ static void usbd_mtp_thread(void *argument)
     }
     #endif
     clear_all_list();
-    usb_osal_sem_delete(mtp_sem);
-    mtp_sem = NULL;
-    mtp_thread = NULL;
+    /* Hand the queue/thread teardown back to usb_mtp_deinit(): it is blocked on
+     * mtp_exit_sem and will delete mtp_op_q + clear the handles only after we
+     * signal here. Do NOT touch mtp_op_q/mtp_thread from this context anymore --
+     * that async free was the source of the repeated start/stop crash. */
+    if (mtp_exit_sem)
+        usb_osal_sem_give(mtp_exit_sem);
     /* self-delete: v1.6 OSAL usb_osal_thread_delete(NULL) wraps to
      * rtos_delete_thread(&handle) with handle==NULL, which asserts in the
      * RTOS. Use rtos_delete_thread(NULL) for the proper self-delete path. */
@@ -3314,7 +3531,9 @@ struct usbd_interface *usbd_mtp_init_intf(struct usbd_interface *intf, const uin
         next_handle = 1;
         open_fd = -1;
         #endif
-        mtp_sem = usb_osal_sem_create(1);
+        mtp_should_exit = 0;
+        mtp_exit_sem = usb_osal_sem_create(0);
+        mtp_op_q = usb_osal_mq_create(8);
         mtp_thread = usb_osal_thread_create("usbd_mtp", 2048, BEKEN_DEFAULT_WORKER_PRIORITY, usbd_mtp_thread, NULL);
         if (mtp_thread == NULL) {
             USB_LOG_ERR("no enough memory to alloc mtp thread\r\n");
@@ -3394,7 +3613,7 @@ int usb_mtp_init(void)
     {
         usb_pm = malloc_pm_lock();
     }
-    ep_out_buffer = os_malloc(MAX_PACKET_SIZE);
+    ep_out_buffer = os_malloc(MTP_RX_CHUNK);
     if(ep_out_buffer == NULL)
     {
         USB_LOG_ERR("%s malloc ep_out_buffer fail", __func__);
@@ -3439,19 +3658,56 @@ int usb_mtp_deinit(void)
 {
     if(!s_mtp_init) return BK_OK;
     int ret = BK_OK;
-    mtp_thread_op = MTP_THREAD_EXIT;
-    usb_osal_sem_give(mtp_sem);
+
+    /* 1. Retire the worker thread SYNCHRONOUSLY. Signal EXIT, wake it, then block
+     *    on mtp_exit_sem until it has actually returned. The USB device is still
+     *    live here, so a worker that is mid-transfer finishes cleanly before it
+     *    checks mtp_thread_op and breaks. */
+    if(mtp_thread)
+    {
+        mtp_should_exit = 1;
+        mtp_thread_op = MTP_THREAD_EXIT;
+        mtp_wake_worker();
+        if(mtp_exit_sem)
+            usb_osal_sem_take(mtp_exit_sem, USB_OSAL_WAITING_FOREVER);
+    }
+
+    /* 2. Tear the USB device controller down. After usbd_deinitialize() the USB
+     *    HS ISR is unregistered, so nothing can post to the worker queue behind
+     *    our back once we start deleting the handles below. */
     if((ret = usbd_deinitialize(MTP_BUSID)) != BK_OK)
     {
         pm_unlock(usb_pm);
         return ret;
     }
+
+    /* 3. Worker is gone and USB is quiesced: safe to delete the queue/sem and
+     *    clear every handle. Next usb_mtp_init() will recreate a fresh set. */
+    if(mtp_exit_sem)
+    {
+        usb_osal_sem_delete(mtp_exit_sem);
+        mtp_exit_sem = NULL;
+    }
+    if(mtp_op_q)
+    {
+        usb_osal_mq_delete(mtp_op_q);
+        mtp_op_q = NULL;
+    }
+    mtp_thread = NULL;
+
     os_free(ep_out_buffer);
     os_free(ep_in_buffer);
     os_free(mtp_buffer);
     ep_out_buffer = NULL;
     ep_in_buffer = NULL;
     mtp_buffer = NULL;
+#if CONFIG_VFS
+    if(s_handles_buf)
+    {
+        psram_free(s_handles_buf);
+        s_handles_buf = NULL;
+    }
+#endif
     /* Power the USB analog PHY back down and release the no-sleep vote. */
     bk_analog_layer_usb_sys_related_ops(MTP_USB_DEVICE_MODE, false);
     bk_pm_module_vote_sleep_ctrl(PM_SLEEP_MODULE_NAME_USB_1, 1, 0);

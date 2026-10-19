@@ -509,6 +509,37 @@ uint32_t sys_drv_apll_en(uint32_t value)
 	sys_drv_exit_critical(int_level);
 	return SYS_DRV_SUCCESS;
 }
+
+/* APLL is a single physical PLL shared by audio and i2s on this core.
+ * Use paired acquire/release so that the PLL is only powered down when the
+ * last user releases it. AP and CP never use the APLL at the same time, so a
+ * per-core reference count is sufficient. */
+static volatile uint32_t s_apll_user_ref = 0;
+
+uint32_t sys_drv_apll_ref_acquire(void)
+{
+	uint32_t int_level = sys_drv_enter_critical();
+	if (s_apll_user_ref++ == 0) {
+		sys_hal_apll_en(1);
+	}
+	sys_drv_exit_critical(int_level);
+	return SYS_DRV_SUCCESS;
+}
+
+uint32_t sys_drv_apll_ref_release(void)
+{
+	uint32_t int_level = sys_drv_enter_critical();
+	if (s_apll_user_ref > 0 && --s_apll_user_ref == 0) {
+		sys_hal_apll_en(0);
+	}
+	sys_drv_exit_critical(int_level);
+	return SYS_DRV_SUCCESS;
+}
+
+uint32_t sys_drv_apll_ref_get(void)
+{
+	return s_apll_user_ref;
+}
 #if CONFIG_SOC_BK7259
 uint32_t sys_drv_get_apll_en_status(void)
 {
@@ -556,6 +587,95 @@ uint32_t sys_drv_apll_spi_trigger_set(uint32_t value)
 	return SYS_DRV_SUCCESS;
 }
 
+uint32_t sys_drv_aud_looprst0v9_en(uint32_t value)
+{
+	uint32_t int_level = sys_drv_enter_critical();
+
+	sys_hal_aud_looprst0v9_en(value);
+	sys_drv_exit_critical(int_level);
+	return SYS_DRV_SUCCESS;
+}
+
+uint32_t sys_drv_aud_dac_ldcoc_en(uint32_t value)
+{
+	uint32_t int_level = sys_drv_enter_critical();
+	sys_hal_aud_dac_ldcoc_en(value);
+	sys_drv_exit_critical(int_level);
+	return SYS_DRV_SUCCESS;
+}
+
+uint32_t sys_drv_aud_dac_rdcoc_en(uint32_t value)
+{
+	uint32_t int_level = sys_drv_enter_critical();
+	sys_hal_aud_dac_rdcoc_en(value);
+	sys_drv_exit_critical(int_level);
+	return SYS_DRV_SUCCESS;
+}
+
+uint32_t sys_drv_aud_dac_enbs_en(uint32_t value)
+{
+	uint32_t int_level = sys_drv_enter_critical();
+	sys_hal_aud_dac_enbs_en(value);
+	sys_drv_exit_critical(int_level);
+	return SYS_DRV_SUCCESS;
+}
+
+uint32_t sys_drv_set_ana_reg20_value(uint32_t value)
+{
+	uint32_t int_level = sys_drv_enter_critical();
+	sys_hal_set_ana_reg20_value(value);
+	sys_drv_exit_critical(int_level);
+	return SYS_DRV_SUCCESS;
+}
+
+uint32_t sys_drv_set_ana_reg21_value(uint32_t value)
+{
+	uint32_t int_level = sys_drv_enter_critical();
+	sys_hal_set_ana_reg21_value(value);
+	sys_drv_exit_critical(int_level);
+	return SYS_DRV_SUCCESS;
+}
+
+uint32_t sys_drv_set_ana_reg25_value(uint32_t value)
+{
+	uint32_t int_level = sys_drv_enter_critical();
+	sys_hal_set_ana_reg25_value(value);
+	sys_drv_exit_critical(int_level);
+	return SYS_DRV_SUCCESS;
+}
+
+uint32_t sys_drv_set_ana_reg27_value(uint32_t value)
+{
+	uint32_t int_level = sys_drv_enter_critical();
+	sys_hal_set_ana_reg27_value(value);
+	sys_drv_exit_critical(int_level);
+	return SYS_DRV_SUCCESS;
+}
+
+uint32_t sys_drv_set_ana_reg28_value(uint32_t value)
+{
+	uint32_t int_level = sys_drv_enter_critical();
+	sys_hal_set_ana_reg28_value(value);
+	sys_drv_exit_critical(int_level);
+	return SYS_DRV_SUCCESS;
+}
+
+uint32_t sys_drv_set_ana_reg29_value(uint32_t value)
+{
+	uint32_t int_level = sys_drv_enter_critical();
+	sys_hal_set_ana_reg29_value(value);
+	sys_drv_exit_critical(int_level);
+	return SYS_DRV_SUCCESS;
+}
+
+uint32_t sys_drv_set_ana_reg30_value(uint32_t value)
+{
+	uint32_t int_level = sys_drv_enter_critical();
+	sys_hal_set_ana_reg30_value(value);
+	sys_drv_exit_critical(int_level);
+	return SYS_DRV_SUCCESS;
+}
+
 uint32_t sys_drv_i2s0_ckdiv_set(uint32_t value)
 {
 	uint32_t int_level = sys_drv_enter_critical();
@@ -575,5 +695,3 @@ uint32_t sys_drv_apll_config_set(uint32_t value)
 }
 
 /**  I2S End  **/
-
-

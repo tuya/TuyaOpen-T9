@@ -26,6 +26,9 @@
 #include "hal_jtag.h"
 #include "hal_hw_fih.h"
 #include "hal_sw_fih.h"
+#if CONFIG_SLEEP_RETENTION_NSC
+#include "sleep_fastboot_tfm.h"
+#endif
 
 #define ENTRY_SECTION  __attribute__((section(".fix.reset_entry")))
 #define SYSTEM_BASE_ADDR                 (0x44010000)
@@ -206,17 +209,6 @@ const VECTOR_TABLE_Type __VECTOR_TABLE[] __VECTOR_TABLE_ATTRIBUTE = {
 
 __NO_RETURN ENTRY_SECTION __attribute__((naked)) void Reset_Handler(void)
 {
-    /* BK7259 bring-up: keep tfm_s reset minimal and aligned with the bk7259
-     * bringup tfm_s startup (assembly: msplim -> copy/zero -> SystemInit ->
-     * _start). Drop the psa_level3 additions that destabilised / hung the
-     * secure image right at entry:
-     *   - bk_fih_init()/FIH_ASSERT128 (FIH hardware self-test; user dropped FIH)
-     *   - hal_secure_debug()
-     *   - a 2nd sys_drv_early_init() (already done by BL2; re-running it on the
-     *     analog/clock path from the secure side hangs)
-     *   - sys_hal_switch_cpu_bus_freq() (BL2 kept the bootrom clock; re-switching
-     *     here is unnecessary and risky)
-     * The watchdogs are already disabled by BL2. */
     __set_MSPLIM((uint32_t)(&__STACK_LIMIT));
 
 #if defined (__ARM_FEATURE_CMSE) && (__ARM_FEATURE_CMSE == 3U)
@@ -225,6 +217,10 @@ __NO_RETURN ENTRY_SECTION __attribute__((naked)) void Reset_Handler(void)
 
     /* CMSIS System Initialization */
     SystemInit();
+
+#if CONFIG_SLEEP_RETENTION_NSC
+    tfm_sleep_early_boot();
+#endif
 
     /* Enter PreMain (C library entry point) */
     Pre_Main();

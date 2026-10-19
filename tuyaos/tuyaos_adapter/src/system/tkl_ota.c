@@ -171,11 +171,6 @@ STATIC VOID_T __tkl_ota_ctx_free(VOID_T)
         return;
     }
 
-    if (s_ota_ctx->protect_saved) {
-        bk_flash_set_protect_type((flash_protect_type_t)s_ota_ctx->flash_protect_type);
-        s_ota_ctx->protect_saved = FALSE;
-    }
-
     if (s_ota_ctx->wr_buf != NULL) {
         tkl_system_free(s_ota_ctx->wr_buf);
         s_ota_ctx->wr_buf = NULL;
@@ -472,9 +467,8 @@ OPERATE_RET tkl_ota_start_notify(UINT_T image_size, TUYA_OTA_TYPE_E type, TUYA_O
         return OPRT_OS_ADAPTER_OTA_START_INFORM_FAILED;
     }
 
-    s_ota_ctx->flash_protect_type = (UINT_T)bk_flash_get_protect_type();
-    s_ota_ctx->protect_saved = TRUE;
-    bk_flash_set_protect_type(FLASH_PROTECT_NONE);
+    /* 4.0.1.11: the flash core owns the protect state and re-asserts it around
+     * every op, so OTA no longer saves/unprotects/restores it here. */
 
     bk_printf("[tkl_ota] start size=%u target=0x%x len=0x%x path=%u\r\n",
               image_size, s_ota_ctx->partition_start, s_ota_ctx->partition_length, path);

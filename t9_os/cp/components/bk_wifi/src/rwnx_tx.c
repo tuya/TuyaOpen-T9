@@ -35,7 +35,6 @@
 
 #define dbg(...)
 
-
 /// Length of a char in bytes
 #define CHAR_LEN    (CHAR_BIT/8)
 
@@ -405,8 +404,19 @@ __IRAM2 void rwnx_tx_push(struct sk_buff *skb)
 
 	// Push to UMAC
 	ret = fhost_txbuf_push(txdesc, skb->ac);
-	if (ret)
+	if (ret != kNoErr) {
+		if (txdesc->host.flags & TXU_CNTRL_UNDER_BA) {
+			/*
+			 * bam_tx_cfm() already ran in fhost_txbuf_push(). Retry
+			 * confirmation returned one TXQ credit; only apply extra
+			 * credits released while moving the BAW.
+			 */
+			txq->credits += txdesc->host.cfm.credits - 1;
+			if (txq->credits <= 0)
+				rwnx_txq_stop(txq, RWNX_TXQ_STOP_FULL);
+		}
 		goto tx_exit;
+	}
 
 	// If successfully push to umac, decrease txq credits
 	txq->credits--;
@@ -555,6 +565,7 @@ __ITCM_N int rwnx_start_xmit(uint8_t vif_idx, struct pbuf *p, BUS_MSG_T *msg)
 	int ret = 0;
 	bool more_pbuf = !!(rwnx_hw_mm_features() & (1ULL << MM_FEAT_MORE_TBD_BIT));
 	uint32_t p_cnt = 0;
+	uint32_t txdesc_size;
 	int max_sg_size = macif_max_sg_size();
 	// TBD: dynamic alloc array in stack
     uint32_t seg_addr[max_sg_size];
@@ -647,12 +658,14 @@ __ITCM_N int rwnx_start_xmit(uint8_t vif_idx, struct pbuf *p, BUS_MSG_T *msg)
 
 	// alloc tx desc
 	fhost_txdesc = (struct fhost_tx_desc_tag *)((uint8_t *)skb + (sizeof(struct sk_buff)));
-	if((sizeof(struct fhost_tx_desc_tag) + fhost_txdesc_extra_size() + p_cnt * sizeof(struct tx_pbd) + (sizeof(struct sk_buff))) > CONFIG_MSDU_RESV_DESC_LENGTH)
+	txdesc_size = sizeof(struct fhost_tx_desc_tag) + fhost_txdesc_extra_size()
+		+ p_cnt * sizeof(struct tx_pbd);
+	if((txdesc_size + sizeof(struct sk_buff)) > CONFIG_MSDU_RESV_DESC_LENGTH)
 	{
 		RWNX_LOGI("rwnx_start_xmit overflow mem \r\n");
 		BK_ASSERT(0);
 	}
-	memset(fhost_txdesc, 0, sizeof(struct fhost_tx_desc_tag));
+	memset(fhost_txdesc, 0, txdesc_size);
 
 	if (!fhost_txdesc)
 		goto exit;
@@ -840,7 +853,8 @@ void rwnx_start_xmit_mgmt(struct sk_buff *skb)
 	host->staid = skb->sta_idx;
 
 	// fill lmac desc
-	fhost_txdesc_mgmt_init(txdesc, (uint32_t)skb->msdu_ptr, skb->len);
+	if (fhost_txdesc_mgmt_init(txdesc, p_cnt, (uint32_t)skb->msdu_ptr, skb->len))
+		goto tx_exit;
 
 	// VO for all mgmt frames
 	skb->ac = AC_VO;

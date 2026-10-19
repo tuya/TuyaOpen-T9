@@ -31,6 +31,9 @@ static char TAG[] = "ethosu";
 
 #define BK_ETHOSU_SEMAPHORE_MAX_COUNT 1
 
+#define BK_ETHOSU_SECURE_ENABLE     CONFIG_SPE
+#define BK_ETHOSU_PRIVILEGED_ENABLE 1
+
 static uint32_t bk_ethosu_timeout_to_ms(uint64_t timeout)
 {
     if (timeout == ETHOSU_SEMAPHORE_WAIT_FOREVER)
@@ -165,6 +168,7 @@ int bk_ethosu_init(void *fast_memory, uint32_t fast_memory_size)
 
     // Disable NPU power down (if needed)
     bk_pm_module_vote_power_ctrl(PM_POWER_SUB_DOMAIN_NPU, PM_POWER_MODULE_STATE_ON);
+    bk_pm_module_vote_cpu_freq(PM_DEV_ID_NPU, PM_CPU_FRQ_480M);
 
     // Enable NPU clock
     bk_pm_clock_ctrl(PM_CLK_ID_NPU, CLK_PWR_CTRL_PWR_UP);
@@ -182,12 +186,18 @@ int bk_ethosu_init(void *fast_memory, uint32_t fast_memory_size)
     bk_ethosu_int_enable(0);
     bk_int_isr_register(INT_SRC_NPU, (int_group_isr_t)&bk_npu_int_isr, NULL);
 
-    ret = ethosu_init(&ethosu0_driver, (void *)SOC_NPU_REG_BASE, fast_memory, fast_memory_size, 1, 1);
+    ret = ethosu_init(&ethosu0_driver,
+                      (void *)SOC_NPU_REG_BASE,
+                      fast_memory,
+                      fast_memory_size,
+                      BK_ETHOSU_SECURE_ENABLE,
+                      BK_ETHOSU_PRIVILEGED_ENABLE);
     if (ret != 0)
     {
         LOGE("Ethos-U driver init failed, ret=%d\r\n", ret);
         bk_int_isr_unregister(INT_SRC_NPU);
         bk_pm_clock_ctrl(PM_CLK_ID_NPU, CLK_PWR_CTRL_PWR_DOWN);
+        bk_pm_module_vote_cpu_freq(PM_DEV_ID_NPU, PM_CPU_FRQ_DEFAULT);
         bk_pm_module_vote_power_ctrl(PM_POWER_SUB_DOMAIN_NPU, PM_POWER_MODULE_STATE_OFF);
         return ret;
     }
@@ -206,6 +216,7 @@ void bk_ethosu_deinit(void)
 
     ethosu_deinit(&ethosu0_driver);
     bk_pm_clock_ctrl(PM_CLK_ID_NPU, CLK_PWR_CTRL_PWR_DOWN);
+    bk_pm_module_vote_cpu_freq(PM_DEV_ID_NPU, PM_CPU_FRQ_DEFAULT);
     bk_pm_module_vote_power_ctrl(PM_POWER_SUB_DOMAIN_NPU, PM_POWER_MODULE_STATE_OFF);
 }
 

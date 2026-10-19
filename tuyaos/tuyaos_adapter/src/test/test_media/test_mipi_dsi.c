@@ -21,6 +21,10 @@
 #include "tkl_system.h"
 #include "tkl_thread.h"
 
+/* Declared in <components/bk_platform.h>; declared locally here to match the
+ * convention used by tkl_system.c / test_mbedtls.c in this adapter. */
+extern int bk_rand(void);
+
 #define MIPI_TEST_TASK_NAME         "mipi_test"
 #define MIPI_TEST_TASK_STACK_SIZE   (4 * 1024)
 #define MIPI_TEST_RESET_PIN         GPIO_21
@@ -773,7 +777,6 @@ static uint32_t test_mipi_cpu_mhz(void)
 
     if (mhz == 0U) {
         switch (bk_pm_current_max_cpu_freq_get()) {
-        case PM_CPU_FRQ_60M:  mhz = 60U;  break;
         case PM_CPU_FRQ_80M:  mhz = 80U;  break;
         case PM_CPU_FRQ_120M: mhz = 120U; break;
         case PM_CPU_FRQ_160M: mhz = 160U; break;

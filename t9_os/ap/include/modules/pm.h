@@ -22,6 +22,63 @@ extern "C" {
  */
 typedef void (*sleep_callback_t)(void *arg);
 
+/**
+ * AP power transition callbacks.
+ *
+ * prepare_power_off is the common non-blocking drain gate for normal and fast
+ * AP power-off. It runs repeatedly from the CPU2 idle path with interrupts
+ * disabled. On the first call, a module must atomically reject new submissions,
+ * then return BK_ERR_BUSY while its retained lock-free pending state is not
+ * empty. Normal tasks keep running between idle probes and drain existing work;
+ * the callback returns BK_OK only after that work is complete.
+ *
+ * The PM framework only schedules and aggregates callbacks. WiFi, BT/BLE and
+ * other clients own their queue, worker, transaction and mailbox-pending
+ * definitions; PM code must not inspect those private states. If CP cancels or
+ * times out, resume is called to reopen the module submission gate, so resume
+ * must be idempotent.
+ *
+ * prepare_power_off must not log, wait, allocate memory, or use a mutex,
+ * semaphore, queue or other RTOS service. It may only update/read lock-free
+ * retained state and must return in constant time.
+ * quiesce/resume/app_resume run in the CPU2 PM task with interrupts enabled.
+ * backup/restore run with CPU3 offline and CPU2 interrupts disabled; they
+ * must not block, allocate memory, log, or wait for interrupt completion.
+ * app_resume runs only after AP0/AP1 and the CP-to-AP mailbox are ready.
+ * A registered quiesce callback requires resume for rollback. backup and
+ * restore must be registered as a pair. resume without quiesce remains valid
+ * for modules that only use prepare_power_off.
+ */
+typedef bk_err_t (*pm_ap_power_callback_t)(void *arg);
+
+typedef struct {
+	const char *name;
+	pm_ap_power_callback_t prepare_power_off;
+	pm_ap_power_callback_t quiesce;
+	pm_ap_power_callback_t backup;
+	pm_ap_power_callback_t restore;
+	pm_ap_power_callback_t resume;
+	pm_ap_power_callback_t app_resume;
+	void *arg;
+	uint8_t priority;
+} pm_ap_power_ops_t;
+
+/* Compatibility aliases for existing fast-boot clients. */
+typedef pm_ap_power_callback_t pm_ap_fast_callback_t;
+typedef pm_ap_power_ops_t pm_ap_fast_pm_ops_t;
+
+#define PM_AP_POWER_PRIORITY_PLATFORM     (0U)
+#define PM_AP_POWER_PRIORITY_BUS          (50U)
+#define PM_AP_POWER_PRIORITY_PERIPHERAL   (100U)
+#define PM_AP_POWER_PRIORITY_SERVICE      (150U)
+#define PM_AP_POWER_PRIORITY_APPLICATION  (200U)
+
+#define PM_AP_FAST_PRIORITY_PLATFORM     PM_AP_POWER_PRIORITY_PLATFORM
+#define PM_AP_FAST_PRIORITY_BUS          PM_AP_POWER_PRIORITY_BUS
+#define PM_AP_FAST_PRIORITY_PERIPHERAL   PM_AP_POWER_PRIORITY_PERIPHERAL
+#define PM_AP_FAST_PRIORITY_SERVICE      PM_AP_POWER_PRIORITY_SERVICE
+#define PM_AP_FAST_PRIORITY_APPLICATION  PM_AP_POWER_PRIORITY_APPLICATION
+
 /* Standard priority definitions for callback execution order
  * Lower value = Higher priority = Executes first
  * Range: 0 (highest) to 255 (lowest)
@@ -363,7 +420,7 @@ typedef enum
 	PM_SLEEP_MODULE_NAME_WDG,      // 27
 	PM_SLEEP_MODULE_NAME_AUDIO_ASR,// 28
 	PM_SLEEP_MODULE_NAME_APP1,     // 29
-	PM_SLEEP_MODULE_NAME_CPU1,     // 30
+	PM_SLEEP_MODULE_NAME_AP,       // 30
 	PM_SLEEP_MODULE_NAME_ROSC_PROG,// 31
 	PM_SLEEP_MODULE_NAME_ROSC,     // 32
 	PM_SLEEP_MODULE_NAME_FLASH_OP, // 33
@@ -434,7 +491,7 @@ typedef enum
 	PM_DEV_ID_AUDIO,    // 31
 	PM_DEV_ID_RTC,      // 32
 	PM_DEV_ID_GPIO,     // 33
-	PM_DEV_ID_DECODER,  // 34
+	PM_DEV_ID_VPU_DEC,  // 34
 	PM_DEV_ID_LIN,      // 35
 	PM_DEV_ID_PWM_1,    // 36
 	PM_DEV_ID_SECURE_WORLD,// 37
@@ -445,6 +502,8 @@ typedef enum
 	PM_DEV_ID_KEY,          //42
 	PM_DEV_ID_CIF,          //43
 	PM_DEV_ID_MAILBOX,      //44
+	PM_DEV_ID_UART5,        //45, callback slot for hardware UART4
+	PM_DEV_ID_IPI,          //46
 	/*
 	 * S2 (HPDMA review):
 	 *   New PM device id for the High-Performance DMA controller. The
@@ -457,27 +516,110 @@ typedef enum
 	 *
 	 *   PM_DEV_ID_DEFAULT remains the sentinel for the "default cpu
 	 *   frequency" pseudo-device, so it is intentionally renumbered to
-	 *   46. PM_DEV_ID_MAX still fits the "max 63" limit.
+	 *   53. PM_DEV_ID_MAX still fits the "max 63" limit.
 	 */
-	PM_DEV_ID_HPDMA,        //45
+	PM_DEV_ID_HPDMA,        //47
+	PM_DEV_ID_GPU,          //48
+	PM_DEV_ID_ISP,          //49
+	PM_DEV_ID_NPU,          //50
+	PM_DEV_ID_LVGL,         //51
+	PM_DEV_ID_VPU_ENC,      //52
 
-	PM_DEV_ID_DEFAULT,      //46  it is used by pm module set default cpu frequency
+	PM_DEV_ID_DEFAULT,      //53  it is used by pm module set default cpu frequency
 
 	PM_DEV_ID_MAX       //attention:max 63
 }pm_dev_id_e;
 typedef enum
 {
 	PM_CPU_FRQ_XTAL = 0, // 0:CPU:XTAL,BUS:XTAL(eg:XTAL:40M/26M)
-	PM_CPU_FRQ_60M,      // 1:CPU:60M,BUS:60M
-	PM_CPU_FRQ_80M,      // 2:CPU:80M,BUS:80M
-	PM_CPU_FRQ_120M,     // 3:CPU:120M,BUS:120M
-	PM_CPU_FRQ_160M,     // 4:CPU0:160M,BUS:160M
-	PM_CPU_FRQ_240M,     // 5:CPU:240M,BUS:120M
-	PM_CPU_FRQ_320M,     // 6:CPU:320M,BUS:160M
-	PM_CPU_FRQ_480M,     // 7:CPU:480M,BUS:240M
-	PM_CPU_FRQ_HIGHEST,  // 8:(Appli do not need to be concerned with the specific CPU frequency)
+	PM_CPU_FRQ_80M,      // 1:CPU:80M,BUS:80M
+	PM_CPU_FRQ_120M,     // 2:CPU:120M,BUS:120M
+	PM_CPU_FRQ_160M,     // 3:CPU:160M,BUS:160M
+	PM_CPU_FRQ_240M,     // 4:CPU:240M,BUS:120M
+	PM_CPU_FRQ_320M,     // 5:CPU:320M,BUS:160M
+	PM_CPU_FRQ_480M,     // 6:CPU:480M,BUS:240M
+	PM_CPU_FRQ_HIGHEST,  // 7:(Appli do not need to be concerned with the specific CPU frequency)
 	PM_CPU_FRQ_DEFAULT   // default cpu frequency which control by pm module
 }pm_cpu_freq_e;
+
+typedef enum
+{
+	PM_CP_DEV_ID_TIMER_0,  // 0
+	PM_CP_DEV_ID_I2C1,     // 1
+	PM_CP_DEV_ID_SPI_1,    // 2
+	PM_CP_DEV_ID_UART1,    // 3
+	PM_CP_DEV_ID_AIRPLAY,  // 4
+	PM_CP_DEV_ID_TIMER_1,  // 5
+	PM_CP_DEV_ID_SARADC,   // 6
+	PM_CP_DEV_ID_IRDA,     // 7
+	PM_CP_DEV_ID_EFUSE,    // 8
+	PM_CP_DEV_ID_I2C2,     // 9
+	PM_CP_DEV_ID_SPI_2,    //10
+	PM_CP_DEV_ID_UART2,    // 11
+	PM_CP_DEV_ID_UART3,    // 12
+	PM_CP_DEV_ID_PWM_2,    // 13
+	PM_CP_DEV_ID_TIMER_2,  // 14
+	PM_CP_DEV_ID_TIMER_3,  // 15
+	PM_CP_DEV_ID_TOUCH,    // 16
+	PM_CP_DEV_ID_I2S_1,    // 17
+	PM_CP_DEV_ID_USB_1,    // 18
+	PM_CP_DEV_ID_CAN,      // 19
+	PM_CP_DEV_ID_PSRAM,    // 20
+	PM_CP_DEV_ID_QSPI_1,   // 21
+	PM_CP_DEV_ID_QSPI_2,   // 22
+	PM_CP_DEV_ID_SDIO,     // 23
+	PM_CP_DEV_ID_AUXS,     // 24
+	PM_CP_DEV_ID_BTDM,     // 25
+	PM_CP_DEV_ID_WPAS,     // 26
+	PM_CP_DEV_ID_MAC,      // 27
+	PM_CP_DEV_ID_PHY,      // 28
+	PM_CP_DEV_ID_JPEG,     // 29
+	PM_CP_DEV_ID_DISP,     // 30
+	PM_CP_DEV_ID_AUDIO,    // 31
+	PM_CP_DEV_ID_RTC,      // 32
+	PM_CP_DEV_ID_GPIO,     // 33
+	PM_CP_DEV_ID_DECODER,  // 34
+	PM_CP_DEV_ID_LIN,      // 35
+	PM_CP_DEV_ID_PWM_1,    // 36
+	PM_CP_DEV_ID_SECURE_WORLD,// 37
+	PM_CP_DEV_ID_UART4,       // 38
+	PM_CP_DEV_ID_TRNG,        // 39
+	PM_CP_DEV_ID_AP,          // 40
+	PM_CP_DEV_ID_PHY_DPD_CALI, //41
+	PM_CP_DEV_ID_KEY,          //42
+	PM_CP_DEV_ID_CIF,          //43
+	PM_CP_DEV_ID_MAILBOX,      //44
+	PM_CP_DEV_ID_UART5,        //45
+	PM_CP_DEV_ID_IPI,          //46
+	/*
+	 * S2 (HPDMA review):
+	 *   Keep CP-side PM device id table in lock-step with the AP side.
+	 *   PM_DEV_ID_HPDMA is consumed only by the AP HPDMA driver (CP has
+	 *   no HPDMA presence today), but the enum is part of the cross-
+	 *   core PM ABI: shifting PM_DEV_ID_DEFAULT to a different ordinal
+	 *   on one core would silently misalign any cross-core PM tables.
+	 */
+	PM_CP_DEV_ID_HPDMA,        //47
+
+	PM_CP_DEV_ID_DEFAULT,      //48  it is used by pm module set default cpu frequency
+
+	PM_CP_DEV_ID_MAX
+}pm_cp_dev_id_e;
+
+typedef enum
+{
+	PM_CP_CPU_FRQ_XTAL = 0, // 0:CPU:XTAL,BUS:XTAL(eg:XTAL:40M/26M)
+	PM_CP_CPU_FRQ_60M,      // 1:CPU0:60M,BUS:60M
+	PM_CP_CPU_FRQ_80M,      // 2:CPU0:80M,BUS:80M
+	PM_CP_CPU_FRQ_120M,     // 3:CPU0:120M,BUS:120M
+	PM_CP_CPU_FRQ_160M,     // 4:CPU0:160M,BUS:160M
+	PM_CP_CPU_FRQ_240M,     // 5:CPU0:240M,BUS:240M
+
+	PM_CP_CPU_FRQ_HIGHEST,  // 6:(Appli do not need to be concerned with the specific CPU frequency)
+	PM_CP_CPU_FRQ_DEFAULT   // default cpu frequency which control by pm module
+}pm_cp_cpu_freq_e;
+
+
 typedef enum
 {
 	PM_ROSC_CALI_AUTO = 0,  // 0:auto calibration
@@ -585,7 +727,7 @@ typedef enum
 	PM_SLEEP_MODULE_NAME_WDG,\
 	PM_SLEEP_MODULE_NAME_AUDIO_ASR,\
 	PM_SLEEP_MODULE_NAME_APP1,\
-	PM_SLEEP_MODULE_NAME_CPU1,\
+	PM_SLEEP_MODULE_NAME_AP,\
 	PM_SLEEP_MODULE_NAME_ROSC_PROG,\
 	PM_SLEEP_MODULE_NAME_ROSC,\
 	PM_SLEEP_MODULE_NAME_FLASH_OP, \
@@ -627,7 +769,7 @@ typedef enum
 	PM_SLEEP_MODULE_NAME_WDG,\
 	PM_SLEEP_MODULE_NAME_AUDIO_ASR,\
 	PM_SLEEP_MODULE_NAME_APP1,\
-	PM_SLEEP_MODULE_NAME_CPU1,\
+	PM_SLEEP_MODULE_NAME_AP,\
 	PM_SLEEP_MODULE_NAME_ROSC_PROG,\
 	PM_SLEEP_MODULE_NAME_ROSC,\
 	PM_SLEEP_MODULE_NAME_FLASH_OP,\
@@ -659,7 +801,11 @@ typedef enum {
 	PM_AP_WORK_STATE_FIRST_BOOT   = (1U << 0), /**< first AP boot */
 	PM_AP_WORK_STATE_BOOT_SUCCESS = (1U << 1), /**< AP boot success */
 	PM_AP_WORK_STATE_FAST_RESUME  = (1U << 2), /**< AP FreeRTOS context is ready for restore */
+#if CONFIG_PM_AP_FAST_BOOT_ENABLE
+	PM_AP_WORK_STATE_FULL_READY   = (1U << 3), /**< CPU2, CPU3 and registered AP modules are ready */
+#else
 	PM_AP_WORK_STATE_RESERVED3    = (1U << 3), /**< reserved for extension */
+#endif
 } pm_ap_work_state_e;
 
 typedef struct {
@@ -672,8 +818,8 @@ typedef struct {
     volatile uint8_t wakeup_alarm_name[ALARM_NAME_MAX_LEN+1];
     volatile uint8_t gpio_id;
     volatile uint32_t param0;
-    volatile uint32_t param1;
-    volatile uint32_t param2;
+    volatile uint32_t param1; /**< Fast Boot: AP-published suspend-failed recovery sequence */
+    volatile uint32_t param2; /**< Fast Boot: AP-published prepare-ready recovery sequence */
 } pm_shared_info_t;
 
 typedef enum {
@@ -733,6 +879,206 @@ bool bk_pm_ap_first_boot_get(void);
  * @return BK_OK on success
  */
 bk_err_t bk_pm_ap_boot_success_set(bool boot_success);
+
+/**
+ * @brief Register an AP module's power transition operations
+ *
+ * The operations are inserted according to their priority. The descriptor and
+ * the objects referenced by it must remain valid until they are unregistered.
+ * Registration is only allowed while the AP power state is running.
+ *
+ * @param ops AP power operations to register
+ *
+ * @return
+ * - BK_OK: Registration succeeded
+ * - BK_ERR_PARAM: The descriptor or its callback configuration is invalid
+ * - BK_ERR_NO_MEM: Failed to allocate a registration node
+ * - BK_ERR_BUSY: An AP power transition is active or already registered
+ */
+bk_err_t bk_pm_ap_power_ops_register(const pm_ap_power_ops_t *ops);
+
+/**
+ * @brief Unregister an AP module's power transition operations
+ *
+ * The descriptor address must match the address used during registration.
+ * Unregistration is only allowed while the AP power state is running.
+ *
+ * @param ops Fast PM operations to unregister
+ *
+ * @return
+ * - BK_OK: Unregistration succeeded
+ * - BK_ERR_PARAM: The descriptor is NULL
+ * - BK_ERR_BUSY: An AP power transition is active
+ * - BK_FAIL: The descriptor is not registered
+ */
+bk_err_t bk_pm_ap_power_ops_unregister(const pm_ap_power_ops_t *ops);
+
+/**
+ * @brief Probe whether registered modules are ready for AP power-off
+ *
+ * Calls prepare_power_off callbacks in reverse priority order. The function is
+ * non-blocking and may be called repeatedly from the CPU2 idle path with
+ * interrupts disabled.
+ *
+ * @return BK_OK if all modules are idle, BK_ERR_BUSY otherwise
+ */
+bk_err_t bk_pm_ap_power_prepare(void);
+
+/**
+ * @brief Check whether AP power-off preparation is complete
+ *
+ * This lock-free query is safe in mailbox ISR context.
+ *
+ * @return true if every prepare_power_off callback returned BK_OK
+ */
+bool bk_pm_ap_power_prepare_is_ready(void);
+
+/**
+ * @brief Dump the latest AP power-off preparation results
+ *
+ * Prints every registered module whose latest prepare_power_off callback
+ * returned an error. This function must be called from task context.
+ */
+void bk_pm_ap_power_prepare_dump(void);
+
+/**
+ * @brief Cancel an in-progress AP power-off preparation
+ *
+ * In normal power-off, invokes resume for modules whose prepare_power_off
+ * callback was entered. Fast-boot rollback is completed by the PM task's
+ * normal resume phase so callbacks are not run from the idle path.
+ *
+ * @return BK_OK or the first error returned by a resume callback
+ */
+bk_err_t bk_pm_ap_power_prepare_abort(void);
+
+/* Compatibility entry points for existing fast-boot clients. */
+bk_err_t bk_pm_ap_fast_ops_register(const pm_ap_fast_pm_ops_t *ops);
+bk_err_t bk_pm_ap_fast_ops_unregister(const pm_ap_fast_pm_ops_t *ops);
+
+#if CONFIG_PM_AP_SRAM_RETENTION_CHECK
+/**
+ * @brief Register the AP idle-task stack range excluded from retention checks
+ */
+void bk_pm_ap_sram_retention_check_set_idle_stack(void *start, void *end);
+#else
+static inline void bk_pm_ap_sram_retention_check_set_idle_stack(void *start,
+	void *end)
+{
+	(void)start;
+	(void)end;
+}
+#endif
+
+#if CONFIG_PM_AP_FAST_BOOT_ENABLE
+/**
+ * @brief Quiesce registered AP modules before fast suspend
+ *
+ * Clears the complete-AP-ready state and invokes quiesce callbacks in reverse
+ * priority order. If a callback fails, already-quiesced modules are resumed.
+ * This internal orchestration API is intended for the CPU2 PM task.
+ *
+ * @return
+ * - BK_OK: All registered modules were quiesced
+ * - BK_ERR_STATE: Fast PM is not in the running state
+ * - others: Error returned by a quiesce callback
+ */
+bk_err_t bk_pm_ap_fast_suspend_prepare(void);
+
+/**
+ * @brief Back up registered AP module hardware state
+ *
+ * Invokes backup callbacks in reverse priority order with CPU2 interrupts
+ * disabled. CPU3 must already be offline, and callbacks must not block. If a
+ * callback fails, backed-up modules are restored before this function returns.
+ *
+ * @return
+ * - BK_OK: Hardware state was backed up and fast suspend is prepared
+ * - BK_ERR_STATE: Module quiescing has not completed
+ * - others: Error returned by a backup callback
+ */
+bk_err_t bk_pm_ap_fast_suspend_backup(void);
+
+/**
+ * @brief Restore registered AP module hardware state after fast resume
+ *
+ * Invokes restore callbacks in priority order with CPU2 interrupts disabled.
+ * Module resume callbacks must be invoked separately after this function.
+ *
+ * @return
+ * - BK_OK: All backed-up hardware state was restored
+ * - BK_ERR_STATE: Fast suspend is not in the prepared state
+ * - others: Error returned by a restore callback
+ */
+bk_err_t bk_pm_ap_fast_restore_hardware(void);
+
+/**
+ * @brief Resume registered AP modules while rolling back fast suspend
+ *
+ * Invokes resume callbacks in priority order. On success, the fast PM state is
+ * returned to running, IPC reception is unblocked, and complete AP readiness
+ * is published. This rollback API does not arm app_resume because AP was not
+ * powered off.
+ *
+ * @return
+ * - BK_OK: All quiesced modules were resumed
+ * - BK_ERR_STATE: Fast PM is not quiescing or restoring
+ * - others: The first error returned by a resume callback
+ */
+bk_err_t bk_pm_ap_fast_resume_modules(void);
+
+/**
+ * @brief Resume registered AP modules after a real fast-boot wake
+ *
+ * Performs the same restore-to-running transition as the rollback API, and
+ * additionally arms one app_resume phase. It is reserved for the CPU2 PM task
+ * after the prepared AP context returns from WFI/power-off.
+ *
+ * @return
+ * - BK_OK: All quiesced modules were resumed and app_resume was armed
+ * - BK_ERR_STATE: Fast PM is not restoring
+ * - others: The first error returned by a resume callback
+ */
+bk_err_t bk_pm_ap_fast_wakeup_resume_modules(void);
+
+/**
+ * @brief Notify registered applications that fast resume is complete
+ *
+ * Invokes app_resume callbacks in priority order after AP_FULL_READY is
+ * published and CP confirms that CP-to-AP mailbox communication is available.
+ * Only a real wake after AP power-off can trigger this callback phase, once.
+ * This internal orchestration API is intended for the CPU2 PM task.
+ *
+ * @return
+ * - BK_OK: All registered application resume callbacks completed
+ * - BK_ERR_STATE: AP is not ready or no callback phase is pending
+ * - others: The first error returned by an app_resume callback
+ */
+bk_err_t bk_pm_ap_fast_app_resume(void);
+
+/**
+ * @brief Check whether fast-suspend hardware backup is complete
+ *
+ * @return true if fast suspend is prepared; false otherwise
+ */
+bool bk_pm_ap_fast_suspend_is_prepared(void);
+
+/**
+ * @brief Enable or disable the CP-to-AP business IPC receive gate
+ *
+ * The PM control channel remains available so that suspend retry and abort
+ * requests can still reach the CPU2 PM task.
+ *
+ * @param blocked true to reject business IPC reception; false to allow it
+ */
+void bk_pm_ap_fast_ipc_rx_block_set(bool blocked);
+
+/**
+ * Publish/query complete AP readiness independently from AP0 boot_success.
+ */
+bk_err_t bk_pm_ap_full_ready_set(bool ready);
+bool bk_pm_ap_full_ready_get(void);
+#endif
 /****************************************************************************
  * Name: bk_pm_auxldo_ctrl_vote
  *
@@ -1382,6 +1728,18 @@ pm_cpu_freq_e bk_pm_current_max_cpu_freq_get(void);
  *  - others: other errors.
  */
 bk_err_t bk_pm_module_vote_cpu_freq(pm_dev_id_e module,pm_cpu_freq_e cpu_freq);
+/**
+ * @brief vote CP cpu frequency
+ *
+ * Send a frequency vote to the CP power management service.
+ *
+ * @param
+ * -module:module id;cpu_freq:CP cpu frequency
+ * @return
+ *  - BK_OK: succeed
+ *  - others: other errors.
+ */
+bk_err_t bk_pm_module_vote_cp_cpu_freq(pm_cp_dev_id_e module,pm_cp_cpu_freq_e cpu_freq);
 /**
  * @brief clock ctrl
  *

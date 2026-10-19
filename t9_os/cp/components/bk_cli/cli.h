@@ -67,6 +67,7 @@ extern "C" {
 #define WIFI_EVT_GOT_IP                    "EVT:GOT-IP\r\n"
 
 int cli_wifi_init(void);
+bk_err_t cli_wifi_register_event_cbs(void);
 int cli_ble_init(void);
 int cli_24g_init(void);
 int cli_netif_init(void);
@@ -133,7 +134,9 @@ int cli_psa_crypto_init(void);
 int cli_psa_customization_init();
 int cli_cpu_perf_init(void);
 
-
+#if CONFIG_QUICK_TRACK
+int cli_quicktrack_init(void);
+#endif
 
 extern int hexstr2bin_cli(const char *hex, u8 *buf, size_t len);
 extern int hexstr2bin(const char *hex, u8 *buf, size_t len);

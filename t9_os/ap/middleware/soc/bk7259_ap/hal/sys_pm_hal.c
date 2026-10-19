@@ -39,12 +39,22 @@
 #endif
 #include "sys_ahbp_ll.h"
 #include "multicore_driver.h"
+#if CONFIG_GENERAL_DMA
 #include <driver/dma.h>
+#endif
 #if CONFIG_TASK_WDT
 #include "bk_private/bk_wdt.h"
 #endif
 
 extern uint64_t check_IRQ_pending(void);
+extern void bk_delay_us(UINT32 us);
+extern uint32_t sys_drv_set_psram_pad_latch(uint32_t value);
+
+#if CONFIG_GENERAL_DMA
+#define SYS_PM_DMA_CHN_BUSY() bk_dma_check_chn_status()
+#else
+#define SYS_PM_DMA_CHN_BUSY() (0U)
+#endif
 
 #define portNVIC_SYSTICK_CTRL_REG             ( *( ( volatile uint32_t * ) 0xe000e010 ) )
 #define portNVIC_SYSTICK_LOAD_REG             ( *( ( volatile uint32_t * ) 0xe000e014 ) )
@@ -67,6 +77,60 @@ extern uint64_t check_IRQ_pending(void);
 #define PM_LOW_VOL_AON_LDO_SEL                (2)       // 0.7V
 #define PM_LOW_VOL_VIO_LDO_SEL                (0)       // 2.9V
 
+#if CONFIG_PM_AP_FAST_BOOT_ENABLE && CONFIG_PSRAM_DATA_RETENTION_ENABLE
+#define AP_PSRAM_RETENTION_FLUSH_BIT           (1U << 3)
+#define AP_PSRAM_RETENTION_FLUSH_TIMEOUT       (1000000U)
+#define AP_PSRAM_SF_RESET_BIT                  (1U << 0)
+#define AP_PSRAM_REG2_ADDR(base)               ((base) + (0x2U << 2))
+#define AP_PSRAM_REG8_ADDR(base)               ((base) + (0x8U << 2))
+
+/*
+ * Run the controller save command on AP before publishing sleep-ready.
+ * At this point CPU3 and DMA are stopped and the context backup has
+ * cleaned AP L1/L2, so no AP master can create more PSRAM writes.
+ */
+static bool sys_hal_psram_retention_flush(uint32_t *failed_id,
+	uint32_t *failed_reg2, uint32_t *failed_pre_reg8,
+	uint32_t *failed_reg8)
+{
+	const uint32_t reg8_addr[] = {
+		AP_PSRAM_REG8_ADDR(SOC_PSRAM0_REG_BASE),
+		AP_PSRAM_REG8_ADDR(SOC_PSRAM1_REG_BASE),
+	};
+
+	__DSB();
+	for (uint32_t i = 0; i < ARRAY_SIZE(reg8_addr); i++) {
+		uint32_t timeout = AP_PSRAM_RETENTION_FLUSH_TIMEOUT;
+		uint32_t pre_reg8 = REG_READ(reg8_addr[i]);
+
+		/*
+		 * REG8 is a command/status register. Write only set_save; carrying
+		 * old command/status bits forward can prevent a new command edge.
+		 */
+		REG_WRITE(reg8_addr[i], AP_PSRAM_RETENTION_FLUSH_BIT);
+		__DSB();
+		while ((REG_READ(reg8_addr[i]) &
+			AP_PSRAM_RETENTION_FLUSH_BIT) != 0U) {
+			if (--timeout == 0U) {
+				*failed_id = i;
+				*failed_reg2 = REG_READ(reg8_addr[i] - (6U << 2));
+				*failed_pre_reg8 = pre_reg8;
+				*failed_reg8 = REG_READ(reg8_addr[i]);
+				return false;
+			}
+		}
+	}
+	__DSB();
+	bk_delay_us(100);
+	//sys_drv_set_psram_pad_latch(1);
+	/* REG2[0] Soft_Reset: 0 holds the PSRAM controller in reset. */
+	REG_WRITE(AP_PSRAM_REG2_ADDR(SOC_PSRAM0_REG_BASE),REG_READ(AP_PSRAM_REG2_ADDR(SOC_PSRAM0_REG_BASE)) & ~AP_PSRAM_SF_RESET_BIT);
+	REG_WRITE(AP_PSRAM_REG2_ADDR(SOC_PSRAM1_REG_BASE),REG_READ(AP_PSRAM_REG2_ADDR(SOC_PSRAM1_REG_BASE)) & ~AP_PSRAM_SF_RESET_BIT);
+
+	return true;
+}
+#endif
+
 #if CONFIG_OTA_POSITION_INDEPENDENT_AB || CONFIG_DIRECT_XIP
 #define FLASH_BASE_ADDRESS                    SOC_FLASH_REG_BASE
 #define FLASH_OFFSET_ADDR_BEGIN               (0x16)
@@ -86,7 +150,6 @@ typedef struct
 
 uint64_t low_voltage_exit_tick = 0;
 uint64_t low_voltage_wakeup_time_us = 0;
-extern void bk_delay_us(UINT32 us);
 static inline bool is_lpo_src_26m32k(void)
 {
 	return (aon_pmu_ll_get_r41_lpo_config() == SYS_LPO_SRC_26M32K);
@@ -524,11 +587,53 @@ void sys_hal_gpio_ana_wakeup_enable(uint32_t count, uint32_t index, uint32_t typ
 
 void sys_hal_enter_cpu_wfi()
 {
+	static bool s_power_prepare_started;
+
 	if(portGET_CORE_ID() == CPU0_CORE_ID)
 	{
 		//bk_printf("CPU0_CORE_ID\r\n");
 		pm_shared_info_t shared_info = {0};
 		bk_sys_sw_regs_get_pm_shared_info(&shared_info);
+		if (shared_info.pm_cp0_sleep_state == 0x1) {
+			s_power_prepare_started = true;
+			/*
+			 * This idle path runs with interrupts disabled. Callbacks must
+			 * only gate new work and inspect lock-free retained state.
+			 * Returning without publishing pm_ap0_sleep_state lets normal
+			 * tasks drain pending work before the next idle probe.
+			 */
+			if (bk_pm_ap_power_prepare() != BK_OK) {
+				return;
+			}
+#if CONFIG_PM_AP_FAST_BOOT_ENABLE
+			/*
+			 * CP already polls pm_shared_info while waiting for AP sleep.
+			 * Publish the accepted recovery sequence once all module drain
+			 * callbacks are ready, allowing CP to send the next recovery
+			 * command immediately instead of waiting up to one retry period.
+			 * The sequence match prevents stale READY data from a previous
+			 * close transaction from advancing a new one.
+			 */
+			uint32_t prepare_ready_seq =
+				bk_pm_ap_recovery_request_seq_get();
+			if ((prepare_ready_seq != 0U) &&
+				(shared_info.param2 != prepare_ready_seq)) {
+				shared_info.param2 = prepare_ready_seq;
+				bk_sys_sw_regs_update_pm_shared_info(&shared_info,
+					BK_SYS_SW_REGS_PM_SHARED_INFO_FIELD_PARAM2,
+					BK_SYS_SW_REGS_LOCK_DISABLE);
+				__DSB();
+				flush_dcache(
+					(void *)&bk_sys_sw_regs_ptr()->pm_shared_info,
+					sizeof(bk_sys_sw_regs_ptr()->pm_shared_info));
+				__DSB();
+			}
+#endif
+		} else if (s_power_prepare_started) {
+			/* Restore modules if CP timed out or cancelled the request. */
+			s_power_prepare_started = false;
+			(void)bk_pm_ap_power_prepare_abort();
+		}
 		if(shared_info.pm_cp0_sleep_state == 0x1)
 		{
 			volatile uint32_t int_state0_31;
@@ -536,7 +641,12 @@ void sys_hal_enter_cpu_wfi()
 			uint32_t systick_ctrl_value = 0;
 
 			systick_ctrl_value = portNVIC_SYSTICK_CTRL_REG;
-			//portNVIC_SYSTICK_CTRL_REG = 0;
+			/*
+			 * Stop the scheduler tick before checking pending work and
+			 * capturing context. The saved value is restored on every
+			 * abort and resume path below.
+			 */
+			portNVIC_SYSTICK_CTRL_REG = 0;
 
 			int_state0_31 = sys_ahbp_ll_get_reg10_value();
 			int_state32_63 = sys_ahbp_ll_get_reg11_value();
@@ -551,7 +661,7 @@ void sys_hal_enter_cpu_wfi()
 			__asm volatile( "nop" );
 			__asm volatile( "nop" );
 
-			if(check_IRQ_pending()||bk_dma_check_chn_status()||(sys_ahbp_ll_get_reg18_value()||(sys_ahbp_ll_get_reg19_value()))||(portNVIC_INT_CTRL_REG&portNVIC_SYSTICKSET_BIT))
+			if(check_IRQ_pending()||SYS_PM_DMA_CHN_BUSY()||(sys_ahbp_ll_get_reg18_value()||(sys_ahbp_ll_get_reg19_value()))||(portNVIC_INT_CTRL_REG&portNVIC_SYSTICKSET_BIT))
 			{
 				sys_ahbp_ll_set_reg10_value(int_state0_31);
 				sys_ahbp_ll_set_reg11_value(int_state32_63);
@@ -561,6 +671,18 @@ void sys_hal_enter_cpu_wfi()
 
 #if CONFIG_CPU_HOTPLUG
 #if CONFIG_PM_AP_FAST_BOOT_ENABLE
+			/*
+			 * Application quiesce and atomic peripheral backup run in the
+			 * CPU2 PM task. Never commit AP power-down until that transaction
+			 * is complete; this path already has interrupts masked and must
+			 * not invoke module callbacks.
+			 */
+			if (!bk_pm_ap_fast_suspend_is_prepared()) {
+				sys_ahbp_ll_set_reg10_value(int_state0_31);
+				sys_ahbp_ll_set_reg11_value(int_state32_63);
+				portNVIC_SYSTICK_CTRL_REG = systick_ctrl_value;
+				return;
+			}
 			/*
 			 * Only CPU2 context is retained. CPU3 hotplug requires a normal
 			 * task context and must be completed before entering this idle
@@ -602,6 +724,54 @@ void sys_hal_enter_cpu_wfi()
 			__asm goto ("" : : : "memory" : ap_fast_resume_after_wfi);
 			dlv_trigger_backup_context_to(
 				(uint32_t)(uintptr_t)&&ap_fast_resume_after_wfi);
+#if CONFIG_PM_AP_SRAM_RETENTION_CHECK
+			/*
+			 * Context and DTCM backup are now stable. Snapshot every AP SRAM
+			 * bank before the retained-PSRAM controller save command below.
+			 */
+			sys_pm_hal_ap_sram_check_save();
+#endif
+#if CONFIG_PSRAM_DATA_RETENTION_ENABLE
+			/*
+			 * Context capture cleans AP L1/L2. Flush both PSRAM
+			 * controllers afterwards, while AP/AHBP command clocks are
+			 * still running, and before CP is told that AP is asleep.
+			 */
+			{
+				uint32_t failed_id = 0;
+				uint32_t failed_reg2 = 0;
+				uint32_t failed_pre_reg8 = 0;
+				uint32_t failed_reg8 = 0;
+
+				if (!sys_hal_psram_retention_flush(&failed_id,
+					&failed_reg2, &failed_pre_reg8, &failed_reg8)) {
+					sys_ahbp_ll_set_reg10_value(int_state0_31);
+					sys_ahbp_ll_set_reg11_value(int_state32_63);
+					portNVIC_SYSTICK_CTRL_REG = systick_ctrl_value;
+					bk_sys_sw_regs_get_pm_shared_info(&shared_info);
+					shared_info.pm_ap_work_state &=
+						(uint8_t)~PM_AP_WORK_STATE_FAST_RESUME;
+					bk_sys_sw_regs_update_pm_shared_info(&shared_info,
+						BK_SYS_SW_REGS_PM_SHARED_INFO_FIELD_AP_WORK_STATE,
+						BK_SYS_SW_REGS_LOCK_DISABLE);
+					__DSB();
+					flush_dcache(
+						(void *)&bk_sys_sw_regs_ptr()->pm_shared_info,
+						sizeof(bk_sys_sw_regs_ptr()->pm_shared_info));
+					__DSB();
+					/* SVC returned with PRIMASK/FAULTMASK held off. */
+					dlv_interrupt_restore();
+#if CONFIG_TASK_WDT
+					bk_task_wdt_start();
+#endif
+					BK_LOGE("pm",
+						"AP fast suspend: PSRAM%u cache flush timeout reg2=0x%08x pre_reg8=0x%08x reg8=0x%08x\r\n",
+						failed_id, failed_reg2, failed_pre_reg8,
+						failed_reg8);
+					return;
+				}
+			}
+#endif
 #endif
 
 			shared_info.pm_ap0_sleep_state = 1;
@@ -640,6 +810,16 @@ ap_fast_resume_after_wfi:
 #if CONFIG_CPU_HOTPLUG && !CONFIG_PM_AP_FAST_BOOT_ENABLE
 			/* Match the original wake path when AP fast boot is disabled. */
 			bk_cpu_hp_online(CPU3_CORE_ID);
+#endif
+#if !CONFIG_PM_AP_FAST_BOOT_ENABLE
+			/*
+			 * arch_deep_sleep returned without AP power being removed.
+			 * Re-open modules that were gated during power-off preparation.
+			 */
+			if (s_power_prepare_started) {
+				s_power_prepare_started = false;
+				(void)bk_pm_ap_power_prepare_abort();
+			}
 #endif
 
 			sys_ahbp_ll_set_reg10_value(int_state0_31);
@@ -699,32 +879,31 @@ ap_fast_resume_after_wfi:
 				}
 			}
 			#endif
+#if CONFIG_SLAVE_HEART_BEAT_USE_IPI
 			{
-				uint32_t total_us;
-				uint32_t dtcm_us;
-				uint32_t l1_scb_us;
-				uint32_t arch_us;
-				uint32_t finish_us;
-				extern void dlv_restore_profile_get(uint32_t *total_us,
-					uint32_t *dtcm_us, uint32_t *l1_scb_us,
-					uint32_t *arch_us, uint32_t *finish_us);
+				extern bk_err_t mb_ipc_heartbeat_fast_resume_notify(void);
+				bk_err_t hb_ret = mb_ipc_heartbeat_fast_resume_notify();
 
-				dlv_restore_profile_get(&total_us, &dtcm_us, &l1_scb_us,
-					&arch_us, &finish_us);
-				BK_LOGI("deep_lv",
-					"AP_TIME restore total_us=%u dtcm_us=%u l1_scb_us=%u arch_us=%u finish_us=%u\r\n",
-					total_us, dtcm_us, l1_scb_us, arch_us, finish_us);
+				if (hb_ret != BK_OK) {
+					BK_LOGE("pm", "AP fast resume: heartbeat power-up failed[%d]\r\n",
+						hb_ret);
+				}
 			}
+#endif
 #endif
 		}
 		else
 		{
-			//arh_sleep();
+#if CONFIG_PM_AP_WFI_ENABLE
+			arch_sleep();
+#endif
 		}
 	}
 	else
 	{
-		//arch_sleep();
+#if CONFIG_PM_AP_WFI_ENABLE
+		arch_sleep();
+#endif
 	}
 }
 
@@ -751,7 +930,7 @@ void sys_hal_enter_normal_sleep(uint32_t peri_clk)
 			__asm volatile( "nop" );
 			__asm volatile( "nop" );
 			__asm volatile( "nop" );
-			if(check_IRQ_pending()||bk_dma_check_chn_status()||(sys_ll_get_cpu1_int_0_31_status_value()||(sys_ll_get_cpu1_int_32_63_status_value()))||(portNVIC_INT_CTRL_REG&portNVIC_SYSTICKSET_BIT))
+			if(check_IRQ_pending()||SYS_PM_DMA_CHN_BUSY()||(sys_ll_get_cpu1_int_0_31_status_value()||(sys_ll_get_cpu1_int_32_63_status_value()))||(portNVIC_INT_CTRL_REG&portNVIC_SYSTICKSET_BIT))
 			{
 				sys_ll_set_cpu1_int_0_31_en_value(int_state1);
 				sys_ll_set_cpu1_int_32_63_en_value(int_state2);
@@ -816,7 +995,7 @@ void sys_hal_enter_normal_sleep(uint32_t peri_clk)
 			__asm volatile( "nop" );
 			__asm volatile( "nop" );
 			__asm volatile( "nop" );
-			if(check_IRQ_pending()||bk_dma_check_chn_status()||(sys_ll_get_cpu2_int_0_31_status_value()||(sys_ll_get_cpu2_int_32_63_status_value()))||(portNVIC_INT_CTRL_REG&portNVIC_SYSTICKSET_BIT))
+			if(check_IRQ_pending()||SYS_PM_DMA_CHN_BUSY()||(sys_ll_get_cpu2_int_0_31_status_value()||(sys_ll_get_cpu2_int_32_63_status_value()))||(portNVIC_INT_CTRL_REG&portNVIC_SYSTICKSET_BIT))
 			{
 				sys_ll_set_cpu2_int_0_31_en_value(int1_state1);
 				sys_ll_set_cpu2_int_32_63_en_value(int1_state2);
@@ -926,9 +1105,118 @@ void sys_hal_dco_switch_freq(dco_cali_speed_e speed)
 	return;
 }
 
-static int sys_hal_dco_cali(dco_cali_speed_e speed)
+/* Per the BK7259_V2 DCO spec with a 26 MHz XTAL: ndiv is the loop divider in
+ * [31:24].[23:0] fixed point (VCO = 26 MHz * ndiv) and cnti is the number of
+ * VCO cycles expected inside a 20-XTAL-cycle calibration window. The spec only
+ * tabulates 320/480/640M, none of which divides down to the 50 MHz an RMII
+ * reference needs, so the rest are derived from the same two formulas. Every
+ * entry except the three tabulated ones is a multiple of 50 MHz reachable by
+ * the 4-bit AUXS_ENET divider. */
+static const struct {
+	uint32_t vco_mhz;
+	uint32_t cnti;
+	uint32_t ndiv;
+} s_dco_cali_tbl[] = {
+	{320, 0x0F6, 0x0C4EC4EC},
+	{350, 0x10D, 0x0D762762},
+	{400, 0x134, 0x0F627627},
+	{450, 0x15A, 0x114EC4EC},
+	{480, 0x171, 0x12762762},
+	{500, 0x181, 0x133B13B1},
+	{550, 0x1A7, 0x15276276},
+	{600, 0x1CE, 0x1713B13B},
+	{640, 0x1EC, 0x189D89D8},
+	{650, 0x1F4, 0x19000000},
+};
+
+#define DCO_BAND_MAX            0x3FU
+
+/* A full 6-bit band sweep costs 64 windows of 20 XTAL cycles, i.e. ~50 us at
+ * 26 MHz, so the 1 us / 100 us the CP code waits leaves no margin at all. */
+#define DCO_CALI_TRIG_GAP_US    200U
+#define DCO_CALI_SETTLE_US      2000U
+
+static uint32_t sys_hal_dco_state_get(uint32_t *reg7, uint32_t *reg8)
 {
-	return 0;
+	if (reg7)
+		*reg7 = sys_ll_get_ana_reg7_value();
+	if (reg8)
+		*reg8 = sys_ll_get_ana_reg8_value();
+
+	return sys_ll_get_ana_reg7_bandmanual();
+}
+
+int sys_hal_dco_cali(uint32_t vco_mhz)
+{
+	uint32_t cnti;
+	uint32_t ndiv;
+	uint32_t bandcal;
+	uint32_t reg7 = 0;
+	uint32_t reg8 = 0;
+	uint32_t i;
+
+	for (i = 0; i < ARRAY_SIZE(s_dco_cali_tbl); i++) {
+		if (s_dco_cali_tbl[i].vco_mhz == vco_mhz)
+			break;
+	}
+	if (i == ARRAY_SIZE(s_dco_cali_tbl)) {
+		PM_HAL_LOGE("dco: %d MHz has no calibration entry\r\n", vco_mhz);
+		return BK_FAIL;
+	}
+	cnti = s_dco_cali_tbl[i].cnti;
+	ndiv = s_dco_cali_tbl[i].ndiv;
+
+	/* The spec hands out this one ana_reg1 value alongside its 480M example
+	 * without saying which fields are frequency dependent; it is applied
+	 * as-is for every entry and measured fine down to 320M and up to 650M. */
+	sys_ll_set_ana_reg1_value(0x00655044);
+
+	sys_ll_set_ana_reg7_value(0x622E7080);
+	sys_ll_set_ana_reg8_value(ndiv);
+	sys_ll_set_ana_reg2_rst_unlock_dco(0);
+	sys_ll_set_ana_reg2_unlock_sel_dco(0);
+	sys_ll_set_ana_reg2_dco_modecal_1(0);
+	sys_ll_set_ana_reg2_dco_modecal(0);
+
+	sys_ll_set_ana_reg7_cnti(cnti);
+	sys_ll_set_ana_reg5_en_dco(1);
+
+	/* Current is calibrated first and the band second, both off one trigger,
+	 * so the pulse pair has to be issued twice before the result is valid. */
+	sys_ll_set_ana_reg7_osccal_trig(0);
+	bk_delay_us(DCO_CALI_TRIG_GAP_US);
+	sys_ll_set_ana_reg7_osccal_trig(1);
+	bk_delay_us(DCO_CALI_TRIG_GAP_US);
+	sys_ll_set_ana_reg7_osccal_trig(0);
+	bk_delay_us(DCO_CALI_TRIG_GAP_US);
+	sys_ll_set_ana_reg7_osccal_trig(1);
+	bk_delay_us(DCO_CALI_TRIG_GAP_US);
+	sys_ll_set_ana_reg7_osccal_trig(0);
+
+	bk_delay_us(DCO_CALI_SETTLE_US);
+
+	/* The band is left under hardware control: the PMU band_cal read does not
+	 * track this sequence, alternating between the band the boot-time 480 MHz
+	 * calibration left behind and 0 for the same ndiv across resets, so
+	 * driving bandmanual from it would pin the loop to a band unrelated to
+	 * vco_mhz. The read is kept for logging only. */
+	bandcal = aon_pmu_hal_band_cal_get() & DCO_BAND_MAX;
+
+	sys_ll_set_ana_reg2_rst_unlock_dco(1);
+	sys_ll_set_ana_reg2_rst_unlock_dco(0);
+
+	/* ana_reg7/8 reach the analog block over a serial bus, so the writes are
+	 * worth confirming before reading anything into the result. */
+	sys_hal_dco_state_get(&reg7, &reg8);
+	PM_HAL_LOGD("dco: %d MHz band_cal %d ndiv 0x%08x/0x%08x reg7 0x%08x\r\n",
+				vco_mhz, bandcal, ndiv, reg8, reg7);
+
+	if (reg8 != ndiv) {
+		PM_HAL_LOGE("dco: ndiv readback 0x%08x != 0x%08x\r\n", reg8, ndiv);
+		return BK_FAIL;
+	}
+
+	return BK_OK;
 }
 
 static int sys_hal_config_32k_source_default()
@@ -1425,54 +1713,17 @@ uint32_t sys_hal_auxldo_out_get(auxldo_sel_t auxldo_sel)
 
 static int sys_hal_power_config_default()
 {
-    return 0;
+#if CONFIG_PM_AP_SUBPOWER_DOMAIN_DEFAULT_DISABLE
+	sys_hal_module_power_ctrl(POWER_DOMAIN_NAME_VIDEO_POST, POWER_MODULE_STATE_OFF);
+	sys_hal_module_power_ctrl(POWER_DOMAIN_NAME_H26E, POWER_MODULE_STATE_OFF);
+	sys_hal_module_power_ctrl(POWER_DOMAIN_NAME_ISP, POWER_MODULE_STATE_OFF);
+	sys_hal_module_power_ctrl(POWER_DOMAIN_NAME_NPU, POWER_MODULE_STATE_OFF);
+#endif
+
+	return BK_OK;
 }
 void sys_hal_low_power_hardware_init()
 {
-	#if !CONFIG_AON_PMU_REG0_REFACTOR_DEV
-	/*recover aon pmu reg0*/
-	uint32_t reg = aon_pmu_ll_get_r7b();
-	aon_pmu_ll_set_r0(reg);
-	#endif
-
-#if CONFIG_GPIO_RETENTION_SUPPORT
-	// must before gpio state unlock
-	gpio_retention_sync(true);
-#endif
-
-	/*gpio state unlock for shutdown wakeup*/
-#if CONFIG_AON_PMU_REG0_REFACTOR_DEV
-	aon_pmu_hal_set_gpio_sleep(0, true);
-#else
-	sys_hal_gpio_state_switch(false);
-#endif
-
-	/*set memery bypass*/
-	aon_pmu_ll_set_r0_memchk_bps(1);
-	aon_pmu_ll_set_r0_fast_boot(1);
-
-	/*set wakeup source*/
-	aon_pmu_ll_set_r41_wakeup_ena(0x23);//enable wakeup source: int_touched,int_rtc,int_gpio,wifi wake(bt or wifi wakeup source enable when bt or wifi sleep)
-
-	/*enable the buck*/
-	#if CONFIG_BUCK_ENABLE
-	uint32_t chip_id = aon_pmu_hal_get_chipid();
-	if ((chip_id & PM_CHIP_ID_MASK) != (PM_CHIP_ID_MP_A & PM_CHIP_ID_MASK)){
-		sys_hal_enable_buck();
-	}
-	#endif
-	/*select lowpower lpo clk source*/
-	sys_hal_config_32k_source_default();
-
-	/*default to config the power */
+	/*default to config the AP power */
 	sys_hal_power_config_default();
-
-	/*set the lp voltage*/
-	sys_hal_lp_vol_set(CONFIG_LP_VOL);
-
-	/*set rosc calib trig once*/
-	sys_hal_rosc_calibration(3, 0);
-
-	/*dco cali*/
-	sys_hal_dco_cali(DCO_CALIB_SPEED_240M);
 }

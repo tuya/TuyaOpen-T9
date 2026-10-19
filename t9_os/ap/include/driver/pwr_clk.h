@@ -33,6 +33,10 @@ extern "C" {
 #define PM_CP1_PSRAM_MALLOC_STATE_CMD        (0x8)
 #define PM_CP1_DUMP_PSRAM_MALLOC_INFO_CMD    (0x9)
 #define PM_CP1_RECOVERY_CMD                  (0xa)
+#if CONFIG_PM_AP_FAST_BOOT_ENABLE
+#define PM_AP_RECOVERY_ACTION_PREPARE        (0x0)
+#define PM_AP_RECOVERY_ACTION_ABORT          (0x1)
+#endif
 
 #define PM_ENTER_DEEP_SLEEP_CMD              (0xb)
 #define PM_GET_PM_DATA_CMD                   (0xc)
@@ -41,6 +45,9 @@ extern "C" {
 #define PM_WAKEUP_CONFIG_CMD                 (0xf)
 
 #define PM_SLEEP_WAKEUP_NOTIFY_CMD           (0x10)
+#if CONFIG_PM_AP_FAST_BOOT_ENABLE
+#define PM_AP_APP_RESUME_NOTIFY_CMD           (0x11)
+#endif
 
 #define PM_AON_RTC_DEFAULT_TICK_COUNT        (32)//only for cp1 using aon rtc
 

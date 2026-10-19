@@ -138,7 +138,7 @@ static void hpdma_apply_smem_burst_policy_at_start(hpdma_id_t id);
  */
 bk_err_t hpdma_wait_to_idle(hpdma_id_t id);
 
-#if CONFIG_PM_ENABLE
+#if CONFIG_PM_ENABLE && !CONFIG_PM_AP_FAST_BOOT_ENABLE
 /*
  * S2 (HPDMA review):
  *   Adapter that matches the PM module's pm_cb signature
@@ -170,7 +170,58 @@ static pm_cb_conf_t s_hpdma_pm_exit_cfg = {
     .cb = hpdma_pm_exit_low_voltage_cb,
     .args = NULL,
 };
-#endif /* CONFIG_PM_ENABLE */
+#endif
+
+#if CONFIG_PM_AP_FAST_BOOT_ENABLE
+static bool s_hpdma_fast_pm_registered;
+
+static bk_err_t hpdma_fast_quiesce(void *arg)
+{
+    (void)arg;
+    for (hpdma_id_t id = 0; id < SOC_HPDMA_CHAN_NUM_PER_UNIT; id++) {
+        if ((s_hpdma.id_init_bits & BIT(id)) &&
+            hpdma_hal_get_enable_status(&s_hpdma.hal, id)) {
+            return BK_ERR_BUSY;
+        }
+    }
+    return BK_OK;
+}
+
+static bk_err_t hpdma_fast_backup(void *arg)
+{
+    (void)arg;
+    return BK_OK;
+}
+
+static bk_err_t hpdma_fast_restore(void *arg)
+{
+    (void)arg;
+    hpdma_hal_init_without_channels(&s_hpdma.hal);
+    __DMB();
+    return BK_OK;
+}
+
+/*
+ * hpdma_fast_quiesce() only vetoes suspend while a channel is still enabled; it
+ * changes no state, so there is nothing to undo. Required because
+ * bk_pm_ap_power_ops_register() rejects ops that supply quiesce without resume,
+ * and that rejection propagates out of bk_hpdma_driver_init().
+ */
+static bk_err_t hpdma_fast_resume(void *arg)
+{
+    (void)arg;
+    return BK_OK;
+}
+
+static const pm_ap_fast_pm_ops_t s_hpdma_fast_pm_ops = {
+    .name = "hpdma",
+    .quiesce = hpdma_fast_quiesce,
+    .backup = hpdma_fast_backup,
+    .restore = hpdma_fast_restore,
+    .resume = hpdma_fast_resume,
+    .priority = PM_AP_FAST_PRIORITY_BUS,
+};
+#endif
 
 static void hpdma_id_init_common(hpdma_id_t id)
 {
@@ -189,8 +240,15 @@ static void hpdma_id_deinit_common(hpdma_id_t id)
 
 static void hpdma_id_enable_interrupt_common(hpdma_id_t id)
 {
-    //0:int route to M55 core 0
+    /*
+     * CONFIG_SPE=0 (NS after TF-M/PPHS): int_allocate is controller-wide;
+     * TF-M already set it to HPDMA_INT_0. NS RMW BusFaults — skip.
+     */
+#if CONFIG_SPE
     hpdma_hal_set_int_allocate(&s_hpdma.hal, id, HPDMA_INT_0);
+#else
+    (void)id;
+#endif
 #if CONFIG_SOC_SMP
 	sys_drv_set_int_en(CPU2_CORE_ID, INT_SRC_HPDMA, 1);
 #else
@@ -303,9 +361,11 @@ bk_err_t bk_hpdma_driver_init(void)
 		s_hpdma_chnl_pool.chnl_user[i] = -1;
 	}
 
-    // workaround: must uncomment it after mailbox problem fixed
-    // bk_pm_module_vote_power_ctrl(PM_POWER_SUB_MODULE_NAME_BAKP_DMA0, PM_POWER_MODULE_STATE_ON);
-    // bk_pm_module_vote_power_ctrl(PM_POWER_SUB_MODULE_NAME_BAKP_DMA1, PM_POWER_MODULE_STATE_ON);
+#if !CONFIG_SPE && CONFIG_PM_ENABLE
+    /* BAKP must be on before NS writes HPDMA channel regs. */
+    bk_pm_module_vote_power_ctrl(PM_POWER_SUB_MODULE_NAME_BAKP_DMA0, PM_POWER_MODULE_STATE_ON);
+    bk_pm_module_vote_power_ctrl(PM_POWER_SUB_MODULE_NAME_BAKP_DMA1, PM_POWER_MODULE_STATE_ON);
+#endif
 
     /* 1)intc_service_register
      * 2)init hpdma_finish_int handler, hpdma_half_finish_int handler
@@ -326,9 +386,13 @@ bk_err_t bk_hpdma_driver_init(void)
 		hpdma_hal_init(&s_hpdma.hal);
 	}
 
-    s_hpdma_driver_is_init = true;
-
-#if CONFIG_PM_ENABLE
+#if CONFIG_PM_AP_FAST_BOOT_ENABLE
+    bk_err_t pm_ret = bk_pm_ap_fast_ops_register(&s_hpdma_fast_pm_ops);
+    if (pm_ret != BK_OK) {
+        return pm_ret;
+    }
+    s_hpdma_fast_pm_registered = true;
+#elif CONFIG_PM_ENABLE
     /*
      * S2 (HPDMA review):
      *   Wire bk_hpdma_recover_after_low_voltage() into the PM
@@ -351,6 +415,7 @@ bk_err_t bk_hpdma_driver_init(void)
     }
 #endif
 
+    s_hpdma_driver_is_init = true;
     return BK_OK;
 }
 
@@ -373,7 +438,15 @@ bk_err_t bk_hpdma_driver_deinit(void)
         hpdma_exit_critical(int_mask);
     }
 
-#if CONFIG_PM_ENABLE
+#if CONFIG_PM_AP_FAST_BOOT_ENABLE
+    if (s_hpdma_fast_pm_registered) {
+        bk_err_t pm_ret = bk_pm_ap_fast_ops_unregister(&s_hpdma_fast_pm_ops);
+        if (pm_ret != BK_OK) {
+            return pm_ret;
+        }
+        s_hpdma_fast_pm_registered = false;
+    }
+#elif CONFIG_PM_ENABLE
     /*
      * S2 (HPDMA review):
      *   Unregister the exit-low-voltage callback paired with the one
@@ -2201,7 +2274,9 @@ void bk_hpdma_link_deinit(void *desc_table)
         (uint32_t)raw_ptr < (uint32_t)desc_table) {
         // Free raw pointer (which was allocated with extra space)
         os_free(raw_ptr);
-        HPDMA_LOGD("%s freed desc_table=0x%x raw_ptr=0x%x\r\n", __func__, desc_table, raw_ptr);
+        /* Verbose only: cpu_dma_verify / other high-rate memcpy-link callers
+         * hit this every transfer. Keep it off the default debug UART. */
+        HPDMA_LOGV("%s freed desc_table=0x%x raw_ptr=0x%x\r\n", __func__, desc_table, raw_ptr);
     } else {
         HPDMA_LOGE("%s invalid raw_ptr: desc_table=0x%x raw_ptr=0x%x\r\n", __func__, desc_table, raw_ptr);
     }
@@ -2327,10 +2402,14 @@ bk_err_t bk_hpdma_link_transfer(hpdma_id_t id, void *desc_table)
     hpdma_config.dst.step = 0;
     hpdma_config.dst.addr_loop_en = HPDMA_ADDR_LOOP_DISABLE;
 
-    bk_hpdma_set_next_ll_addr(id, (uint32_t)desc_table);
-
     // Initialize and configure DMA
     bk_hpdma_init(id, &hpdma_config);
+
+    /* next_ll_addr must be programmed after bk_hpdma_init(): hpdma_hal_init_dma()
+     * never writes it back, so any channel reset on the init path would clear it
+     * and leave the channel enabled with no chain loaded. Matches the order used
+     * by the general DMA driver. */
+    bk_hpdma_set_next_ll_addr(id, (uint32_t)desc_table);
 
 #if CONFIG_SPE
     bk_hpdma_set_src_sec_attr(id, HPDMA_ATTR_SEC);

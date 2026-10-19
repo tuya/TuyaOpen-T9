@@ -4,8 +4,9 @@
  *
  * @details
  * Memory in, memory out. Every call blocks until the hardware is done; there is
- * no handle, no stream state and no callback, so anything stateful (H264)
- * belongs to a peripheral or to tkl_stream instead.
+ * no handle, no stream state and no callback. An H264 IDR access unit is
+ * self-contained and decodes here; anything that needs references from earlier
+ * frames (P/B) or a running session belongs to tkl_vdec instead.
  *
  * Three entry points, nothing else:
  *   - tkl_image_codec_get_info()  - what a bitstream is, and how big the native
@@ -108,6 +109,10 @@ typedef struct {
  *       read back), and a stream that is not a decodable JPEG fails with
  *       OPRT_COM_ERROR.
  *
+ * @note The same applies to H264: an access unit has no header this call can
+ *       read the geometry from without a full SPS parser, so an H264 caller
+ *       supplies the geometry itself.
+ *
  * @return OPRT_OK on success. Others on error, please refer to tuya_error_code.h
  */
 OPERATE_RET tkl_image_codec_get_info(CONST TUYA_IMAGE_BUF_T *in, TUYA_IMAGE_INFO_T *info);
@@ -116,7 +121,7 @@ OPERATE_RET tkl_image_codec_get_info(CONST TUYA_IMAGE_BUF_T *in, TUYA_IMAGE_INFO
  * @brief One-shot image operation: decode, encode or scale, chosen by the
  *        formats on the two buffers.
  *
- * @param[in]     in  media buffer. format = JPEG / NV12 / YUYV
+ * @param[in]     in  media buffer. format = JPEG / H264 / NV12 / YUYV
  * @param[in,out] out caller-owned destination. Fill in @c data, @c size
  *                    (capacity) and the wanted @c width / @c height / @c format
  *                    before calling; @c size is overwritten with the bytes
@@ -127,8 +132,27 @@ OPERATE_RET tkl_image_codec_get_info(CONST TUYA_IMAGE_BUF_T *in, TUYA_IMAGE_INFO
  * | in->format    | out->format              | operation            |
  * |---------------|--------------------------|----------------------|
  * | JPEG          | NV12 / YUYV / RGB565 / RGB888 | decode          |
+ * | H264 / H264_I | NV12 / RGB565 / RGB888   | decode (IDR only)    |
  * | NV12 / YUYV   | JPEG                     | encode               |
  * | NV12          | NV12 / RGB565 / RGB888 / YUYV | scale / convert |
+ *
+ * H264 input must be exactly one access unit that carries its own SPS and PPS
+ * ahead of a single IDR slice. Every call builds a fresh decoder, so parameter
+ * sets seen by an earlier call are gone - an access unit that leans on them
+ * cannot be decoded at all, and is rejected rather than decoded wrong. A
+ * P or B frame returns OPRT_NOT_SUPPORTED: it references pictures this call
+ * never had. The geometry is the caller's to know (there is no probe for
+ * H264); out->width / out->height select the output size and the decoder
+ * scales to it.
+ *
+ * The decode core serves one session at a time, shared with the JPEG decoder.
+ * When another session holds it - a running UVC MJPEG stream, for instance -
+ * this call returns OPRT_TIMEOUT and does not wait: taking the core away does
+ * not fail cleanly, it kills both sessions (see tkl_codec_gate_internal.h).
+ *
+ * in->length is the caller's assertion about how many bytes are valid, and it
+ * is believed: the scan never reads past it, so a length larger than the
+ * buffer actually holds is a caller bug this call cannot detect.
  *
  * Anything else - JPEG to JPEG included - returns OPRT_NOT_SUPPORTED. The
  * JPEG encoder always uses the best quality and picks its backend internally;
@@ -142,9 +166,20 @@ OPERATE_RET tkl_image_codec_get_info(CONST TUYA_IMAGE_BUF_T *in, TUYA_IMAGE_INFO
  *         to a multiple of 32 and 1280x720 needs 1280x736 worth of bytes.
  *         For a native-size NV12 decode, tkl_image_codec_get_info() returns the
  *         geometry in @ref TUYA_IMAGE_INFO_T; feed that to tkl_pp_output_size()
- *         and pass the result back as the capacity.
+ *         and pass the result back as the capacity. That probe is JPEG-only -
+ *         an H264 caller already knows the geometry it asked the encoder for.
  *       - JPEG output: no exact formula; budget about 4.5 bits/pixel.
  *       An undersized buffer returns OPRT_INVALID_PARM.
+ * @note Pixel output layouts - the byte order is not implied by the format
+ *       name, and getting it wrong yields a plausible-looking but wrongly
+ *       coloured picture rather than an error:
+ *       - NV12: Y plane then interleaved CbCr, stored height rounded to 32 rows
+ *       - RGB565: little-endian, stored height rounded to 16 rows
+ *       - RGB888: **4 bytes per pixel ordered 0,R,G,B** - a leading pad byte,
+ *         then the three channels. Not packed 24-bit, and not R,G,B,pad.
+ *         Board-confirmed on T9, 2026-10-14: reading it as rgb0 renders green
+ *         and as bgr0 renders yellow; 0rgb is correct (ffplay -pixel_format
+ *         0rgb). The pad byte is 0 on this part.
  * @note Encode: geometry comes from @p in (must be even), @c out->width /
  *       @c out->height are ignored. A YUYV input is packed to the software
  *       encoder's own byte order on an internal pixel-pool copy

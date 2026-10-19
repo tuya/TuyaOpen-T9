@@ -256,10 +256,8 @@ static uint32_t xplat_pm_freq_to_mhz(pm_cpu_freq_e freq)
     if (freq == PM_CPU_FRQ_80M) {
         return 80U;
     }
-    if (freq == PM_CPU_FRQ_60M) {
-        return 60U;
-    }
-    /* XTAL / 26M / 160M / DEFAULT / unknown: leave 0, caller logs enum */
+    /* XTAL / 26M / 60M / 160M / DEFAULT / unknown: leave 0, caller logs enum.
+     * 4.0.1.11 dropped PM_CPU_FRQ_60M from the AP-side pm_cpu_freq_e (CP still has it). */
     return 0U;
 }
 

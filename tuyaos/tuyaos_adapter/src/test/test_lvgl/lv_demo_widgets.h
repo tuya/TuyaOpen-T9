@@ -16,6 +16,14 @@ extern "C" {
 #include "lvgl.h"
 #include "lv_conf_custom.h"
 
+/*
+ * The demo image assets vendored under ./assets are renamed with a tuya_ prefix
+ * (tuya_img_clothes, tuya_img_demo_widgets_avatar, ...). 4.0.1.11 added
+ * lvgl_v9/demos/widgets/assets/*.c to the LVGL component, and those upstream files
+ * define the same img_* symbols without any LV_USE_DEMO_WIDGETS guard, so the
+ * unprefixed names would collide at link time.
+ */
+
 #if LV_USE_DEMO_WIDGETS
 
 #if LV_USE_GRID == 0

@@ -22,6 +22,8 @@ extern void bk_printf(const char *fmt, ...);
 
 #define DMA_BUF_SAFE_INTERVAL    (8)
 
+#define DMA_BUF_FRAME_CNT        (6)
+
 // x: sample rate, y: sample bits, z: frame time in ms, channel only 1
 #define TKL_DAC_FRAME_SIZE_MS(x, y, z)  ((x * (y / 8) / 1000) * z)
 
@@ -202,8 +204,9 @@ static bk_err_t __tkl_aud_dac_dma_config(TUYA_AUDIO_DAC_PORT_E port)
 
     test_dma_id = gl_dac_ctx->spk_dma_id;
 
-    /* Two frames + safe interval for dma_set_src_pause_addr flow control */
-    gl_dac_ctx->spk_dma_buf = (int8_t *)audio_dma_mem_calloc(2, frame_size + DMA_BUF_SAFE_INTERVAL / 2);
+    /* DMA_BUF_FRAME_CNT frames + safe interval for dma_set_src_pause_addr flow control */
+    gl_dac_ctx->spk_dma_buf = (int8_t *)audio_dma_mem_calloc(
+        1, DMA_BUF_FRAME_CNT * frame_size + DMA_BUF_SAFE_INTERVAL);
     if (gl_dac_ctx->spk_dma_buf == NULL) {
         TKL_DAC_LOG("malloc dma buffer fail\n");
         goto exit;
@@ -216,7 +219,7 @@ static bk_err_t __tkl_aud_dac_dma_config(TUYA_AUDIO_DAC_PORT_E port)
      */
     ring_buffer_init(&gl_dac_ctx->spk_rb,
                      (uint8_t *)gl_dac_ctx->spk_dma_buf,
-                     frame_size * 2 + DMA_BUF_SAFE_INTERVAL,
+                     frame_size * DMA_BUF_FRAME_CNT + DMA_BUF_SAFE_INTERVAL,
                      gl_dac_ctx->spk_dma_id,
                      RB_DMA_TYPE_READ);
 
@@ -232,7 +235,7 @@ static bk_err_t __tkl_aud_dac_dma_config(TUYA_AUDIO_DAC_PORT_E port)
     dma_config.src.addr_loop_en = DMA_ADDR_LOOP_ENABLE;
     dma_config.src.start_addr = (uint32_t)(uintptr_t)gl_dac_ctx->spk_dma_buf;
     dma_config.src.end_addr = (uint32_t)(uintptr_t)gl_dac_ctx->spk_dma_buf
-                              + frame_size * 2 + DMA_BUF_SAFE_INTERVAL;
+                              + frame_size * DMA_BUF_FRAME_CNT + DMA_BUF_SAFE_INTERVAL;
 
     /* dst: DAC FIFO */
 #if CONFIG_AUD_DRIVER_V1
@@ -547,47 +550,9 @@ __dac_init_exit:
     return OPRT_COM_ERROR;
 }
 
-/*
- * On-board speaker analog power + power-amplifier enable.
- *
- * The DAC *digital* path (DMA, FIFO, tx callbacks) runs fine without these, but
- * there is NO audible output until:
- *   the speaker PA enable pin (cfg.pa_pin, active-high) is driven when valid.
- * PA GPIO comes from tkl_aud_dac_init() config; use TKL_AUD_DAC_PA_PIN_NONE to skip.
- */
-static void __tkl_aud_dac_spk_power_on(void)
-{
-    UINT32_T pa_pin;
-
-    if (gl_dac_ctx == NULL) {
-        return;
-    }
-
-    pa_pin = gl_dac_ctx->cfg.pa_pin;
-    if (pa_pin >= TUYA_GPIO_NUM_MAX) {
-        return;
-    }
-
-    gpio_dev_unmap((gpio_id_t)pa_pin);
-    (void)bk_gpio_enable_output((gpio_id_t)pa_pin);
-    (void)bk_gpio_set_output_high((gpio_id_t)pa_pin);
-}
-
-static void __tkl_aud_dac_spk_power_off(void)
-{
-    UINT32_T pa_pin;
-
-    if (gl_dac_ctx == NULL) {
-        return;
-    }
-
-    pa_pin = gl_dac_ctx->cfg.pa_pin;
-    if (pa_pin >= TUYA_GPIO_NUM_MAX) {
-        return;
-    }
-
-    (void)bk_gpio_set_output_low((gpio_id_t)pa_pin);
-}
+/* Speaker PA enable is owned by the TAL layer: tal_audio_dac.c drives that
+ * GPIO itself (tkl_gpio_init/write). The adapter must not touch it as well -
+ * doing so drove the wrong pin (the config field defaulted to 0) and is removed. */
 
 /**
  * @brief Start DAC playback.
@@ -675,10 +640,6 @@ OPERATE_RET tkl_aud_dac_start(TUYA_AUDIO_DAC_PORT_E port)
     }
 #endif
 
-    /* Power the analog output stage + enable the speaker PA, otherwise the DAC
-     * runs but stays silent (see helper comment above). */
-    __tkl_aud_dac_spk_power_on();
-
     gl_dac_ctx->stat = TKL_AUD_DAC_STAT_START;
     TKL_DAC_LOG("dac start ok\n");
 
@@ -711,9 +672,6 @@ OPERATE_RET tkl_aud_dac_stop(TUYA_AUDIO_DAC_PORT_E port)
                gl_dac_ctx->stat == TKL_AUD_DAC_STAT_DEINIT) {
         return OPRT_COM_ERROR;
     }
-
-    /* Disable the speaker PA before tearing down the data path. */
-    __tkl_aud_dac_spk_power_off();
 
     bk_aud_dac_mute();
 

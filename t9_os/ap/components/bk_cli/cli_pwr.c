@@ -15,8 +15,14 @@
 #include <driver/aon_rtc_types.h>
 #include <driver/aon_rtc.h>
 #include <driver/timer.h>
+#include <driver/dma.h>
 #include <components/bk_platform.h>
 #include <driver/pwr_clk.h>
+#if CONFIG_SPI
+#include <driver/spi.h>
+#include "spi_hal.h"
+#include "cmsis_gcc.h"
+#endif
 #include <driver/rosc_32k.h>
 #include <driver/rosc_ppm.h>
 #include <driver/pm_ap_core.h>
@@ -32,8 +38,6 @@ static UINT32 s_cli_sleep_mode = 0;
 static UINT32 s_pm_vote1       = 0;
 static UINT32 s_pm_vote2       = 0;
 static UINT32 s_pm_vote3       = 0;
-
-extern void stop_cpu1_core(void);
 
 #if CONFIG_TOUCH
 void cli_pm_touch_callback(void *param)
@@ -97,7 +101,6 @@ static bk_err_t cli_pm_rtc_sleep_wakeup_callback(pm_sleep_mode_e sleep_mode,pm_w
 #define PM_DEEPSLEEP_RTC_THRESHOLD       (500)
 #define PM_SHUTDOWN_RTC_THRESHOLD        (4)        //=500ms
 #define PM_OLD_TOUCH_WAKE_SOURCE         (4)
-extern void stop_cpu1_core(void);
 
 static void cli_pm_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv)
 {
@@ -249,11 +252,8 @@ static void cli_pm_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char 
 	{
 		if(pm_vote3 == PM_POWER_MODULE_NAME_CPU1)
 		{
-			#if 1 && (CONFIG_CPU_CNT > 1)
-				stop_cpu1_core();
-			#endif
-		}
 
+		}
 	}
 	else if(pm_sleep_mode == PM_MODE_LOW_VOLTAGE)
 	{
@@ -315,8 +315,9 @@ static void cli_pm_debug(char *pcWriteBuffer, int xWriteBufferLen, int argc, cha
 	{
 		//pm_debug_pwr_clk_state();
 		//pm_debug_lv_state();
-		// BK_LOGD(NULL, "Deepsleep wakeup source[%d]\r\n",bk_pm_deep_sleep_wakeup_source_get());
-		// BK_LOGD(NULL, "Low vol wakeup source[%d]\r\n",bk_pm_exit_low_vol_wakeup_source_get());
+		pm_debug_module_state();
+		bk_pm_ap_power_prepare_dump();
+		bk_pm_cpu_freq_dump();
 	}
 	/*for temp debug*/
 	if(pm_debug == 16)
@@ -430,6 +431,7 @@ static void cli_pm_power(char *pcWriteBuffer, int xWriteBufferLen, int argc, cha
 }
 static void cli_pm_freq(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv)
 {
+	bk_err_t ret;
 	UINT32 pm_freq  = 0;
 	UINT32 pm_module_id  = 0;
 	pm_cpu_freq_e module_freq = 0;
@@ -442,20 +444,79 @@ static void cli_pm_freq(char *pcWriteBuffer, int xWriteBufferLen, int argc, char
 
 	pm_module_id = os_strtoul(argv[1], NULL, 10);
 	pm_freq = os_strtoul(argv[2], NULL, 10);
-	if ((pm_freq > PM_CPU_FRQ_DEFAULT) || (pm_module_id > PM_DEV_ID_MAX))
+	if ((pm_freq > PM_CPU_FRQ_DEFAULT) || (pm_module_id >= PM_DEV_ID_MAX))
 	{
 		BK_LOGD(NULL, "set pm freq value invalid %d %d \r\n",pm_freq,pm_module_id);
 		return;
 	}
 
-	bk_pm_module_vote_cpu_freq(pm_module_id,pm_freq);
+	ret = bk_pm_module_vote_cpu_freq(pm_module_id,pm_freq);
+	if (ret != BK_OK)
+	{
+		BK_LOGD(NULL, "set pm freq failed: %d\r\n", ret);
+		return;
+	}
 
-	// module_freq =  bk_pm_module_current_cpu_freq_get(pm_module_id);
+	module_freq = bk_pm_module_current_cpu_freq_get(pm_module_id);
+	current_max_freq = bk_pm_current_max_cpu_freq_get();
+	BK_LOGD(NULL, "PM AP cpu freq test id: %d; freq: %d; current max cpu freq: %d;\r\n",pm_module_id,module_freq,current_max_freq);
 
-	// current_max_freq = bk_pm_current_max_cpu_freq_get();
+}
+static const char *cli_pm_cp_cpu_freq_str(pm_cp_cpu_freq_e pm_freq)
+{
+	switch (pm_freq)
+	{
+		case PM_CP_CPU_FRQ_XTAL:
+			return "XTAL (40M/26M)";
+		case PM_CP_CPU_FRQ_60M:
+			return "60M";
+		case PM_CP_CPU_FRQ_80M:
+			return "80M";
+		case PM_CP_CPU_FRQ_120M:
+			return "120M";
+		case PM_CP_CPU_FRQ_160M:
+			return "160M";
+		case PM_CP_CPU_FRQ_240M:
+			return "240M";
+		case PM_CP_CPU_FRQ_HIGHEST:
+			return "HIGHEST";
+		case PM_CP_CPU_FRQ_DEFAULT:
+			return "DEFAULT";
+		default:
+			return "UNKNOWN";
+	}
+}
+static void cli_pm_cp_freq(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv)
+{
+	bk_err_t ret;
+	UINT32 pm_freq = 0;
+	UINT32 pm_module_id = 0;
 
-	BK_LOGD(NULL, "pm cpu freq test id: %d; freq: %d; current max cpu freq: %d;\r\n",pm_module_id,module_freq,current_max_freq);
+	if (argc != 3)
+	{
+		BK_LOGD(NULL, "set CP pm freq parameter invalid %d\r\n", argc);
+		return;
+	}
 
+	pm_module_id = os_strtoul(argv[1], NULL, 10);
+	pm_freq = os_strtoul(argv[2], NULL, 10);
+	if ((pm_freq > PM_CP_CPU_FRQ_DEFAULT) || (pm_module_id >= PM_CP_DEV_ID_MAX))
+	{
+		BK_LOGD(NULL, "set CP pm freq value invalid %d %d\r\n", pm_freq, pm_module_id);
+		return;
+	}
+
+	BK_LOGD(NULL, "PM CP module id: %d; pm_freq: %d; CPU freq: %s\r\n",
+		pm_module_id, pm_freq, cli_pm_cp_cpu_freq_str((pm_cp_cpu_freq_e)pm_freq));
+
+	ret = bk_pm_module_vote_cp_cpu_freq((pm_cp_dev_id_e)pm_module_id, (pm_cp_cpu_freq_e)pm_freq);
+	if (ret != BK_OK)
+	{
+		BK_LOGD(NULL, "set CP pm freq failed: %d\r\n", ret);
+		return;
+	}
+
+	BK_LOGD(NULL, "PM CP cpu freq test id: %d; freq: %d\r\n", pm_module_id, pm_freq);
 }
 static void cli_pm_lpo(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv)
 {
@@ -884,6 +945,628 @@ static void cli_pm_ap_demo_cmd(char *pcWriteBuffer, int xWriteBufferLen, int arg
 		return;
 	}
 }
+
+#if CONFIG_SPI
+/*
+ * AP fast-suspend SPI callback demo
+ *
+ * This demo deliberately does not call bk_spi_init() or claim GPIO/DMA
+ * resources. Register it only after the target SPI instance has been
+ * initialized by its real owner:
+ *
+ *   pm_spi_fast_demo register 1
+ *   pm_spi_fast_demo status
+ *   pm_spi_fast_demo busy 1     # simulate an in-flight transfer
+ *   pm_spi_fast_demo busy 0
+ *   pm_spi_fast_demo prepare 1  # force prepare_power_off to return BUSY
+ *   pm_spi_fast_demo prepare 0  # let prepare_power_off return OK
+ *   pm_spi_fast_demo unregister
+ *
+ * Driver integration rules demonstrated here:
+ * 1. prepare_power_off is the common normal/Fast Boot drain gate. On its
+ *    first idle probe it atomically rejects new submissions; prepare_busy
+ *    models a driver-owned lock-free pending counter. It returns BUSY until
+ *    normal tasks drain existing work, then the next idle probe returns OK.
+ * 2. resume must idempotently reopen the submission gate after cancellation
+ *    or Fast Boot recovery. quiesce/app_resume run in task context and may use
+ *    RTOS APIs; any quiesce wait must have a finite timeout.
+ * 3. backup/restore run with CPU3 offline and CPU2 interrupts disabled. They
+ *    must only access retained memory and MMIO: no log, allocation, mutex,
+ *    semaphore, delay or other blocking API.
+ *    prepare_power_off follows the same non-blocking restrictions.
+ * 4. Clock/power dependencies must use PLATFORM/BUS priority callbacks so
+ *    they restore before this PERIPHERAL callback.
+ * 5. The PM framework never reads driver-private queues or busy flags. WiFi,
+ *    BT/BLE and other owners must maintain these states and register callbacks.
+ * 6. The callback descriptor and backup storage must remain valid until
+ *    bk_pm_ap_power_ops_unregister() succeeds.
+ */
+#define CLI_SPI_FAST_QUIESCE_TIMEOUT_MS (20U)
+#define CLI_SPI_FAST_BACKUP_REG_NUM      (3U)
+
+typedef struct {
+	spi_hal_t hal;
+	uint32_t regs[CLI_SPI_FAST_BACKUP_REG_NUM];
+	volatile bool accepting;
+	volatile bool transfer_busy;
+	volatile bool prepare_busy;
+	volatile bool backup_valid;
+	uint32_t prepare_count;
+	uint32_t app_resume_count;
+	bool registered;
+} cli_spi_fast_demo_t;
+
+static cli_spi_fast_demo_t s_cli_spi_fast_demo;
+
+static bk_err_t cli_spi_prepare_power_off(void *arg)
+{
+	cli_spi_fast_demo_t *demo = (cli_spi_fast_demo_t *)arg;
+
+	/*
+	 * Called from the idle path with interrupts disabled. Only close the
+	 * submission gate and inspect retained lock-free state. prepare_busy is a
+	 * test stand-in for a real module's queue/worker/transaction pending count;
+	 * the PM framework intentionally has no knowledge of that private state.
+	 */
+	__atomic_store_n(&demo->accepting, false, __ATOMIC_RELEASE);
+	__atomic_add_fetch(&demo->prepare_count, 1U, __ATOMIC_RELAXED);
+	return __atomic_load_n(&demo->prepare_busy, __ATOMIC_ACQUIRE) ?
+		BK_ERR_BUSY : BK_OK;
+}
+
+static bk_err_t cli_spi_fast_quiesce(void *arg)
+{
+	cli_spi_fast_demo_t *demo = (cli_spi_fast_demo_t *)arg;
+	uint32_t start_ms = rtos_get_time();
+
+	/* A real driver sets this gate before checking its DMA/IRQ busy state. */
+	__atomic_store_n(&demo->accepting, false, __ATOMIC_RELEASE);
+	while (__atomic_load_n(&demo->transfer_busy, __ATOMIC_ACQUIRE)) {
+		if ((rtos_get_time() - start_ms) >=
+			CLI_SPI_FAST_QUIESCE_TIMEOUT_MS) {
+			__atomic_store_n(&demo->accepting, true, __ATOMIC_RELEASE);
+			return BK_ERR_TIMEOUT;
+		}
+		rtos_delay_milliseconds(1);
+	}
+
+	return BK_OK;
+}
+
+static bk_err_t cli_spi_fast_backup(void *arg)
+{
+	cli_spi_fast_demo_t *demo = (cli_spi_fast_demo_t *)arg;
+	spi_hw_t *hw = demo->hal.hw;
+
+	/*
+	 * Atomic hardware snapshot. The PM framework has already disabled CPU2
+	 * interrupts; these are the same configuration registers saved by the
+	 * BK7259 SPI HAL. FIFO/data/status registers are intentionally excluded.
+	 */
+	demo->regs[0] = hw->global_ctrl.v;
+	demo->regs[1] = hw->ctrl.v;
+	demo->regs[2] = hw->cfg.v;
+	__DMB();
+	demo->backup_valid = true;
+	return BK_OK;
+}
+
+static bk_err_t cli_spi_fast_restore(void *arg)
+{
+	cli_spi_fast_demo_t *demo = (cli_spi_fast_demo_t *)arg;
+	spi_hw_t *hw = demo->hal.hw;
+
+	/*
+	 * Clock/power must already be available through an earlier PLATFORM/BUS
+	 * restore callback. Do not call ordinary SPI driver APIs in this phase.
+	 */
+	if (demo->backup_valid) {
+		hw->global_ctrl.v = demo->regs[0];
+		hw->ctrl.v = demo->regs[1];
+		hw->cfg.v = demo->regs[2];
+		__DMB();
+		demo->backup_valid = false;
+	}
+	return BK_OK;
+}
+
+static bk_err_t cli_spi_fast_resume(void *arg)
+{
+	cli_spi_fast_demo_t *demo = (cli_spi_fast_demo_t *)arg;
+
+	/* Real drivers re-enable software submissions and restart deferred work. */
+	__atomic_store_n(&demo->accepting, true, __ATOMIC_RELEASE);
+	return BK_OK;
+}
+
+static bk_err_t cli_spi_fast_app_resume(void *arg)
+{
+	cli_spi_fast_demo_t *demo = (cli_spi_fast_demo_t *)arg;
+	uint32_t count = __atomic_add_fetch(&demo->app_resume_count, 1U,
+		__ATOMIC_RELAXED);
+
+	/*
+	 * This phase runs only after AP0/AP1, low-level resources and CP-to-AP
+	 * business mailbox communication are ready. Application work may use
+	 * normal RTOS, logging, driver and cross-core communication APIs here.
+	 */
+	CLI_LOGI("SPI fast PM demo app resume:%u\r\n", count);
+	return BK_OK;
+}
+
+static const pm_ap_power_ops_t s_cli_spi_fast_ops = {
+	.name = "cli_spi_demo",
+	.prepare_power_off = cli_spi_prepare_power_off,
+	.quiesce = cli_spi_fast_quiesce,
+	.backup = cli_spi_fast_backup,
+	.restore = cli_spi_fast_restore,
+	.resume = cli_spi_fast_resume,
+	.app_resume = cli_spi_fast_app_resume,
+	.arg = &s_cli_spi_fast_demo,
+	.priority = PM_AP_POWER_PRIORITY_PERIPHERAL,
+};
+
+static void cli_pm_spi_fast_demo(char *pcWriteBuffer,
+	int xWriteBufferLen, int argc, char **argv)
+{
+	bk_err_t ret;
+
+	(void)pcWriteBuffer;
+	(void)xWriteBufferLen;
+
+	if (argc < 2) {
+		CLI_LOGI("usage: pm_spi_fast_demo {register <id>|unregister|busy <0|1>|prepare <0|1>|status}\r\n");
+		return;
+	}
+
+	if (os_strcmp(argv[1], "register") == 0) {
+		uint32_t id;
+
+		if (argc != 3) {
+			CLI_LOGI("usage: pm_spi_fast_demo register <spi_id>\r\n");
+			return;
+		}
+		if (s_cli_spi_fast_demo.registered) {
+			CLI_LOGW("SPI fast PM demo already registered\r\n");
+			return;
+		}
+
+		id = os_strtoul(argv[2], NULL, 0);
+		if (id >= SPI_ID_MAX) {
+			CLI_LOGE("invalid SPI id:%u\r\n", id);
+			return;
+		}
+
+		os_memset(&s_cli_spi_fast_demo, 0,
+			sizeof(s_cli_spi_fast_demo));
+		s_cli_spi_fast_demo.hal.id = (spi_unit_t)id;
+		s_cli_spi_fast_demo.hal.hw =
+			(spi_hw_t *)SPI_LL_REG_BASE(id);
+		s_cli_spi_fast_demo.accepting = true;
+
+		ret = bk_pm_ap_power_ops_register(&s_cli_spi_fast_ops);
+		if (ret == BK_OK) {
+			s_cli_spi_fast_demo.registered = true;
+			CLI_LOGI("SPI%u fast PM demo registered\r\n", id);
+		} else {
+			CLI_LOGE("register SPI fast PM demo failed:%d\r\n", ret);
+		}
+		return;
+	}
+
+	if (!s_cli_spi_fast_demo.registered) {
+		CLI_LOGW("SPI fast PM demo is not registered; run: pm_spi_fast_demo register <spi_id>\r\n");
+		return;
+	}
+
+	if (os_strcmp(argv[1], "unregister") == 0) {
+		ret = bk_pm_ap_power_ops_unregister(&s_cli_spi_fast_ops);
+		if (ret == BK_OK) {
+			s_cli_spi_fast_demo.registered = false;
+			CLI_LOGI("SPI fast PM demo unregistered\r\n");
+		} else {
+			CLI_LOGE("unregister SPI fast PM demo failed:%d\r\n", ret);
+		}
+		return;
+	}
+
+	if (os_strcmp(argv[1], "busy") == 0) {
+		if (argc != 3) {
+			CLI_LOGI("usage: pm_spi_fast_demo busy <0|1>\r\n");
+			return;
+		}
+		__atomic_store_n(&s_cli_spi_fast_demo.transfer_busy,
+			os_strtoul(argv[2], NULL, 0) != 0U,
+			__ATOMIC_RELEASE);
+		CLI_LOGI("SPI fast PM demo busy:%u\r\n",
+			s_cli_spi_fast_demo.transfer_busy);
+		return;
+	}
+
+	if (os_strcmp(argv[1], "prepare") == 0) {
+		if (argc != 3) {
+			CLI_LOGI("usage: pm_spi_fast_demo prepare <0|1>\r\n");
+			return;
+		}
+		__atomic_store_n(&s_cli_spi_fast_demo.prepare_busy,
+			os_strtoul(argv[2], NULL, 0) != 0U,
+			__ATOMIC_RELEASE);
+		CLI_LOGI("SPI fast PM demo prepare busy:%u\r\n",
+			s_cli_spi_fast_demo.prepare_busy);
+		return;
+	}
+
+	if (os_strcmp(argv[1], "status") == 0) {
+		CLI_LOGI("SPI fast PM demo: registered=%u id=%u accepting=%u transfer_busy=%u prepare_busy=%u prepare_count=%u backup=%u app_resume=%u\r\n",
+			s_cli_spi_fast_demo.registered,
+			s_cli_spi_fast_demo.hal.id,
+			s_cli_spi_fast_demo.accepting,
+			s_cli_spi_fast_demo.transfer_busy,
+			s_cli_spi_fast_demo.prepare_busy,
+			s_cli_spi_fast_demo.prepare_count,
+			s_cli_spi_fast_demo.backup_valid,
+			s_cli_spi_fast_demo.app_resume_count);
+		return;
+	}
+
+	CLI_LOGI("usage: pm_spi_fast_demo {register <id>|unregister|busy <0|1>|prepare <0|1>|status}\r\n");
+}
+#endif
+
+/*
+ * Generic non-Fast-Boot AP power-off drain demo.
+ *
+ * The auto_drain worker represents existing WiFi/BLE work. prepare_power_off
+ * closes the submission gate and only observes retained lock-free state; the
+ * worker clears pending later in normal task context. The next idle probe can
+ * then continue AP power-off. If CP cancels or times out, resume reopens the
+ * submission gate.
+ */
+#define CLI_POWER_PREPARE_DRAIN_TASK_PRIO  (4)
+#define CLI_POWER_PREPARE_DRAIN_TASK_STACK (1024)
+
+typedef struct {
+	volatile bool accepting;
+	volatile bool pending;
+	volatile bool drain_running;
+	volatile uint32_t prepare_count;
+	volatile uint32_t resume_count;
+	uint32_t drain_delay_ms;
+	beken_thread_t drain_thread;
+	bool registered;
+} cli_power_prepare_demo_t;
+
+static cli_power_prepare_demo_t s_cli_power_prepare_demo;
+
+static bk_err_t cli_power_prepare_demo_prepare(void *arg)
+{
+	cli_power_prepare_demo_t *demo = (cli_power_prepare_demo_t *)arg;
+
+	__atomic_store_n(&demo->accepting, false, __ATOMIC_RELEASE);
+	__atomic_add_fetch(&demo->prepare_count, 1U, __ATOMIC_RELAXED);
+	return __atomic_load_n(&demo->pending, __ATOMIC_ACQUIRE) ?
+		BK_ERR_BUSY : BK_OK;
+}
+
+static bk_err_t cli_power_prepare_demo_resume(void *arg)
+{
+	cli_power_prepare_demo_t *demo = (cli_power_prepare_demo_t *)arg;
+
+	/* Non-Fast-Boot prepare abort can run from Idle with IRQs disabled. */
+	__atomic_store_n(&demo->accepting, true, __ATOMIC_RELEASE);
+	__atomic_add_fetch(&demo->resume_count, 1U, __ATOMIC_RELAXED);
+	return BK_OK;
+}
+
+static const pm_ap_power_ops_t s_cli_power_prepare_ops = {
+	.name = "cli_power_demo",
+	.prepare_power_off = cli_power_prepare_demo_prepare,
+	.resume = cli_power_prepare_demo_resume,
+	.arg = &s_cli_power_prepare_demo,
+	.priority = PM_AP_POWER_PRIORITY_SERVICE,
+};
+
+static void cli_power_prepare_demo_drain_worker(void *arg)
+{
+	cli_power_prepare_demo_t *demo = (cli_power_prepare_demo_t *)arg;
+	uint32_t delay_ms = demo->drain_delay_ms;
+
+	rtos_delay_milliseconds(delay_ms);
+	__atomic_store_n(&demo->pending, false, __ATOMIC_RELEASE);
+	__atomic_store_n(&demo->drain_running, false, __ATOMIC_RELEASE);
+	demo->drain_thread = NULL;
+	CLI_LOGI("AP power prepare demo drained after %u ms\r\n", delay_ms);
+	rtos_delete_thread(NULL);
+}
+
+static void cli_pm_power_prepare_demo(char *pcWriteBuffer,
+	int xWriteBufferLen, int argc, char **argv)
+{
+	cli_power_prepare_demo_t *demo = &s_cli_power_prepare_demo;
+	bk_err_t ret;
+
+	(void)pcWriteBuffer;
+	(void)xWriteBufferLen;
+
+	if (argc < 2) {
+		CLI_LOGI("usage: pm_power_prepare_demo {register|unregister|busy <0|1>|auto_drain <ms>|status}\r\n");
+		return;
+	}
+
+	if (os_strcmp(argv[1], "register") == 0) {
+		if (demo->registered) {
+			CLI_LOGW("AP power prepare demo already registered\r\n");
+			return;
+		}
+		os_memset(demo, 0, sizeof(*demo));
+		demo->accepting = true;
+		ret = bk_pm_ap_power_ops_register(&s_cli_power_prepare_ops);
+		if (ret == BK_OK) {
+			demo->registered = true;
+			CLI_LOGI("AP power prepare demo registered\r\n");
+		} else {
+			CLI_LOGE("register AP power prepare demo failed:%d\r\n", ret);
+		}
+		return;
+	}
+
+	if (!demo->registered) {
+		CLI_LOGW("AP power prepare demo is not registered; run: pm_power_prepare_demo register\r\n");
+		return;
+	}
+
+	if (os_strcmp(argv[1], "unregister") == 0) {
+		if (__atomic_load_n(&demo->drain_running, __ATOMIC_ACQUIRE)) {
+			CLI_LOGW("AP power prepare demo drain worker is running\r\n");
+			return;
+		}
+		ret = bk_pm_ap_power_ops_unregister(&s_cli_power_prepare_ops);
+		if (ret == BK_OK) {
+			demo->registered = false;
+			CLI_LOGI("AP power prepare demo unregistered\r\n");
+		} else {
+			CLI_LOGE("unregister AP power prepare demo failed:%d\r\n", ret);
+		}
+		return;
+	}
+
+	if ((os_strcmp(argv[1], "busy") == 0) ||
+		(os_strcmp(argv[1], "pending") == 0)) {
+		if (argc != 3) {
+			CLI_LOGI("usage: pm_power_prepare_demo busy <0|1>\r\n");
+			return;
+		}
+		if (__atomic_load_n(&demo->drain_running, __ATOMIC_ACQUIRE)) {
+			CLI_LOGW("AP power prepare demo drain worker is running\r\n");
+			return;
+		}
+		__atomic_store_n(&demo->pending,
+			os_strtoul(argv[2], NULL, 0) != 0U, __ATOMIC_RELEASE);
+		CLI_LOGI("AP power prepare demo state:%s\r\n",
+			demo->pending ? "BUSY" : "IDLE");
+		return;
+	}
+
+	if (os_strcmp(argv[1], "auto_drain") == 0) {
+		if (argc != 3) {
+			CLI_LOGI("usage: pm_power_prepare_demo auto_drain <ms>\r\n");
+			return;
+		}
+		if (__atomic_load_n(&demo->drain_running, __ATOMIC_ACQUIRE)) {
+			CLI_LOGW("AP power prepare demo drain worker is already running\r\n");
+			return;
+		}
+		demo->drain_delay_ms = os_strtoul(argv[2], NULL, 0);
+		__atomic_store_n(&demo->pending, true, __ATOMIC_RELEASE);
+		__atomic_store_n(&demo->drain_running, true, __ATOMIC_RELEASE);
+		ret = rtos_create_thread(&demo->drain_thread,
+			CLI_POWER_PREPARE_DRAIN_TASK_PRIO,
+			"pm_drain",
+			(beken_thread_function_t)cli_power_prepare_demo_drain_worker,
+			CLI_POWER_PREPARE_DRAIN_TASK_STACK,
+			demo);
+		if (ret != BK_OK) {
+			demo->drain_thread = NULL;
+			__atomic_store_n(&demo->drain_running, false,
+				__ATOMIC_RELEASE);
+			__atomic_store_n(&demo->pending, false, __ATOMIC_RELEASE);
+			CLI_LOGE("create AP power prepare drain worker failed:%d\r\n",
+				ret);
+		} else {
+			CLI_LOGI("AP power prepare demo pending, auto drain after %u ms\r\n",
+				demo->drain_delay_ms);
+		}
+		return;
+	}
+
+	if (os_strcmp(argv[1], "status") == 0) {
+		CLI_LOGI("AP power prepare demo: registered=%u state=%s accepting=%u pending=%u drain_running=%u prepare_count=%u resume_count=%u\r\n",
+			demo->registered, demo->pending ? "BUSY" : "IDLE",
+			demo->accepting, demo->pending,
+			demo->drain_running, demo->prepare_count,
+			demo->resume_count);
+		return;
+	}
+
+	CLI_LOGI("usage: pm_power_prepare_demo {register|unregister|busy <0|1>|auto_drain <ms>|status}\r\n");
+}
+
+#if CONFIG_PM_AP_FAST_BOOT_ENABLE && CONFIG_CPU_HOTPLUG
+/*
+ * Fast-suspend guard test.
+ *
+ * Test 1: quiesce callback budget
+ *   pm_fast_guard_test register
+ *   pm_fast_guard_test timeout_case
+ *   pm_boot_ap 9 1
+ * Expected: the 120 ms callback exceeds the framework's 100 ms budget,
+ *           suspend rolls back and AP remains available.
+ *
+ * Test 2: DMA guard after quiesce
+ *   Start a real audio/DMA stream first.
+ *   pm_fast_guard_test dma_case
+ *   pm_boot_ap 9 1
+ * Expected: "DMA still busy mask=..." followed by "rollback ready".
+ *
+ * Test 3: normal path
+ *   Stop all DMA users.
+ *   pm_fast_guard_test pass_case
+ *   pm_boot_ap 9 1
+ * Expected: no guard failure and AP proceeds to power off.
+ *
+ * The test deliberately does not allocate a synthetic DMA channel because
+ * doing so can conflict with real DMA owners. dma_case reports the live mask
+ * and requires the caller to start a known DMA client.
+ */
+#define CLI_FAST_GUARD_TIMEOUT_TEST_MS (120U)
+#define CLI_FAST_GUARD_BUDGET_MS       (100U)
+
+typedef struct {
+	volatile bool accepting;
+	volatile uint32_t quiesce_delay_ms;
+	volatile uint32_t quiesce_count;
+	volatile uint32_t resume_count;
+	volatile uint32_t last_quiesce_ms;
+	bool registered;
+} cli_fast_guard_test_t;
+
+static cli_fast_guard_test_t s_cli_fast_guard_test;
+
+static bk_err_t cli_fast_guard_prepare(void *arg)
+{
+	cli_fast_guard_test_t *test = (cli_fast_guard_test_t *)arg;
+
+	__atomic_store_n(&test->accepting, false, __ATOMIC_RELEASE);
+	return BK_OK;
+}
+
+static bk_err_t cli_fast_guard_quiesce(void *arg)
+{
+	cli_fast_guard_test_t *test = (cli_fast_guard_test_t *)arg;
+	uint32_t start_ms = rtos_get_time();
+	uint32_t delay_ms = __atomic_load_n(&test->quiesce_delay_ms,
+		__ATOMIC_ACQUIRE);
+
+	__atomic_add_fetch(&test->quiesce_count, 1U, __ATOMIC_RELAXED);
+	if (delay_ms != 0U) {
+		rtos_delay_milliseconds(delay_ms);
+	}
+	__atomic_store_n(&test->last_quiesce_ms,
+		rtos_get_time() - start_ms, __ATOMIC_RELEASE);
+	return BK_OK;
+}
+
+static bk_err_t cli_fast_guard_resume(void *arg)
+{
+	cli_fast_guard_test_t *test = (cli_fast_guard_test_t *)arg;
+
+	__atomic_store_n(&test->accepting, true, __ATOMIC_RELEASE);
+	__atomic_add_fetch(&test->resume_count, 1U, __ATOMIC_RELAXED);
+	return BK_OK;
+}
+
+static const pm_ap_power_ops_t s_cli_fast_guard_ops = {
+	.name = "cli_fast_guard",
+	.prepare_power_off = cli_fast_guard_prepare,
+	.quiesce = cli_fast_guard_quiesce,
+	.resume = cli_fast_guard_resume,
+	.arg = &s_cli_fast_guard_test,
+	.priority = PM_AP_POWER_PRIORITY_APPLICATION,
+};
+
+static void cli_pm_fast_guard_test(char *pcWriteBuffer,
+	int xWriteBufferLen, int argc, char **argv)
+{
+	cli_fast_guard_test_t *test = &s_cli_fast_guard_test;
+	uint32_t dma_busy_mask;
+	bk_err_t ret;
+
+	(void)pcWriteBuffer;
+	(void)xWriteBufferLen;
+
+	if (argc < 2) {
+		CLI_LOGI("usage: pm_fast_guard_test {register|unregister|timeout_case|dma_case|pass_case|status}\r\n");
+		return;
+	}
+
+	if (os_strcmp(argv[1], "register") == 0) {
+		if (test->registered) {
+			CLI_LOGW("Fast guard test already registered\r\n");
+			return;
+		}
+		os_memset(test, 0, sizeof(*test));
+		test->accepting = true;
+		ret = bk_pm_ap_power_ops_register(&s_cli_fast_guard_ops);
+		if (ret == BK_OK) {
+			test->registered = true;
+			CLI_LOGI("Fast guard test registered, budget=%u ms\r\n",
+				CLI_FAST_GUARD_BUDGET_MS);
+		} else {
+			CLI_LOGE("Fast guard test register failed:%d\r\n", ret);
+		}
+		return;
+	}
+
+	if (!test->registered) {
+		CLI_LOGW("Fast guard test is not registered; run: pm_fast_guard_test register\r\n");
+		return;
+	}
+
+	if (os_strcmp(argv[1], "unregister") == 0) {
+		ret = bk_pm_ap_power_ops_unregister(&s_cli_fast_guard_ops);
+		if (ret == BK_OK) {
+			test->registered = false;
+			CLI_LOGI("Fast guard test unregistered\r\n");
+		} else {
+			CLI_LOGE("Fast guard test unregister failed:%d\r\n", ret);
+		}
+		return;
+	}
+
+	if (os_strcmp(argv[1], "timeout_case") == 0) {
+		__atomic_store_n(&test->quiesce_delay_ms,
+			CLI_FAST_GUARD_TIMEOUT_TEST_MS, __ATOMIC_RELEASE);
+		CLI_LOGI("Timeout case armed: callback=%u ms, budget=%u ms; run pm_boot_ap 9 1\r\n",
+			CLI_FAST_GUARD_TIMEOUT_TEST_MS, CLI_FAST_GUARD_BUDGET_MS);
+		return;
+	}
+
+	if (os_strcmp(argv[1], "dma_case") == 0) {
+		__atomic_store_n(&test->quiesce_delay_ms, 0U, __ATOMIC_RELEASE);
+		dma_busy_mask = bk_dma_check_chn_status();
+		if (dma_busy_mask == 0U) {
+			CLI_LOGW("DMA case not armed: no active DMA; start an audio/DMA stream first\r\n");
+		} else {
+			CLI_LOGI("DMA case armed: live mask=0x%x; run pm_boot_ap 9 1\r\n",
+				dma_busy_mask);
+		}
+		return;
+	}
+
+	if (os_strcmp(argv[1], "pass_case") == 0) {
+		__atomic_store_n(&test->quiesce_delay_ms, 0U, __ATOMIC_RELEASE);
+		dma_busy_mask = bk_dma_check_chn_status();
+		if (dma_busy_mask != 0U) {
+			CLI_LOGW("Pass case blocked: stop DMA mask=0x%x before AP close\r\n",
+				dma_busy_mask);
+		} else {
+			CLI_LOGI("Pass case armed; run pm_boot_ap 9 1\r\n");
+		}
+		return;
+	}
+
+	if (os_strcmp(argv[1], "status") == 0) {
+		CLI_LOGI("Fast guard test: registered=%u accepting=%u delay_ms=%u quiesce_count=%u last_ms=%u resume_count=%u dma_mask=0x%x\r\n",
+			test->registered, test->accepting, test->quiesce_delay_ms,
+			test->quiesce_count, test->last_quiesce_ms,
+			test->resume_count, bk_dma_check_chn_status());
+		return;
+	}
+
+	CLI_LOGI("usage: pm_fast_guard_test {register|unregister|timeout_case|dma_case|pass_case|status}\r\n");
+}
+#endif
+
 #define PWR_CMD_CNT (sizeof(s_pwr_commands) / sizeof(struct cli_command))
 static const struct cli_command s_pwr_commands[] = {
 #if 1//CONFIG_SYSTEM_CTRL
@@ -898,6 +1581,7 @@ static const struct cli_command s_pwr_commands[] = {
 	{"pm_clk", "pm_clk [module_name][clk_state]", cli_pm_clk},
 	{"pm_power", "pm_power [module_name][ power state]", cli_pm_power},
 	{"pm_freq", "pm_freq [module_name][ frequency]", cli_pm_freq},
+	{"pm_cp_freq", "pm_cp_freq [module_name][frequency]", cli_pm_cp_freq},
 	{"pm_ctrl", "pm_ctrl [ctrl_value]", cli_pm_ctrl},
 	{"pm_pwr_state", "pm_pwr_state [pwr_state]", cli_pm_pwr_state},
 	{"pm_auto_vote", "pm_auto_vote [auto_vote_value]", cli_pm_auto_vote},
@@ -908,11 +1592,22 @@ static const struct cli_command s_pwr_commands[] = {
 #endif
 	{"pm_boot_ap", "pm_boot_ap [module_name] [ctrl_state:0x0:bootup; 0x1:shutdowm]", cli_pm_boot_ap},
 	{"pm_ap_demo", "pm_ap_demo {init|sleep|deep_sleep}", cli_pm_ap_demo_cmd},
+#if CONFIG_SPI
+	{"pm_spi_fast_demo", "pm_spi_fast_demo {register <id>|unregister|busy <0|1>|prepare <0|1>|status}", cli_pm_spi_fast_demo},
+#endif
+	{"pm_power_prepare_demo", "pm_power_prepare_demo {register|unregister|busy <0|1>|auto_drain <ms>|status}", cli_pm_power_prepare_demo},
+#if CONFIG_PM_AP_FAST_BOOT_ENABLE && CONFIG_CPU_HOTPLUG
+	{"pm_fast_guard_test", "pm_fast_guard_test {register|unregister|timeout_case|dma_case|pass_case|status}", cli_pm_fast_guard_test},
+#endif
 #else
 	{"pm", "pm [sleep_mode] [wake_source] [vote1] [vote2] [vote3] [param1] [param2] [param3]", cli_pm_cmd},
 	{"pm_vote", "pm_vote [pm_sleep_mode] [pm_vote] [pm_vote_value] [pm_sleep_time]", cli_pm_vote_cmd},
 	{"pm_debug", "pm_debug [debug_en_value]", cli_pm_debug},
 	{"pm_ap_demo", "pm_ap_demo {init|sleep|deep_sleep}", cli_pm_ap_demo_cmd},
+	{"pm_power_prepare_demo", "pm_power_prepare_demo {register|unregister|busy <0|1>|auto_drain <ms>|status}", cli_pm_power_prepare_demo},
+#if CONFIG_PM_AP_FAST_BOOT_ENABLE && CONFIG_CPU_HOTPLUG
+	{"pm_fast_guard_test", "pm_fast_guard_test {register|unregister|timeout_case|dma_case|pass_case|status}", cli_pm_fast_guard_test},
+#endif
 #endif //CONFIG_DEBUG_VERSION
 #endif //CONFIG_SYSTEM_CTRL
 };

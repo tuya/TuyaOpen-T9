@@ -209,8 +209,8 @@ void lv_demo_widgets(void)
         lv_obj_set_style_pad_left(tab_bar, LV_HOR_RES / 2, 0);
         lv_obj_t * logo = lv_image_create(tab_bar);
         lv_obj_add_flag(logo, LV_OBJ_FLAG_IGNORE_LAYOUT);
-        LV_IMAGE_DECLARE(img_lvgl_logo);
-        lv_image_set_src(logo, &img_lvgl_logo);
+        LV_IMAGE_DECLARE(tuya_img_lvgl_logo);
+        lv_image_set_src(logo, &tuya_img_lvgl_logo);
         lv_obj_align(logo, LV_ALIGN_LEFT_MID, -LV_HOR_RES / 2 + 25, 0);
 
         lv_obj_t * label = lv_label_create(tab_bar);
@@ -263,9 +263,9 @@ static void profile_create(lv_obj_t * parent)
     lv_obj_t * panel1 = lv_obj_create(parent);
     lv_obj_set_height(panel1, LV_SIZE_CONTENT);
 
-    LV_IMAGE_DECLARE(img_demo_widgets_avatar);
+    LV_IMAGE_DECLARE(tuya_img_demo_widgets_avatar);
     lv_obj_t * avatar = lv_image_create(panel1);
-    lv_image_set_src(avatar, &img_demo_widgets_avatar);
+    lv_image_set_src(avatar, &tuya_img_demo_widgets_avatar);
 
     lv_obj_t * name = lv_label_create(panel1);
     lv_label_set_text_static(name, "Elena Smith");
@@ -852,9 +852,9 @@ static void analytics_create(lv_obj_t * parent)
     lv_scale_set_section_style_indicator(scale3, section, &scale3_section3_indicator_style);
     lv_scale_set_section_style_items(scale3, section, &scale3_section3_tick_style);
 
-    LV_IMAGE_DECLARE(img_demo_widgets_needle);
+    LV_IMAGE_DECLARE(tuya_img_demo_widgets_needle);
     scale3_needle = lv_image_create(scale3);
-    lv_image_set_src(scale3_needle, &img_demo_widgets_needle);
+    lv_image_set_src(scale3_needle, &tuya_img_demo_widgets_needle);
     lv_image_set_pivot(scale3_needle, 3, 4);
     lv_obj_align(scale3_needle, LV_ALIGN_CENTER, 47, -2);
 
@@ -1001,12 +1001,12 @@ void shop_create(lv_obj_t * parent)
     lv_label_set_text(title, "Top products");
     lv_obj_add_style(title, &style_title, 0);
 
-    LV_IMAGE_DECLARE(img_clothes);
-    create_shop_item(list, &img_clothes, "Blue T-shirt", "Clothes", "$722");
-    create_shop_item(list, &img_clothes, "Blue T-shirt", "Clothes", "$411");
-    create_shop_item(list, &img_clothes, "Blue T-shirt", "Clothes", "$917");
-    create_shop_item(list, &img_clothes, "Blue T-shirt", "Clothes", "$64");
-    create_shop_item(list, &img_clothes, "Blue T-shirt", "Clothes", "$805");
+    LV_IMAGE_DECLARE(tuya_img_clothes);
+    create_shop_item(list, &tuya_img_clothes, "Blue T-shirt", "Clothes", "$722");
+    create_shop_item(list, &tuya_img_clothes, "Blue T-shirt", "Clothes", "$411");
+    create_shop_item(list, &tuya_img_clothes, "Blue T-shirt", "Clothes", "$917");
+    create_shop_item(list, &tuya_img_clothes, "Blue T-shirt", "Clothes", "$64");
+    create_shop_item(list, &tuya_img_clothes, "Blue T-shirt", "Clothes", "$805");
 
     lv_obj_t * notifications = lv_obj_create(parent);
     if(disp_size == DISP_SMALL) {

@@ -14,10 +14,6 @@
 
 #include <lwip/sockets.h>
 #include "wlanif.h"
-#if CONFIG_ETH
-#include "ethernetif.h"
-#include "miiphy.h"
-#endif
 
 #include <components/system.h>
 #include "bk_drv_model.h"
@@ -88,21 +84,6 @@ struct ipv4_config p2p_gc_ip_settings = {
 };
 #endif
 
-#ifdef CONFIG_ETH
-struct ipv4_config eth_ip_settings = {
-#if CONFIG_ETH_DHCP
-	.addr_type = ADDR_TYPE_DHCP, // ADDR_TYPE_DHCP
-#else
-	.addr_type = ADDR_TYPE_STATIC, // ADDR_TYPE_STATIC
-#endif
-	.address = 0x0afaa8c0, //192.168.250.10, network order
-	.gw = 0x01faa8c0,      //192.168.250.1, network order
-	.netmask = 0x00ffffff, //255.255.255.0, network order
-	.dns1 = 0x01faa8c0,    //192.168.250.1, network order
-	.dns2 = 0,
-};
-#endif
-
 #if CONFIG_BRIDGE
 struct ipv4_config br_ip_settings = {
 	.addr_type = ADDR_TYPE_DHCP,
@@ -120,9 +101,6 @@ bool uap_ip_start_flag = false;
 #if CONFIG_P2P
 bool p2p_go_ip_start_flag = false;
 static bool p2p_gc_ip_start_flag = false;
-#endif
-#ifdef CONFIG_ETH
-static bool eth_ip_start_flag = false;
 #endif
 #if CONFIG_BRIDGE
 static bool bridge_ip_start_flag = false;
@@ -143,6 +121,8 @@ static bool bridge_ip_start_flag = false;
 
 #if LWIP_NETIF_EXT_STATUS_CALLBACK && LWIP_IPV6
 NETIF_DECLARE_EXT_CALLBACK(netif_ipv6_callback)
+static uint8_t s_sta_ip6_ll_reported;
+static uint8_t s_sta_ip6_global_reported;
 #endif
 
 typedef void (*net_sta_ipup_cb_fn)(void *data);
@@ -161,9 +141,6 @@ static struct iface g_uap = {{0}, .name = "ap"};
 #if CONFIG_P2P
 static struct iface g_p2p_go = {{0}, .name = "p2p_go"};
 static struct iface g_p2p_gc = {{0}, .name = "p2p_gc"};
-#endif
-#ifdef CONFIG_ETH
-static struct iface g_eth = {{0}, .name = "eth"};
 #endif
 #if CONFIG_BRIDGE
 static struct iface g_br = {{0}, .name = "br"};
@@ -457,11 +434,6 @@ static void wm_netif_status_callback(struct netif *n)
 #endif
 				}
 #endif // CONFIG_WIFI_ENABLE
-#ifdef CONFIG_ETH
-			} else if (n == &g_mlan.netif) {
-				// Ethernet DHCP handler, clear ps prevent
-				// TODO: ETH, DHCP, IPv6, RA, DHCPv6 handler
-#endif
 			} else {
 				// dhcp fail
 #ifdef CONFIG_WIFI_ENABLE
@@ -485,24 +457,39 @@ static void
 wm_netif_ipv6_status_callback(struct netif *netif, netif_nsc_reason_t reason, const netif_ext_callback_args_t *args)
 {
 	u8 *ipv6_addr;
+	char ip6_str[40];
 	s8_t addr_index;
 	LWIP_UNUSED_ARG(args);
 
 	if (reason & LWIP_NSC_IPV6_ADDR_STATE_CHANGED) {
 		addr_index = args->ipv6_addr_state_changed.addr_index;
 		ipv6_addr = (u8 *)(ip_2_ip6(&netif->ip6_addr[addr_index]))->addr;
-		/*only global addr send got ip6 event*/
-		if (ip6_addr_isvalid(netif_ip6_addr_state(netif, addr_index)) &&
-			!ip6_addr_islinklocal(ip_2_ip6(&netif->ip6_addr[addr_index]))) {
-			LWIP_LOGE("ipv6_addr[%d] : %02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x\r\n", addr_index,
-				  ipv6_addr[0], ipv6_addr[1], ipv6_addr[2], ipv6_addr[3],
-				  ipv6_addr[4], ipv6_addr[5], ipv6_addr[6], ipv6_addr[7],
-				  ipv6_addr[8], ipv6_addr[9], ipv6_addr[10], ipv6_addr[11],
-				  ipv6_addr[12], ipv6_addr[13], ipv6_addr[14], ipv6_addr[15]);
-			LWIP_LOGE("ipv6_type[%d] :0x%x\r\n", addr_index, netif->ip6_addr[addr_index].type);
-			LWIP_LOGE("ipv6_state[%d] :0x%x\r\n", addr_index, netif->ip6_addr_state[addr_index]);
+		if (!ip6_addr_ispreferred(netif_ip6_addr_state(netif, addr_index)))
+			return;
+		snprintf(ip6_str, sizeof(ip6_str),
+			 "%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x",
+			 ipv6_addr[0], ipv6_addr[1], ipv6_addr[2], ipv6_addr[3],
+			 ipv6_addr[4], ipv6_addr[5], ipv6_addr[6], ipv6_addr[7],
+			 ipv6_addr[8], ipv6_addr[9], ipv6_addr[10], ipv6_addr[11],
+			 ipv6_addr[12], ipv6_addr[13], ipv6_addr[14], ipv6_addr[15]);
 
-			wifi_netif_notify_sta_got_ip(IP6);
+		if (ip6_addr_islinklocal(ip_2_ip6(&netif->ip6_addr[addr_index]))) {
+			if (s_sta_ip6_ll_reported & (1U << addr_index))
+				return;
+			s_sta_ip6_ll_reported |= (1U << addr_index);
+			LWIP_LOGD("ipv6_addr[%d] linklocal_addr: %s\r\n", addr_index, ip6_str);
+			if (netif == &g_mlan.netif)
+				wifi_netif_notify_sta_got_ip6_ll(addr_index, ip6_str);
+			cif_handle_bk_cmd_ipv6_ind(netif);
+		} else {
+			if (s_sta_ip6_global_reported & (1U << addr_index))
+				return;
+			s_sta_ip6_global_reported |= (1U << addr_index);
+			LWIP_LOGD("ipv6_addr[%d]: %s type:0x%x state:0x%x\r\n", addr_index, ip6_str,
+				  netif->ip6_addr[addr_index].type, netif->ip6_addr_state[addr_index]);
+
+			if (netif == &g_mlan.netif)
+				wifi_netif_notify_sta_got_ip6_global(addr_index, ip6_str);
 			cif_handle_bk_cmd_ipv6_ind(netif);
 #if !CONFIG_DISABLE_DEPRECIATED_WIFI_API
 			if (sta_ipup_cb)
@@ -513,12 +500,6 @@ wm_netif_ipv6_status_callback(struct netif *netif, netif_nsc_reason_t reason, co
 #endif
 
 		}
-		else if (ip6_addr_islinklocal(ip_2_ip6(&netif->ip6_addr[addr_index])))
-			LWIP_LOGE("ipv6_addr[%d] linklocal_addr: %02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x\r\n", addr_index,
-				  ipv6_addr[0], ipv6_addr[1], ipv6_addr[2], ipv6_addr[3],
-				  ipv6_addr[4], ipv6_addr[5], ipv6_addr[6], ipv6_addr[7],
-				  ipv6_addr[8], ipv6_addr[9], ipv6_addr[10], ipv6_addr[11],
-				  ipv6_addr[12], ipv6_addr[13], ipv6_addr[14], ipv6_addr[15]);
 	}
 }
 #endif /*LWIP_NETIF_EXT_STATUS_CALLBACK*/
@@ -639,11 +620,18 @@ void sta_ip_down(void)
 #if LWIP_IPV6
 #if LWIP_NETIF_EXT_STATUS_CALLBACK
 		netif_remove_ext_callback(&netif_ipv6_callback);
+		s_sta_ip6_ll_reported = 0;
+		s_sta_ip6_global_reported = 0;
 #endif
 		for (u8_t addr_idx = 1; addr_idx < LWIP_IPV6_NUM_ADDRESSES; addr_idx++) {
 			netif_ip6_addr_set(&g_mlan.netif, addr_idx, (const ip6_addr_t *)IP6_ADDR_ANY);
 			g_mlan.netif.ip6_addr_state[addr_idx] = IP6_ADDR_INVALID;
 		}
+		netif_ip6_addr_set(&g_mlan.netif, 0, (const ip6_addr_t *)IP6_ADDR_ANY);
+		g_mlan.netif.ip6_addr_state[0] = IP6_ADDR_INVALID;
+#if defined(CONFIG_WIFI_VNET_CONTROLLER)
+		cif_send_ipv6_clear_ind(0);
+#endif
 #endif
 	}
 }
@@ -751,13 +739,6 @@ void ap_set_default_netif(void)
 #if (IP_FORWARD && IP_NAPT)
 	if (netif_is_up(&g_mlan.netif))
 		netifapi_netif_set_default(net_get_sta_handle());
-#endif
-#endif
-
-#ifdef CONFIG_ETH
-#if (IP_FORWARD && IP_NAPT)
-	if (netif_is_up(&g_eth.netif) && netif_is_link_up(&g_eth.netif))
-		netifapi_netif_set_default(&g_eth.netif);
 #endif
 #endif
 }
@@ -1041,6 +1022,10 @@ int net_configure_address(struct ipv4_config *addr, void *intrfc_handle)
 
 	switch (addr->addr_type) {
 	case ADDR_TYPE_STATIC:
+#ifdef CONFIG_WFA_CERT
+		/* if set to static IP, disable DHCP client */
+		netifapi_dhcp_stop(&if_handle->netif);
+#endif
 		ip_addr_set_ip4_u32(&if_handle->ipaddr, addr->address);
 		ip_addr_set_ip4_u32(&if_handle->nmask, addr->netmask);
 		ip_addr_set_ip4_u32(&if_handle->gw, addr->gw);
@@ -1052,12 +1037,6 @@ int net_configure_address(struct ipv4_config *addr, void *intrfc_handle)
 			netif_set_status_callback(&if_handle->netif, wm_netif_status_static_callback);
 			netifapi_netif_set_up(&if_handle->netif);
 			net_configure_dns(if_handle, (struct wlan_ip_config *)addr);
-#ifdef CONFIG_ETH
-		} else if (if_handle == &g_eth) {
-			netif_set_status_callback(&if_handle->netif, wm_netif_status_static_callback);
-			netifapi_netif_set_up(&if_handle->netif);
-			net_configure_dns(if_handle, (struct wlan_ip_config *)addr);
-#endif
 #if CONFIG_BRIDGE
 		} else if (if_handle == &g_br) {
 			netifapi_netif_set_default(net_get_br_handle());
@@ -1101,9 +1080,6 @@ int net_configure_address(struct ipv4_config *addr, void *intrfc_handle)
 
 		// we always set sta netif as the default.
 		sta_set_default_netif();
-#ifdef CONFIG_ETH
-	} else if (if_handle == &g_eth) {
-#endif
 #if CONFIG_P2P
 	} else if (if_handle == &g_p2p_gc) {
 		up_iface = 0;
@@ -1133,12 +1109,8 @@ int net_get_if_addr(struct wlan_ip_config *addr, void *intrfc_handle)
 	struct iface *if_handle = (struct iface *)intrfc_handle;
 
 	if (netif_is_up(&if_handle->netif)) {
-		if (if_handle == &g_mlan
-#ifdef CONFIG_ETH
-			|| if_handle == &g_eth
-#endif
-			) {
-			/* STA or ETH Mode */
+		if (if_handle == &g_mlan) {
+			/* STA Mode */
 			addr->ipv4.address = ip_addr_get_ip4_u32(&if_handle->netif.ip_addr);
 			addr->ipv4.netmask = ip_addr_get_ip4_u32(&if_handle->netif.netmask);
 			addr->ipv4.gw = ip_addr_get_ip4_u32(&if_handle->netif.gw);
@@ -1398,152 +1370,6 @@ void net_begin_send_arp_reply(bool is_send_arp, bool is_allow_send_req)
 		return;
 	}
 	etharp_reply();
-}
-#endif
-
-
-#ifdef CONFIG_ETH
-void *net_get_eth_handle(void)
-{
-	return &g_eth.netif;
-}
-
-int net_eth_add_netif(uint8_t *mac)
-{
-	struct iface *eth_if = &g_eth;
-	err_t err;
-
-	ip_addr_set_ip4_u32(&eth_if->ipaddr, INADDR_ANY);
-	err = netifapi_netif_add(&eth_if->netif,
-		ip_2_ip4(&eth_if->ipaddr),
-		ip_2_ip4(&eth_if->ipaddr),
-		ip_2_ip4(&eth_if->ipaddr),
-		NULL,
-		ethernetif_init,
-		tcpip_input);
-
-	if (err) {
-		LWIP_LOGE("net_wlan_add_netif failed(%d)\n", err);
-		return err;
-	}
-
-	/* disable SW checksum calculation */
-	NETIF_SET_CHECKSUM_CTRL(&eth_if->netif, NETIF_CHECKSUM_DISABLE_ALL);
-
-	return ERR_OK;
-}
-
-int net_eth_remove_netif(void)
-{
-	err_t err = netifapi_netif_remove(&g_eth.netif);
-
-	if (err != ERR_OK) {
-		LWIP_LOGE("remove netif, failed(%d)\n", err);
-		return err;
-	}
-
-	return ERR_OK;
-}
-
-#if LWIP_NETIF_LINK_CALLBACK
-/**
- * @brief  Notify the User about the network iface config status
- * @param  netif: the network iface
- * @retval None
- */
-static void ethernet_link_status_updated(struct netif *netif)
-{
-	LWIP_LOGD("%s netif->flags 0x%x\n", __func__, netif->flags);
-
-	if (netif_is_up(netif)) {
-	} else {
-		/* netif is down */
-	}
-}
-#endif
-
-int net_eth_start()
-{
-	int ret;
-	uint8_t mac[BK_MAC_ADDR_LEN];
-
-	miiphy_init();
-
-	ieee8023_phy_init();
-
-	// Init TCP/IP Stack
-	net_ipv4stack_init();
-
-	// Get ETH MAC address
-	bk_get_mac(mac, MAC_TYPE_ETH);
-
-	// Add netif
-	ret = net_eth_add_netif(mac);
-	if (ret) {
-		return ret;
-	}
-
-	/* Registers the default network iface */
-	netifapi_netif_set_default(&g_eth.netif);
-
-	// Lock when accessing netif link functions
-	LOCK_TCPIP_CORE();
-
-	if (netif_is_link_up(&g_eth.netif)) {
-		/* When the netif is fully configured this function must be called */
-		netif_set_up(&g_eth.netif);
-	} else {
-		/* When the netif link is down this function must be called */
-		netif_set_down(&g_eth.netif);
-	}
-
-#if LWIP_NETIF_LINK_CALLBACK
-	/* Set the link callback function, this function is called on change of link status*/
-	netif_set_link_callback(&g_eth.netif, ethernet_link_status_updated);
-#endif
-
-	UNLOCK_TCPIP_CORE();
-
-	if (rtos_create_thread(NULL, BEKEN_APPLICATION_PRIORITY, "eth_link",
-						   ethernet_link_thread, 0x1000, &g_eth.netif))
-		LWIP_LOGE("Create eth link thread failed\n");
-
-	return 0;
-}
-
-void eth_ip_start(void)
-{
-	struct wlan_ip_config address = { 0 };
-
-	if (!eth_ip_start_flag) {
-		LWIP_LOGD("eth ip start\r\n");
-		eth_ip_start_flag = true;
-		net_configure_address(&eth_ip_settings, net_get_eth_handle());
-		return;
-	}
-
-	net_get_if_addr(&address, net_get_eth_handle());
-	LWIP_LOGD("eth ip start: %pIn\n", &address.ipv4.address);
-}
-
-void eth_ip_down(void)
-{
-	if (eth_ip_start_flag) {
-		LWIP_LOGD("eth ip down\n");
-
-		eth_ip_start_flag = false;
-
-		netifapi_netif_set_link_down(&g_eth.netif);
-		netifapi_netif_set_down(&g_eth.netif);
-		netif_set_status_callback(&g_eth.netif, NULL);
-		netifapi_dhcp_stop(&g_eth.netif);
-#if LWIP_IPV6
-		for (u8_t addr_idx = 1; addr_idx < LWIP_IPV6_NUM_ADDRESSES; addr_idx++) {
-			netif_ip6_addr_set(&g_eth.netif, addr_idx, (const ip6_addr_t *)IP6_ADDR_ANY);
-			g_eth.netif.ip6_addr_state[addr_idx] = IP6_ADDR_INVALID;
-		}
-#endif
-	}
 }
 #endif
 

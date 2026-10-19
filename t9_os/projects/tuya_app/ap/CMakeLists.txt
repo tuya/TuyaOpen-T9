@@ -1,5 +1,5 @@
 set(incs .)
-set(srcs ap_main.c)
+set(srcs ap_main.c tuya_deepsleep_stress.c)
 
 list(APPEND incs
     $ENV{ARMINO_PATH}/../../tuyaos/tuyaos_adapter/include/utilities/include

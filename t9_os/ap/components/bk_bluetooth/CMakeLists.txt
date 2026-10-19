@@ -87,8 +87,8 @@ if (CONFIG_BLUETOOTH_AP)
 
 		if(CONFIG_ALI_MQTT)
 			list(APPEND incs
-				${components}/ali_mqtt/mqtt
-				${components}/ali_mqtt/mqtt/utils
+				${components}/app/ali_mqtt/mqtt
+				${components}/app/ali_mqtt/mqtt/utils
 			)
 		endif()#CONFIG_ALI_MQTT
 		set(bk_inc ../../include)
@@ -171,6 +171,17 @@ if (CONFIG_BLUETOOTH_AP)
 					service/dm/hfp/hfp_hf_audio.c
 					)
 			endif()
+
+			if (CONFIG_BLUETOOTH_BTDM_COMPONENT_HFP_AG)
+				list(APPEND srcs
+					service/dm/hfp/bk_hfp_ag_service.c
+					)
+				if (CONFIG_AUDIO_PLAY)
+					list(APPEND srcs
+						service/dm/hfp/hfp_ag_audio.c
+						)
+				endif()
+			endif()
 		endif ()
 
 		# BLE public GATT framework (service/dm/ble/gatt, formerly bt_dm/ble/gatt).
@@ -251,7 +262,9 @@ armino_component_register(SRCS "${srcs}"
 
 get_filename_component(config_component_name ${CMAKE_CURRENT_LIST_DIR} NAME)
 armino_component_get_target(target "${config_component_name}")
-set_local_library_compile_option(${target})
+if(srcs)
+	set_local_library_compile_option(${target})
+endif()
 
 if (CONFIG_BLUETOOTH_AP)
     #host: <libbluetooth_host_ble|libbluetooth_host_dm_(bt|ble|dual)>[_nspe].a
@@ -291,8 +304,8 @@ if (CONFIG_BLUETOOTH_AP)
         list(APPEND bluetooth_elem ${bt_host_basename})
     endif()
 
-    message("WARINIG bt_host_exist ${bt_host_exist}")
-    message("WARINIG bt_host_basename ${bt_host_basename}")
+    message(STATUS "bt_host_exist ${bt_host_exist}")
+    message(STATUS "bt_host_basename ${bt_host_basename}")
 
 	foreach(lib_name ${bluetooth_elem})
 		#message("WARINIG lib_name ${ARMINO_PATH}/components/bk_libs/${ARMINO_SOC}/libs/${lib_name}")

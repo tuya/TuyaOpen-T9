@@ -82,7 +82,6 @@ static bk_err_t _aac_decoder_open(audio_element_handle_t self)
     aac_decoder_t *aac_dec = (aac_decoder_t *)audio_element_getdata(self);
     aac_dec->main_buff_readptr = aac_dec->main_buff;
 
-    bk_pm_module_vote_cpu_freq(PM_DEV_ID_AUDIO, PM_CPU_FRQ_480M);
 
     /* set read data timeout */
     audio_element_set_input_timeout(self, 2000 / portTICK_RATE_MS);
@@ -185,6 +184,7 @@ __retry:
 
     aac_dec->main_buff_consume_size = 0;
     int bytesLeft = aac_dec->main_buff_remain_size;
+    AUDIO_ELEMENT_OBS_BEGIN(self);
     AAC_DECODER_FRAME_START();
     ret = AACDecode(aac_dec->dec_handle, &aac_dec->main_buff_readptr, &bytesLeft, aac_dec->out_pcm_buff);
     AAC_DECODER_FRAME_END();
@@ -205,6 +205,7 @@ __retry:
         aac_dec->main_buff_remain_size = bytesLeft;
         BK_LOGV(TAG, "[%s] remain_size: %d, consume_size: %d\n", audio_element_get_tag(self), aac_dec->main_buff_remain_size, aac_dec->main_buff_consume_size);
         r_size = aac_dec->frame_info.outputSamps * aac_dec->frame_info.bitsPerSample / 8;
+        AUDIO_ELEMENT_OBS_END(self, r_size, (uint32_t)r_size);
     }
     else
     {
@@ -213,12 +214,14 @@ __retry:
         {
             case ERR_AAC_INDATA_UNDERFLOW:
                 /* data is not enough, read more data and decode */
+                AUDIO_ELEMENT_OBS_END(self, 0, (uint32_t)aac_dec->main_buff_size);
                 goto __retry;
                 break;
 
             default:
                 BK_LOGE(TAG, "[%s] %s, %d, AACDecode failed, code is %d \n", audio_element_get_tag(self), __func__, __LINE__, ret);
                 //goto __retry;
+                AUDIO_ELEMENT_OBS_END(self, -1, (uint32_t)aac_dec->main_buff_size);
                 return -1;
         }
     }
@@ -341,4 +344,3 @@ _aac_decoder_init_exit:
     aac_dec = NULL;
     return NULL;
 }
-

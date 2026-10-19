@@ -43,7 +43,8 @@ static const char *pm_dev_id_to_string(uint32_t dev_id)
 		"TOUCH", "I2S_1", "USB_1", "CAN", "PSRAM", "QSPI_1", "QSPI_2", "SDIO",
 		"AUXS", "BTDM", "WPAS", "MAC", "PHY", "JPEG", "DISP", "AUDIO", "RTC",
 		"GPIO", "DECODER", "LIN", "PWM_1", "SECURE_WORLD", "UART4", "TRNG",
-		"CPU1", "PHY_DPD_CALI", "KEY", "CIF", "MAILBOX", "HPDMA", "DEFAULT",
+		"AP", "PHY_DPD_CALI", "KEY", "CIF", "MAILBOX", "UART5", "IPI",
+		"HPDMA", "DEFAULT",
 	};
 
 	if (dev_id >= PM_DEV_ID_MAX) {
@@ -68,7 +69,7 @@ static const char *pm_cpu_freq_to_string(uint32_t cpu_freq)
 }
 
 /*=========================CLK/FREQ CTRL START========================*/
-bk_err_t pm_core_bus_clock_ctrl(uint32_t cksel_core, uint32_t ckdiv_core, uint32_t ckdiv_bus, uint32_t ckdiv_cpu0, uint32_t ckdiv_cpu1)
+__IRAM_SEC bk_err_t pm_core_bus_clock_ctrl(uint32_t cksel_core, uint32_t ckdiv_core, uint32_t ckdiv_bus, uint32_t ckdiv_cpu0, uint32_t ckdiv_cpu1)
 {
 	GLOBAL_INT_DECLARATION();
 
@@ -94,11 +95,12 @@ pm_cpu_freq_e bk_pm_module_current_cpu_freq_get(pm_dev_id_e module)
 	return s_pm_cpu_freq[module];
 }
 
-bk_err_t bk_pm_module_vote_cpu_freq(pm_dev_id_e module, pm_cpu_freq_e cpu_freq)
+__IRAM_SEC bk_err_t bk_pm_module_vote_cpu_freq(pm_dev_id_e module, pm_cpu_freq_e cpu_freq)
 {
-
-	if (module >= PM_DEV_ID_MAX)
+	if (((uint32_t)module >= PM_DEV_ID_MAX) ||
+		((uint32_t)cpu_freq > PM_CPU_FRQ_DEFAULT))
 	{
+		LOGE("CP vote cpu freq param error: module = %d, cpu_freq = %d\r\n", module, cpu_freq);
 		return BK_ERR_PARAM;
 	}
 

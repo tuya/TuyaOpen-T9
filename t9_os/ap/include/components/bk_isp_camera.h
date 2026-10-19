@@ -15,6 +15,7 @@
 #pragma once
 
 #include <components/bk_isp_camera_types.h>
+#include <components/bk_camera_isp_ctlr.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -34,6 +35,8 @@ avdk_err_t bk_isp_camera_dev_init(bk_isp_camera_ctlr_handle_t handle);
  * @return AVDK error code
  */
 avdk_err_t bk_isp_camera_port_init(bk_isp_camera_ctlr_handle_t handle, void *config);
+
+avdk_err_t bk_isp_camera_port_select(bk_isp_camera_ctlr_handle_t handle, uint8_t port_id);
 
 /**
  * @brief Switch or update the active ISP port configuration
@@ -75,6 +78,30 @@ avdk_err_t bk_isp_camera_close(bk_isp_camera_ctlr_handle_t handle);
  */
 avdk_err_t bk_isp_camera_read(bk_isp_camera_ctlr_handle_t handle, uint16_t id, uint8_t *frame, uint32_t size, uint32_t timeout);
 
+avdk_err_t bk_isp_camera_multi_port_read(
+    bk_isp_camera_ctlr_handle_t handle,
+    const multi_port_read_param_t *param,
+    multi_port_read_result_t *result);
+
+avdk_err_t bk_isp_camera_vc_mux_start(bk_isp_camera_vc_mux_handle_t handle, bk_isp_camera_vc_mux_config_t *config);
+
+avdk_err_t bk_isp_camera_vc_mux_stop(bk_isp_camera_vc_mux_handle_t handle);
+
+avdk_err_t bk_isp_camera_vc_mux_vc_enable(bk_isp_camera_vc_mux_handle_t handle, uint8_t vc, uint8_t discard_frames);
+
+avdk_err_t bk_isp_camera_vc_mux_vc_disable(bk_isp_camera_vc_mux_handle_t handle, uint8_t vc);
+
+avdk_err_t bk_isp_camera_vc_mux_peek(bk_isp_camera_vc_mux_handle_t handle, bk_isp_camera_vc_mux_frame_ref_t *frame);
+
+avdk_err_t bk_isp_camera_vc_mux_release(bk_isp_camera_vc_mux_handle_t handle, bk_isp_camera_vc_mux_frame_ref_t *frame);
+
+/**
+ * @brief Destroy the ISP camera VC mux controller instance
+ * @param handle VC mux handle from bk_camera_isp_vc_mux_new
+ * @return AVDK error code
+ */
+avdk_err_t bk_isp_camera_vc_mux_delete(bk_isp_camera_vc_mux_handle_t handle);
+
 /**
  * @brief Register an ISP interrupt callback
  * @param handle ISP camera controller handle
@@ -100,6 +127,22 @@ avdk_err_t bk_isp_camera_deregister_isr_callback(bk_isp_camera_ctlr_handle_t han
  * @param ioctl IOCTL command identifier
  * @param arg Command-specific argument
  * @return AVDK error code
+ *
+ * White balance (BK_CAM_IOCTL_GET/SET_WB) and exposure
+ * (BK_CAM_IOCTL_GET/SET_EXPOSURE) notes:
+ * - Call them only after bk_isp_camera_port_init(). That step loads the sensor
+ *   tuning data, which overwrites the whole WB and exposure attribute set, so
+ *   anything set earlier is silently lost. Re-apply after a port re-init.
+ * - Both act on the currently selected logical ISP port; use
+ *   BK_CAM_IOCTL_SELECT_ISP_PORT first on multi-port setups.
+ * - Prefer get-modify-set so unrelated fields keep their current value.
+ * - Manual values take effect on the next 3A interrupt while streaming, so
+ *   expect a delay of one to three frames.
+ * - Out-of-range gains and exposure times are clamped by the ISP firmware with
+ *   a warning rather than rejected; read back if the exact value matters.
+ * - On a dual MIPI logical port setup, BK_CAM_IOCTL_RESTORE_ISP_PORT_CONTEXT
+ *   forces AE back to auto, so manual exposure must be re-applied after a port
+ *   switch. White balance is unaffected.
  */
 avdk_err_t bk_isp_camera_ctlr_ioctl(bk_isp_camera_ctlr_handle_t handle, bk_cam_interface_ioctl_t ioctl, void *arg);
 

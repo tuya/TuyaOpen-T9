@@ -18,11 +18,11 @@
 #include "platform_retarget.h"
 #include "RTE_Device.h"
 #include "driver/flash.h"
-#include "components/log.h"
-#include "common/bk_err.h"
 #include "bk_tfm_log.h"
+#include "common/bk_err.h"
 #include "bk_tfm_ppc.h"
 #include "sys_driver.h"
+#include "flash_layout.h"
 
 #define TAG "cmsis_flash"
 
@@ -40,6 +40,18 @@
 /* Driver version */
 #define ARM_FLASH_DRV_VERSION      ARM_DRIVER_VERSION_MAJOR_MINOR(1, 1)
 #define ARM_FLASH_DRV_ERASE_VALUE  0xFF
+
+/* Write-protect the secure-boot chain that lives at the very start of flash:
+ * bl1_control, boot_flag, partition table, primary_manifest and the BL2 image
+ * all sit in [0, end-of-BL2). This region must stay immutable at runtime, so any
+ * program/erase that targets it is refused. A stray flash_area_write()/erase()
+ * (or a driver bug) can then no longer brick the device by wiping the bootloader.
+ * sys_its/sys_ps and every primary/secondary/ota image start at or above this
+ * boundary and remain writable. */
+#ifndef FLASH_PROTECTED_REGION_END
+#define FLASH_PROTECTED_REGION_END \
+    (CONFIG_BL2_PHY_PARTITION_OFFSET + CONFIG_BL2_PHY_PARTITION_SIZE)
+#endif
 
 /**
  * Data width values for ARM_FLASH_CAPABILITIES::data_width
@@ -92,7 +104,7 @@ static const ARM_DRIVER_VERSION DriverVersion = {
 static const ARM_FLASH_CAPABILITIES DriverCapabilities = {
     0, /* event_ready */
     0, /* data_width = 0:8-bit, 1:16-bit, 2:32-bit */
-    1  /* erase_chip */
+    0  /* erase_chip: unsupported, whole-device erase would wipe BL2/TF-M */
 };
 
 static bool is_access_from_code_bus(uint32_t absolute_addr)
@@ -118,6 +130,14 @@ static int32_t is_range_valid(struct arm_flash_dev_t *flash_dev,
         rc = -1;
     }
     return rc;
+}
+
+/* True if a flash offset falls inside the protected secure-boot region. Any
+ * range that starts below FLASH_PROTECTED_REGION_END overlaps it (the region is
+ * anchored at offset 0), so checking the start offset is sufficient. */
+static bool is_in_protected_region(uint32_t offset)
+{
+    return (offset < FLASH_PROTECTED_REGION_END);
 }
 
 static int32_t is_write_aligned(struct arm_flash_dev_t *flash_dev,
@@ -198,7 +218,10 @@ static int32_t Flash_Initialize(ARM_Flash_SignalEvent_t cb_event)
 
     ppc_flash_ns_flag = bk_ppc_lock_flash();
     BK_LOG_ON_ERR(bk_flash_driver_init());
-    bk_flash_set_protect_type(FLASH_PROTECT_NONE); //TODO wangzhilei double check
+    /* Init applies FLASH_PROTECT_ALL and it stays the runtime type: there is no
+     * session-wide unprotect. Erase/write self-unprotect PER_OP and re-protect
+     * after each op, so normal DIRECT_XIP boot (read-only) and the download
+     * session are both protected between ops. */
 
     flash_size = bk_flash_get_current_total_size();
     /* Optimze it if we support more than one flash */
@@ -302,16 +325,20 @@ static int32_t Flash_ProgramData(uint32_t addr, const void *data,
         return ARM_DRIVER_ERROR_PARAMETER;
     }
 
+    /* Never let a write fall into the immutable secure-boot region. */
+    if (is_in_protected_region(addr)) {
+        BK_TFM_FLASH_LOGE(TAG, "write blocked: off=%x in boot region [0,%x)\r\n",
+                          addr, (uint32_t)FLASH_PROTECTED_REGION_END);
+        return ARM_DRIVER_ERROR_PARAMETER;
+    }
+
     /* Check if the flash area to write the data was erased previously */
     if (use_cbus) {
         memcpy((uint8_t*)(FLASH0_DEV->memory_base + addr), (uint8_t*)data, cnt);
     } else {
         ppc_flash_ns_flag = bk_ppc_lock_flash();
-        uint32_t protect_type = bk_flash_get_protect_type();
-        bk_flash_set_protect_type(FLASH_PROTECT_NONE);
         rc = is_flash_ready_to_write((const uint8_t*)addr, cnt);
         BK_LOG_ON_ERR(bk_flash_write_bytes(addr, data, cnt));
-        bk_flash_set_protect_type(protect_type);
         bk_ppc_unlock_flash(ppc_flash_ns_flag);
     }
 
@@ -335,11 +362,15 @@ static int32_t Flash_EraseSector(uint32_t addr)
         return ARM_DRIVER_ERROR_PARAMETER;
     }
 
+    /* Never let an erase fall into the immutable secure-boot region. */
+    if (is_in_protected_region(addr)) {
+        BK_TFM_FLASH_LOGE(TAG, "erase blocked: off=%x in boot region [0,%x)\r\n",
+                          addr, (uint32_t)FLASH_PROTECTED_REGION_END);
+        return ARM_DRIVER_ERROR_PARAMETER;
+    }
+
     ppc_flash_ns_flag = bk_ppc_lock_flash();
-    uint32_t protect_type = bk_flash_get_protect_type();
-    bk_flash_set_protect_type(FLASH_PROTECT_NONE);
     BK_LOG_ON_ERR(bk_flash_erase_sector(offset));
-    bk_flash_set_protect_type(protect_type);
     bk_ppc_unlock_flash(ppc_flash_ns_flag);
 
     return ARM_DRIVER_OK;
@@ -347,31 +378,9 @@ static int32_t Flash_EraseSector(uint32_t addr)
 
 static int32_t Flash_EraseChip(void)
 {
-    uint32_t i;
-    uint32_t addr = FLASH0_DEV->memory_base;
-    int32_t rc = ARM_DRIVER_ERROR_UNSUPPORTED;
-    uint32_t offset = 0;
-
-    uint32_t ppc_flash_ns_flag;
-    /* Check driver capability erase_chip bit */
-    ppc_flash_ns_flag = bk_ppc_lock_flash();
-    uint32_t protect_type = bk_flash_get_protect_type();
-    bk_flash_set_protect_type(FLASH_PROTECT_NONE);
-
-    if (DriverCapabilities.erase_chip == 1) {
-        for (i = 0; i < flash_sector_count(); i++) {
-                offset = addr - FLASH0_DEV->memory_base;
-                BK_LOG_ON_ERR(bk_flash_erase_sector(addr)); //TODO double check address offset
-
-            addr += FLASH0_DEV->data->sector_size;
-            rc = ARM_DRIVER_OK;
-        }
-    }
-
-    bk_flash_set_protect_type(protect_type);
-    bk_ppc_unlock_flash(ppc_flash_ns_flag);
-
-    return rc;
+    /* Refuse: a whole-device erase would wipe BL2/TF-M. Use
+     * Flash_EraseSector for a bounded range instead. */
+    return ARM_DRIVER_ERROR_UNSUPPORTED;
 }
 
 static ARM_FLASH_STATUS Flash_GetStatus(void)
@@ -409,11 +418,20 @@ static inline bool is_32k_aligned(uint32_t addr)
     return ((addr & (KB(32) - 1)) == 0);
 }
 
+static inline bool flash_min_erase_protected(uint32_t aligned_addr)
+{
+    return aligned_addr < CONFIG_PRIMARY_ALL_PHY_PARTITION_OFFSET;
+}
+
 int flash_area_erase_fast(uint32_t erase_off, uint32_t len)
 {
     uint32_t erase_size = 0;
     int erase_remain = len;
 
+    if (flash_min_erase_protected(erase_off)) {
+        BK_TFM_FLASH_LOGE(TAG, "erase off=%x is protected\r\n", erase_off);
+        return ARM_DRIVER_ERROR_PARAMETER;
+    }
     uint32_t ppc_flash_ns_flag;
     ppc_flash_ns_flag = bk_ppc_lock_flash();
     while (erase_remain > 0) {

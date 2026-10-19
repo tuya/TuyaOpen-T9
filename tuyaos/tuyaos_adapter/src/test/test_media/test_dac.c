@@ -7,6 +7,7 @@
 
 #include "cli_tuya_test.h"
 #include "tkl_aud_dac.h"
+#include "tkl_gpio.h"
 #include "tkl_memory.h"
 #include "tkl_output.h"
 #include "tkl_system.h"
@@ -144,6 +145,38 @@ static OPERATE_RET test_dac_set_gain(TUYA_AUDIO_DAC_CHANNEL_E channel, INT32_T d
     return ret;
 }
 
+
+/* --------------------------------------------------------------------------
+ * Speaker PA enable (vendor EVB P28).
+ *
+ * The adapter no longer drives this pin: in production the TAL layer owns it
+ * (tal_audio_dac.c). A standalone test that only talks to tkl_aud_dac_* must
+ * drive it itself, otherwise the DAC runs but stays silent.
+ * ------------------------------------------------------------------------ */
+#define TEST_DAC_PA_PIN  ((TUYA_GPIO_NUM_E)28)
+
+static void test_dac_pa_init(void)
+{
+    TUYA_GPIO_BASE_CFG_T cfg;
+
+    os_memset(&cfg, 0, sizeof(cfg));
+    cfg.direct = TUYA_GPIO_OUTPUT;
+    cfg.mode   = TUYA_GPIO_PUSH_PULL;
+    cfg.level  = TUYA_GPIO_LEVEL_LOW;   /* disabled until playback starts */
+    (void)tkl_gpio_init(TEST_DAC_PA_PIN, &cfg);
+}
+
+static void test_dac_pa_set(bool enable)
+{
+    (void)tkl_gpio_write(TEST_DAC_PA_PIN,
+                         enable ? TUYA_GPIO_LEVEL_HIGH : TUYA_GPIO_LEVEL_LOW);
+}
+
+static void test_dac_pa_deinit(void)
+{
+    (void)tkl_gpio_deinit(TEST_DAC_PA_PIN);
+}
+
 static OPERATE_RET test_dac_init(uint32_t sample_rate, uint32_t frame_time_ms,
                                  INT32_T dig_db, INT32_T ana_db, uint8_t chan_num)
 {
@@ -179,7 +212,6 @@ static OPERATE_RET test_dac_init(uint32_t sample_rate, uint32_t frame_time_ms,
     cfg.frame_time_ms = frame_time_ms;
     cfg.frame_cb = test_dac_frame_cb;
     cfg.args = NULL;
-    cfg.pa_pin = 28;
 
     for (retry = 0U; retry < DAC_TEST_INIT_RETRY_CNT; retry++) {
         ret = tkl_aud_dac_init(DAC_TEST_DEFAULT_PORT, &cfg);
@@ -239,6 +271,8 @@ static OPERATE_RET test_dac_init(uint32_t sample_rate, uint32_t frame_time_ms,
                 s_dac_ctx.frame_time_ms);
     }
 
+    test_dac_pa_init();
+
     return OPRT_OK;
 }
 
@@ -261,6 +295,10 @@ static OPERATE_RET test_dac_start(void)
         return ret;
     }
 
+    /* Enable the PA only once the data path runs, so the first samples are
+     * already flowing - same order the adapter used to apply internally. */
+    test_dac_pa_set(true);
+
     s_dac_ctx.started = true;
     return OPRT_OK;
 }
@@ -276,6 +314,8 @@ static OPERATE_RET test_dac_stop(void)
     if (s_dac_ctx.started != true) {
         return OPRT_OK;
     }
+
+    test_dac_pa_set(false);
 
     ret = tkl_aud_dac_stop(s_dac_ctx.port);
     if (ret != OPRT_OK) {
@@ -309,6 +349,9 @@ static OPERATE_RET test_dac_deinit(void)
         tkl_log_output("dac deinit failed: %d\r\n", ret);
         return ret;
     }
+
+    test_dac_pa_set(false);
+    test_dac_pa_deinit();
 
     test_dac_runtime_reset();
     return OPRT_OK;

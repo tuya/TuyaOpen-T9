@@ -3,7 +3,6 @@
 #include "os_heap.h"
 #include "bk_heap/port/port_heap.h"
 #include "os_heap_debug.h"
-#include "os_heap_malloc_fallback.h"
 #include "sys_sw_regs.h"
 #include <soc/soc.h>
 
@@ -36,8 +35,8 @@ static void bk_heap_track_ap_heap_window(void *ptr, size_t size)
         pool_base = CONFIG_AP_PSRAM_HEAP_ADDR;
     }
 #endif
-#if defined(CONFIG_AP_PSRAM_NOCACHE_HEAP_ADDR) && (CONFIG_AP_PSRAM_NOCACHE_HEAP_SIZE > 0)
-    else if (ptr_is_psram_nocache_heap(ptr)) {
+#if defined(CONFIG_AP_PSRAM_CACHE_HEAP_ADDR) && (CONFIG_AP_PSRAM_CACHE_HEAP_SIZE > 0)
+    else if (ptr_is_psram_cache_heap(ptr)) {
         return;
     }
 #endif
@@ -45,24 +44,6 @@ static void bk_heap_track_ap_heap_window(void *ptr, size_t size)
     else if (ptr_is_hsram_heap(ptr)) {
         heap_id = BK_SYS_SW_REGS_AP_HEAP_HSRAM;
         pool_base = (uint32_t)SOC_SRAM_CPU_ADDR(CONFIG_AP_HSRAM_HEAP_ADDR);
-    }
-#endif
-#ifdef CONFIG_AP_EXT_SRAM_HEAP_ADDR
-    else if (ptr_is_ext_sram_heap(ptr)) {
-        ap_extra_dump_info_t extra_info;
-        // Modified by TUYA Start
-        uint32_t pool_base = (uint32_t)SOC_SRAM_CPU_ADDR(CONFIG_AP_EXT_SRAM_HEAP_ADDR);
-        uint32_t usage = (uint32_t)(alloc_end - pool_base);
-        // Modified by TUYA End
-        if (bk_sys_sw_regs_get_ap_extra_dump(BK_SYS_SW_REGS_AP_EXTRA_DUMP_EXT_SRAM_HEAP, &extra_info) &&
-            (usage <= extra_info.size)) {
-            return;
-        }
-        // Modified by TUYA Start
-        bk_sys_sw_regs_update_ap_extra_dump(BK_SYS_SW_REGS_AP_EXTRA_DUMP_EXT_SRAM_HEAP,
-                                            pool_base, usage);
-        // Modified by TUYA End
-        return;
     }
 #endif
     else {
@@ -111,19 +92,14 @@ size_t os_heap_get_allocated_size(void *ptr)
         return psram_get_allocated_size(ptr);
     }
     #endif
-    #if defined(CONFIG_AP_PSRAM_NOCACHE_HEAP_ADDR) && (CONFIG_AP_PSRAM_NOCACHE_HEAP_SIZE > 0)
-    else if (ptr_is_psram_nocache_heap(ptr)) {
-        return psram_nocache_get_allocated_size(ptr);
+    #if defined(CONFIG_AP_PSRAM_CACHE_HEAP_ADDR) && (CONFIG_AP_PSRAM_CACHE_HEAP_SIZE > 0)
+    else if (ptr_is_psram_cache_heap(ptr)) {
+        return psram_cache_get_allocated_size(ptr);
     }
     #endif
     #ifdef CONFIG_AP_HSRAM_HEAP_ADDR
     else if (ptr_is_hsram_heap(ptr)) {
         return hsram_get_allocated_size(ptr);
-    }
-    #endif
-    #ifdef CONFIG_AP_EXT_SRAM_HEAP_ADDR
-    else if (ptr_is_ext_sram_heap(ptr)) {
-        return ext_sram_get_allocated_size(ptr);
     }
     #endif
     else {
@@ -287,19 +263,14 @@ void os_free_debug(const char *func_name, int line, void *ptr)
         psram_free_debug(func_name, line, ptr);
     }
     #endif
-    #if defined(CONFIG_AP_PSRAM_NOCACHE_HEAP_ADDR) && (CONFIG_AP_PSRAM_NOCACHE_HEAP_SIZE > 0)
-    else if (ptr_is_psram_nocache_heap(ptr)) {
-        psram_nocache_free_debug(func_name, line, ptr);
+    #if defined(CONFIG_AP_PSRAM_CACHE_HEAP_ADDR) && (CONFIG_AP_PSRAM_CACHE_HEAP_SIZE > 0)
+    else if (ptr_is_psram_cache_heap(ptr)) {
+        psram_cache_free_debug(func_name, line, ptr);
     }
     #endif
     #ifdef CONFIG_AP_HSRAM_HEAP_ADDR
     else if (ptr_is_hsram_heap(ptr)) {
         hsram_free_debug(func_name, line, ptr);
-    }
-    #endif
-    #ifdef CONFIG_AP_EXT_SRAM_HEAP_ADDR
-    else if (ptr_is_ext_sram_heap(ptr)) {
-        ext_sram_free_debug(func_name, line, ptr);
     }
     #endif
     else {
@@ -320,9 +291,9 @@ void os_free_release(void *ptr)
         psram_free_release(ptr);
     }
     #endif
-    #if defined(CONFIG_AP_PSRAM_NOCACHE_HEAP_ADDR) && (CONFIG_AP_PSRAM_NOCACHE_HEAP_SIZE > 0)
-    else if (ptr_is_psram_nocache_heap(ptr)) {
-        psram_nocache_free_release(ptr);
+    #if defined(CONFIG_AP_PSRAM_CACHE_HEAP_ADDR) && (CONFIG_AP_PSRAM_CACHE_HEAP_SIZE > 0)
+    else if (ptr_is_psram_cache_heap(ptr)) {
+        psram_cache_free_release(ptr);
     }
     #endif
     #ifdef CONFIG_AP_HSRAM_HEAP_ADDR
@@ -330,19 +301,12 @@ void os_free_release(void *ptr)
         hsram_free_release(ptr);
     }
     #endif
-    #ifdef CONFIG_AP_EXT_SRAM_HEAP_ADDR
-    else if (ptr_is_ext_sram_heap(ptr)) {
-        ext_sram_free_release(ptr);
-    }
-    #endif
     else {
         BK_ASSERT(0);
     }
 }
 
-/* Default OS heap type selection (Kconfig: OS_HEAP_TYPE).
- * Scheme C (OS_MALLOC_EXT_SRAM_FALLBACK): os_malloc* implemented after ext_sram_heap. */
-#if !OS_MALLOC_EXT_SRAM_FALLBACK_ENABLED
+/* Default OS heap type selection (Kconfig: OS_HEAP_TYPE) */
 #if defined(CONFIG_OS_HEAP_USE_HSRAM)
     void *os_malloc_debug(const char *func_name, int line, size_t size, int need_zero) __attribute__((alias("hsram_malloc_debug")));
     void *os_malloc_release(size_t size) __attribute__((alias("hsram_malloc_release")));
@@ -383,7 +347,58 @@ void *os_zalloc_release(size_t size)
     void *os_malloc_release(size_t size) __attribute__((alias("sram_malloc_release")));
     void *os_zalloc_release(size_t size) __attribute__((alias("sram_zalloc_release")));
 #endif
-#endif /* !OS_MALLOC_EXT_SRAM_FALLBACK_ENABLED */
+
+void *os_realloc_debug(const char *func_name, int line, void *ptr, size_t size, int need_zero)
+{
+#if CONFIG_MEM_DEBUG
+#if defined(CONFIG_OS_HEAP_USE_HSRAM)
+    bk_heap_get_size_t get_size_func = hsram_get_allocated_size;
+#elif defined(CONFIG_OS_HEAP_USE_PSRAM)
+    bk_heap_get_size_t get_size_func = os_heap_get_allocated_size;
+#else
+    bk_heap_get_size_t get_size_func = sram_get_allocated_size;
+#endif
+    return bk_heap_realloc_debug_impl(os_malloc_debug, os_free_debug,
+                                      get_size_func, func_name, line,
+                                      ptr, size, need_zero);
+#else
+    return os_realloc_release(ptr, size);
+#endif
+}
+
+void *os_realloc_release(void *ptr, size_t size)
+{
+#if defined(CONFIG_OS_HEAP_USE_HSRAM)
+    return bk_heap_realloc_release_impl(hsram_malloc_release, hsram_free_release,
+                                        hsram_get_allocated_size, ptr, size);
+#elif defined(CONFIG_OS_HEAP_USE_PSRAM)
+    if ((ptr == NULL) || ptr_is_psram_heap(ptr)) {
+        return bk_heap_realloc_release_impl(os_malloc_release, os_free_release,
+                                            psram_get_allocated_size, ptr, size);
+    } else if (ptr_is_sram_heap(ptr)) {
+        return bk_heap_realloc_release_impl(os_malloc_release, os_free_release,
+                                            sram_get_allocated_size, ptr, size);
+    }
+#if defined(CONFIG_AP_PSRAM_CACHE_HEAP_ADDR) && (CONFIG_AP_PSRAM_CACHE_HEAP_SIZE > 0)
+    else if (ptr_is_psram_cache_heap(ptr)) {
+        return bk_heap_realloc_release_impl(psram_cache_malloc_release,
+                                            psram_cache_free_release,
+                                            psram_cache_get_allocated_size,
+                                            ptr, size);
+    }
+#endif
+#ifdef CONFIG_AP_HSRAM_HEAP_ADDR
+    else if (ptr_is_hsram_heap(ptr)) {
+        return hsram_realloc_release(ptr, size);
+    }
+#endif
+    BK_ASSERT(0);
+    return NULL;
+#else
+    return bk_heap_realloc_release_impl(sram_malloc_release, sram_free_release,
+                                        sram_get_allocated_size, ptr, size);
+#endif
+}
 
 /* =========================== SRAM HEAP =========================== */
 #if CONFIG_MEM_DEBUG
@@ -486,75 +501,6 @@ void *hsram_realloc_release(void *ptr, size_t size)
                                         hsram_get_allocated_size, ptr, size);
 }
 #endif
-/* =========================== EXT SRAM HEAP =========================== */
-#ifdef CONFIG_AP_EXT_SRAM_HEAP_ADDR
-#if CONFIG_MEM_DEBUG
-static struct list_head s_ext_sram_used;
-void bk_heap_ext_sram_debug_init(void)
-{
-    INIT_LIST_HEAD(&s_ext_sram_used);
-}
-#endif
-
-static const bk_heap_t bk_heap_ext_sram = {
-    .malloc = ext_sram_malloc_impl,
-    .free = ext_sram_free_impl,
-#if CONFIG_MEM_DEBUG
-    .used_list = &s_ext_sram_used,
-#endif
-};
-
-void *ext_sram_malloc_debug(const char *func_name, int line, size_t size, int need_zero)
-{
-    return bk_heap_malloc_impl(&bk_heap_ext_sram, func_name, line, size, need_zero);
-}
-
-void ext_sram_free_debug(const char *func_name, int line, void *ptr)
-{
-    bk_heap_free_impl(&bk_heap_ext_sram, func_name, line, ptr);
-}
-
-void *ext_sram_malloc_release(size_t size)
-{
-    return bk_heap_malloc_impl(&bk_heap_ext_sram, "NULL", 0, size, 0);
-}
-
-void ext_sram_free_release(void *ptr)
-{
-    bk_heap_free_impl(&bk_heap_ext_sram, "NULL", 0, ptr);
-}
-
-void *ext_sram_zalloc_release(size_t size)
-{
-    return bk_heap_malloc_impl(&bk_heap_ext_sram, "NULL", 0, size, 1);
-}
-
-void *ext_sram_realloc_debug(const char *func_name, int line, void *ptr, size_t size, int need_zero)
-{
-    void *tmp;
-
-    tmp = (void *)ext_sram_malloc_debug(func_name, line, size, need_zero);
-    if (tmp && ptr) {
-        os_memcpy(tmp, ptr, size);
-        ext_sram_free_debug(func_name, line, ptr);
-    }
-
-    return tmp;
-}
-
-void *ext_sram_realloc_release(void *ptr, size_t size)
-{
-    void *tmp;
-
-    tmp = (void *)ext_sram_malloc_release(size);
-    if (tmp && ptr) {
-        os_memcpy(tmp, ptr, size);
-        ext_sram_free_release(ptr);
-    }
-
-    return tmp;
-}
-#endif
 /* =========================== PSRAM HEAP =========================== */
 #ifdef CONFIG_AP_PSRAM_HEAP_ADDR
 #if CONFIG_MEM_DEBUG
@@ -616,47 +562,47 @@ void *psram_zalloc_release(size_t size)
 }
 #endif
 
-/* =========================== PSRAM NOCACHE HEAP =========================== */
-#if defined(CONFIG_AP_PSRAM_NOCACHE_HEAP_ADDR) && (CONFIG_AP_PSRAM_NOCACHE_HEAP_SIZE > 0)
+/* =========================== PSRAM CACHE HEAP =========================== */
+#if defined(CONFIG_AP_PSRAM_CACHE_HEAP_ADDR) && (CONFIG_AP_PSRAM_CACHE_HEAP_SIZE > 0)
 #if CONFIG_MEM_DEBUG
-static struct list_head s_psram_nocache_used;
-void bk_heap_psram_nocache_debug_init(void)
+static struct list_head s_psram_cache_used;
+void bk_heap_psram_cache_debug_init(void)
 {
-    INIT_LIST_HEAD(&s_psram_nocache_used);
+    INIT_LIST_HEAD(&s_psram_cache_used);
 }
 #endif
 
-static const bk_heap_t bk_heap_psram_nocache = {
-    .malloc = psram_nocache_malloc_impl,
-    .free = psram_nocache_free_impl,
+static const bk_heap_t bk_heap_psram_cache = {
+    .malloc = psram_cache_malloc_impl,
+    .free = psram_cache_free_impl,
 #if CONFIG_MEM_DEBUG
-    .used_list = &s_psram_nocache_used,
+    .used_list = &s_psram_cache_used,
 #endif
 };
 
-void *psram_nocache_malloc_debug(const char *func_name, int line, size_t size, int need_zero)
+void *psram_cache_malloc_debug(const char *func_name, int line, size_t size, int need_zero)
 {
-    return bk_heap_malloc_impl(&bk_heap_psram_nocache, func_name, line, size, need_zero);
+    return bk_heap_malloc_impl(&bk_heap_psram_cache, func_name, line, size, need_zero);
 }
 
-void psram_nocache_free_debug(const char *func_name, int line, void *ptr)
+void psram_cache_free_debug(const char *func_name, int line, void *ptr)
 {
-    bk_heap_free_impl(&bk_heap_psram_nocache, func_name, line, ptr);
+    bk_heap_free_impl(&bk_heap_psram_cache, func_name, line, ptr);
 }
 
-void *psram_nocache_malloc_release(size_t size)
+void *psram_cache_malloc_release(size_t size)
 {
-    return bk_heap_malloc_impl(&bk_heap_psram_nocache, "NULL", 0, size, 0);
+    return bk_heap_malloc_impl(&bk_heap_psram_cache, "NULL", 0, size, 0);
 }
 
-void psram_nocache_free_release(void *ptr)
+void psram_cache_free_release(void *ptr)
 {
-    bk_heap_free_impl(&bk_heap_psram_nocache, "NULL", 0, ptr);
+    bk_heap_free_impl(&bk_heap_psram_cache, "NULL", 0, ptr);
 }
 
-void *psram_nocache_zalloc_release(size_t size)
+void *psram_cache_zalloc_release(size_t size)
 {
-    return bk_heap_malloc_impl(&bk_heap_psram_nocache, "NULL", 0, size, 1);
+    return bk_heap_malloc_impl(&bk_heap_psram_cache, "NULL", 0, size, 1);
 }
 #endif
 
@@ -673,22 +619,16 @@ void os_dump_memory_stats(uint32_t start_tick, uint32_t ticks_since_malloc, cons
         BK_DUMP_OUT("hsram heap list is empty.\r\n");
     }
     #endif
-    #ifdef CONFIG_AP_EXT_SRAM_HEAP_ADDR
-    BK_DUMP_OUT(">>>>> ext sram heap dump memory stats.\r\n");
-    if (bk_heap_debug_dump_mem_stats(start_tick, ticks_since_malloc, task, &s_ext_sram_used) != 0) {
-        BK_DUMP_OUT("ext sram heap list is empty.\r\n");
-    }
-    #endif
     #ifdef CONFIG_AP_PSRAM_HEAP_ADDR
     BK_DUMP_OUT(">>>>> psram heap dump memory stats.\r\n");
     if (bk_heap_debug_dump_mem_stats(start_tick, ticks_since_malloc, task, &s_psram_used) != 0) {
         BK_DUMP_OUT("psram heap list is empty.\r\n");
     }
     #endif
-    #if defined(CONFIG_AP_PSRAM_NOCACHE_HEAP_ADDR) && (CONFIG_AP_PSRAM_NOCACHE_HEAP_SIZE > 0)
-    BK_DUMP_OUT(">>>>> psram nocache heap dump memory stats.\r\n");
-    if (bk_heap_debug_dump_mem_stats(start_tick, ticks_since_malloc, task, &s_psram_nocache_used) != 0) {
-        BK_DUMP_OUT("psram nocache heap list is empty.\r\n");
+    #if defined(CONFIG_AP_PSRAM_CACHE_HEAP_ADDR) && (CONFIG_AP_PSRAM_CACHE_HEAP_SIZE > 0)
+    BK_DUMP_OUT(">>>>> psram cache heap dump memory stats.\r\n");
+    if (bk_heap_debug_dump_mem_stats(start_tick, ticks_since_malloc, task, &s_psram_cache_used) != 0) {
+        BK_DUMP_OUT("psram cache heap list is empty.\r\n");
     }
     #endif
 }
@@ -718,170 +658,11 @@ void bk_psram_heap_get_used_state(void)
     if (bk_heap_debug_dump_mem_stats(0, 0, NULL, &s_psram_used) != 0) {
         BK_DUMP_OUT("psram heap list is empty.\r\n");
     }
-#if defined(CONFIG_AP_PSRAM_NOCACHE_HEAP_ADDR) && (CONFIG_AP_PSRAM_NOCACHE_HEAP_SIZE > 0)
-    BK_DUMP_OUT(">>>>> psram nocache heap dump memory stats.\r\n");
-    if (bk_heap_debug_dump_mem_stats(0, 0, NULL, &s_psram_nocache_used) != 0) {
-        BK_DUMP_OUT("psram nocache heap list is empty.\r\n");
+#if defined(CONFIG_AP_PSRAM_CACHE_HEAP_ADDR) && (CONFIG_AP_PSRAM_CACHE_HEAP_SIZE > 0)
+    BK_DUMP_OUT(">>>>> psram cache heap dump memory stats.\r\n");
+    if (bk_heap_debug_dump_mem_stats(0, 0, NULL, &s_psram_cache_used) != 0) {
+        BK_DUMP_OUT("psram cache heap list is empty.\r\n");
     }
 #endif
 }
 #endif
-
-/* =========================== os_malloc ext_sram fallback (scheme C) =========================== */
-#if OS_MALLOC_EXT_SRAM_FALLBACK_ENABLED
-
-#if defined(CONFIG_OS_HEAP_USE_HSRAM)
-#define OS_HEAP_PRIMARY_MALLOC_DEBUG(func_name, line, size, need_zero) \
-    hsram_malloc_debug((func_name), (line), (size), (need_zero))
-#define OS_HEAP_PRIMARY_MALLOC_RELEASE(size)    hsram_malloc_release(size)
-#define OS_HEAP_PRIMARY_ZALLOC_RELEASE(size)    hsram_zalloc_release(size)
-#elif defined(CONFIG_OS_HEAP_USE_PSRAM)
-#define OS_HEAP_PRIMARY_MALLOC_DEBUG(func_name, line, size, need_zero) \
-    psram_malloc_debug((func_name), (line), (size), (need_zero))
-#define OS_HEAP_PRIMARY_MALLOC_RELEASE(size)    psram_malloc_release(size)
-#define OS_HEAP_PRIMARY_ZALLOC_RELEASE(size)    psram_zalloc_release(size)
-#else
-#define OS_HEAP_PRIMARY_MALLOC_DEBUG(func_name, line, size, need_zero) \
-    sram_malloc_debug((func_name), (line), (size), (need_zero))
-#define OS_HEAP_PRIMARY_MALLOC_RELEASE(size)    sram_malloc_release(size)
-#define OS_HEAP_PRIMARY_ZALLOC_RELEASE(size)    sram_zalloc_release(size)
-#endif
-
-void *os_malloc_debug(const char *func_name, int line, size_t size, int need_zero)
-{
-    void *ptr = OS_HEAP_PRIMARY_MALLOC_DEBUG(func_name, line, size, need_zero);
-
-    if ((ptr == NULL) && (size != 0U)) {
-        ptr = ext_sram_malloc_debug(func_name, line, size, need_zero);
-    }
-    return ptr;
-}
-
-void *os_malloc_release(size_t size)
-{
-    void *ptr = OS_HEAP_PRIMARY_MALLOC_RELEASE(size);
-
-    if ((ptr == NULL) && (size != 0U)) {
-        ptr = ext_sram_malloc_release(size);
-    }
-    return ptr;
-}
-
-void *os_zalloc_release(size_t size)
-{
-    void *ptr = OS_HEAP_PRIMARY_ZALLOC_RELEASE(size);
-
-    if ((ptr == NULL) && (size != 0U)) {
-        ptr = ext_sram_zalloc_release(size);
-    }
-    return ptr;
-}
-
-/* scheme C 下 os_malloc 可能落在主堆，也可能回退到 AP_EXT_SRAM_HEAP，
- * 因此 realloc 必须按指针归属取原始长度。os_heap_get_allocated_size 只在
- * CONFIG_MEM_DEBUG 下存在，这里提供一份 release 构建也可用的路由。 */
-static size_t os_heap_route_get_allocated_size(void *ptr)
-{
-    if (ptr_is_sram_heap(ptr)) {
-        return sram_get_allocated_size(ptr);
-    }
-    #ifdef CONFIG_AP_PSRAM_HEAP_ADDR
-    else if (ptr_is_psram_heap(ptr)) {
-        return psram_get_allocated_size(ptr);
-    }
-    #endif
-    #if defined(CONFIG_AP_PSRAM_NOCACHE_HEAP_ADDR) && (CONFIG_AP_PSRAM_NOCACHE_HEAP_SIZE > 0)
-    else if (ptr_is_psram_nocache_heap(ptr)) {
-        return psram_nocache_get_allocated_size(ptr);
-    }
-    #endif
-    #ifdef CONFIG_AP_HSRAM_HEAP_ADDR
-    else if (ptr_is_hsram_heap(ptr)) {
-        return hsram_get_allocated_size(ptr);
-    }
-    #endif
-    #ifdef CONFIG_AP_EXT_SRAM_HEAP_ADDR
-    else if (ptr_is_ext_sram_heap(ptr)) {
-        return ext_sram_get_allocated_size(ptr);
-    }
-    #endif
-
-    return 0;
-}
-
-#endif /* OS_MALLOC_EXT_SRAM_FALLBACK_ENABLED */
-
-/* Modified by TUYA Start
- * 4.0.1.8 OEM 重写了 os_realloc_*：按 old_size 截断拷贝，修掉了原实现按新 size
- * 拷贝导致的越界读。这里在 OEM 实现之上补 scheme C 的 ext_sram 分支——否则
- * 回退到 AP_EXT_SRAM_HEAP 的指针会被按主堆（HSRAM/PSRAM/SRAM）取长度与释放。
- * 本函数对启用/未启用 scheme C 两种配置都只定义一次。 */
-void *os_realloc_debug(const char *func_name, int line, void *ptr, size_t size, int need_zero)
-{
-#if CONFIG_MEM_DEBUG
-#if OS_MALLOC_EXT_SRAM_FALLBACK_ENABLED
-    bk_heap_get_size_t get_size_func = os_heap_get_allocated_size;
-#elif defined(CONFIG_OS_HEAP_USE_HSRAM)
-    bk_heap_get_size_t get_size_func = hsram_get_allocated_size;
-#elif defined(CONFIG_OS_HEAP_USE_PSRAM)
-    bk_heap_get_size_t get_size_func = os_heap_get_allocated_size;
-#else
-    bk_heap_get_size_t get_size_func = sram_get_allocated_size;
-#endif
-    return bk_heap_realloc_debug_impl(os_malloc_debug, os_free_debug,
-                                      get_size_func, func_name, line,
-                                      ptr, size, need_zero);
-#else
-    return os_realloc_release(ptr, size);
-#endif
-}
-
-void *os_realloc_release(void *ptr, size_t size)
-{
-#if OS_MALLOC_EXT_SRAM_FALLBACK_ENABLED
-    /* 非 cache 缓冲（DMA）保持留在 nocache 堆，不迁移到主堆，避免破坏 cache 一致性 */
-#if defined(CONFIG_AP_PSRAM_NOCACHE_HEAP_ADDR) && (CONFIG_AP_PSRAM_NOCACHE_HEAP_SIZE > 0)
-    if ((ptr != NULL) && ptr_is_psram_nocache_heap(ptr)) {
-        return bk_heap_realloc_release_impl(psram_nocache_malloc_release,
-                                            psram_nocache_free_release,
-                                            psram_nocache_get_allocated_size,
-                                            ptr, size);
-    }
-#endif
-    /* os_malloc_release / os_free_release 本身按指针归属分派，长度用同款路由 */
-    return bk_heap_realloc_release_impl(os_malloc_release, os_free_release,
-                                        os_heap_route_get_allocated_size, ptr, size);
-#elif defined(CONFIG_OS_HEAP_USE_HSRAM)
-    return bk_heap_realloc_release_impl(hsram_malloc_release, hsram_free_release,
-                                        hsram_get_allocated_size, ptr, size);
-#elif defined(CONFIG_OS_HEAP_USE_PSRAM)
-    if ((ptr == NULL) || ptr_is_psram_heap(ptr)) {
-        return bk_heap_realloc_release_impl(os_malloc_release, os_free_release,
-                                            psram_get_allocated_size, ptr, size);
-    } else if (ptr_is_sram_heap(ptr)) {
-        return bk_heap_realloc_release_impl(os_malloc_release, os_free_release,
-                                            sram_get_allocated_size, ptr, size);
-    }
-#if defined(CONFIG_AP_PSRAM_NOCACHE_HEAP_ADDR) && (CONFIG_AP_PSRAM_NOCACHE_HEAP_SIZE > 0)
-    else if (ptr_is_psram_nocache_heap(ptr)) {
-        /* Keep non-cacheable buffers (e.g. DMA) inside the nocache heap; do not
-         * migrate them into cached PSRAM, which would break cache coherency. */
-        return bk_heap_realloc_release_impl(psram_nocache_malloc_release,
-                                            psram_nocache_free_release,
-                                            psram_nocache_get_allocated_size,
-                                            ptr, size);
-    }
-#endif
-#ifdef CONFIG_AP_HSRAM_HEAP_ADDR
-    else if (ptr_is_hsram_heap(ptr)) {
-        return hsram_realloc_release(ptr, size);
-    }
-#endif
-    BK_ASSERT(0);
-    return NULL;
-#else
-    return bk_heap_realloc_release_impl(sram_malloc_release, sram_free_release,
-                                        sram_get_allocated_size, ptr, size);
-#endif
-}
-/* Modified by TUYA End */

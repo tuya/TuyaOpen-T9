@@ -21,6 +21,9 @@ extern "C" {
 #include <stdint.h>
 #include <avdk_error.h>
 #include <driver/hal/hal_yuv_buf_types.h>
+#include <driver/isp_types.h>
+
+#define BK_ISP_CAMERA_INVALID_PORT_ID 0xFFU
 
 
 typedef enum
@@ -62,6 +65,10 @@ typedef enum
     ID_GC4653,       /**< GC4653 sensor */
     ID_OV2775,       /**< OV2775 sensor */
     ID_GC2053D,      /**< GC2053D sensor */
+    ID_CV2002,       /**< CV2002 sensor */
+    ID_CV2005,       /**< CV2005 sensor */
+    ID_CV2008,       /**< CV2008 sensor */
+    ID_GC20C3,       /**< GC20C3 sensor */
 } sensor_id_t;
 
 /**
@@ -80,6 +87,19 @@ typedef enum
     BK_CAM_IOCTL_SET_SKIP_FRAMES, /**< Set skip_frames for a channel before channel_open; arg = bk_isp_camera_skip_frames_config_t * */
     BK_CAM_IOCTL_GET_CPROC, /**< Get CPROC attributes; arg = bk_isp_cproc_attr_t * */
     BK_CAM_IOCTL_SET_CPROC, /**< Set CPROC attributes; arg = bk_isp_cproc_attr_t * */
+    BK_CAM_IOCTL_QUERY_EXPOSURE_INFO, /**< Query current AE result; arg = bk_isp_camera_exposure_info_t * */
+    BK_CAM_IOCTL_SET_INITIAL_EXPOSURE, /**< Seed manual exposure before channel open; arg = bk_isp_camera_exposure_info_t * */
+    BK_CAM_IOCTL_RESUME_AUTO_EXPOSURE, /**< Resume auto AE after the initial frame; arg = NULL */
+    BK_CAM_IOCTL_CHANNEL_ACQUIRE, /**< Hand a channel to an external consumer; arg = uint8_t * */
+    BK_CAM_IOCTL_CHANNEL_RELEASE, /**< Return a channel to the camera thread; arg = uint8_t * */
+    BK_CAM_IOCTL_FRAME_POP, /**< Dequeue a zero-copy frame; arg = bk_isp_camera_frame_info_t * */
+    BK_CAM_IOCTL_FRAME_QBUF, /**< Re-queue a zero-copy frame; arg = bk_isp_camera_frame_info_t * */
+    BK_CAM_IOCTL_SELECT_ISP_PORT, /**< Select logical ISP port; arg = uint8_t * */
+    BK_CAM_IOCTL_RESTORE_ISP_PORT_CONTEXT, /**< Restore selected logical ISP port context; arg = NULL */
+    BK_CAM_IOCTL_GET_WB, /**< Get white balance attributes; arg = bk_isp_camera_wb_attr_t * */
+    BK_CAM_IOCTL_SET_WB, /**< Set white balance attributes; arg = bk_isp_camera_wb_attr_t * */
+    BK_CAM_IOCTL_GET_EXPOSURE, /**< Get exposure mode and manual values; arg = bk_isp_camera_exposure_attr_t * */
+    BK_CAM_IOCTL_SET_EXPOSURE, /**< Set exposure mode and manual values; arg = bk_isp_camera_exposure_attr_t * */
 } bk_cam_interface_ioctl_t;
 
 /**
@@ -92,6 +112,24 @@ typedef struct
     uint8_t channel;   /**< ISP channel id (ISP_MP_CHN_ID / ISP_SP_CHN_ID) */
     uint8_t count;     /**< Drop first N frames after channel open (AE warmup), 0 = disabled */
 } bk_isp_camera_skip_frames_config_t;
+
+typedef struct
+{
+    uint8_t channel;
+    uint8_t discard_frames;
+    uint32_t frame_size;
+    uint16_t width;
+    uint16_t height;
+    uint8_t runtime_vc_switch; /**< Use lightweight MIPI VC switch (TP2863 dual-VC) */
+} bk_isp_camera_vc_mux_config_t;
+
+typedef struct
+{
+    uint8_t vc;
+    uint8_t *frame;
+    uint32_t frame_size;
+    uint32_t sequence;
+} bk_isp_camera_vc_mux_frame_ref_t;
 
 /** Number of strength nodes for CPROC auto attributes (matches ISP_AUTO_STRENGTH_NUN). */
 #define BK_ISP_CPROC_AUTO_STRENGTH_NUM 16
@@ -130,6 +168,21 @@ typedef struct
 } bk_isp_cproc_attr_t;
 
 /**
+ * @brief Current or initial exposure information for camera AE IOCTLs.
+ */
+typedef bk_isp_exposure_info_t bk_isp_camera_exposure_info_t;
+
+/**
+ * @brief White balance attributes for BK_CAM_IOCTL_GET/SET_WB.
+ */
+typedef bk_isp_wb_attr_t bk_isp_camera_wb_attr_t;
+
+/**
+ * @brief Exposure attributes for BK_CAM_IOCTL_GET/SET_EXPOSURE.
+ */
+typedef bk_isp_exposure_attr_t bk_isp_camera_exposure_attr_t;
+
+/**
  * @brief Camera ISP instance configuration structure
  */
 typedef struct
@@ -143,6 +196,40 @@ typedef struct
     uint16_t format;        /**< Pixel format */
 } bk_isp_camera_channel_config_t;
 
+
+/**
+ * @brief Zero-copy frame descriptor handed out by the ISP camera controller.
+ *
+ * Describes one ISP output frame still living in the ISP frame pool (no copy).
+ * Pass it to BK_CAM_IOCTL_FRAME_POP with @ref channel and @ref timeout set.
+ * On success the caller owns the buffer until it passes the same @ref channel
+ * and @ref index to BK_CAM_IOCTL_FRAME_QBUF. Y plane starts at @ref frame_addr;
+ * for semi-planar NV12 the chroma plane is contiguous at frame_addr +
+ * width*height.
+ */
+typedef struct
+{
+    uint32_t frame_addr;   /**< Physical/user address of the frame (Y plane base), zero-copy. */
+    uint32_t frame_size;   /**< Total frame size in bytes (all planes). */
+    uint32_t timeout;      /**< FRAME_POP timeout in milliseconds; ignored by FRAME_QBUF. */
+    uint8_t  channel;      /**< ISP channel id (ISP_MP_CHN_ID / ISP_SP_CHN_ID). */
+    uint8_t  index;        /**< Frame-pool buffer index; pass back to BK_CAM_IOCTL_FRAME_QBUF. */
+    uint8_t  port_id;      /**< Logical ISP port that produced this frame. */
+} bk_isp_camera_frame_info_t;
+
+typedef struct
+{
+    uint16_t id;
+    uint8_t *frame;
+    uint32_t size;
+    uint32_t timeout;
+} multi_port_read_param_t;
+
+typedef struct
+{
+    uint32_t frame_size;
+    uint8_t port_id;
+} multi_port_read_result_t;
 
 /**
  * @brief Camera controller handle type definition
@@ -161,9 +248,13 @@ struct bk_camera_ctlr_t
 {
     avdk_err_t (*dev_init)(bk_camera_ctlr_t *controller);   /**< Initialize controller level resources (clock, GPIO, etc.) */
     avdk_err_t (*port_init)(bk_camera_ctlr_t *controller, void *config); /**< Configure a physical port according to the supplied configuration */
+    avdk_err_t (*port_select)(bk_camera_ctlr_t *controller, uint8_t port_id); /**< Select an initialized logical ISP port */
     avdk_err_t (*port_change)(bk_camera_ctlr_t *controller); /**< Switch the active port or update link configuration dynamically */
     avdk_err_t (*open)(bk_camera_ctlr_t *controller, void *parameter); /**< Open the controller for streaming with the specified parameters */
     avdk_err_t (*read)(bk_camera_ctlr_t *controller, uint16_t id, uint8_t *frame, uint32_t size, uint32_t timeout); /**< Read a frame */
+    avdk_err_t (*multi_port_read)(bk_camera_ctlr_t *controller,
+                                  const multi_port_read_param_t *param,
+                                  multi_port_read_result_t *result); /**< Read a frame and return its logical ISP port */
     avdk_err_t (*close)(bk_camera_ctlr_t *controller); /**< Stop streaming and release transient resources */
     avdk_err_t (*deinit)(bk_camera_ctlr_t *controller); /**< Deinitialize controller level resources */
     avdk_err_t (*suspend)(bk_camera_ctlr_t *controller); /**< Suspend the controller for low-power operation */
@@ -179,6 +270,23 @@ struct bk_camera_ctlr_t
     bk_isp_camera_channel_state_t (*channel_state_get)(bk_camera_ctlr_t *controller, uint8_t channel); /**< Get a channel state */
 } ;
 
+/**
+ * @brief ISP camera VC mux controller operation table
+ */
+typedef struct bk_camera_vc_mux_ctlr_t bk_camera_vc_mux_ctlr_t;
+
+struct bk_camera_vc_mux_ctlr_t
+{
+    avdk_err_t (*start)(bk_camera_vc_mux_ctlr_t *controller, bk_isp_camera_vc_mux_config_t *config); /**< Start VC mux service */
+    avdk_err_t (*stop)(bk_camera_vc_mux_ctlr_t *controller); /**< Stop VC mux service */
+    avdk_err_t (*vc_enable)(bk_camera_vc_mux_ctlr_t *controller, uint8_t vc, uint8_t discard_frames); /**< Enable one VC route */
+    avdk_err_t (*vc_disable)(bk_camera_vc_mux_ctlr_t *controller, uint8_t vc); /**< Disable one VC route */
+    avdk_err_t (*peek)(bk_camera_vc_mux_ctlr_t *controller, bk_isp_camera_vc_mux_frame_ref_t *frame); /**< Get VC mux latest frame pointer */
+    avdk_err_t (*release)(bk_camera_vc_mux_ctlr_t *controller, bk_isp_camera_vc_mux_frame_ref_t *frame); /**< Release VC mux frame pointer */
+    avdk_err_t (*del)(bk_camera_vc_mux_ctlr_t *controller); /**< Destroy the VC mux controller object and free memory */
+};
+
+typedef struct bk_camera_vc_mux_ctlr_t *bk_isp_camera_vc_mux_handle_t;
 
 
 #ifdef __cplusplus

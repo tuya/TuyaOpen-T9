@@ -432,12 +432,16 @@ netif_if_t wifi_netif_mac_to_netif_type(uint8_t *mac);
 void wifi_netif_set_vif_private_data(void *vif, void *data);
 __IRAM3 void* wifi_netif_get_vif_private_data(void *vif);
 void wifi_netif_notify_sta_got_ip(enum ip_ver ver);
+#if CONFIG_IPV6
+void wifi_netif_notify_sta_got_ip6_ll(uint8_t addr_idx, const char *ip);
+void wifi_netif_notify_sta_got_ip6_global(uint8_t addr_idx, const char *ip);
+#endif
 void wifi_netif_notify_sta_dhcp_timeout(void);
+void wifi_netif_notify_sta_disconnect(void);
 void wifi_netif_call_status_cb_when_sta_got_ip(void);
 void wifi_netif_call_status_cb_when_sta_dhcp_timeout(void);
 bool wifi_netif_sta_is_connected(void);
 bool wifi_netif_sta_is_got_ip(void);
-void wifi_netif_notify_sta_disconnect(void);
 
 uint8_t* wifi_netif_vif_to_mac(void *vif);
 __IRAM3 int wifi_netif_vif_to_vifid(void *vif);
@@ -471,10 +475,13 @@ void bk_wifi_test_hw_diag(void);
 void bk_wifi_set_hw_diag(uint8_t diag_type, uint16_t diag_no);
 
 /* bk_wifi_wpa_cmd*/
-int cmd_wlan_sta_exec(char *cmd);
+int cmd_wlan_sta_exec(const char *cmd, ...);
 int cmd_wlan_ap_exec(char *cmd);
 int cmd_wlan_p2p_exec(char *cmd);
 int cmd_wlan_get_ps_status();
+int cmd_wpas_parse_key_mgmt(const char *value);
+int cmd_wpas_parse_cipher(const char *value);
+int cmd_wpas_parse_proto(const char *value);
 
 /* bk_wifi_wpa */
 // TODO
@@ -593,7 +600,11 @@ int bk_wlan_ps_disable_send_msg(void);
 void bk_wlan_sta_init(network_InitTypeDef_st *inNetworkInitPara);
 bk_err_t bk_wlan_start_sta(network_InitTypeDef_st *inNetworkInitPara);
 
-int wlan_sta_set(const uint8_t *ssid, uint8_t ssid_len, const uint8_t *psk);
+#if CONFIG_QUICK_TRACK
+int wlan_sta_set(network_InitTypeDef_st *network, uint8_t *ssid, uint8_t ssid_len, uint8_t *psk);
+#else
+int wlan_sta_set(uint8_t *ssid, uint8_t ssid_len, uint8_t *psk);
+#endif
 int wlan_sta_set_config(wlan_sta_config_t *config);
 int wlan_sta_get_config(wlan_sta_config_t *config);
 int wlan_sta_set_autoreconnect(wlan_auto_reconnect_t *config);
@@ -609,6 +620,7 @@ int wlan_sta_scan_interval(int sec);
 int wlan_sta_bss_max_count(uint8_t count);
 int wlan_sta_bss_flush(int age);
 int wlan_sta_connect(int chan);
+int wlan_sta_reassoicate(void);
 int wlan_sta_disconnect(void);
 int wlan_sta_state(wlan_sta_states_t *state);
 int wlan_sta_twt_setup(uint8_t annouced,
@@ -642,6 +654,10 @@ int wlan_p2p_get_saved_intent(void);  // Get saved P2P intent for wpa_supplicant
 char *wlan_p2p_get_saved_ssid(void);
 int wlan_p2p_disable(void);
 int wlan_p2p_cancel(void);
+void p2p_go_noa_set_enabled(uint8_t enabled);
+uint8_t p2p_go_noa_is_enabled(void);
+void wlan_p2p_go_noa_set_enabled(uint8_t enabled);
+uint8_t wlan_p2p_go_noa_is_enabled(void);
 #endif
 void bk_wifi_prepare_deepsleep(void);
 void bk_trigger_mqttping(void);

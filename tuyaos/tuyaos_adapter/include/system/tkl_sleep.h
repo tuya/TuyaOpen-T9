@@ -20,7 +20,7 @@ extern "C" {
 #define DEEPSLEEP_MAGIC                 0x74796473
 #define DS_ENTRY_FLAG                   0x55aa55aa
 
-#define DEEPSLEEP_PARAMETER_ADDRESS     0x7dc000
+#define DEEPSLEEP_PARAMETER_ADDRESS     0x7ED000
 #define DS_MAX_CFG_ITEM                 6
 
 typedef struct {

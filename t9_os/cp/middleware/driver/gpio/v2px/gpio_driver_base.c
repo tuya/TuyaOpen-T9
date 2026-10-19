@@ -33,6 +33,9 @@
 #if CONFIG_USR_GPIO_CFG_EN
 #include "gpio_driver.h"
 #include "usr_gpio_cfg.h"
+#ifndef GPIO_IS_AP_OWNED_INTERRUPT
+#define GPIO_IS_AP_OWNED_INTERRUPT(gpio_id)       (false)
+#endif
 #endif
 
 #define GPIO_REG_DEFAULT_VALUE                    (0x0)
@@ -451,6 +454,13 @@ static void gpio_isr(void)
 			}
 
 			if(i == sizeof(default_map)/sizeof(gpio_default_map_t)) {
+				/* AP-owned GPIO interrupts share the GPIO controller with CP.
+				 * Leave their enable and pending state untouched so the AP ISR
+				 * can service and clear them. */
+				if (GPIO_IS_AP_OWNED_INTERRUPT(gpio_id)) {
+					continue;
+				}
+
 				/* GPIO fired an interrupt but it is NOT declared in
 				 * GPIO_DEFAULT_DEV_CONFIG. Falling through to `continue`
 				 * without silencing it would let the pending status

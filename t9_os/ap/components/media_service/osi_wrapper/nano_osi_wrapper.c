@@ -7,13 +7,14 @@
 #if CONFIG_HIGH_PERFORMANCE_DMA
 #include <driver/hpdma.h>
 #endif
+#if CONFIG_FRAME_BUFFER
+#include <components/bk_frame_buffer.h>
+#endif
 #include "soc/reg_base.h"   /* SOC_SRAM_PERI_ADDR: resolved here (app side) where CONFIG_SRAM_DIRECT_ADDR is valid */
 
 static void *nano_malloc_wrapper(uint32_t size)
 {
-// Modified by TUYA Start
-    return os_malloc(size);
-// Modified by TUYA End
+    return hsram_malloc(size);
 }
 
 static void nano_free_wrapper(void *ptr)
@@ -340,9 +341,7 @@ static int nano_queue_recv_wrapper(beken_queue_t *os_queue, void *data, uint32_t
 static int nano_thread_create_wrapper( beken_thread_t* thread, uint8_t priority, const char* name,
     void (*function)(void *), uint32_t stack_size, void *arg)
 {
-// Modified by TUYA Start
-    return rtos_create_thread(thread, priority, name, (beken_thread_function_t)function, stack_size, arg);
-// Modified by TUYA End
+    return rtos_create_hsram_thread(thread, priority, name, (beken_thread_function_t)function, stack_size, arg);
 }
 
 static int nano_thread_destroy_wrapper(beken_thread_t *thread)
@@ -439,37 +438,33 @@ static void nano_module_exit_critical_wrapper(bk_nano_module_t module, uint32_t 
 #endif
 }
 
-#ifdef CONFIG_VG_LITE_GPU_BASE_ADDRESS
-#define GPU_BASE_ADDR CONFIG_VG_LITE_GPU_BASE_ADDRESS
-#else
-#define GPU_BASE_ADDR 0
-#endif
-
-#ifdef CONFIG_VG_LITE_GPU_CONTIGUOUS_MEM_SZ
-#define GPU_VG_LITE_CONTIGUOUS_MEM_SZ CONFIG_VG_LITE_GPU_CONTIGUOUS_MEM_SZ
-#else
-#define GPU_VG_LITE_CONTIGUOUS_MEM_SZ 0
-#endif
-
-#ifdef CONFIG_VG_LITE_GPU_COMMAND_BUFFER_SIZE
-#define GPU_VG_LITE_COMMAND_BUFFER_SIZE CONFIG_VG_LITE_GPU_COMMAND_BUFFER_SIZE
-#else
-#define GPU_VG_LITE_COMMAND_BUFFER_SIZE 0
-#endif
-
-
 static uint32_t nano_sram_peri_addr_wrapper(uint32_t addr)
 {
     return (uint32_t)SOC_SRAM_PERI_ADDR(addr);
 }
 
+static int nano_frame_buffer_set_write_through_wrapper(void *buffer)
+{
+#if CONFIG_FRAME_BUFFER && CONFIG_PSRAM_WRITE_THROUGH
+    if (buffer == NULL) {
+        return -1;
+    }
+    return (bk_frame_buffer_set(buffer, BK_FRAME_BUFFER_FLAG_WRITE_THROUGH) == BK_OK) ? 0 : -1;
+#else
+    (void)buffer;
+    return 0;
+#endif
+}
+
 static bk_nano_osi_funcs_t s_nano_osi_funcs =
 {
-    .gpu_base_addr = GPU_BASE_ADDR,
-    .gpu_vg_lite_contiguous_mem_sz = GPU_VG_LITE_CONTIGUOUS_MEM_SZ,
-    .gpu_vg_lite_command_buffer_size = GPU_VG_LITE_COMMAND_BUFFER_SIZE,
-
+#if CONFIG_ISP_DUAL_MIPI_LOGICAL_PORT
+    .isp_port_count = 3U,
+#else
+    .isp_port_count = 2U,
+#endif
     .sram_peri_addr = nano_sram_peri_addr_wrapper,
+    .frame_buffer_set_write_through = nano_frame_buffer_set_write_through_wrapper,
 
     .malloc      = nano_malloc_wrapper,
     .free        = nano_free_wrapper,

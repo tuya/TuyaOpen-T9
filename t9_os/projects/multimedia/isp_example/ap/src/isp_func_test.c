@@ -133,10 +133,10 @@ int isp_detect_all_sensors(void)
     LOGI("Starting CSI sensor detection...\n");
 
     bus_config = (bk_camera_bus_config_t)CSI_CAM_BUS_I2C1_8BIT_2000TIMEOUT();
+    bus_config.pin_xclk = GPIO_59;
     os_memset(&sensor_config, 0, sizeof(sensor_config));
     sensor_config.pin_reset = GPIO_71;
     sensor_config.pin_pwdn = 0xFF;
-    sensor_config.pin_xclk = GPIO_59;
     sensor_count += isp_detect_sensor_on_port(CSI_CAMERA_PORT, &bus_config, &sensor_config, "CSI");
 
     LOGI("CSI sensor detection complete. Found %d sensor(s).\n", sensor_count);
@@ -248,10 +248,10 @@ static avdk_err_t isp_init_mipi_camera(uint16_t width, uint16_t height, uint16_t
     avdk_err_t ret = AVDK_ERR_OK;
     bk_camera_bus_t *bus = NULL;
     bk_camera_bus_config_t bus_config = (bk_camera_bus_config_t)CSI_CAM_BUS_I2C1_8BIT_2000TIMEOUT();
+    bus_config.pin_xclk = GPIO_59;
     bk_camera_sensor_config_t sensor_config = {
         .pin_reset = GPIO_71,
         .pin_pwdn = 0xFF,
-        .pin_xclk = GPIO_59,
     };
 
     LOGI("Initializing MIPI CSI camera: %dx%d @ %dfps\n", width, height, fps);

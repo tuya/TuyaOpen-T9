@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import importlib
 import json
+import os
 import re
 import struct
 import zlib
@@ -155,12 +156,44 @@ class bk_sdk_project(bk_project):
     def project_build_package_dir(self) -> Path:
         return self.project_build_dir / "package"
 
+    @staticmethod
+    def _flash_capacity() -> str:
+        """8M (default) or 16M. Driven by FLASH_CAPACITY env / make variable."""
+        cap = os.getenv("FLASH_CAPACITY", "8M").strip().upper()
+        cap = cap.replace("MB", "M")
+        if cap in ("16M", "16"):
+            return "16M"
+        return "8M"
+
+    @staticmethod
+    def _psram_capacity() -> str:
+        """16M (default) or 32M. Driven by PSRAM_CAPACITY env / make variable."""
+        cap = os.getenv("PSRAM_CAPACITY", "16M").strip().upper()
+        cap = cap.replace("MB", "M")
+        if cap in ("32M", "32"):
+            return "32M"
+        return "16M"
+
     @property
     def auto_partitions_table(self) -> Path:
+        if self._flash_capacity() == "16M":
+            csv_16m = self.partitions_dir / "auto_partitions_16M.csv"
+            if not csv_16m.exists():
+                raise FileNotFoundError(
+                    f"FLASH_CAPACITY=16M but {csv_16m} does not exist"
+                )
+            return csv_16m
         return self.partitions_dir / "auto_partitions.csv"
 
     @property
     def ram_regions_table(self) -> Path:
+        if self._psram_capacity() == "32M":
+            csv_32m = self.partitions_dir / "ram_regions_32M.csv"
+            if not csv_32m.exists():
+                raise FileNotFoundError(
+                    f"PSRAM_CAPACITY=32M but {csv_32m} does not exist"
+                )
+            return csv_32m
         return self.partitions_dir / "ram_regions.csv"
 
     @property

@@ -16,15 +16,11 @@ set(CONFIG_TFM_BOOT_STORE_MEASUREMENTS   OFF         CACHE BOOL      "Store meas
 set(CONFIG_TFM_USE_TRUSTZONE            ON)
 set(MBEDCRYPTO_BUILD_TYPE               debug CACHE STRING "Build type of Mbed Crypto library")
 set(PLATFORM_FLIH_IRQ_TEST_SUPPORT      ON       CACHE BOOL      "Whether the platform has FLIH test support")
-# Phase-1: start at Isolation Level 2 (SAU+MPC+PPC). L3 is an evolution.
 set(PLATFORM_HAS_ISOLATION_L3_SUPPORT   OFF      CACHE BOOL      "Whether the platform support isolation l3")
-# BK7259 bring-up: disable MCUboot HW anti-rollback. 
 set(MCUBOOT_HW_ROLLBACK_PROT            OFF         CACHE BOOL      "Enable security counter validation against non-volatile HW counters")
 set(BL2_VALIDATE_ENABLED_BY_EFUSE       ON           CACHE BOOL       "Whether to enable bl2 validate by efuse")
 set(CONFIG_SUPPORT_SWD_DEBUG            OFF           CACHE BOOL        "Whether to enable SWD dedbug")
 
-# Phase-1: FIH / SCA disabled to reduce bring-up complexity. Re-enable for
-# PSA certification (see DLD §9.3 / config decision D7).
 set(MCUBOOT_FIH_PROFILE                 "OFF"         CACHE STRING    "Fault injection hardening profile [OFF, LOW, MEDIUM, HIGH]")
 set(TFM_FIH_PROFILE                     "OFF"         CACHE STRING    "Fault injection hardening profile [OFF, LOW, MEDIUM, HIGH]")
 set(HW_FIH                              OFF          CACHE BOOL       "Whether to enable hardware FIH")
@@ -42,35 +38,30 @@ set(ITS_MAX_ASSET_SIZE               "512"       CACHE STRING    "The maximum as
 set(ITS_NUM_ASSETS                   "20"        CACHE STRING    "The maximum number of assets to be stored in the Internal Trusted Storage area")
 
 set(CONFIG_PANIC_DEAD_LOOP              OFF           CACHE BOOL       "Whether to enable panic dead loop")
-# BK7259 bring-up: disable the TF-M MPU (privileged/unprivileged + inter-partition
-# memory isolation). Two reasons:
-#   1) The crypto partition (PSA-RoT, runs PRIVILEGED) accesses the Dubhe crypto
-#      engine MMIO at 0x42110000 during psa_crypto_init(). That region is not
-#      mapped by any MPU region, so once the MPU is enabled the access faults.
-#   2) tfm_hal_set_up_static_boundaries() calls enable_scb_dcache() right after
-#      mpu_armv8m_enable(); with the default memory map the Dubhe MMIO can become
-#      D-cacheable, and the cached MMIO writes surface as an imprecise BusFault.
-# Disabling CONFIG_TFM_MPU skips both mpu_armv8m_enable() and enable_scb_dcache().
-# PSA-RoT partitions are PRIVILEGED regardless of the MPU (privileged flag comes
-# from IS_PARTITION_PSA_ROT), so turning the MPU off does not change their
-# privilege level; it only drops inter-partition memory isolation, which is
-# acceptable for bring-up where the priority is to reach the NS world.
-set(CONFIG_TFM_MPU                      OFF          CACHE BOOL       "BK7259 bring-up: disable tfm MPU")
+set(CONFIG_TFM_MPU                      OFF           CACHE BOOL       "disable tfm MPU")
+set(TFM_PARTITION_PROTECTED_STORAGE     OFF           CACHE BOOL       "disable PS partition" FORCE)
 
-# BK7259 bring-up: temporarily disable the Protected Storage partition.
-# profile_medium.cmake turns it ON, but its SFN init (tfm_ps_entry) touches flash
-# via the thin-shim driver (and routes requests through the platform partition),
-# which stalls the SPM scheduler so ns_agent (lowest priority) never runs and we
-# never reach the NS world. Priority right now is to see the NS app log.
-#
-# NOTE: Internal Trusted Storage (ITS) is intentionally kept ON: the crypto
-# partition has a hard manifest dependency on TFM_INTERNAL_TRUSTED_STORAGE_SERVICE
-# and mbedcrypto's psa_crypto_storage.c links against psa_its_* symbols, so
-# disabling ITS breaks the build. FORCE overrides the profile_medium cache value.
-set(TFM_PARTITION_PROTECTED_STORAGE        OFF   CACHE BOOL "BK7259 bring-up: disable PS partition" FORCE)
+# Secure runtime (SPE) log level is driven by CONFIG_TFM_LOG_LEVEL from the
+# project defconfig, independent from the bootloader level (CONFIG_TFM_BL2_LOG_LEVEL
+# -> MCUBOOT_LOG_LEVEL). The build type is minsizerel, which pre-sets
+# TFM_SPM_LOG_LEVEL=SILENCE (config/build_type/minsizerel.cmake), so FORCE the
+# mapped value here. The SPM level set has no WARNING tier: map it onto INFO.
+if(NOT DEFINED CONFIG_TFM_LOG_LEVEL OR CONFIG_TFM_LOG_LEVEL STREQUAL "")
+	set(CONFIG_TFM_LOG_LEVEL "INFO")
+endif()
+if(CONFIG_TFM_LOG_LEVEL STREQUAL "OFF")
+	set(_bk_spm_log_level TFM_SPM_LOG_LEVEL_SILENCE)
+elseif(CONFIG_TFM_LOG_LEVEL STREQUAL "ERROR")
+	set(_bk_spm_log_level TFM_SPM_LOG_LEVEL_ERROR)
+elseif(CONFIG_TFM_LOG_LEVEL STREQUAL "DEBUG")
+	set(_bk_spm_log_level TFM_SPM_LOG_LEVEL_DEBUG)
+else() # WARNING / INFO
+	set(_bk_spm_log_level TFM_SPM_LOG_LEVEL_INFO)
+endif()
+set(TFM_SPM_LOG_LEVEL    ${_bk_spm_log_level}    CACHE STRING "SPE SPM log level from CONFIG_TFM_LOG_LEVEL" FORCE)
 
-# BK7259 bring-up: the build type is minsizerel, which forces
-# TFM_SPM_LOG_LEVEL=SILENCE (see config/build_type/minsizerel.cmake), so no TF-M
-# SPM log is emitted on UART1. Force DEBUG level so the TFM_EXCEPTION_INFO_DUMP
-# fault context (printed via SPMLOG_DBGMSG in exception_info.c) is visible.
-set(TFM_SPM_LOG_LEVEL    TFM_SPM_LOG_LEVEL_DEBUG    CACHE STRING "BK7259 bring-up: force TF-M SPM log to DEBUG" FORCE)
+# Secure Partition (unprivileged) logging is kept SILENCE: the beken secure world
+# logs from privileged code through the SPM sink, so the partition raw-log path
+# (printf -> SVC OUTPUT_UNPRIV_STRING) is not needed. Forcing SILENCE keeps the
+# emitter and its SPM handler both out, so no partition SVC log traffic is issued.
+set(TFM_PARTITION_LOG_LEVEL    TFM_PARTITION_LOG_LEVEL_SILENCE    CACHE STRING "Secure Partition log level" FORCE)

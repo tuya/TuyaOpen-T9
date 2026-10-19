@@ -86,7 +86,12 @@ ARM_MPU_Region_t mpu_regions[] = {
     { ARM_MPU_RBAR(0x40000000UL + NS_MEM_OFFSET, ARM_MPU_SH_INNER, 0, 1, 1),
       ARM_MPU_RLAR(0x4FFFFFE0UL + NS_MEM_OFFSET, 2) },
 
-    /* Non-secure QSPI window. */
+    /*
+     * Non-Secure QSPI memory-mapped window. secureboot_ai currently does not
+     * enable CONFIG_QSPI or access this window. If runtime QSPI programming is
+     * enabled later, make this region non-cacheable or provide Secure L2 cache
+     * maintenance before allowing the underlying device contents to change.
+     */
     { ARM_MPU_RBAR(0x68000000UL + NS_MEM_OFFSET, ARM_MPU_SH_NON, 0, 1, 1),
       ARM_MPU_RLAR(0x6FFFFFE0UL + NS_MEM_OFFSET, 3) },
 
@@ -97,16 +102,14 @@ ARM_MPU_Region_t mpu_regions[] = {
      * policy in smp_ram_setting_bk7259.json, or override it per project in
      * partitions/bk7259/ram_regions_mpu.json.
      *
-     * Default app layout:
-     *   PSRAM_MEM_SLAB_UNCODED:
-     *     0x70000000 - 0x70FFFFE0, attr 1, non-cacheable
-     *   PSRAM_MEM_SLAB_CODED / CP_PSRAM_HEAP /
-     *   AP_PSRAM_NOCACHE_HEAP / AP_PSRAM_DATA_SECTION:
-     *     0x74000000 - 0x74E7FFE0, attr 1, non-cacheable
-     *   AP_PSRAM_HEAP:
-     *     0x74E80000 - 0x74EFFFE0, attr 5, L2 write-back
+     * Default policy:
+     *   PSRAM_MEM_SLAB_UNCODED / PSRAM_MEM_SLAB_CODED /
+     *   CP_PSRAM_HEAP / AP_PSRAM_DATA_SECTION / AP_PSRAM_HEAP:
+     *     attr 1, non-cacheable
+     *   AP_PSRAM_CACHE_HEAP:
+     *     attr 5, L2 write-back, used for AP task stacks
      *   AP_PSRAM_CODE_SECTION:
-     *     0x74F00000 - 0x74FFFFE0, attr 3, L1/L2 write-back
+     *     attr 3, L1/L2 write-back
      */
 #if CONFIG_PSRAM_MPU_REGION_COUNT > 0
     { ARM_MPU_RBAR(CONFIG_PSRAM_MPU_NS_REGION_0_BASE, ARM_MPU_SH_NON, 0, 1, 0),

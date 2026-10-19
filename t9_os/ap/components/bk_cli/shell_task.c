@@ -99,7 +99,7 @@
 #else
 #define SHELL_CMD_BUF_LEN		200
 #endif
-#define SHELL_RSP_BUF_LEN		140
+#define SHELL_RSP_BUF_LEN		256
 #define SHELL_IND_BUF_LEN		132
 
 #define SHELL_RSP_QUEUE_ID	    (7)
@@ -1615,13 +1615,13 @@ static void rx_ind_process(void)
 			}
 
 			bk_err_t ret = rtos_get_semaphore(&cmd_line_buf.rsp_buf_semaphore, SHELL_WAIT_OUT_TIME);
-#if (CMD_DEV == DEV_MAILBOX) && CONFIG_PM_AP_FAST_BOOT_ENABLE
+#if CONFIG_PM_AP_FAST_BOOT_ENABLE
 			/*
-			 * A command arriving from CP proves the peer is alive. If a legacy
-			 * async completion was lost across AP power-down, reclaim the sole
-			 * response buffer instead of turning a transport bookkeeping miss
-			 * into a system-wide Assert. Responses below use the synchronous
-			 * path, so no new completion dependency is introduced.
+			 * A command reaching this point proves the shell is alive. If the
+			 * async TX completion that returns rsp_buf_semaphore was lost
+			 * across AP power-down, reuse the sole response buffer anyway
+			 * rather than turning a transport bookkeeping miss into a
+			 * system-wide Assert.
 			 */
 			(void)ret;
 #else
@@ -2789,10 +2789,6 @@ static bool_t shell_log_flush_continue(void *context)
 		? bTRUE : bFALSE;
 }
 
-/* Bounded variant of shell_log_flush(): should_continue() is polled inside the
- * device flush loop, so an exception-context flush cannot wait forever on a
- * device that never drains. On abandonment the pending log is dropped via
- * TX_RESET so subsequent synchronous dump output is not blocked behind it. */
 bool shell_log_flush_controlled(
 	shell_log_flush_continue_t should_continue, void *context)
 {

@@ -24,6 +24,7 @@
 #include "bootutil/bootutil_log.h"
 #include "bootutil/image.h"
 #include "bootutil/bootutil.h"
+#include "bootutil/bootutil_public.h"
 #include "bootutil/boot_record.h"
 #include "bootutil/fault_injection_hardening.h"
 #include "flash_map_backend/flash_map_backend.h"
@@ -132,12 +133,11 @@ int main(void)
      * bk_sw_fih_* / bk_fih_set_src) dropped for now; re-add once stable. */
     bk_efuse_init();
 
-    update_wdt(BL2_WDT_FEED_VAL);
-#if CONFIG_BL2_SECURE_DEBUG
+#if 1//CONFIG_BL2_SECURE_DEBUG
     extern void hal_secure_debug(void);
     hal_secure_debug();
 #endif
-
+    update_wdt(BL2_WDT_FEED_VAL);
     /* Initialise the mbedtls static memory allocator so that mbedtls allocates
      * memory from the provided static buffer instead of from the heap.
      */
@@ -154,14 +154,21 @@ int main(void)
 #if CONFIG_BL2_DOWNLOAD
     if (efuse_is_secure_download_enabled()) {
         BOOT_LOG_INF("BB2: download start");
-        flash_switch_to_line_mode_two();
+        /* No line-mode bracket needed: each download flash op self-brackets to
+         * two-line and restores the ambient QUAD continuous-read; op_sw data
+         * reads work in four-line. */
         void legacy_boot_main(void);
         legacy_boot_main();
-        flash_restore_line_mode();
+#if CONFIG_DOWNLOAD_LOG
+        /* The download transport shares UART0 with the console and tears down
+         * its TX path and clock on exit; re-initialise the console so the
+         * subsequent bootloader log is emitted. */
+        stdio_init();
+#endif
     }
 #endif
 
-    BOOT_LOG_INF("Starting bootloader");
+    BOOT_LOG_DBG("Starting bootloader");
     dump_efuse();
     int part_rc = -1;
     part_rc = partition_init();
@@ -172,12 +179,15 @@ int main(void)
 
     flash_map_init();
     dump_partition();
+
+#if CONFIG_DIRECT_XIP
     /* Compute preferred A/B slot from boot_param; fed to MCUboot via
      * boot_get_active_slot_hook(). MCUboot still validates and falls back on
      * a bad signature. */
     (void)boot_param_load();
     uint8_t ab_pref = boot_param_decide_slot();
-    BOOT_LOG_INF("boot_param preferred slot: %d", ab_pref);
+    BOOT_LOG_FORCE("bp preferred slot: %d", ab_pref);
+#endif
 
     plat_err = tfm_plat_otp_init();
     if (plat_err != TFM_PLAT_ERR_SUCCESS) {
@@ -212,11 +222,17 @@ int main(void)
     FIH_CALL(boot_go, fih_rc, &rsp);
     if (FIH_NOT_EQ(fih_rc, FIH_SUCCESS)) {
         BOOT_LOG_ERR("Unable to find bootable image");
+        /* FIH_PANIC is a while(1) in MinSizeRel: re-arm so the board resets and
+         * retries instead of sitting here until the AON WDT's ~65s. */
+        update_wdt(BL2_WDT_FEED_VAL);
         FIH_PANIC;
     }
+
+#if CONFIG_DIRECT_XIP
     /* If MCUboot fell back off our preferred slot (it failed validation), persist
      * the slot actually booted so the next reset goes straight to the good one. */
     boot_param_reconcile_booted(rsp.br_image_off);
+#endif
     do_boot(&rsp);
 
     BOOT_LOG_ERR("Never should get here");

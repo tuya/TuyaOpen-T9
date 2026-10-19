@@ -64,23 +64,23 @@ static inline void flash_ll_set_op_cmd(flash_hw_t *hw, flash_op_cmd_t cmd)
 {
 	hw->op_cmd.op_type_sw = cmd;
 	hw->op_ctrl.op_sw = 1;
-	hw->op_ctrl.wp_value = 1;
+	//hw->op_ctrl.wp_value = 1;    //only pull up wp pin when write status reg
 }
 
 static inline uint32_t flash_ll_get_id(flash_hw_t *hw)
 {
-	while (flash_ll_is_busy(hw));
+	flash_ll_wait_op_done(hw);
 	flash_ll_set_op_cmd(hw, FLASH_OP_CMD_RDID);
-	while (flash_ll_is_busy(hw));
+	flash_ll_wait_op_done(hw);
 	return flash_ll_read_flash_id(hw) >> 0x8;
 }
 
 static inline uint32_t flash_ll_get_mid(flash_hw_t *hw)
 {
-	while (flash_ll_is_busy(hw));
+	flash_ll_wait_op_done(hw);
 	hw->op_cmd.op_type_sw = FLASH_OP_CMD_RDID;
 	hw->op_ctrl.op_sw = 1;
-	while (flash_ll_is_busy(hw));
+	flash_ll_wait_op_done(hw);
 	return flash_ll_read_flash_id(hw);
 }
 
@@ -113,44 +113,77 @@ static inline void flash_ll_deinit_rdsr_cmd(flash_hw_t *hw)
 }
 
 
-static inline void flash_ll_write_status_reg(flash_hw_t *hw, uint8_t sr_width, uint32_t sr_data)
+static inline void flash_ll_set_volatile_status_write(flash_hw_t *hw)
 {
+	flash_ll_wait_op_done(hw);
+	hw->REG_0x1C.wren_cmd = 0x50;
+}
 
-	while (flash_ll_is_busy(hw));
+static inline void flash_ll_clear_volatile_status_write(flash_hw_t *hw)
+{
+	flash_ll_wait_op_done(hw);
+	hw->REG_0x1C.wren_cmd = 0x6;
+	flash_ll_wait_op_done(hw);
+}
+
+static inline void flash_ll_write_status_reg_common(flash_hw_t *hw, uint8_t sr_width, uint32_t sr_data)
+{
+	uint32_t v = sr_data;
+
+	/* NOR SR: SRP0 = byte1 bit7; SRP1 = byte2 S8 (bit8 of 16b SR).
+	 * Force SRP0=1/SRP1=0 so WP# pin gates status-register writes. */
+	v |= (1u << FLASH_STATUS_REG_SRP0_BIT);
+	v &= ~(1u << FLASH_STATUS_REG_SRP1_BIT);
+
+	flash_ll_wait_op_done(hw);
 	hw->cmd_cfg.v = 0;
-	hw->config.wrsr_data = sr_data;
+	hw->config.wrsr_data = v;
 	hw->op_ctrl.wp_value = 1;
-	if (sr_width == 1) {
+
+	/* Split write for max compatibility: 01H writes S0-7, 31H writes S8-15,
+	 * 11H writes S16-23 - one byte per command. This mirrors the read side
+	 * (RDSR/RDSR2/0x15) which is already per-register, and avoids the combined
+	 * 01H+2byte (WRSR2) form that some parts do not accept. wp_value stays 1
+	 * across all writes; the volatile 0x50 prefix (when set) is re-issued by
+	 * the controller before each op_sw WRSR. */
+	flash_ll_set_op_cmd(hw, FLASH_OP_CMD_WRSR);              /* 01H + S0-7 */
+
+	if (sr_width >= 2) {
+		flash_ll_wait_op_done(hw);
+		hw->config.wrsr_data = (v >> LEN_WRSR_S0_S7);       /* S8-15 */
+		flash_ll_init_wrsr_cmd(hw, CMD_WRSR_S8_S15);        /* 0x31 */
 		flash_ll_set_op_cmd(hw, FLASH_OP_CMD_WRSR);
-	} else if (sr_width == 2) {
-		flash_ll_set_op_cmd(hw, FLASH_OP_CMD_WRSR2);
-	} else {
-		if(FLASH_ID_GD25Q32C == flash_ll_get_id(hw) || FLASH_ID_TH25Q64 == flash_ll_get_id(hw)) {
-			flash_ll_set_op_cmd(hw, FLASH_OP_CMD_WRSR);
-			while (flash_ll_is_busy(hw));
-			hw->config.wrsr_data = (sr_data >> LEN_WRSR_S0_S7);
-			flash_ll_init_wrsr_cmd(hw, CMD_WRSR_S8_S15);
-			// hw->op_ctrl.wp_value = 1;    //  ???
-			flash_ll_set_op_cmd(hw, FLASH_OP_CMD_WRSR);
 
-			#if 0
-			while (flash_ll_is_busy(hw));
-			hw->config.wrsr_data = (sr_data >> LEN_WRSR_S8_S15);
-			flash_ll_init_wrsr_cmd(hw, CMD_WRSR_S16_S24);
+		if (sr_width >= 3) {
+			flash_ll_wait_op_done(hw);
+			hw->config.wrsr_data = (v >> LEN_WRSR_S8_S15);  /* S16-23 */
+			flash_ll_init_wrsr_cmd(hw, CMD_WRSR_S16_S24);   /* 0x11 */
 			flash_ll_set_op_cmd(hw, FLASH_OP_CMD_WRSR);
-			#endif
-
-			while (flash_ll_is_busy(hw));
-
-			// flash_ll_deinit_wrsr_cmd(hw);
-			hw->cmd_cfg.v = 0;
-		} else {
-			flash_ll_set_op_cmd(hw, FLASH_OP_CMD_WRSR2);
 		}
+
+		flash_ll_wait_op_done(hw);
+		hw->cmd_cfg.v = 0;   /* restore wrsr_cmd_sel back to default 01H */
 	}
 
-	while (flash_ll_is_busy(hw));
+	flash_ll_wait_op_done(hw);
 	hw->op_ctrl.wp_value = 0;
+}
+
+/* Volatile status-register write: bracket the WRSR with the 0x50 volatile-enable
+ * prefix so runtime protect toggling does not wear the flash. */
+static inline void flash_ll_write_status_reg(flash_hw_t *hw, uint8_t sr_width, uint32_t sr_data)
+{
+	flash_ll_set_volatile_status_write(hw);
+	flash_ll_write_status_reg_common(hw, sr_width, sr_data);
+	flash_ll_clear_volatile_status_write(hw);
+}
+
+/* Non-volatile status-register write: no 0x50 prefix, so the controller issues
+ * the standard WREN (0x06) before WRSR and the value persists across reboot.
+ * Used for one-time protection setup and QE at init. */
+static inline void flash_ll_write_status_reg_nvol(flash_hw_t *hw, uint8_t sr_width, uint32_t sr_data)
+{
+	flash_ll_write_status_reg_common(hw, sr_width, sr_data);
 }
 
 static inline void flash_ll_set_qe(flash_hw_t *hw, uint8_t qe_bit, uint8_t qe_bit_post)
@@ -162,10 +195,10 @@ static inline uint32_t flash_ll_read_status_reg(flash_hw_t *hw, uint8_t sr_width
 {
 	uint32_t state_reg_data = 0;
 
-	while (flash_ll_is_busy(hw));
+	flash_ll_wait_op_done(hw);
 	hw->cmd_cfg.v = 0;
 	flash_ll_set_op_cmd(hw, FLASH_OP_CMD_RDSR);
-	while (flash_ll_is_busy(hw));
+	flash_ll_wait_op_done(hw);
 	state_reg_data = hw->state.status_reg;
 
 	if (sr_width ==1)
@@ -174,7 +207,7 @@ static inline uint32_t flash_ll_read_status_reg(flash_hw_t *hw, uint8_t sr_width
 	}
 
 	flash_ll_set_op_cmd(hw, FLASH_OP_CMD_RDSR2);
-	while (flash_ll_is_busy(hw));
+	flash_ll_wait_op_done(hw);
 	state_reg_data |= hw->state.status_reg << 8;
 
 	if (sr_width ==2)
@@ -185,7 +218,7 @@ static inline uint32_t flash_ll_read_status_reg(flash_hw_t *hw, uint8_t sr_width
 	hw->cmd_cfg.rdsr_cmd_reg = 0x15;
 	hw->cmd_cfg.rdsr_cmd_sel = 1;
 	flash_ll_set_op_cmd(hw, FLASH_OP_CMD_RDSR);
-	while (flash_ll_is_busy(hw));
+	flash_ll_wait_op_done(hw);
 	state_reg_data |= hw->state.status_reg << 16;
 	hw->cmd_cfg.v = 0;
 
@@ -212,7 +245,7 @@ static inline void flash_ll_clear_qwfr(flash_hw_t *hw)
 	hw->config.mode_sel = 0;
 	hw->op_cmd.addr_sw_reg = 0;
 	flash_ll_set_op_cmd(hw, FLASH_OP_CMD_CRMR);
-	while (flash_ll_is_busy(hw));
+	flash_ll_wait_op_done(hw);
 }
 
 static inline void flash_ll_set_mode(flash_hw_t *hw, uint8_t mode_sel)
@@ -237,11 +270,11 @@ static inline uint32_t flash_ll_read_data_sw_flash_sel(flash_hw_t *hw)
 
 static inline void flash_ll_erase_block(flash_hw_t *hw, uint32_t erase_addr, int type)
 {
-	while (flash_ll_is_busy(hw));
+	flash_ll_wait_op_done(hw);
 	hw->op_cmd.addr_sw_reg = erase_addr;
 	hw->op_cmd.op_type_sw = type;
 	hw->op_ctrl.op_sw = 1;
-	while (flash_ll_is_busy(hw));
+	flash_ll_wait_op_done(hw);
 }
 
 static inline void flash_ll_set_op_cmd_read(flash_hw_t *hw, uint32_t read_addr)
@@ -249,7 +282,7 @@ static inline void flash_ll_set_op_cmd_read(flash_hw_t *hw, uint32_t read_addr)
 	hw->op_cmd.addr_sw_reg = read_addr;
 	hw->op_cmd.op_type_sw = FLASH_OP_CMD_READ;
 	hw->op_ctrl.op_sw = 1;
-	while (flash_ll_is_busy(hw));
+	flash_ll_wait_op_done(hw);
 }
 
 static inline uint32_t flash_ll_read_data(flash_hw_t *hw)
@@ -262,7 +295,7 @@ static inline void flash_ll_set_op_cmd_write(flash_hw_t *hw, uint32_t write_addr
 	hw->op_cmd.addr_sw_reg = write_addr;
 	hw->op_cmd.op_type_sw = FLASH_OP_CMD_PP;
 	hw->op_ctrl.op_sw = 1;
-	while (flash_ll_is_busy(hw));
+	flash_ll_wait_op_done(hw);
 }
 
 static inline void flash_ll_write_data(flash_hw_t *hw, uint32_t data)
@@ -301,13 +334,13 @@ static inline void flash_ll_set_clk_dco(flash_hw_t *hw, bool ate_enabled)
 static inline void flash_ll_write_enable(flash_hw_t *hw)
 {
 	flash_ll_set_op_cmd(hw, FLASH_OP_CMD_WREN);
-	while (flash_ll_is_busy(hw));
+	flash_ll_wait_op_done(hw);
 }
 
 static inline void flash_ll_write_disable(flash_hw_t *hw)
 {
 	flash_ll_set_op_cmd(hw, FLASH_OP_CMD_WRDI);
-	while (flash_ll_is_busy(hw));
+	flash_ll_wait_op_done(hw);
 }
 
 static inline void flash_ll_set_ota_enable(flash_hw_t *hw, bool enable)
@@ -363,16 +396,6 @@ static inline uint32_t flash_ll_get_addr_offset(flash_hw_t *hw)
 static inline void flash_ll_set_addr_offset(flash_hw_t *hw, uint32_t addr_offset)
 {
 	hw->flash_addr_offset = addr_offset;
-}
-
-static inline void flash_ll_set_volatile_status_write(flash_hw_t *hw)
-{
-	hw->cmd_cfg.wrsr_cmd_reg = 0x50;
-	hw->cmd_cfg.wrsr_cmd_sel = 0x1;
-	flash_ll_set_op_cmd(hw, FLASH_OP_CMD_WRSR);
-	while (flash_ll_is_busy(hw));
-	hw->cmd_cfg.wrsr_cmd_reg = 0x0;
-	hw->cmd_cfg.wrsr_cmd_sel = 0x0;
 }
 
 #ifdef __cplusplus

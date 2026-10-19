@@ -49,7 +49,7 @@ list(APPEND incs
 	${components}/at_server
 	${components}/at_server/_at_server
 	${components}/at_server/_at_server_port
-	${components}/bk_net/include
+	${components}/bk_netif/include
 	${components}/bk_event
 	)
 endif()
@@ -100,6 +100,8 @@ if(CONFIG_WIFI_ENABLE)
 	if (CONFIG_TZ AND NOT CONFIG_SPE)
 		if(CONFIG_WIFI_CSI_EN)
 			set (wifi_elem libwifi_csi_nspe.a)
+		elseif(CONFIG_QUICK_TRACK)
+			set (wifi_elem libwifi_quick_track_nspe.a)
 		else()
 			set (wifi_elem libwifi_nspe.a)
 		endif()
@@ -107,6 +109,8 @@ if(CONFIG_WIFI_ENABLE)
 	else()
 		if(CONFIG_WIFI_CSI_EN)
 			set (wifi_elem libwifi_csi.a)
+		elseif(CONFIG_QUICK_TRACK)
+			set (wifi_elem libwifi_quick_track.a)
 		else()
 			set (wifi_elem libwifi.a)
 		endif()

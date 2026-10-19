@@ -2934,7 +2934,9 @@
  *
  * This module provides networking routines.
  */
+#if defined(CONFIG_LWIP) && CONFIG_LWIP
 #define MBEDTLS_NET_C
+#endif
 
 /**
  * \def MBEDTLS_OID_C
@@ -3152,11 +3154,12 @@
  *           or MBEDTLS_HMAC_DRBG_C and MBEDTLS_ENTROPY_C,
  *           or MBEDTLS_PSA_CRYPTO_EXTERNAL_RNG.
  *
- * NS builds do not enable a local PSA Crypto server. When
- * CONFIG_MBEDTLS_USE_PSA_CRYPTO is set, PSA APIs are provided by TF-M
- * (MBEDTLS_PSA_CRYPTO_CLIENT). Otherwise only classic mbedtls is used.
+ * CONFIG_TFM_CRYPTO=y: PSA server in SPE, NS uses MBEDTLS_PSA_CRYPTO_CLIENT only.
+ * CONFIG_TFM_CRYPTO=n: NS builds local PSA server when USE_PSA is enabled.
  */
-//#define MBEDTLS_PSA_CRYPTO_C
+#if CONFIG_MBEDTLS_USE_PSA_CRYPTO && !CONFIG_TFM_CRYPTO
+#define MBEDTLS_PSA_CRYPTO_C
+#endif
 
 /**
  * \def MBEDTLS_PSA_CRYPTO_SE_C
@@ -4198,7 +4201,9 @@
 #define MBEDTLS_SSL_TLS_C
 #define MBEDTLS_X509_USE_C
 #define MBEDTLS_X509_CRT_PARSE_C
+#if defined(CONFIG_LWIP) && CONFIG_LWIP
 #define MBEDTLS_NET_C
+#endif
 #define MBEDTLS_SSL_OUT_CONTENT_LEN             8192
 #define MBEDTLS_SSL_DTLS_MAX_BUFFERING          16384
 
@@ -4232,6 +4237,22 @@
 #endif
 #elif defined(MBEDTLS_ENTROPY_NV_SEED)
 #include "mbedtls_entropy_nv_seed_config.h"
+#endif
+
+#if CONFIG_MBEDTLS_USE_PSA_CRYPTO
+#if defined(CONFIG_TFM_CRYPTO) && CONFIG_TFM_CRYPTO
+#define MBEDTLS_PSA_CRYPTO_CLIENT
+#else
+#define MBEDTLS_PSA_CRYPTO_C
+#define MBEDTLS_PSA_CRYPTO_CLIENT
+
+// #ifndef MBEDTLS_SHA512_C
+// #define MBEDTLS_SHA512_C
+// #endif
+// #ifndef MBEDTLS_SHA384_C
+// #define MBEDTLS_SHA384_C
+// #endif
+#endif
 #endif
 
 /* Target and application specific configurations

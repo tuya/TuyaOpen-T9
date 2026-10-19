@@ -14,6 +14,7 @@
 //
 #pragma once
 
+#include <stdbool.h>
 #include <driver/int_types.h>
 #include <common/bk_include.h>
 #include <driver/hal/hal_aud_types.h>
@@ -23,6 +24,25 @@
 extern "C" {
 #endif
 
+/**
+ * @brief External-amp PA control parameters.
+ */
+typedef struct
+{
+    bool     pa_ctrl_en;     /*!< true: drive PA GPIO around dac open/close */
+    uint16_t pa_ctrl_gpio;   /*!< GPIO id controlling PA enable / unmute */
+    uint8_t  pa_on_level;    /*!< level that turns PA on: 0=low, 1=high */
+    uint32_t pa_on_delay;    /*!< ms after dac enable before PA on */
+    uint32_t pa_off_delay;   /*!< ms after PA off before dac deinit */
+} aud_pa_ctrl_t;
+
+#define DEFAULT_AUD_PA_CTRL() { \
+    .pa_ctrl_en = false,        \
+    .pa_ctrl_gpio = 0,          \
+    .pa_on_level = 0,           \
+    .pa_on_delay = 0,           \
+    .pa_off_delay = 0,          \
+}
 
 /**
  * @brief audio dac defines
@@ -141,6 +161,8 @@ typedef struct {
     }
 #elif CONFIG_AUD_DRIVER_V2
 
+#include <driver/aud_dac_drc_types.h>
+
 /** Max digital gain in dB (maps to register full-scale linear, ~0x3FFFFFFF) */
 #define BK_AUD_DAC_DIG_GAIN_DB_MAX        (12.0f)
 /** dB returned when register linear gain is 0 (mute / -inf dB) */
@@ -155,11 +177,21 @@ typedef struct {
 
 
 typedef enum {
-	AUD_DAC_SOURCE_A2DP = 0,
-	AUD_DAC_SOURCE_CALL,
-	AUD_DAC_SOURCE_HINT,
+	AUD_DAC_SOURCE_A2DP = 0, /**< Goes through Resample → EQ → DRC before mix */
+	AUD_DAC_SOURCE_CALL,     /**< Mixes after DRC (no HW DRC) */
+	AUD_DAC_SOURCE_HINT,     /**< Mixes after DRC (no HW DRC) */
 	AUD_DAC_SOURCE_MAX,
 } aud_dac_source_t;
+
+/**
+ * A2DP sample-rate clock-domain policy.
+ * NATIVE: 44.1k uses 90.3168MHz APLL and bypasses HW resample (default, compatible).
+ * HW_TO_48K: 44.1k keeps input rate but enables HW resample to 48k domain (98.304MHz APLL).
+ */
+typedef enum {
+	AUD_DAC_A2DP_RATE_NATIVE = 0,
+	AUD_DAC_A2DP_RATE_HW_TO_48K,
+} aud_dac_a2dp_rate_policy_t;
 
 typedef enum {
 	AUD_DAC_SPK0_A2DP_FIFO_ALMOST_EMPTY_MASK = 1,
@@ -191,6 +223,15 @@ typedef struct {
 	int32_t ana_gain;                       /**< AUD dac analog gain in dB, range: [0, 7], 1dB/step */
 	aud_dac_clk_invert_t dac_clk_invert;    /**< AUD dac output clock edge select */
 	aud_clk_t clk_src;
+	aud_dac_a2dp_rate_policy_t a2dp_rate_policy; /**< A2DP 44.1k clock/resample policy */
+	/**
+	 * When non-zero, bk_aud_dac_init() applies a2dp_drc (Preset/L2/raw).
+	 * When zero, HW DRC is bypassed. Prefer preset via a2dp_drc.mode=0
+	 * (AUD_DAC_DRC_PARAM_CFG_PRESET), not a separate preset field.
+	 * CALL/HINT never pass through HW DRC.
+	 */
+	uint8_t a2dp_drc_en;
+	aud_dac_drc_param_cfg_t a2dp_drc;
 } aud_dac_config_t;
 
 #define DEFAULT_AUD_DAC_CONFIG() {                      \
@@ -202,6 +243,9 @@ typedef struct {
     .ana_gain  = 4,                                     \
     .dac_clk_invert = AUD_DAC_CLK_INVERT_RISING,        \
     .clk_src        = AUD_CLK_APLL,                     \
+    .a2dp_rate_policy = AUD_DAC_A2DP_RATE_NATIVE,       \
+    .a2dp_drc_en = 0,                                   \
+    .a2dp_drc = AUD_DAC_DRC_PARAM_CFG_OFF(),              \
 }
 #endif
 

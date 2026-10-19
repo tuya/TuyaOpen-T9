@@ -169,7 +169,6 @@ uint8_t bl_set_boot_flag_value(void)
 
 	memset(&boot_flag_new_val[28], 0 , 4); //for bootrom log print
 
-	flash_set_protect_type(FLASH_PROTECT_NONE);
 	if(bl_get_boot_flag_value() == 1)
 	{
 		printf(" run on A, and refresh boot_flag \r\n");
@@ -190,8 +189,6 @@ uint8_t bl_set_boot_flag_value(void)
 	flash_write_data(&boot_flag_new_val[0], CONFIG_BOOT_FLAG_PHY_PARTITION_OFFSET, sizeof(boot_flag_new_val));
 
 	bl_double_check_the_written_value(boot_flag_new_val);
-
-	flash_set_protect_type(FLASH_PROTECT_ALL);
 
 	return status;
 }
@@ -271,6 +268,35 @@ bool bl_forbid_operate_boot_partition(uint32_t addr, uint32_t len)
 			//printf("normal test partition \r\n ");
 			return true;
 	}
+#else
+	/* No BL2 A/B update: protect [0, TFM); only partition table is writable. */
+	if ((addr >= flash_max_size) || (len > flash_max_size) ||
+	    ((addr + len) > flash_max_size)) {
+		printf("operate flash is override!!! addr: 0x%x, len: 0x%x, flash: 0x%x\r\n",
+		       addr, len, flash_max_size);
+		return false;
+	}
+
+	{
+		uint32_t op_start_addr = addr;
+		uint32_t op_end_addr = addr + len; /* exclusive */
+		uint32_t protect_end_addr = CONFIG_PRIMARY_TFM_S_PHY_PARTITION_OFFSET;
+		uint32_t part_tbl_start = CONFIG_PARTITION_PHY_PARTITION_OFFSET;
+		uint32_t part_tbl_end = CONFIG_PARTITION_PHY_PARTITION_OFFSET +
+					CONFIG_PARTITION_PHY_PARTITION_SIZE;
+
+		if (op_start_addr < protect_end_addr) {
+			uint32_t clipped_end = (op_end_addr < protect_end_addr) ?
+						     op_end_addr : protect_end_addr;
+
+			if (!((op_start_addr >= part_tbl_start) &&
+			      (clipped_end <= part_tbl_end))) {
+				printf("Forbid operating flash before TFM partition, addr: 0x%x, len: 0x%x, boundary: 0x%x\r\n",
+				       addr, len, protect_end_addr);
+				return false;
+			}
+		}
+	}
 #endif
 	return true;
 }
@@ -335,7 +361,6 @@ static int bl_update_bootloader_version(uint8_t curr_bl2_idx,uint32_t write_pos,
 		return -3;
 	}
 
-    flash_set_protect_type(FLASH_PROTECT_NONE);
     flash_erase_cmd(write_pos, FLASH_OPCODE_SE);
     if (curr_bl2_idx == EXEC_BOOT_A_PARTITION)  //curr exec boot_A.
     {
@@ -347,8 +372,6 @@ static int bl_update_bootloader_version(uint8_t curr_bl2_idx,uint32_t write_pos,
         flash_write_data(&p_buf[0], write_pos, ALLOCATED_VERSION_LEN); // maintain boot_A version.
         flash_write_data((uint8_t*)s_bl2_version, (write_pos + ALLOCATED_VERSION_LEN), sizeof(s_bl2_version));//update boot_B version.
     }
-
-    flash_set_protect_type(FLASH_PROTECT_ALL);
 
     return 0;
 }

@@ -904,7 +904,9 @@ OPERATE_RET tkl_aud_adc_init(TUYA_AUDIO_ADC_PORT_E port, TKL_AUD_ADC_CFG_T *conf
     bk_aud_set_ana_mic1_gain(0x08);
 #endif
 
-    mb_flash_register_op_onboard_mic_stream_notify(__tkl_aud_adc_flash_op_notify_handler, NULL);
+    /* 4.0.1.11 dropped the per-peripheral onboard-mic flash-notify API; the generic
+     * registry takes the same void(uint32_t busy, void *args) callback. */
+    mb_flash_register_op_notify_cb(__tkl_aud_adc_flash_op_notify_handler, NULL);
 
     TKL_AUD_ADC_LOG("audio analog mic init success\n");
     return OPRT_OK;
@@ -1175,7 +1177,7 @@ VOID_T tkl_aud_adc_deinit(TUYA_AUDIO_ADC_PORT_E port)
     bk_aud_adc_deinit();
 #endif
 
-    mb_flash_unregister_op_onboard_mic_stream_notify();
+    mb_flash_unregister_op_notify_cb(__tkl_aud_adc_flash_op_notify_handler);
 
     if (gl_adc_ctx->read_buf)
     {

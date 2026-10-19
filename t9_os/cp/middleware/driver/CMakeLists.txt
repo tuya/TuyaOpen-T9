@@ -47,7 +47,7 @@ if(IS_ABSOLUTE "$ENV{PROJECT_DIR}")
 		list(APPEND incs "$ENV{PROJECT_DIR}/config/${target}/")
 	endif()
 else()
-	list(APPEND incs "${armino_path}/$ENV{PROJECT_DIR}/config/${target}/")
+	list(APPEND incs "${armino_path}/$ENV{PROJECT_DIR}/cp/config/${target}/")
 endif()
 # Modified by Tuya End
 set(srcs
@@ -231,54 +231,58 @@ if (CONFIG_SBC)
 		)
 endif()
 
+if (CONFIG_AUD_DRIVER_V1)
 	list(APPEND srcs
-		"audio/aud/aud_common_driver.c"
-		#"audio/uac_driver.c"
+		"audio/aud/V1/aud_common_driver.c"
 		)
+	if (CONFIG_AUDIO_ADC)
+		list(APPEND srcs
+			"audio/aud/V1/aud_adc_driver.c"
+			)
+	endif()
+	if (CONFIG_AUDIO_DAC)
+		list(APPEND srcs
+			"audio/aud/V1/aud_dac_driver.c"
+			)
+	endif()
+	if (CONFIG_AUDIO_DMIC)
+		list(APPEND srcs
+			"audio/aud/V1/aud_dmic_driver.c"
+			)
+	endif()
+	if (CONFIG_AUDIO_DTMF)
+		list(APPEND srcs
+			"audio/aud/V1/aud_dtmf_driver.c"
+			)
+	endif()
+elseif (CONFIG_AUD_DRIVER_V2)
+	list(APPEND srcs
+		"audio/aud/V2/aud_common_driver.c"
+		)
+	if (CONFIG_AUDIO_ADC)
+			list(APPEND srcs
+				"audio/aud/V2/aud_adc_driver.c"
+				)
+	endif()
+	if (CONFIG_AUDIO_DAC)
+			list(APPEND srcs
+				"audio/aud/V2/aud_dac_driver.c"
+				)
+		if (CONFIG_AUD_DAC_DRC)
+			list(APPEND srcs
+				"audio/aud/V2/aud_dac_drc_driver.c"
+				)
+		endif()
+	endif()
+endif() # CONFIG_AUD_DRIVER_V1 / V2
+
+endif() #if (CONFIG_AUDIO)
 
 if (CONFIG_LPVAD)
 	list(APPEND srcs
 		"lpvad/aud_lp_vad.c"
 		)
 endif()
-
-if (CONFIG_AUDIO_ADC)
-if (CONFIG_SOC_BK7259)
-	list(APPEND srcs
-		"audio/aud/aud_adc_driver_bk7259.c"
-		)
-else()
-	list(APPEND srcs
-		"audio/aud/aud_adc_driver.c"
-		)
-endif()
-endif()
-
-if (CONFIG_AUDIO_DMIC)
-	list(APPEND srcs
-		"audio/aud/aud_dmic_driver.c"
-		)
-endif()
-
-if (CONFIG_AUDIO_DTMF)
-	list(APPEND srcs
-		"audio/aud/aud_dtmf_driver.c"
-		)
-endif()
-
-if (CONFIG_AUDIO_DAC)
-
-if (CONFIG_SOC_BK7259)
-	list(APPEND srcs
-		"audio/aud/aud_dac_driver_bk7259.c"
-		)
-else()
-	list(APPEND srcs
-		"audio/aud/aud_dac_driver.c"
-		)
-endif()
-endif()
-endif() #if (CONFIG_AUDIO)
 
 if (CONFIG_AUDIO_RING_BUFF)
 	list(APPEND srcs
@@ -320,26 +324,6 @@ if (CONFIG_CLI_SARADC_TEST)
 		saradc/cli_adc.c
 		)
 endif()
-endif()
-
-# Ethernet Support
-if (CONFIG_ETH)
-	list(APPEND incs
-		eth
-		eth/phy
-	)
-
-	# MAC and PHY src
-	list(APPEND srcs
-		eth/eth_mac.c
-		eth/eth_mac_ex.c
-		eth/lan8742.c
-		eth/phy/phy.c
-		eth/phy/smsc.c
-		eth/phy/micrel_ksz90x1.c
-		eth/phy/miiphyutil.c
-		eth/phy/realtek.c
-	)
 endif()
 
 # ckmn Support

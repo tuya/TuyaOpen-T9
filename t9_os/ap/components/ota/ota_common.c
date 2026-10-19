@@ -2,11 +2,15 @@
 #include <stdio.h>
 #include <string.h>
 #include "cli.h"
+#include <components/log.h>
 #include <components/system.h>
 #include "driver/flash.h"
 #include "common/bk_err.h"
 #include "bk_private/bk_ota_private.h"
 #include <soc/soc.h>   /* SOC_FLASH_REG_BASE: applies the S/NS address offset */
+#ifdef CONFIG_TASK_WDT
+#include "bk_wdt.h"
+#endif
 
 #ifdef CONFIG_HTTP_AB_PARTITION
 #include "modules/ota.h"
@@ -101,20 +105,16 @@ static int ap_ab_record_read(ab_flag_record_t *latest)
 	return (ab_record_read_latest(base, &s_ap_ab_ops, latest) < 0) ? -1 : 0;
 }
 
-/* Commit a fully-populated (semantic fields set) record with flash protection
- * temporarily disabled. */
+/* Commit a fully-populated (semantic fields set) record. Flash protection is
+ * managed internally by the flash erase/write API. */
 static void ap_ab_record_commit(ab_flag_record_t *rec)
 {
 	uint32_t base = ap_flag_partition_base();
-	flash_protect_type_t protect_type;
 
 	if (base == 0) {
 		return;
 	}
-	protect_type = bk_flash_get_protect_type();
-	bk_flash_set_protect_type(FLASH_PROTECT_NONE);
 	(void)ab_record_commit(base, &s_ap_ab_ops, rec);
-	bk_flash_set_protect_type(protect_type);
 }
 
 /* Build a record from its semantic fields and commit it (magic/seq/crc are
@@ -243,9 +243,8 @@ int32_t ota_do_hash_check(void)
 	ota_get_rbl_head(bk_ptr, &rbl_hdr, partition_length);
 	
 	ret = ota_hash_verify(bk_ptr, &rbl_hdr);
-	if(ret == BK_OK)
-	{
-		OTA_LOGI("hash sucess!!!! \r\n");
+	if (ret == BK_OK) {
+		BK_LOG_FLUSH();
 	}
 
 	return ret;
@@ -272,6 +271,7 @@ int bk_ota_update_partition_flag(int input_val)
 	seq = ap_ab_commit(exec_slot, update_slot, (uint8_t)AB_STATE_TRIAL, (uint8_t)AB_DL_DONE, 0);
 	OTA_LOGI("OTA armed: TRIAL exec=%d update=%d seq->%u\r\n",
 		(int)exec_slot, (int)update_slot, (unsigned)seq);
+	BK_LOG_FLUSH();
 	return BK_OK;
 }
 
@@ -434,6 +434,12 @@ void register_ota_callback(ota_process_data_callback_t ota_callback)
 
 int bk_ota_process_data(char*receive_data, uint32_t len, uint32_t received, uint32_t total)
 {
+#if CONFIG_TASK_WDT
+	/* HTTP and HTTPS both land here before backend flash/SD write. Secure
+	 * XIP/overwrite skip ota_do_process_data(), so feed in this common
+	 * entry to keep the per-core task WDT alive during a long download. */
+	bk_task_wdt_feed();
+#endif
 	if(s_ota_data_process != NULL)
 	{
 		/* Propagate the write result so the HTTP layer can abort the transfer

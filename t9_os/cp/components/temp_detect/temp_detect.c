@@ -35,9 +35,6 @@
 #endif
 
 #include "sys_driver.h"
-#if CONFIG_FLASH_ORIGIN_API
-#include "flash.h"
-#endif
 #include <modules/pm.h>
 #include <driver/aon_rtc.h>
 
@@ -102,7 +99,7 @@ static uint16_t tempd_calculate_temperature(void)
 
     uint32_t sum = 0, index, count = 0;
 
-    for (index = 5; index < ADC_TEMP_BUFFER_SIZE; index++)
+    for (index = ADC_TEMP_BUFFER_SKIP; index < ADC_TEMP_BUFFER_SIZE; index++)
     {
         /* 0 is invalid, but saradc may return 0 in power save mode */
         if ((0 != s_raw_temperature_data[index]) && (8192 != s_raw_temperature_data[index]))

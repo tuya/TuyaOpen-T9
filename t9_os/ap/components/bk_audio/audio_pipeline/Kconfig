@@ -36,17 +36,17 @@ menu "Adk"
 
 		config ADK_AUTO_TEST_PIPELINE
 			depends on ADK_AUTO_TEST
-			bool "Enable ADK pipeline auto test "
+			bool "Enable ADK pipeline auto test"
 			default n
 
 		config ADK_AUTO_TEST_ELEMENT
 			depends on ADK_AUTO_TEST
-			bool "Enable ADK element auto test "
+			bool "Enable ADK element auto test"
 			default n
 
 		config ADK_AUTO_TEST_EVENT
 			depends on ADK_AUTO_TEST
-			bool "Enable ADK event listener auto test "
+			bool "Enable ADK event listener auto test"
 			default n
 	endmenu
 
@@ -512,6 +512,11 @@ menu "Adk"
 			bool "Enable ADK count debug util"
 			default y
 
+		config ADK_OBS_UTIL
+			depends on ADK_UTILS
+			bool "Enable ADK observe debug util"
+			default n
+
 		config ADK_VFS_UTIL
 			depends on ADK_UTILS
 			bool "Enable ADK vfs debug util"
@@ -526,6 +531,23 @@ menu "Adk"
 			depends on ADK_DEBUG_DUMP_UTIL
 			bool "Enable ADK debug dump data type extension"
 			default n
+
+		config ADK_WIFI_DUMP_UTIL
+			depends on ADK_DEBUG_DUMP_UTIL
+			bool "Enable ADK debug dump over WiFi TCP"
+			default n
+
+		config ADK_WIFI_DUMP_PORT
+			depends on ADK_WIFI_DUMP_UTIL
+			int "ADK WiFi dump TCP port"
+			range 1 65535
+			default 9000
+
+		config ADK_WIFI_DUMP_QUEUE_DEPTH
+			depends on ADK_WIFI_DUMP_UTIL
+			int "ADK WiFi dump queued frame count"
+			range 4 32
+			default 24
 	endmenu
 
 endmenu

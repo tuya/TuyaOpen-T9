@@ -26,40 +26,14 @@
  * boot_param_partition_base). This unit only holds the SPE confirm transition. */
 
 #include <string.h>
-#include <stdio.h>
-#include <stdarg.h>
 #include "boot_param.h"
-#include "uart_stdout.h"
+#include "bk_tfm_log.h"
 
-/* SPE debug print: BK_LOG (SDK log path) is unsafe here, and the plain printf
- * symbol may resolve to a semihosting stub (SVC -> "Unknown SPM SVC"). Format
- * locally and push straight to the secure UART via stdio_output_string() - the
- * same SVC-free path TF-M's own SPM log uses, and it is up by the time this
- * runs (stdio_init() in tfm_hal_platform_init). */
-static void bp_log(const char *fmt, ...)
-{
-	char buf[96];
-	va_list ap;
-	int len;
+#define TAG "bp_cfm"
 
-	va_start(ap, fmt);
-	len = vsnprintf(buf, sizeof(buf), fmt, ap);
-	va_end(ap);
-	if (len <= 0) {
-		return;
-	}
-	if (len > (int)sizeof(buf)) {
-		len = (int)sizeof(buf);
-	}
-	stdio_output_string((const unsigned char *)buf, (uint32_t)len);
-}
-#define BP_LOG(fmt, ...) bp_log("[bp_confirm] " fmt, ##__VA_ARGS__)
-
-/* op_sw erase/PP are ignored while the flash is in QUAD continuous-read (the XIP
- * path leaves it there), so a commit must drop to TWO first and restore after.
- * Mirrors boot_param_commit() in BL2. */
-extern void bk_flash_min_switch_line_mode_two(void);
-extern void bk_flash_min_restore_line_mode(void);
+/* Route to the unified SPM-sink log. Force: the A/B confirm trace is always
+ * emitted, even with CONFIG_TFM_LOG_LEVEL lowered for production. */
+#define BP_LOG(fmt, ...) BK_LOG_FORCE(TAG ": " fmt, ##__VA_ARGS__)
 
 /* Running A/B slot from the flash XIP remap enable (0=A / 1=B), set by MCUboot
  * for the slot it actually booted. */
@@ -87,11 +61,11 @@ int boot_param_confirm(void)
 	}
 
 	if (rec.boot_state != AB_STATE_TRIAL) {
-		BP_LOG("state=%x not TRIAL, nothing to do\r\n", rec.boot_state);
+		BP_LOG("state=%x not TRIAL, skip\r\n", rec.boot_state);
 		return 0;
 	}
 
-	BP_LOG("TRIAL running=%d exec=%d update=%d -> NORMAL\r\n",
+	BP_LOG("TRIAL run=%d exec=%d upd=%d -> NORMAL\r\n",
 		running, rec.exec_slot, rec.update_slot);
 
 	/* Adopt the slot that actually brought up the secure world; drop the pending
@@ -104,15 +78,14 @@ int boot_param_confirm(void)
 	memset(rec.rsvd0, 0, sizeof(rec.rsvd0));
 	rec.dl_state    = AB_DL_IDLE;
 
-	/* op_sw erase/PP are ignored while the flash is in QUAD continuous-read (the
-	 * XIP path leaves it there after BL2 hands over), so drop to TWO around the
-	 * commit and restore after. XIP code fetch keeps working in TWO mode. */
-	bk_flash_min_switch_line_mode_two();
+	/* BK7259SW-2937: nothing to bracket (same as ota_confirm) - the
+	 * ab_record_commit erase/PP go through flash_core, which per-op drops to
+	 * two-line so op_sw is accepted, self-unprotects -> op -> re-protect, and
+	 * restores the ambient QUAD continuous-read for the next XIP fetch. */
 	idx = ab_record_commit(base, &boot_param_ops, &rec);
-	bk_flash_min_restore_line_mode();
 
 	if (idx < 0) {
-		BP_LOG("commit failed %d\r\n", idx);
+		BK_LOGE(TAG, "commit failed %d\r\n", idx);
 		return -1;
 	}
 

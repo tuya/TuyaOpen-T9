@@ -17,9 +17,11 @@
 #include <components/log.h>
 #include <components/avdk_utils/avdk_error.h>
 #include <components/bk_frame_buffer.h>
+#include <soc/soc.h>
 
 #include "driver/int.h"
 #include "driver/sys_pm.h"
+#include "modules/pm.h"
 
 #include "sys_driver.h"
 
@@ -65,7 +67,7 @@ typedef struct {
 } hw_encoder_ctlr_t;
 
 // TODO FIX
-#define REG_SYS_BASE_ADDR  0x48000000
+#define REG_SYS_BASE_ADDR  SOC_SYS_AHBP_REG_BASE
 
 static hw_encoder_ctlr_t *g_hw_encoder_ctlr = NULL;
 
@@ -114,6 +116,7 @@ static avdk_err_t hw_encoder_hw_init(void)
 
     // h264e pwd enable
     bk_pm_module_vote_power_ctrl(PM_POWER_SUB_DOMAIN_H26E, PM_POWER_MODULE_STATE_ON);
+    bk_pm_module_vote_cpu_freq(PM_DEV_ID_VPU_ENC, PM_CPU_FRQ_480M);
 
     // h264e clock sel
 #ifdef CONFIG_ENCODER_H264_CLK_240M
@@ -141,6 +144,8 @@ static avdk_err_t hw_encoder_hw_deinit(void)
 
     // h264e clock disable
     bk_pm_clock_ctrl(PM_CLK_ID_H26E, PM_CLK_CTRL_PWR_DOWN);
+
+    bk_pm_module_vote_cpu_freq(PM_DEV_ID_VPU_ENC, PM_CPU_FRQ_DEFAULT);
 
     // h264e pwd disable
     bk_pm_module_vote_power_ctrl(PM_POWER_SUB_DOMAIN_H26E, PM_POWER_MODULE_STATE_OFF);

@@ -21,6 +21,7 @@
 #include "tkl_system.h"
 #include "tkl_aud_adc.h"
 #include "tkl_aud_dac.h"
+#include "tkl_gpio.h"
 #include "tuya_error_code.h"
 #include "tkl_memory.h"
 #include <common/bk_err.h>
@@ -675,14 +676,48 @@ static void hwloop_fill_stereo_frame(int16_t *p, uint32_t dac_frame_samples, uin
 /* -------------------------------------------------------------------------- */
 /*                        DAC deinit (called internally)                      */
 /* -------------------------------------------------------------------------- */
+
+/* --------------------------------------------------------------------------
+ * Speaker PA enable (vendor EVB P28).
+ *
+ * The adapter no longer drives this pin: in production the TAL layer owns it
+ * (tal_audio_dac.c). A standalone factory test that only talks to
+ * tkl_aud_dac_* must drive it itself, otherwise the DAC runs but stays silent.
+ * ------------------------------------------------------------------------ */
+#define MFTEST_PA_PIN  ((TUYA_GPIO_NUM_E)28)
+
+static void mftest_pa_init(void)
+{
+    TUYA_GPIO_BASE_CFG_T cfg;
+
+    os_memset(&cfg, 0, sizeof(cfg));
+    cfg.direct = TUYA_GPIO_OUTPUT;
+    cfg.mode   = TUYA_GPIO_PUSH_PULL;
+    cfg.level  = TUYA_GPIO_LEVEL_LOW;   /* disabled until playback starts */
+    (void)tkl_gpio_init(MFTEST_PA_PIN, &cfg);
+}
+
+static void mftest_pa_set(bool enable)
+{
+    (void)tkl_gpio_write(MFTEST_PA_PIN,
+                         enable ? TUYA_GPIO_LEVEL_HIGH : TUYA_GPIO_LEVEL_LOW);
+}
+
+static void mftest_pa_deinit(void)
+{
+    (void)tkl_gpio_deinit(MFTEST_PA_PIN);
+}
+
 static void test_adc_dac_deinit(void)
 {
     if (s_adc_ctx.dac_inited) {
         if (s_adc_ctx.dac_started) {
+            mftest_pa_set(false);
             (void)tkl_aud_dac_stop(s_adc_ctx.dac_port);
         }
         (void)tkl_aud_dac_deinit(s_adc_ctx.dac_port);
     }
+    mftest_pa_deinit();
     if (s_adc_ctx.loop_mix_buf != NULL) {
         tkl_system_free(s_adc_ctx.loop_mix_buf);
         s_adc_ctx.loop_mix_buf = NULL;
@@ -768,13 +803,14 @@ static OPERATE_RET test_adc_dac_init_start(uint32_t dac_port, uint32_t sample_ra
     cfg.frame_time_ms = frame_time_ms;
     cfg.frame_cb = hwloop_dac_frame_cb;
     cfg.args = NULL;
-    cfg.pa_pin = 28;
 
     ret = tkl_aud_dac_init((TUYA_AUDIO_DAC_PORT_E)dac_port, &cfg);
     if (ret != OPRT_OK) {
         test_adc_dac_deinit();
         return ret;
     }
+
+    mftest_pa_init();
     {
         INT32_T gain[2];
 
@@ -797,6 +833,7 @@ static OPERATE_RET test_adc_dac_init_start(uint32_t dac_port, uint32_t sample_ra
         test_adc_dac_deinit();
         return ret;
     }
+    mftest_pa_set(true);
     s_adc_ctx.dac_started = true;
     return OPRT_OK;
 }
@@ -815,10 +852,11 @@ static OPERATE_RET hwloop_dac_init_start(uint32_t dac_port, uint32_t sample_rate
     cfg.frame_time_ms = frame_time_ms;
     cfg.frame_cb = NULL;
     cfg.args = NULL;
-    cfg.pa_pin = 28;
 
     OPERATE_RET ret = tkl_aud_dac_init((TUYA_AUDIO_DAC_PORT_E)dac_port, &cfg);
     if (ret != OPRT_OK) return ret;
+
+    mftest_pa_init();
 
     {
         INT32_T gain[2];
@@ -838,6 +876,7 @@ static OPERATE_RET hwloop_dac_init_start(uint32_t dac_port, uint32_t sample_rate
         tkl_aud_dac_deinit((TUYA_AUDIO_DAC_PORT_E)dac_port);
         return ret;
     }
+    mftest_pa_set(true);
     s_adc_ctx.dac_inited = true;
     s_adc_ctx.dac_port = (TUYA_AUDIO_DAC_PORT_E)dac_port;
     s_adc_ctx.dac_dig_db = dig_db;

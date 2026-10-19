@@ -231,6 +231,58 @@ void test_getfree(DISK_NUMBER number)
     BK_LOGD(NULL, "----- test_getfree %d over  -----\r\n\r\n", number);
 }
 
+void test_fatfs_reclaim_lost(DISK_NUMBER number)
+{
+    FRESULT fr;
+    char cFileName[FF_MAX_LFN];
+    DWORD free_before = 0;
+    DWORD free_after = 0;
+    DWORD reclaimed = 0;
+    FATFS *pfs = NULL;
+    uint64_t cluster_bytes;
+
+    sprintf(cFileName, "%d:", number);
+
+    fr = f_getfree(cFileName, &free_before, &pfs);
+    if (fr != FR_OK || pfs == NULL)
+    {
+        BK_LOGD(NULL, "reclaim: f_getfree(before) failed:%d\r\n", fr);
+        return;
+    }
+
+    cluster_bytes = (uint64_t)pfs->csize * (uint64_t)pfs->ssize;
+    os_printf("----- reclaim_lost %d start -----\r\n", number);
+    os_printf("free before: %lu clusters (~%llu MB)\r\n",
+              (unsigned long)free_before,
+              (unsigned long long)free_before * cluster_bytes / (1024u * 1024u));
+
+    fr = f_reclaim_lost(cFileName, &reclaimed);
+    if (fr != FR_OK)
+    {
+        os_printf("f_reclaim_lost failed: %d\r\n", fr);
+        BK_LOGD(NULL, "----- reclaim_lost %d failed -----\r\n\r\n", number);
+        return;
+    }
+
+    os_printf("reclaimed: %lu clusters (~%llu MB)\r\n",
+              (unsigned long)reclaimed,
+              (unsigned long long)reclaimed * cluster_bytes / (1024u * 1024u));
+
+    fr = f_getfree(cFileName, &free_after, &pfs);
+    if (fr == FR_OK)
+    {
+        os_printf("free after: %lu clusters (~%llu MB)\r\n",
+                  (unsigned long)free_after,
+                  (unsigned long long)free_after * cluster_bytes / (1024u * 1024u));
+    }
+    else
+    {
+        os_printf("f_getfree(after) failed: %d\r\n", fr);
+    }
+
+    BK_LOGD(NULL, "----- reclaim_lost %d over -----\r\n\r\n", number);
+}
+
 void scan_file_system(DISK_NUMBER number)
 {
     FRESULT fr;
@@ -756,8 +808,13 @@ void test_fatfs_format(DISK_NUMBER number)
 {
 	FRESULT fr;
 	char cFileName[FF_MAX_LFN];
+	/* f_mkfs needs a work buffer of at least one sector. QSPI NOR reports a
+	 * 4096-byte sector (FLASH_SECTOR_SIZE), larger than WR_RD_BUF_SIZE (1024),
+	 * so a 1024-byte buffer makes sz_buf=len/ss round to 0 and mkfs aborts
+	 * (FR_MKFS_ABORTED). Size the buffer to FF_MAX_SS to cover all media. */
+	const uint32_t mkfs_buf_len = FF_MAX_SS;
 	//unsigned char ucRdTemp[WR_RD_BUF_SIZE];
-	unsigned char *ucRdTemp = os_malloc(WR_RD_BUF_SIZE);
+	unsigned char *ucRdTemp = os_malloc(mkfs_buf_len);
 	if(ucRdTemp == 0)
 	{
 		FATFS_LOGE("%s:os_malloc fail \r\n", __func__);
@@ -767,7 +824,7 @@ void test_fatfs_format(DISK_NUMBER number)
 	FATFS_LOGV("----- test_fatfs_format %d start -----\r\n", number);
 
 	sprintf(cFileName, "%d:", number);
-	fr = f_mkfs(cFileName, FM_ANY, 65536, ucRdTemp, WR_RD_BUF_SIZE);
+	fr = f_mkfs(cFileName, FM_ANY, 65536, ucRdTemp, mkfs_buf_len);
 	if (fr != FR_OK)
 	{
 		os_free(ucRdTemp);
