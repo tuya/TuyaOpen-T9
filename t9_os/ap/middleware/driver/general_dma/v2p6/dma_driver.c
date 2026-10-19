@@ -1055,7 +1055,7 @@ void *bk_dma_link_init(uint32_t link_cnt)
             DMA_LOGE("Descriptor alignment error: curr=0x%x next=0x%x\r\n", curr_desc_addr, next_desc_addr);
         }
         
-        curr_desc->next_desc_addr = (uint32_t)next_desc_addr;
+        curr_desc->next_desc_addr = (uint32_t)SOC_SRAM_PERI_ADDR(next_desc_addr);
         DMA_LOGV("Desc[%d] addr=0x%x next_addr=0x%x\r\n", i, curr_desc_addr, curr_desc->next_desc_addr);
     }
     
@@ -1126,8 +1126,8 @@ bk_err_t bk_dma_link_set_desc(void *desc_table, uint32_t index,
     }
     
     // Configure descriptor - directly copy fields since structures match
-    desc->src_addr = config->src_addr;
-    desc->dst_addr = config->dst_addr;
+    desc->src_addr = SOC_SRAM_PERI_ADDR(config->src_addr);
+    desc->dst_addr = SOC_SRAM_PERI_ADDR(config->dst_addr);
     desc->ctrl.control = config->ctrl.control;  // Copy control word (includes length and interrupt enables)
     
     DMA_LOGV("Desc[%d] src=0x%x dst=0x%x length=%d finish_int=%d half_finish_int=%d\r\n",
@@ -1208,14 +1208,19 @@ bk_err_t bk_dma_link_transfer(dma_id_t id, void *desc_table)
     dma_config.dst.addr_inc_en = DMA_ADDR_INC_ENABLE;
     dma_config.dst.addr_loop_en = DMA_ADDR_LOOP_DISABLE;
 
+    // Initialize and configure DMA
+    // Note: In linked list mode, src/dst addresses are in descriptors, not in dma_config
+    bk_dma_init(id, &dma_config);
+
+    /* transfer_len and next_ll_addr must be programmed after bk_dma_init():
+     * dma_id_init_common() resets the channel and that reset clears both,
+     * while dma_hal_init_dma() writes back neither. Setting them first leaves
+     * the channel enabled with no chain loaded - the engine never fetches a
+     * descriptor and the transfer stalls until the caller times out. */
     dma_hal_set_transfer_len(&s_dma.hal, id, 0);
 
     // Set next linked list address
     bk_dma_set_next_ll_addr(id, (uint32_t)desc_table);
-
-    // Initialize and configure DMA
-    // Note: In linked list mode, src/dst addresses are in descriptors, not in dma_config
-    bk_dma_init(id, &dma_config);
     
     /*
      * No whole-cache flush here (the old flush_all_dcache() was a
