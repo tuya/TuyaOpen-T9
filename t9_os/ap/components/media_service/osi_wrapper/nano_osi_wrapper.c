@@ -14,9 +14,7 @@
 
 static void *nano_malloc_wrapper(uint32_t size)
 {
-// Modified by TUYA Start
-    return os_malloc(size);
-// Modified by TUYA End
+    return hsram_malloc(size);
 }
 
 static void nano_free_wrapper(void *ptr)
@@ -343,9 +341,7 @@ static int nano_queue_recv_wrapper(beken_queue_t *os_queue, void *data, uint32_t
 static int nano_thread_create_wrapper( beken_thread_t* thread, uint8_t priority, const char* name,
     void (*function)(void *), uint32_t stack_size, void *arg)
 {
-// Modified by TUYA Start
-    return rtos_create_thread(thread, priority, name, (beken_thread_function_t)function, stack_size, arg);
-// Modified by TUYA End
+    return rtos_create_hsram_thread(thread, priority, name, (beken_thread_function_t)function, stack_size, arg);
 }
 
 static int nano_thread_destroy_wrapper(beken_thread_t *thread)
