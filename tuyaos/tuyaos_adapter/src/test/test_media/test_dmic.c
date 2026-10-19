@@ -7,6 +7,7 @@
 
 #include "cli_tuya_test.h"
 #include "tkl_aud_dac.h"
+#include "tkl_gpio.h"
 #include "tkl_aud_dmic.h"
 #include "tkl_output.h"
 #include "tkl_system.h"
@@ -215,14 +216,48 @@ static OPERATE_RET test_dmic_stop(void)
     return OPRT_OK;
 }
 
+
+/* --------------------------------------------------------------------------
+ * Speaker PA enable (vendor EVB P28).
+ *
+ * The adapter no longer drives this pin: in production the TAL layer owns it
+ * (tal_audio_dac.c). A standalone test that only talks to tkl_aud_dac_* must
+ * drive it itself, otherwise the DAC runs but stays silent.
+ * ------------------------------------------------------------------------ */
+#define TEST_DMIC_PA_PIN  ((TUYA_GPIO_NUM_E)28)
+
+static void test_dmic_pa_init(void)
+{
+    TUYA_GPIO_BASE_CFG_T cfg;
+
+    os_memset(&cfg, 0, sizeof(cfg));
+    cfg.direct = TUYA_GPIO_OUTPUT;
+    cfg.mode   = TUYA_GPIO_PUSH_PULL;
+    cfg.level  = TUYA_GPIO_LEVEL_LOW;   /* disabled until playback starts */
+    (void)tkl_gpio_init(TEST_DMIC_PA_PIN, &cfg);
+}
+
+static void test_dmic_pa_set(bool enable)
+{
+    (void)tkl_gpio_write(TEST_DMIC_PA_PIN,
+                         enable ? TUYA_GPIO_LEVEL_HIGH : TUYA_GPIO_LEVEL_LOW);
+}
+
+static void test_dmic_pa_deinit(void)
+{
+    (void)tkl_gpio_deinit(TEST_DMIC_PA_PIN);
+}
+
 static void test_dmic_dac_deinit(void)
 {
     if (s_dmic_ctx.dac_inited) {
         if (s_dmic_ctx.dac_started) {
+            test_dmic_pa_set(false);
             (void)tkl_aud_dac_stop(s_dmic_ctx.dac_port);
         }
         (void)tkl_aud_dac_deinit(s_dmic_ctx.dac_port);
     }
+    test_dmic_pa_deinit();
 
     if (s_dmic_ctx.loop_mix_buf != NULL) {
         tkl_system_free(s_dmic_ctx.loop_mix_buf);
@@ -269,13 +304,14 @@ static OPERATE_RET test_dmic_dac_init_start(uint32_t dac_port, uint32_t sample_r
     cfg.frame_time_ms = frame_time_ms;
     cfg.frame_cb = NULL;
     cfg.args = NULL;
-    cfg.pa_pin = 28;
 
     ret = tkl_aud_dac_init((TUYA_AUDIO_DAC_PORT_E)dac_port, &cfg);
     if (ret != OPRT_OK) {
         test_dmic_dac_deinit();
         return ret;
     }
+
+    test_dmic_pa_init();
     {
         INT32_T gain[2];
 
@@ -298,6 +334,7 @@ static OPERATE_RET test_dmic_dac_init_start(uint32_t dac_port, uint32_t sample_r
         test_dmic_dac_deinit();
         return ret;
     }
+    test_dmic_pa_set(true);
     s_dmic_ctx.dac_started = true;
 
     return OPRT_OK;

@@ -50,7 +50,6 @@ typedef struct {
     TKL_AUD_DAC_FRAME_CB frame_cb;
     VOID_T              *args;
     TKL_AUD_DAC_SRC_E src;  /**< Digital source; 0=AUTO */
-    UINT32_T pa_pin; /**< Speaker PA enable GPIO number (active-high). */
 }TKL_AUD_DAC_CFG_T;
 
 /**
