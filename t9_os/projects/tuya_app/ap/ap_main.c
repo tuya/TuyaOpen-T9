@@ -11,6 +11,9 @@
 #include "tuya_cloud_types.h"
 #include "tuya_iot_config.h"
 
+#include "tkl_sleep.h"
+#include "tuya_deepsleep_stress.h"
+
 // extern OPERATE_RET tuya_ipc_init(void);
 extern int bk_ipc_init(void);
 extern void tuya_app_main(void);
@@ -39,8 +42,18 @@ static void entry_app_main(void)
     }
 #endif
 
-    // extern int tkl_sleep_param_check_and_set(void);
-    // tkl_sleep_param_check_and_set();
+#if TUYA_DEEPSLEEP_STRESS_TEST
+    int stress_go = tuya_deepsleep_stress_boot();
+#endif
+
+    extern int tkl_sleep_param_check_and_set(void);
+    tkl_sleep_param_check_and_set();
+
+#if TUYA_DEEPSLEEP_STRESS_TEST
+    if (stress_go) {
+        tuya_deepsleep_stress_arm_next();
+    }
+#endif
 
     bk_printf("go to tuya\r\n");
     tuya_app_main();

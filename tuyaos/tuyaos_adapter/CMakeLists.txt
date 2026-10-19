@@ -198,6 +198,7 @@ else()
             # src/test/test_qspi.c
             # src/test/test_mp3.c
             src/test/test_timer.c
+            src/test/test_sleep.c
             # src/test/test_usb.c
             # src/test/test_spi.c
             src/test/test_ringbuffer/rb.c
