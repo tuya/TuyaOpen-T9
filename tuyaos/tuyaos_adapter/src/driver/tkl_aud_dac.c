@@ -22,6 +22,8 @@ extern void bk_printf(const char *fmt, ...);
 
 #define DMA_BUF_SAFE_INTERVAL    (8)
 
+#define DMA_BUF_FRAME_CNT        (6)
+
 // x: sample rate, y: sample bits, z: frame time in ms, channel only 1
 #define TKL_DAC_FRAME_SIZE_MS(x, y, z)  ((x * (y / 8) / 1000) * z)
 
@@ -202,8 +204,9 @@ static bk_err_t __tkl_aud_dac_dma_config(TUYA_AUDIO_DAC_PORT_E port)
 
     test_dma_id = gl_dac_ctx->spk_dma_id;
 
-    /* Two frames + safe interval for dma_set_src_pause_addr flow control */
-    gl_dac_ctx->spk_dma_buf = (int8_t *)audio_dma_mem_calloc(2, frame_size + DMA_BUF_SAFE_INTERVAL / 2);
+    /* DMA_BUF_FRAME_CNT frames + safe interval for dma_set_src_pause_addr flow control */
+    gl_dac_ctx->spk_dma_buf = (int8_t *)audio_dma_mem_calloc(
+        1, DMA_BUF_FRAME_CNT * frame_size + DMA_BUF_SAFE_INTERVAL);
     if (gl_dac_ctx->spk_dma_buf == NULL) {
         TKL_DAC_LOG("malloc dma buffer fail\n");
         goto exit;
@@ -216,7 +219,7 @@ static bk_err_t __tkl_aud_dac_dma_config(TUYA_AUDIO_DAC_PORT_E port)
      */
     ring_buffer_init(&gl_dac_ctx->spk_rb,
                      (uint8_t *)gl_dac_ctx->spk_dma_buf,
-                     frame_size * 2 + DMA_BUF_SAFE_INTERVAL,
+                     frame_size * DMA_BUF_FRAME_CNT + DMA_BUF_SAFE_INTERVAL,
                      gl_dac_ctx->spk_dma_id,
                      RB_DMA_TYPE_READ);
 
@@ -232,7 +235,7 @@ static bk_err_t __tkl_aud_dac_dma_config(TUYA_AUDIO_DAC_PORT_E port)
     dma_config.src.addr_loop_en = DMA_ADDR_LOOP_ENABLE;
     dma_config.src.start_addr = (uint32_t)(uintptr_t)gl_dac_ctx->spk_dma_buf;
     dma_config.src.end_addr = (uint32_t)(uintptr_t)gl_dac_ctx->spk_dma_buf
-                              + frame_size * 2 + DMA_BUF_SAFE_INTERVAL;
+                              + frame_size * DMA_BUF_FRAME_CNT + DMA_BUF_SAFE_INTERVAL;
 
     /* dst: DAC FIFO */
 #if CONFIG_AUD_DRIVER_V1
