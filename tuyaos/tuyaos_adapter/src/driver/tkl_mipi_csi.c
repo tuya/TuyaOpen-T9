@@ -141,6 +141,14 @@ typedef struct {
     bk_camera_bus_t *bus_handle;
     bk_camera_sensor_handle_t sensor_handle;
     bk_isp_camera_ctlr_handle_t camera_ctlr_handle;
+    /* Flexa rings parked in the ISP controller through BK_CAM_IOCTL_SET_FLEXA_BUF,
+     * indexed by ISP channel id. The controller has no ioctl to unpark a slot and
+     * refuses a second SET on a live one, so a ring is allocated on the first
+     * channel open and held until the controller goes away - which
+     * cam_mipi_cleanup_handles() does on every stop(). See
+     * cam_mipi_flexa_buf_park() for why they are sized off the sensor width. */
+    VOID *flexa_buf[ISP_CHANNEL_INSTANCE_MAX];
+    UINT32_T flexa_buf_size[ISP_CHANNEL_INSTANCE_MAX];
 } tkl_mipi_csi_ctx_t;
 
 static tkl_mipi_csi_ctx_t s_cam_ctx;
@@ -488,6 +496,162 @@ static uint32_t cam_mipi_sp_frame_size_get(void)
     return frame_size;
 }
 
+/**
+ * @brief Park an on-chip flexa ring in the ISP controller for one channel.
+ *
+ * @details
+ * The buffer_ioctl patch moved the flexa ring out of the ISP core: bk_isp_open()
+ * now installs whatever BK_CAM_IOCTL_SET_FLEXA_BUF parked for the channel, and
+ * rejects it with "ext flexa buffer too small" if it cannot cover
+ * buf_cnt * width * FLEXA_LINES * 3 / 2. Without a parked buffer the vendor
+ * still allocates one itself, so failing here only costs the placement choice.
+ *
+ * Sized for the width the channel is about to open with, which is the same
+ * value bk_isp_open() recomputes from - anything larger is dead weight, and the
+ * rings are big enough that the slack decides whether SRAM can hold them at all.
+ * A 2304-wide sensor feeding a 640-wide MP channel would waste 120 KB sizing off
+ * the sensor, which is more than the whole ring needs.
+ *
+ * That makes a parked slot a one-shot fit: there is no unpark ioctl and a second
+ * SET on a live slot is refused, so a later re-open at a *larger* geometry cannot
+ * be served. Both re-open paths avoid it - the MP restart tears the controller
+ * down and parks afresh, and set_output() escalates a growing flexa-mode SP to
+ * that same restart. SP is frame mode in every facade-built config
+ * (cam_mipi_build_cfg_from_channels forces sp_work_mode 0), so its ring only
+ * exists for a caller driving the raw config.
+ *
+ * The ring goes to SRAM when it fits. The ISP's own output rate does not care,
+ * but the GPU and the H264 encoder downstream read it faster there.
+ *
+ * @param[in] ctlr    camera controller, must already exist
+ * @param[in] channel ISP_MP_CHN_ID or ISP_SP_CHN_ID
+ * @param[in] width   channel width the open will use, in pixels
+ * @param[in] buf_cnt flexa slice count the channel will open with
+ *
+ * @return OPRT_OK when a ring is parked or was already parked for this channel;
+ *         OPRT_COM_ERROR / OPRT_MALLOC_FAILED when not - the caller carries on
+ *         and lets the vendor allocate internally
+ */
+static OPERATE_RET cam_mipi_flexa_buf_park(bk_isp_camera_ctlr_handle_t ctlr,
+                                           UINT8_T channel,
+                                           UINT16_T width,
+                                           UINT8_T buf_cnt)
+{
+    bk_isp_camera_flexa_buf_size_t query;
+    bk_isp_camera_flexa_buf_t park;
+    avdk_err_t ret;
+
+    if (ctlr == NULL || channel >= (UINT8_T)ISP_CHANNEL_INSTANCE_MAX) {
+        return OPRT_INVALID_PARM;
+    }
+
+    if (s_cam_ctx.flexa_buf[channel] != NULL) {
+        /* Second open of this channel under the same controller - set_output()
+         * live-switching the SP, for instance. The parked ring is still the
+         * controller's, and bk_isp_open() re-validates its size on its own. */
+        return OPRT_OK;
+    }
+
+    os_memset(&query, 0, sizeof(query));
+    query.buf_cnt = buf_cnt;
+    query.width = width;
+    ret = bk_isp_camera_ctlr_ioctl(ctlr, BK_CAM_IOCTL_GET_FLEXA_BUF_SIZE, &query);
+    if (ret != AVDK_ERR_OK || query.size == 0U) {
+        tkl_log_output("camera: flexa size query failed (%d), ch%u %ux%u x%u\r\n",
+                       (int)ret,
+                       (unsigned int)channel,
+                       (unsigned int)width,
+                       (unsigned int)buf_cnt);
+        return OPRT_COM_ERROR;
+    }
+
+    s_cam_ctx.flexa_buf[channel] = tkl_media_sram_alloc(query.size, "isp_flexa");
+    if (s_cam_ctx.flexa_buf[channel] == NULL) {
+        tkl_log_output("camera: flexa ring %u bytes alloc failed, ch%u\r\n",
+                       (unsigned int)query.size, (unsigned int)channel);
+        return OPRT_MALLOC_FAILED;
+    }
+    s_cam_ctx.flexa_buf_size[channel] = query.size;
+
+    os_memset(&park, 0, sizeof(park));
+    park.channel = channel;
+    park.buffer = s_cam_ctx.flexa_buf[channel];
+    park.size = query.size;
+    /* release_cb stays NULL, so the controller treats the ring as caller-owned
+     * and leaves it parked instead of freeing it from its own teardown.
+     * cam_mipi_cleanup_handles() frees it once the controller is gone. */
+    ret = bk_isp_camera_ctlr_ioctl(ctlr, BK_CAM_IOCTL_SET_FLEXA_BUF, &park);
+    if (ret != AVDK_ERR_OK) {
+        tkl_log_output("camera: flexa ring park failed (%d), ch%u\r\n",
+                       (int)ret, (unsigned int)channel);
+        tkl_media_sram_free(s_cam_ctx.flexa_buf[channel]);
+        s_cam_ctx.flexa_buf[channel] = NULL;
+        s_cam_ctx.flexa_buf_size[channel] = 0U;
+        return OPRT_COM_ERROR;
+    }
+
+    tkl_log_output("camera: flexa ring ch%u parked, %u bytes\r\n",
+                   (unsigned int)channel, (unsigned int)query.size);
+    return OPRT_OK;
+}
+
+/**
+ * @brief Give back every parked flexa ring.
+ *
+ * @note Call only after the controller is deleted: it still holds the parked
+ *       addresses until then, and it never frees them itself (release_cb NULL).
+ */
+static void cam_mipi_flexa_buf_release_all(void)
+{
+    UINT8_T channel;
+
+    for (channel = 0U; channel < (UINT8_T)ISP_CHANNEL_INSTANCE_MAX; channel++) {
+        if (s_cam_ctx.flexa_buf[channel] != NULL) {
+            tkl_media_sram_free(s_cam_ctx.flexa_buf[channel]);
+            s_cam_ctx.flexa_buf[channel] = NULL;
+            s_cam_ctx.flexa_buf_size[channel] = 0U;
+        }
+    }
+}
+
+/**
+ * @brief Would the ring parked for @p channel still cover an open at @p width?
+ *
+ * @details
+ * A parked ring is one fixed size for the controller's whole life, so a re-open
+ * at a larger geometry cannot be served by it. cam_mipi_set_output() asks this
+ * before taking the cheap live-switch path, and rebuilds the controller instead
+ * when the answer is no.
+ *
+ * @note The comparison is exact rather than conservative: the size we parked is
+ *       the same value bk_isp_open() recomputes for the same width and buf_cnt,
+ *       so anything at or above it passes the vendor's own check.
+ *
+ * @return TRUE when nothing is parked, the size cannot be established, or the
+ *         parked ring is big enough; FALSE only when it is provably too small
+ */
+static BOOL_T cam_mipi_flexa_buf_covers(UINT8_T channel, UINT16_T width, UINT8_T buf_cnt)
+{
+    bk_isp_camera_flexa_buf_size_t query;
+
+    if (channel >= (UINT8_T)ISP_CHANNEL_INSTANCE_MAX ||
+        s_cam_ctx.flexa_buf[channel] == NULL ||
+        s_cam_ctx.camera_ctlr_handle == NULL) {
+        return TRUE;
+    }
+
+    os_memset(&query, 0, sizeof(query));
+    query.buf_cnt = buf_cnt;
+    query.width = width;
+    if (bk_isp_camera_ctlr_ioctl(s_cam_ctx.camera_ctlr_handle,
+                                 BK_CAM_IOCTL_GET_FLEXA_BUF_SIZE, &query) != AVDK_ERR_OK) {
+        /* Cannot tell - let the open decide, bk_isp_open() validates anyway. */
+        return TRUE;
+    }
+
+    return (query.size <= s_cam_ctx.flexa_buf_size[channel]) ? TRUE : FALSE;
+}
+
 static OPERATE_RET cam_mipi_open_sp_channel(void)
 {
     OPERATE_RET ret;
@@ -518,6 +682,15 @@ static OPERATE_RET cam_mipi_open_sp_channel(void)
     sp_cfg.format = (uint16_t)s_cam_ctx.cfg.sp_format;
     sp_cfg.width = s_cam_ctx.cfg.sp_width;
     sp_cfg.height = s_cam_ctx.cfg.sp_height;
+
+    /* Flexa mode takes its ring from us now; frame mode never allocates one
+     * (bk_isp_open() sends work_mode 0 down the complete-buffer path). */
+    if (s_cam_ctx.cfg.sp_work_mode != 0U) {
+        (void)cam_mipi_flexa_buf_park(s_cam_ctx.camera_ctlr_handle,
+                                      ISP_SP_CHN_ID,
+                                      s_cam_ctx.cfg.sp_width,
+                                      s_cam_ctx.cfg.sp_buf_cnt);
+    }
 
     ret = bk_isp_camera_channel_open(s_cam_ctx.camera_ctlr_handle, ISP_SP_CHN_ID, &sp_cfg);
     if (ret != OPRT_OK) {
@@ -551,6 +724,15 @@ static OPERATE_RET cam_mipi_open_mp_channel(void)
     mp_cfg.format = (uint16_t)s_cam_ctx.cfg.output_format;
     mp_cfg.width = s_cam_ctx.cfg.output_width;
     mp_cfg.height = s_cam_ctx.cfg.output_height;
+
+    /* Same as the SP leg above: flexa mode needs a ring parked before the open,
+     * frame mode does not. */
+    if (s_cam_ctx.cfg.work_mode != 0U) {
+        (void)cam_mipi_flexa_buf_park(s_cam_ctx.camera_ctlr_handle,
+                                      ISP_MP_CHN_ID,
+                                      s_cam_ctx.cfg.output_width,
+                                      s_cam_ctx.cfg.output_buf_cnt);
+    }
 
     ret = bk_isp_camera_channel_open(s_cam_ctx.camera_ctlr_handle, ISP_MP_CHN_ID, &mp_cfg);
     if (ret != OPRT_OK) {
@@ -725,6 +907,10 @@ static void cam_mipi_cleanup_handles(void)
         bk_isp_camera_delete(s_cam_ctx.camera_ctlr_handle);
         s_cam_ctx.camera_ctlr_handle = NULL;
     }
+
+    /* Only now: the controller held the parked addresses until the delete, and
+     * it never frees them itself (parked with release_cb NULL). */
+    cam_mipi_flexa_buf_release_all();
 }
 
 static void cam_mipi_cleanup_resources(void)
@@ -898,17 +1084,29 @@ STATIC OPERATE_RET cam_mipi_set_output(UINT8_T channel_id, UINT16_T width, UINT1
      * configuration - see the @note above. SP is frame-mode and does, so it keeps the
      * cheap path below. This branch rebuilds SP too when it is open; that is the point,
      * not a side effect.
+     *
+     * A flexa-mode SP also belongs here when the new geometry outgrows the ring
+     * parked for it: that ring is one fixed size for the controller's life (there
+     * is no unpark ioctl), so only a rebuild can park a bigger one. Every
+     * facade-built config forces SP to frame mode and never reaches this; it
+     * guards a caller driving the raw config.
      */
-    if (channel_id == CAM_CHN_MP) {
-        tkl_log_output("set_output MP restart, %ux%u\r\n", width, height);
+    if (channel_id == CAM_CHN_MP ||
+        (channel_id == CAM_CHN_SP &&
+         s_cam_ctx.cfg.sp_work_mode != 0U &&
+         cam_mipi_flexa_buf_covers(ISP_SP_CHN_ID, width, s_cam_ctx.cfg.sp_buf_cnt) != TRUE)) {
+        tkl_log_output("set_output ch%u restart, %ux%u\r\n",
+                       (unsigned int)channel_id, width, height);
         ret = cam_mipi_stop();
         if (ret != OPRT_OK) {
-            tkl_log_output("set_output MP restart stop failed: %d\r\n", ret);
+            tkl_log_output("set_output ch%u restart stop failed: %d\r\n",
+                           (unsigned int)channel_id, ret);
             return ret;
         }
         ret = cam_mipi_start();
         if (ret != OPRT_OK) {
-            tkl_log_output("set_output MP restart start failed: %d\r\n", ret);
+            tkl_log_output("set_output ch%u restart start failed: %d\r\n",
+                           (unsigned int)channel_id, ret);
             return ret;
         }
         tkl_log_output("set_output ch%u restart ok, %ux%u\r\n",

@@ -15,10 +15,12 @@
 
 #include "tuya_cloud_types.h"
 #include "tkl_media_buf.h"
+#include "tkl_memory.h"
 #include "tkl_output.h"
 #include "tkl_system.h"
 
 #include <os/os.h>
+#include <os/mem.h>
 #include <components/bk_frame_buffer.h>
 
 /**
@@ -256,6 +258,60 @@ VOID_T tkl_media_buf_dump(VOID_T)
     }
 
     tkl_log_output("tkl_media_buf: total inflight=%u\r\n", (unsigned int)total);
+}
+
+/* ---------------------------------------------------------------------------
+ * On-chip buffer placement (SRAM / HSRAM)
+ * ------------------------------------------------------------------------- */
+
+VOID_T *tkl_media_sram_alloc(UINT32_T size, CONST CHAR_T *tag)
+{
+    CONST CHAR_T *log_tag = (tag != NULL) ? tag : "media";
+    VOID_T *ptr;
+
+    if (size == 0U) {
+        return NULL;
+    }
+
+    /* SRAM first: the GPU and H264 blocks read it faster than HSRAM, and an ISP
+     * ring placed there speeds up everything downstream of the ISP. Allocation
+     * order therefore decides who wins the scarce region - callers allocate in
+     * bring-up order and this is the only place that picks. */
+    ptr = os_sram_malloc(size);
+
+    if (ptr != NULL) {
+        tkl_log_output("tkl_media_sram: %s %u -> sram %p\r\n",
+                       log_tag, (unsigned int)size, ptr);
+        return ptr;
+    }
+
+    /* SRAM exhausted. Log what HSRAM has left, because that is the budget the
+     * fallback is about to be charged against - a silent fallback would hide a
+     * pipeline that has outgrown SRAM entirely. */
+    tkl_log_output("tkl_media_sram: %s %u sram full (hsram free %d), falling back\r\n",
+                   log_tag,
+                   (unsigned int)size,
+                   (int)tkl_system_hsram_get_free_heap_size());
+
+    ptr = hsram_malloc(size);
+    if (ptr == NULL) {
+        tkl_log_output("tkl_media_sram: %s %u failed, hsram free %d\r\n",
+                       log_tag,
+                       (unsigned int)size,
+                       (int)tkl_system_hsram_get_free_heap_size());
+        return NULL;
+    }
+
+    tkl_log_output("tkl_media_sram: %s %u -> hsram %p\r\n",
+                   log_tag, (unsigned int)size, ptr);
+    return ptr;
+}
+
+VOID_T tkl_media_sram_free(VOID_T *ptr)
+{
+    /* os_free dispatches on the address, so one call covers both regions
+     * (hsram_free and os_sram_free are both aliases of it). */
+    os_free(ptr);
 }
 
 /* ---------------------------------------------------------------------------
