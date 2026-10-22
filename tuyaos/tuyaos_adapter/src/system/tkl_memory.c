@@ -52,7 +52,11 @@ VOID_T* tkl_system_malloc(CONST SIZE_T size)
     if (s_psram_malloc_force) {
         ptr = tkl_system_psram_malloc(size);
     } else {
-        ptr = os_malloc(size);
+        ptr = hsram_malloc(size);
+        if (NULL == ptr) {
+            bk_printf("tkl_system_malloc failed, size(%d), remain %d, use os_malloc\r\n", size, tkl_system_hsram_get_free_heap_size());
+            ptr = os_malloc(size);
+        }
     }
 
     if(NULL == ptr) {
@@ -132,7 +136,11 @@ VOID_T *tkl_system_calloc(size_t nitems, size_t size)
         if (size && nitems > (~(size_t) 0) / size)
             return NULL;
 
-        ptr =  os_zalloc(nitems * size);
+        ptr = hsram_zalloc(nitems * size);
+        if (NULL == ptr) {
+            bk_printf("tkl_system_calloc failed, total_size(%d)! nitems = %d size = %d, use os_zalloc\r\n", nitems * size,nitems,size);
+            ptr = os_zalloc(nitems * size);
+        }
         if (ptr == NULL) {
             bk_printf("tkl_system_calloc failed, total_size(%d)! nitems = %d size = %d\r\n", nitems * size,nitems,size);
         }
@@ -148,11 +156,19 @@ VOID_T *tkl_system_calloc(size_t nitems, size_t size)
  */
 VOID_T *tkl_system_realloc(VOID_T* ptr, size_t size)
 {
+    VOID_T *new_ptr;
+
     if (s_psram_malloc_force) {
         return bk_psram_realloc(ptr, size);
-    } else {
-        return os_realloc(ptr, size);
     }
+    new_ptr = hsram_realloc(ptr, size);
+    if (NULL == new_ptr) {
+        bk_printf("tkl_system_realloc failed, size(%d), remain %d, use os_realloc\r\n",
+                  size, tkl_system_hsram_get_free_heap_size());
+        new_ptr = os_realloc(ptr, size);
+    }
+
+    return new_ptr;
 }
 
 VOID_T* tkl_system_hsram_malloc(CONST SIZE_T size)
