@@ -1966,6 +1966,12 @@ OPERATE_RET tkl_wifi_station_connect(CONST SCHAR_T *ssid, CONST SCHAR_T *passwd)
         return op_ret;
     }
 
+    // stop the station if it is already connected
+    bk_ret = bk_wifi_sta_stop();
+    if (bk_ret != BK_OK) {
+        bk_printf("connect stop station fail bk_ret=%d\r\n", bk_ret);
+    }
+
     memset(&sta_cfg, 0, sizeof(sta_cfg));
     __wifi_copy_str(sta_cfg.ssid, sizeof(sta_cfg.ssid), ssid);
     if (passwd != NULL) {
@@ -1973,7 +1979,7 @@ OPERATE_RET tkl_wifi_station_connect(CONST SCHAR_T *ssid, CONST SCHAR_T *passwd)
     }
     sta_cfg.security = WIFI_SECURITY_AUTO;
     sta_cfg.is_user_fast_connect = 0;
-    sta_cfg.is_not_support_auto_fci = 1;
+    sta_cfg.is_not_support_auto_fci = 0;
     sta_cfg.auto_reconnect_count = 1;
     sta_cfg.disable_auto_reconnect_after_disconnect = TRUE;
 
