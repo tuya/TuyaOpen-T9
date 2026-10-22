@@ -315,10 +315,10 @@ static OPERATE_RET tkl_gpu_backend_destroy(tkl_gpu_ctx_t *ctx)
 
     /* Only now: the controller held the parked addresses until the delete, and
      * it never frees them itself (both were parked with release_cb NULL). */
-    tkl_media_sram_free(ctx->vg_mem_buf);
+    tkl_media_ring_free(ctx->vg_mem_buf);
     ctx->vg_mem_buf = NULL;
     ctx->vg_mem_size = 0U;
-    tkl_media_sram_free(ctx->output_buf);
+    tkl_media_ring_free(ctx->output_buf);
     ctx->output_buf = NULL;
     ctx->output_size = 0U;
 
@@ -426,7 +426,7 @@ static void tkl_gpu_vg_mem_park(tkl_gpu_ctx_t *ctx, const bk_gpu_ctlr_config_t *
         return;
     }
 
-    ctx->vg_mem_buf = tkl_media_sram_alloc(query.size, "gpu_vg");
+    ctx->vg_mem_buf = tkl_media_ring_alloc(TKL_MEDIA_RING_SRAM_FIRST, query.size, "gpu_vg");
     if (ctx->vg_mem_buf == NULL) {
         tkl_log_output("tkl_gpu: vg mem %u bytes alloc failed, vendor allocates\r\n",
                        (unsigned int)query.size);
@@ -443,7 +443,7 @@ static void tkl_gpu_vg_mem_park(tkl_gpu_ctx_t *ctx, const bk_gpu_ctlr_config_t *
     ret = bk_gpu_ioctl(ctx->gpu_handle, BK_GPU_IOCTL_SET_VG_MEM_BUF, &park);
     if (ret != AVDK_ERR_OK) {
         tkl_log_output("tkl_gpu: vg mem park failed (%d), vendor allocates\r\n", (int)ret);
-        tkl_media_sram_free(ctx->vg_mem_buf);
+        tkl_media_ring_free(ctx->vg_mem_buf);
         ctx->vg_mem_buf = NULL;
         ctx->vg_mem_size = 0U;
         return;
@@ -489,7 +489,7 @@ static void tkl_gpu_output_buf_park(tkl_gpu_ctx_t *ctx)
         return;
     }
 
-    ctx->output_buf = tkl_media_sram_alloc(query.size, "gpu_pp");
+    ctx->output_buf = tkl_media_ring_alloc(TKL_MEDIA_RING_SRAM_FIRST, query.size, "gpu_pp");
     if (ctx->output_buf == NULL) {
         tkl_log_output("tkl_gpu: output buf %u bytes alloc failed, vendor allocates\r\n",
                        (unsigned int)query.size);
@@ -503,7 +503,7 @@ static void tkl_gpu_output_buf_park(tkl_gpu_ctx_t *ctx)
     ret = bk_gpu_ioctl(ctx->gpu_handle, BK_GPU_IOCTL_SET_OUTPUT_BUF, &park);
     if (ret != AVDK_ERR_OK) {
         tkl_log_output("tkl_gpu: output buf park failed (%d), vendor allocates\r\n", (int)ret);
-        tkl_media_sram_free(ctx->output_buf);
+        tkl_media_ring_free(ctx->output_buf);
         ctx->output_buf = NULL;
         ctx->output_size = 0U;
         return;
@@ -562,7 +562,7 @@ static OPERATE_RET tkl_gpu_backend_create(tkl_gpu_ctx_t *ctx, const bk_gpu_ctlr_
         ctx->gpu_handle = NULL;
         /* This path bypasses tkl_gpu_backend_destroy(), so the parked vg buffer
          * has to be released here or it leaks until the next create. */
-        tkl_media_sram_free(ctx->vg_mem_buf);
+        tkl_media_ring_free(ctx->vg_mem_buf);
         ctx->vg_mem_buf = NULL;
         ctx->vg_mem_size = 0U;
         s_active_ctx = NULL;

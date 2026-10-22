@@ -180,42 +180,57 @@ VOID_T tkl_media_buf_dump(VOID_T);
  *
  * T9 has both regions on-chip: HSRAM is a 512K bank pair of its own, while the
  * SRAM heap is whatever is left of the AP_RAM region after code, data, bss and
- * the main stack - the linker only asserts 90K. So SRAM is the scarce one.
+ * the main stack - about 178K, and the linker only asserts 90K. It is also the
+ * heap os_malloc() is bound to in this build (CONFIG_OS_HEAP_USE_SRAM), and
+ * pvPortMalloc() with it, so every FreeRTOS object that is not explicitly
+ * redirected (task stacks, queues and lwip are) lands there too. SRAM is
+ * therefore not just scarce, it is contended with the RTOS itself.
  *
- * Vendor guidance: the H264 and GPU blocks are faster off SRAM than HSRAM, and
- * an ISP output ring on SRAM speeds up the GPU and the encoder downstream of it
- * even though it does not change the ISP's own output rate. Hence SRAM first,
- * HSRAM as the fallback, and never PSRAM - an external ring would put the
- * bandwidth bottleneck back, and the camera ctlr rejects a PSRAM buffer
- * outright (buf_on_psram()).
+ * That splits the rings by size, not by preference:
+ *   - ISP flexa rings are the large ones (138K at 1920x1080 - most of the whole
+ *     SRAM heap) and the vendor's own guidance is that their placement does not
+ *     change the ISP output rate, only the GPU/encoder speed downstream. Left
+ *     SRAM-first they starve os_malloc, so they go HSRAM-first.
+ *   - GPU rings are smaller and are the ones the vendor says genuinely run
+ *     faster from SRAM, so they stay SRAM-first.
+ * Neither may come from PSRAM: the camera ctlr rejects a PSRAM flexa buffer
+ * outright (buf_on_psram()), and an external ring would put the bandwidth
+ * bottleneck back.
  * ------------------------------------------------------------------------- */
 
+/** Which on-chip region a media hardware ring should try first. */
+typedef enum {
+    TKL_MEDIA_RING_SRAM_FIRST = 0, /**< SRAM then HSRAM - GPU rings */
+    TKL_MEDIA_RING_HSRAM_FIRST,    /**< HSRAM then SRAM - ISP flexa rings */
+} TKL_MEDIA_RING_PLACE_E;
+
 /**
- * @brief Allocate a media hardware ring, preferring on-chip SRAM.
+ * @brief Allocate a media hardware ring, preferring the given on-chip region.
  *
- * @param[in] size byte count; 0 returns NULL
- * @param[in] tag  short module name for the log line, e.g. "isp_flexa"
+ * @param[in] place region to try first, see TKL_MEDIA_RING_PLACE_E
+ * @param[in] size  byte count; 0 returns NULL
+ * @param[in] tag   short module name for the log line, e.g. "isp_flexa"
  *
- * @note Tries the AP SRAM heap first and falls back to HSRAM, mirroring the
- *       vendor's own bk_sram_hsram_malloc(). Never PSRAM.
+ * @note Falls back to the other on-chip region when the preferred one is
+ *       exhausted, and reports which one served it. Never PSRAM.
  * @note No owner accounting: these buffers are few, long-lived and owned by a
  *       driver controller, not handed to business per frame.
  * @note Both regions are on-chip and CPU-addressable, so the returned pointer
  *       is directly usable by the hardware.
  *
- * @return buffer pointer on success, NULL when both heaps are exhausted
+ * @return buffer pointer on success, NULL when both regions are exhausted
  */
-VOID_T *tkl_media_sram_alloc(UINT32_T size, CONST CHAR_T *tag);
+VOID_T *tkl_media_ring_alloc(TKL_MEDIA_RING_PLACE_E place, UINT32_T size, CONST CHAR_T *tag);
 
 /**
- * @brief Release a buffer obtained from tkl_media_sram_alloc().
+ * @brief Release a buffer obtained from tkl_media_ring_alloc().
  *
  * @param[in] ptr buffer pointer; NULL is ignored
  *
  * @note One free path covers both regions - hsram_free is aliased to os_free,
  *       which dispatches on the address.
  */
-VOID_T tkl_media_sram_free(VOID_T *ptr);
+VOID_T tkl_media_ring_free(VOID_T *ptr);
 
 /* ---------------------------------------------------------------------------
  * Media hardware arbitration

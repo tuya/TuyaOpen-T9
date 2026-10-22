@@ -520,8 +520,13 @@ static uint32_t cam_mipi_sp_frame_size_get(void)
  * (cam_mipi_build_cfg_from_channels forces sp_work_mode 0), so its ring only
  * exists for a caller driving the raw config.
  *
- * The ring goes to SRAM when it fits. The ISP's own output rate does not care,
- * but the GPU and the H264 encoder downstream read it faster there.
+ * The ring comes from HSRAM, falling back to SRAM only if HSRAM is exhausted.
+ * This is the opposite of the GPU rings, and deliberately so: an ISP ring is
+ * large (138K at 1920x1080 - most of the whole SRAM heap), and that heap is also
+ * where os_malloc()/pvPortMalloc() live, so parking it there starves task and
+ * thread allocation. The vendor's own guidance is that the ISP ring's placement
+ * does not change the ISP output rate, only the GPU/encoder speed downstream,
+ * so it is the one ring that can afford to give SRAM up.
  *
  * @param[in] ctlr    camera controller, must already exist
  * @param[in] channel ISP_MP_CHN_ID or ISP_SP_CHN_ID
@@ -565,7 +570,8 @@ static OPERATE_RET cam_mipi_flexa_buf_park(bk_isp_camera_ctlr_handle_t ctlr,
         return OPRT_COM_ERROR;
     }
 
-    s_cam_ctx.flexa_buf[channel] = tkl_media_sram_alloc(query.size, "isp_flexa");
+    s_cam_ctx.flexa_buf[channel] = tkl_media_ring_alloc(TKL_MEDIA_RING_HSRAM_FIRST,
+                                                        query.size, "isp_flexa");
     if (s_cam_ctx.flexa_buf[channel] == NULL) {
         tkl_log_output("camera: flexa ring %u bytes alloc failed, ch%u\r\n",
                        (unsigned int)query.size, (unsigned int)channel);
@@ -584,7 +590,7 @@ static OPERATE_RET cam_mipi_flexa_buf_park(bk_isp_camera_ctlr_handle_t ctlr,
     if (ret != AVDK_ERR_OK) {
         tkl_log_output("camera: flexa ring park failed (%d), ch%u\r\n",
                        (int)ret, (unsigned int)channel);
-        tkl_media_sram_free(s_cam_ctx.flexa_buf[channel]);
+        tkl_media_ring_free(s_cam_ctx.flexa_buf[channel]);
         s_cam_ctx.flexa_buf[channel] = NULL;
         s_cam_ctx.flexa_buf_size[channel] = 0U;
         return OPRT_COM_ERROR;
@@ -607,7 +613,7 @@ static void cam_mipi_flexa_buf_release_all(void)
 
     for (channel = 0U; channel < (UINT8_T)ISP_CHANNEL_INSTANCE_MAX; channel++) {
         if (s_cam_ctx.flexa_buf[channel] != NULL) {
-            tkl_media_sram_free(s_cam_ctx.flexa_buf[channel]);
+            tkl_media_ring_free(s_cam_ctx.flexa_buf[channel]);
             s_cam_ctx.flexa_buf[channel] = NULL;
             s_cam_ctx.flexa_buf_size[channel] = 0U;
         }

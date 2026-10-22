@@ -264,50 +264,63 @@ VOID_T tkl_media_buf_dump(VOID_T)
  * On-chip buffer placement (SRAM / HSRAM)
  * ------------------------------------------------------------------------- */
 
-VOID_T *tkl_media_sram_alloc(UINT32_T size, CONST CHAR_T *tag)
+VOID_T *tkl_media_ring_alloc(TKL_MEDIA_RING_PLACE_E place, UINT32_T size, CONST CHAR_T *tag)
 {
     CONST CHAR_T *log_tag = (tag != NULL) ? tag : "media";
+    CONST CHAR_T *first_name;
+    CONST CHAR_T *second_name;
     VOID_T *ptr;
 
     if (size == 0U) {
         return NULL;
     }
 
-    /* SRAM first: the GPU and H264 blocks read it faster than HSRAM, and an ISP
-     * ring placed there speeds up everything downstream of the ISP. Allocation
-     * order therefore decides who wins the scarce region - callers allocate in
-     * bring-up order and this is the only place that picks. */
-    ptr = os_sram_malloc(size);
-
-    if (ptr != NULL) {
-        tkl_log_output("tkl_media_sram: %s %u -> sram %p\r\n",
-                       log_tag, (unsigned int)size, ptr);
-        return ptr;
-    }
-
-    /* SRAM exhausted. Log what HSRAM has left, because that is the budget the
-     * fallback is about to be charged against - a silent fallback would hide a
-     * pipeline that has outgrown SRAM entirely. */
-    tkl_log_output("tkl_media_sram: %s %u sram full (hsram free %d), falling back\r\n",
-                   log_tag,
-                   (unsigned int)size,
-                   (int)tkl_system_hsram_get_free_heap_size());
-
-    ptr = hsram_malloc(size);
-    if (ptr == NULL) {
-        tkl_log_output("tkl_media_sram: %s %u failed, hsram free %d\r\n",
+    /* ISP rings are large enough to swallow most of the SRAM heap, which is also
+     * where os_malloc()/pvPortMalloc() live, so they come from HSRAM first and
+     * only take SRAM when HSRAM is exhausted. Everything else prefers SRAM,
+     * which is where the GPU genuinely runs faster. */
+    if (place == TKL_MEDIA_RING_HSRAM_FIRST) {
+        first_name = "hsram";
+        second_name = "sram";
+        ptr = hsram_malloc(size);
+        if (ptr != NULL) {
+            tkl_log_output("tkl_media_ring: %s %u -> hsram %p\r\n",
+                           log_tag, (unsigned int)size, ptr);
+            return ptr;
+        }
+        tkl_log_output("tkl_media_ring: %s %u hsram full, falling back\r\n",
+                       log_tag, (unsigned int)size);
+        ptr = os_sram_malloc(size);
+    } else {
+        first_name = "sram";
+        second_name = "hsram";
+        ptr = os_sram_malloc(size);
+        if (ptr != NULL) {
+            tkl_log_output("tkl_media_ring: %s %u -> sram %p\r\n",
+                           log_tag, (unsigned int)size, ptr);
+            return ptr;
+        }
+        /* SRAM exhausted. Log what HSRAM has left, because that is the budget
+         * the fallback is about to be charged against. */
+        tkl_log_output("tkl_media_ring: %s %u sram full (hsram free %d), falling back\r\n",
                        log_tag,
                        (unsigned int)size,
                        (int)tkl_system_hsram_get_free_heap_size());
+        ptr = hsram_malloc(size);
+    }
+
+    if (ptr == NULL) {
+        tkl_log_output("tkl_media_ring: %s %u failed, %s and %s both exhausted\r\n",
+                       log_tag, (unsigned int)size, first_name, second_name);
         return NULL;
     }
 
-    tkl_log_output("tkl_media_sram: %s %u -> hsram %p\r\n",
-                   log_tag, (unsigned int)size, ptr);
+    tkl_log_output("tkl_media_ring: %s %u -> %s %p\r\n",
+                   log_tag, (unsigned int)size, second_name, ptr);
     return ptr;
 }
 
-VOID_T tkl_media_sram_free(VOID_T *ptr)
+VOID_T tkl_media_ring_free(VOID_T *ptr)
 {
     /* os_free dispatches on the address, so one call covers both regions
      * (hsram_free and os_sram_free are both aliases of it). */
