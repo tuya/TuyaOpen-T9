@@ -16,7 +16,7 @@
 extern "C" {
 #endif
 
-#define TKL_QUEUE_WAIT_FROEVER 0xFFFFFFFF
+#define TKL_QUEUE_WAIT_FOREVER 0xFFFFFFFF
 typedef VOID_T* TKL_QUEUE_HANDLE;
 
 

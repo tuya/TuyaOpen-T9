@@ -64,7 +64,7 @@ OPERATE_RET tkl_queue_post(CONST TKL_QUEUE_HANDLE queue, VOID_T *data, UINT_T ti
 
 extern uint32_t platform_is_in_interrupt_context( void );
     if (platform_is_in_interrupt_context() == 0) {
-        if (timeout == TKL_QUEUE_WAIT_FROEVER) {
+        if (timeout == TKL_QUEUE_WAIT_FOREVER) {
             ret = xQueueSend(queue, data, portMAX_DELAY);
         } else {
             UINT_T ticks = timeout / portTICK_RATE_MS;
@@ -109,7 +109,7 @@ OPERATE_RET tkl_queue_fetch(CONST TKL_QUEUE_HANDLE queue, VOID_T *msg, UINT_T ti
         msg = &dummyptr;
     }
 
-    if (timeout == TKL_QUEUE_WAIT_FROEVER) {
+    if (timeout == TKL_QUEUE_WAIT_FOREVER) {
         ret = xQueueReceive(queue, msg, portMAX_DELAY);
     } else {
         UINT_T ticks = timeout / portTICK_RATE_MS;
