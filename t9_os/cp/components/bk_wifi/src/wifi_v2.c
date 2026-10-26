@@ -2250,7 +2250,7 @@ void wlan_clear_fast_connect_info(struct wlan_fast_connect_info *fci)
 					   sizeof(struct wlan_fast_connect_info));
 #endif
 		os_memset(&g_fci, 0, sizeof(struct wlan_fast_connect_info));
-		WIFI_LOGD("clear fast connect info\n");
+		WIFI_LOGW("clear fast connect info\n");
 	}
 	if (bk_feature_fast_dhcp_enable()) {
 		sta_ip_mode_set(1);
