@@ -1,5 +1,5 @@
 #include "cli.h"
-#include "cli_tuya_test.h"
+// #include "cli_tuya_test.h"
 
 #include "modules/pm.h"
 
@@ -15,6 +15,19 @@
 #undef bk_printf
 #endif
 #define bk_printf(fmt, ...) BK_RAW_LOGE("xmbedtls", fmt, ##__VA_ARGS__)
+
+/* Memory placement probe for "xmbedtls tls": prints the heap layout, the current
+ * SP and the region (SRAM / HSRAM / PSRAM / PSRAM cache heap) every reported
+ * pointer belongs to, plus a live-allocation dump of the xmbedtls task.
+ *   0 = compiled out (default), 1 = enabled.
+ * Can also be forced from the build: -DXMBEDTLS_MEM_PROBE=1 */
+#ifndef XMBEDTLS_MEM_PROBE
+#define XMBEDTLS_MEM_PROBE  0
+#endif
+
+#if XMBEDTLS_MEM_PROBE
+#include <soc/soc.h>
+#endif
 
 #include "mbedtls/aes.h"
 #include "mbedtls/base64.h"
@@ -34,6 +47,7 @@
 #include "mbedtls/sha512.h"
 #include "mbedtls/x509_crt.h"
 
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -1184,6 +1198,131 @@ cleanup:
     return ret;
 }
 
+/* ================= memory placement probe =================
+ * Confirms which heap the mbedtls library allocates from:
+ *   mbedtls_calloc -> os_calloc -> os_zalloc -> default OS heap
+ * The predicates below are the allocator's own range checks.
+ * Enabled by XMBEDTLS_MEM_PROBE (see top of file).
+ */
+#if XMBEDTLS_MEM_PROBE
+
+extern unsigned char _heap_start;
+extern unsigned char _heap_end;
+
+extern bool ptr_is_sram_heap(void *ptr);
+#ifdef CONFIG_AP_HSRAM_HEAP_ADDR
+extern bool ptr_is_hsram_heap(void *ptr);
+#endif
+#ifdef CONFIG_AP_PSRAM_HEAP_ADDR
+extern bool ptr_is_psram_heap(void *ptr);
+#endif
+#if defined(CONFIG_AP_PSRAM_CACHE_HEAP_ADDR) && (CONFIG_AP_PSRAM_CACHE_HEAP_SIZE > 0)
+extern bool ptr_is_psram_cache_heap(void *ptr);
+#endif
+
+static uint32_t mbedtls_test_get_sp(void)
+{
+    uint32_t sp;
+
+    __asm volatile ("mov %0, sp" : "=r"(sp));
+    return sp;
+}
+
+static const char *mbedtls_test_mem_region(const void *ptr)
+{
+    if (ptr == NULL) {
+        return "NULL";
+    }
+    if (ptr_is_sram_heap((void *)ptr)) {
+        return "SRAM_HEAP";
+    }
+#ifdef CONFIG_AP_HSRAM_HEAP_ADDR
+    if (ptr_is_hsram_heap((void *)ptr)) {
+        return "HSRAM_HEAP";
+    }
+#endif
+#ifdef CONFIG_AP_PSRAM_HEAP_ADDR
+    if (ptr_is_psram_heap((void *)ptr)) {
+        return "PSRAM_HEAP";
+    }
+#endif
+#if defined(CONFIG_AP_PSRAM_CACHE_HEAP_ADDR) && (CONFIG_AP_PSRAM_CACHE_HEAP_SIZE > 0)
+    if (ptr_is_psram_cache_heap((void *)ptr)) {
+        return "PSRAM_CACHE_HEAP";
+    }
+#endif
+    return "OTHER(stack/static)";
+}
+
+static void mbedtls_test_mem_probe(const char *tag, const void *ptr, uint32_t len)
+{
+    bk_printf("[xmbedtls] MEM %-24s ptr=0x%08x len=%-6u region=%-18s sp=0x%08x\r\n",
+              tag,
+              (unsigned int)(uintptr_t)ptr,
+              (unsigned int)len,
+              mbedtls_test_mem_region(ptr),
+              (unsigned int)mbedtls_test_get_sp());
+}
+
+static void mbedtls_test_mem_layout(void)
+{
+    uint32_t sp = mbedtls_test_get_sp();
+
+    bk_printf("[xmbedtls] MEM heap layout: region start end size\r\n");
+    bk_printf("[xmbedtls] MEM   %-18s 0x%08x 0x%08x %u\r\n",
+              "sram_heap",
+              (unsigned int)(uintptr_t)&_heap_start,
+              (unsigned int)(uintptr_t)&_heap_end,
+              (unsigned int)((uintptr_t)&_heap_end - (uintptr_t)&_heap_start));
+#ifdef CONFIG_AP_HSRAM_HEAP_ADDR
+    bk_printf("[xmbedtls] MEM   %-18s 0x%08x 0x%08x %u\r\n",
+              "hsram_heap",
+              (unsigned int)SOC_SRAM_CPU_ADDR(CONFIG_AP_HSRAM_HEAP_ADDR),
+              (unsigned int)(SOC_SRAM_CPU_ADDR(CONFIG_AP_HSRAM_HEAP_ADDR) + CONFIG_AP_HSRAM_HEAP_SIZE),
+              (unsigned int)CONFIG_AP_HSRAM_HEAP_SIZE);
+#endif
+#ifdef CONFIG_AP_PSRAM_HEAP_ADDR
+    bk_printf("[xmbedtls] MEM   %-18s 0x%08x 0x%08x %u\r\n",
+              "psram_heap",
+              (unsigned int)CONFIG_AP_PSRAM_HEAP_ADDR,
+              (unsigned int)(CONFIG_AP_PSRAM_HEAP_ADDR + CONFIG_AP_PSRAM_HEAP_SIZE),
+              (unsigned int)CONFIG_AP_PSRAM_HEAP_SIZE);
+#endif
+#if defined(CONFIG_AP_PSRAM_CACHE_HEAP_ADDR) && (CONFIG_AP_PSRAM_CACHE_HEAP_SIZE > 0)
+    bk_printf("[xmbedtls] MEM   %-18s 0x%08x 0x%08x %u\r\n",
+              "psram_cache_heap",
+              (unsigned int)CONFIG_AP_PSRAM_CACHE_HEAP_ADDR,
+              (unsigned int)(CONFIG_AP_PSRAM_CACHE_HEAP_ADDR + CONFIG_AP_PSRAM_CACHE_HEAP_SIZE),
+              (unsigned int)CONFIG_AP_PSRAM_CACHE_HEAP_SIZE);
+#endif
+    bk_printf("[xmbedtls] MEM   %-18s sp=0x%08x region=%s\r\n",
+              "task_stack",
+              (unsigned int)sp,
+              mbedtls_test_mem_region((const void *)(uintptr_t)sp));
+}
+
+static void mbedtls_test_mem_dump_live(const char *tag)
+{
+#if (CONFIG_MALLOC_STATIS || CONFIG_MEM_DEBUG)
+    bk_printf("[xmbedtls] MEM live allocations of task xmbedtls after %s\r\n", tag);
+    os_dump_memory_stats(0U, 0U, "xmbedtls");
+#else
+    bk_printf("[xmbedtls] MEM live dump unavailable (MEM_DEBUG off), tag=%s\r\n", tag);
+#endif
+}
+
+#define XMBEDTLS_MEM_PROBE_LAYOUT()               mbedtls_test_mem_layout()
+#define XMBEDTLS_MEM_PROBE_PTR(tag, ptr, len)     mbedtls_test_mem_probe((tag), (ptr), (len))
+#define XMBEDTLS_MEM_DUMP_LIVE(tag)               mbedtls_test_mem_dump_live((tag))
+
+#else /* !XMBEDTLS_MEM_PROBE */
+
+#define XMBEDTLS_MEM_PROBE_LAYOUT()               do { } while (0)
+#define XMBEDTLS_MEM_PROBE_PTR(tag, ptr, len)     do { } while (0)
+#define XMBEDTLS_MEM_DUMP_LIVE(tag)               do { } while (0)
+
+#endif /* XMBEDTLS_MEM_PROBE */
+
 static int mbedtls_test_tls_server_certificate_impl(uint32_t loops)
 {
     mbedtls_x509_crt cacert;
@@ -1241,6 +1380,15 @@ static int mbedtls_test_tls_server_certificate_impl(uint32_t loops)
         parse_us += bk_aon_rtc_get_us() - step_us;
         if (ret != 0) {
             goto cleanup;
+        }
+
+        if (i == 0U) {
+            XMBEDTLS_MEM_PROBE_PTR("x509_ca_raw.p", cacert.raw.p, (uint32_t)cacert.raw.len);
+            XMBEDTLS_MEM_PROBE_PTR("x509_srv_raw.p", srvcert.raw.p, (uint32_t)srvcert.raw.len);
+            XMBEDTLS_MEM_PROBE_PTR("pem_ca(os_malloc)", ca_pem, (uint32_t)ca_pem_len);
+            XMBEDTLS_MEM_PROBE_PTR("pem_srv(os_malloc)", srv_pem, (uint32_t)srv_pem_len);
+            XMBEDTLS_MEM_PROBE_PTR("x509_srv_ctx(stack)", &srvcert, (uint32_t)sizeof(srvcert));
+            XMBEDTLS_MEM_DUMP_LIVE("mbedtls_x509_crt_parse");
         }
 
         step_us = bk_aon_rtc_get_us();
@@ -1370,6 +1518,11 @@ static int mbedtls_test_tls_server_key_exchange_impl(uint32_t loops)
         goto cleanup;
     }
 
+    XMBEDTLS_MEM_PROBE_PTR("ecdh_srv_ctx(stack)", &server_ecdh, (uint32_t)sizeof(server_ecdh));
+    XMBEDTLS_MEM_PROBE_PTR("sign_key_ctx(stack)", &sign_key, (uint32_t)sizeof(sign_key));
+    XMBEDTLS_MEM_PROBE_PTR("x509_srv_ctx(stack)", &srvcert, (uint32_t)sizeof(srvcert));
+    XMBEDTLS_MEM_DUMP_LIVE("mbedtls_ecdh_make_params+mbedtls_pk_sign");
+
     start_us = bk_aon_rtc_get_us();
     for (uint32_t i = 0; i < loops; i++) {
         mbedtls_ecdh_context client_ecdh;
@@ -1454,6 +1607,9 @@ static int mbedtls_test_tls_client_key_exchange_impl(uint32_t loops)
     if (ret != 0) {
         goto cleanup;
     }
+
+    XMBEDTLS_MEM_PROBE_PTR("ecp_server_key(stack)", &server_key, (uint32_t)sizeof(server_key));
+    XMBEDTLS_MEM_DUMP_LIVE("mbedtls_ecp_gen_key");
 
     /* Reset RNG accumulator: only count RNG inside the timed client ECDHE loop. */
     s_mbedtls_tls_rng_us = 0;
@@ -1561,6 +1717,10 @@ static int mbedtls_test_tls_record_aes_gcm_once(uint32_t input_len)
         goto cleanup;
     }
 
+    XMBEDTLS_MEM_PROBE_PTR("gcm_plain(os_malloc)", plain, input_len);
+    XMBEDTLS_MEM_PROBE_PTR("gcm_cipher(os_malloc)", cipher, input_len);
+    XMBEDTLS_MEM_PROBE_PTR("gcm_ctx(stack)", &ctx, (uint32_t)sizeof(ctx));
+
     mbedtls_test_fill_pattern(plain, input_len);
     memset(cipher, 0, input_len);
     memset(iv, 0xA5, sizeof(iv));
@@ -1590,6 +1750,10 @@ static int mbedtls_test_tls_record_aes_gcm_once(uint32_t input_len)
                                         tag);
     }
     elapsed_us = bk_aon_rtc_get_us() - start_us;
+    if (input_len == s_mbedtls_tls_record_len[0]) {
+        /* dump once, while mbedtls' own GCM context is still alive */
+        XMBEDTLS_MEM_DUMP_LIVE("mbedtls_gcm_setkey");
+    }
     mbedtls_gcm_free(&ctx);
     if (ret != 0) {
         goto cleanup;
@@ -2006,6 +2170,8 @@ void mbedtls_test_tls_cmd(int argc, char **argv)
               (unsigned int)loop_cnt,
               MBEDTLS_TLS_TEST_ECDHE_NAME);
 
+    XMBEDTLS_MEM_PROBE_LAYOUT();
+
     mbedtls_test_vote_cpu_freq();
     mbedtls_test_log_result(&st, "tls_server_certificate", mbedtls_test_tls_server_certificate_impl(loop_cnt));
     mbedtls_test_log_result(&st, "tls_server_key_exchange", mbedtls_test_tls_server_key_exchange_impl(loop_cnt));
@@ -2159,6 +2325,18 @@ static void xmbedtls_task(void *param)
     os_free(arg);
     rtos_delete_thread(NULL);
 }
+
+// void cli_xmbedtls_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv);
+
+// static const struct cli_command s_xmbedtls_commands[] = {
+//     {"xmbedtls", "xmbedtls [sha|aes|ecdsa|tls|rsa|selftest|thread] ...", cli_xmbedtls_cmd},
+// };
+
+// int cli_xmbedtls_init(void)
+// {
+//     return cli_register_commands(s_xmbedtls_commands,
+//                                  sizeof(s_xmbedtls_commands) / sizeof(s_xmbedtls_commands[0]));
+// }
 
 void cli_xmbedtls_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv)
 {
