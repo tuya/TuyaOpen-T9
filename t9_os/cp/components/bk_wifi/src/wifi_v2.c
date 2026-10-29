@@ -3419,6 +3419,52 @@ bk_err_t bk_wifi_sta_connect(void)
 	wpa_ctrl_request(WPA_CTRL_CMD_WPAS_SET, (void *)false);
 #endif
 
+	/*
+	 * Re-arm the MFP-protected pre-association deauth with the cached
+	 * fast-connect session (UMAC clears the template after each connect
+	 * attempt). Only reuse it when the cached ssid/password match the
+	 * current connection, mirroring wlan_fci_match_sta().
+	 */
+	if (bk_feature_fast_connect_enable()) {
+		struct wlan_fast_connect_info fci = {0};
+		bool tk_ok = false;
+		int i;
+
+		wlan_read_fast_connect_info(&fci);
+
+		for (i = 0; i < (int)sizeof(fci.tk); i++) {
+			if (fci.tk[i] != 0) {
+				tk_ok = true;
+				break;
+			}
+		}
+
+		if (!tk_ok) {
+			/* Flash copy absent (e.g. host self-managed FCI like
+			 * Tuya, never written to flash): fall back to the
+			 * always-synced runtime g_fci copy. */
+			os_memcpy(&fci, &g_fci, sizeof(fci));
+
+			for (i = 0; i < (int)sizeof(fci.tk); i++) {
+				if (fci.tk[i] != 0) {
+					tk_ok = true;
+					break;
+				}
+			}
+		}
+
+		if (tk_ok && !is_zero_ether_addr(fci.bssid) &&
+			g_sta_param_ptr->ssid.length > 0 &&
+			os_strlen((char *)fci.ssid) == g_sta_param_ptr->ssid.length &&
+			os_memcmp(fci.ssid, g_sta_param_ptr->ssid.array, g_sta_param_ptr->ssid.length) == 0 &&
+			(os_strcmp((char *)fci.pwd, (char *)g_sta_param_ptr->key) == 0 ||
+			 os_strcmp((char *)fci.psk, (char *)g_sta_param_ptr->key) == 0)) {
+			wlan_mfp_connect_deauth(!!(fci.pmf == MGMT_FRAME_PROTECTION_REQUIRED),
+						fci.bssid, fci.tk, false);
+			WIFI_LOGI("mfp connect deauth armed for sta connect\n");
+		}
+	}
+
 	//TODO - optimize event module
 	info.state = WIFI_LINKSTATE_STA_CONNECTING;
 	info.reason_code = WIFI_REASON_MAX;

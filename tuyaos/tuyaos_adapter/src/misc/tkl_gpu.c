@@ -44,6 +44,15 @@ typedef struct {
     bk_gpu_ctlr_config_t gpu_cfg;       /* what the live controller was built with */
     bk_gpu_ctlr_handle_t gpu_handle;
     VOID *bond_handle;
+
+    /* On-chip rings parked in the controller through BK_GPU_IOCTL_SET_VG_MEM_BUF
+     * and BK_GPU_IOCTL_SET_OUTPUT_BUF. The controller refuses a second SET on a
+     * live slot and offers no unpark ioctl, so each is allocated once per
+     * controller and released in tkl_gpu_backend_destroy() once it is gone. */
+    VOID *vg_mem_buf;
+    UINT32_T vg_mem_size;
+    VOID *output_buf;
+    UINT32_T output_size;
 } tkl_gpu_ctx_t;
 
 /**
@@ -304,6 +313,15 @@ static OPERATE_RET tkl_gpu_backend_destroy(tkl_gpu_ctx_t *ctx)
     ctx->backend_opened = FALSE;
     os_memset(&ctx->gpu_cfg, 0, sizeof(ctx->gpu_cfg));
 
+    /* Only now: the controller held the parked addresses until the delete, and
+     * it never frees them itself (both were parked with release_cb NULL). */
+    tkl_media_ring_free(ctx->vg_mem_buf);
+    ctx->vg_mem_buf = NULL;
+    ctx->vg_mem_size = 0U;
+    tkl_media_ring_free(ctx->output_buf);
+    ctx->output_buf = NULL;
+    ctx->output_size = 0U;
+
     if (s_active_ctx == ctx) {
         s_active_ctx = NULL;
     }
@@ -368,6 +386,132 @@ static OPERATE_RET tkl_gpu_backend_cfg_build(tkl_gpu_ctx_t *ctx,
     return OPRT_OK;
 }
 
+/**
+ * @brief Park an on-chip vg-lite contiguous buffer in the controller.
+ *
+ * @param[in] ctx     pipeline context, gpu_handle must already exist
+ * @param[in] gpu_cfg the config the controller was just built with
+ *
+ * @details
+ * bk_gpu_init() used to take this heap from bk_get_gpu_flexa_buffer(); the
+ * buffer_ioctl patch lets us supply it instead, so the placement choice is ours.
+ * The query has to be fed the same tessellation geometry the controller was
+ * created with - init() recomputes the size from its own copy and releases the
+ * buffer if ours is smaller.
+ *
+ * vg-lite works out of this buffer, so SRAM is the faster home for it. Failing
+ * here is not fatal: without a parked buffer init() allocates one itself, still
+ * SRAM-first, we just lose the say in it.
+ *
+ * @note Passes gpu_cfg rather than reading ctx->gpu_cfg: that field is only
+ *       filled in after init() succeeds, which is later than this runs.
+ */
+static void tkl_gpu_vg_mem_park(tkl_gpu_ctx_t *ctx, const bk_gpu_ctlr_config_t *gpu_cfg)
+{
+    bk_gpu_vg_mem_size_t query;
+    bk_gpu_vg_mem_buf_t park;
+    avdk_err_t ret;
+
+    if (ctx->gpu_handle == NULL || ctx->vg_mem_buf != NULL || gpu_cfg == NULL) {
+        return;
+    }
+
+    os_memset(&query, 0, sizeof(query));
+    query.tess_width = gpu_cfg->tess_width;
+    query.tess_height = gpu_cfg->tess_height;
+    ret = bk_gpu_ioctl(ctx->gpu_handle, BK_GPU_IOCTL_GET_VG_MEM_SIZE, &query);
+    if (ret != AVDK_ERR_OK || query.size == 0U) {
+        tkl_log_output("tkl_gpu: vg mem size query failed (%d), tess=%ux%u\r\n",
+                       (int)ret, gpu_cfg->tess_width, gpu_cfg->tess_height);
+        return;
+    }
+
+    ctx->vg_mem_buf = tkl_media_ring_alloc(TKL_MEDIA_RING_SRAM_FIRST, query.size, "gpu_vg");
+    if (ctx->vg_mem_buf == NULL) {
+        tkl_log_output("tkl_gpu: vg mem %u bytes alloc failed, vendor allocates\r\n",
+                       (unsigned int)query.size);
+        return;
+    }
+    ctx->vg_mem_size = query.size;
+
+    os_memset(&park, 0, sizeof(park));
+    park.buffer = ctx->vg_mem_buf;
+    park.size = query.size;
+    /* release_cb stays NULL: the controller then treats the buffer as
+     * caller-owned and never frees it, and tkl_gpu_backend_destroy() releases it
+     * once the controller is gone. */
+    ret = bk_gpu_ioctl(ctx->gpu_handle, BK_GPU_IOCTL_SET_VG_MEM_BUF, &park);
+    if (ret != AVDK_ERR_OK) {
+        tkl_log_output("tkl_gpu: vg mem park failed (%d), vendor allocates\r\n", (int)ret);
+        tkl_media_ring_free(ctx->vg_mem_buf);
+        ctx->vg_mem_buf = NULL;
+        ctx->vg_mem_size = 0U;
+        return;
+    }
+
+    tkl_log_output("tkl_gpu: vg mem %u bytes parked\r\n", (unsigned int)query.size);
+}
+
+/**
+ * @brief Park an on-chip flexa pingpong output buffer in the controller.
+ *
+ * @details
+ * Same arrangement as the vg buffer above, for the pingpong pair
+ * bk_gpu_open() would otherwise take from bk_get_gpu_output_buffer(). The query
+ * mirrors gpu_flex_data_init(): output_width is 16-aligned when compressing, and
+ * the pair needs one strip per slot plus 64 bytes of alignment headroom.
+ *
+ * @note Reads ctx->gpu_cfg, which is safe here: open() only ever runs after
+ *       create() has filled it in.
+ */
+static void tkl_gpu_output_buf_park(tkl_gpu_ctx_t *ctx)
+{
+    bk_gpu_output_buf_size_t query;
+    bk_gpu_output_buf_t park;
+    avdk_err_t ret;
+
+    if (ctx->gpu_handle == NULL || ctx->output_buf != NULL) {
+        return;
+    }
+
+    os_memset(&query, 0, sizeof(query));
+    query.dst_width = ctx->gpu_cfg.dst_width;
+    query.dst_format = ctx->gpu_cfg.dst_format;
+    query.flexa_lines = ctx->gpu_cfg.flexa_lines;
+    query.compress = ctx->gpu_cfg.compress;
+    ret = bk_gpu_ioctl(ctx->gpu_handle, BK_GPU_IOCTL_GET_OUTPUT_BUF_SIZE, &query);
+    if (ret != AVDK_ERR_OK || query.size == 0U) {
+        tkl_log_output("tkl_gpu: output buf size query failed (%d), %ux%u fmt=%u\r\n",
+                       (int)ret,
+                       ctx->gpu_cfg.dst_width,
+                       ctx->gpu_cfg.flexa_lines,
+                       (unsigned int)ctx->gpu_cfg.dst_format);
+        return;
+    }
+
+    ctx->output_buf = tkl_media_ring_alloc(TKL_MEDIA_RING_SRAM_FIRST, query.size, "gpu_pp");
+    if (ctx->output_buf == NULL) {
+        tkl_log_output("tkl_gpu: output buf %u bytes alloc failed, vendor allocates\r\n",
+                       (unsigned int)query.size);
+        return;
+    }
+    ctx->output_size = query.size;
+
+    os_memset(&park, 0, sizeof(park));
+    park.buffer = ctx->output_buf;
+    park.size = query.size;
+    ret = bk_gpu_ioctl(ctx->gpu_handle, BK_GPU_IOCTL_SET_OUTPUT_BUF, &park);
+    if (ret != AVDK_ERR_OK) {
+        tkl_log_output("tkl_gpu: output buf park failed (%d), vendor allocates\r\n", (int)ret);
+        tkl_media_ring_free(ctx->output_buf);
+        ctx->output_buf = NULL;
+        ctx->output_size = 0U;
+        return;
+    }
+
+    tkl_log_output("tkl_gpu: output buf %u bytes parked\r\n", (unsigned int)query.size);
+}
+
 static OPERATE_RET tkl_gpu_backend_create(tkl_gpu_ctx_t *ctx, const bk_gpu_ctlr_config_t *gpu_cfg)
 {
     OPERATE_RET ret;
@@ -408,11 +552,19 @@ static OPERATE_RET tkl_gpu_backend_create(tkl_gpu_ctx_t *ctx, const bk_gpu_ctlr_
     s_active_ctx = ctx;
     s_backend_live++;
 
+    /* Before init(): that is what consumes the vg-lite heap. */
+    tkl_gpu_vg_mem_park(ctx, &local_cfg);
+
     ret = bk_gpu_init(ctx->gpu_handle);
     if (ret != OPRT_OK) {
         tkl_log_output( "bk_gpu_init failed: %d\r\n", ret);
         (void)bk_gpu_delete(ctx->gpu_handle);
         ctx->gpu_handle = NULL;
+        /* This path bypasses tkl_gpu_backend_destroy(), so the parked vg buffer
+         * has to be released here or it leaks until the next create. */
+        tkl_media_ring_free(ctx->vg_mem_buf);
+        ctx->vg_mem_buf = NULL;
+        ctx->vg_mem_size = 0U;
         s_active_ctx = NULL;
         s_backend_live--;
         return ret;
@@ -434,6 +586,9 @@ static OPERATE_RET tkl_gpu_backend_open(tkl_gpu_ctx_t *ctx)
     if (ctx->backend_opened == TRUE) {
         return OPRT_OK;
     }
+
+    /* Before open(): that is what builds the flexa pingpong pair. */
+    tkl_gpu_output_buf_park(ctx);
 
     ret = bk_gpu_open(ctx->gpu_handle);
     if (ret != OPRT_OK) {
