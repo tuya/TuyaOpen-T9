@@ -63,6 +63,27 @@ STATIC TKL_WIFI_CTX_T s_wifi = {
     .country_code = "CN",
 };
 
+/*
+ * 普连时是否清除底层快连信息的兜底状态（对应 wifi_sta_config_t
+ * .is_not_support_auto_fci）。底层快连信息是 BK 的一个 RAM 全局变量
+ * (g_fci)，未固化到 flash（CONFIG_EASY_FLASH 关闭），设备重启即空。
+ *
+ *   FALSE —— 还没有普连尝试失败过，本次普连保留底层快连信息。
+ *            必须保留：设备重启后 AP 侧可能仍留着我们上一次的 SA，只能靠
+ *            g_fci 里的 tk/pmf/bssid 发受保护 deauth 才能清掉，否则 assoc
+ *            会被 AP 拒绝（一直连不上）。
+ *   TRUE  —— 上一次普连没有成功落地，本次普连清掉底层快连信息。
+ *            兜底目的：部分 AP 拒绝过期 PMKSA 时既不发 reason 49 也不回
+ *            status 53（甚至直接不回），底层快连信息会一直残留，导致永远
+ *            连不上；主动清一次即可恢复。
+ *
+ * 只有主动调用 tkl_wifi_station_connect() 会把它置 TRUE；底层内部自愈重连
+ * (auto_reconnect_count) 和 tkl_wifi_station_fast_connect() 都不参与，
+ * 快连失败视为中性（否则重启后快连失败会立刻把 tk 清掉，场景失效）。
+ * 连接成功落地后由 __wifi_plain_conn_settled() 复位。
+ */
+STATIC BOOL_T s_plain_conn_pending = FALSE;
+
 /* ---------------------------------------------------------------------------
  * Forward declarations
  * --------------------------------------------------------------------------- */
@@ -174,6 +195,14 @@ STATIC BOOL_T __wifi_buf_nonzero(CONST UINT8_T *buf, UINT_T len)
     }
 
     return FALSE;
+}
+
+STATIC VOID_T __wifi_plain_conn_settled(VOID_T)
+{
+    if (s_plain_conn_pending == TRUE) {
+        s_plain_conn_pending = FALSE;
+        bk_printf("conn settled, plain pending -> 0\r\n");
+    }
 }
 
 STATIC VOID_T __fast_connect_ap_info_dump(CONST CHAR_T *tag, CONST wifi_sta_config_t *sta_cfg)
@@ -766,6 +795,7 @@ STATIC bk_err_t __wifi_event_cb(VOID_T *arg, event_module_t event_module, INT_T 
         if (s_wifi.sta_status == WSS_CONNECTING) {
             s_wifi.sta_status = WSS_CONN_SUCCESS;
         }
+        __wifi_plain_conn_settled();
         return BK_OK;
     }
 
@@ -1972,6 +2002,16 @@ OPERATE_RET tkl_wifi_station_connect(CONST SCHAR_T *ssid, CONST SCHAR_T *passwd)
         bk_printf("connect stop station fail bk_ret=%d\r\n", bk_ret);
     }
 
+    if (bk_wifi_sta_get_config(&sta_cfg) == BK_OK) {
+        bk_printf("connect cached session: last_ssid=%s bssid_set=%d pmf=%d tk_set=%d\r\n",
+                  sta_cfg.ssid,
+                  (__wifi_buf_nonzero(sta_cfg.bssid, sizeof(sta_cfg.bssid)) == TRUE),
+                  sta_cfg.pmf,
+                  (__wifi_buf_nonzero(sta_cfg.tk, sizeof(sta_cfg.tk)) == TRUE));
+    } else {
+        bk_printf("connect cached session: unavailable\r\n");
+    }
+
     memset(&sta_cfg, 0, sizeof(sta_cfg));
     __wifi_copy_str(sta_cfg.ssid, sizeof(sta_cfg.ssid), ssid);
     if (passwd != NULL) {
@@ -1979,7 +2019,10 @@ OPERATE_RET tkl_wifi_station_connect(CONST SCHAR_T *ssid, CONST SCHAR_T *passwd)
     }
     sta_cfg.security = WIFI_SECURITY_AUTO;
     sta_cfg.is_user_fast_connect = 0;
-    sta_cfg.is_not_support_auto_fci = 0;
+    sta_cfg.is_not_support_auto_fci = (s_plain_conn_pending == TRUE) ? 1 : 0;
+    bk_printf("connect fci policy: pending=%d clear_fci=%d\r\n",
+              s_plain_conn_pending, sta_cfg.is_not_support_auto_fci);
+    s_plain_conn_pending = TRUE;
     sta_cfg.auto_reconnect_count = 1;
     sta_cfg.disable_auto_reconnect_after_disconnect = TRUE;
 
@@ -2103,6 +2146,9 @@ OPERATE_RET tkl_wifi_station_get_status(WF_STATION_STAT_E *stat)
     s_wifi.sta_status = __wifi_link_to_status(&link_info);
     s_wifi.last_disc_reason = __wifi_reason_bk_to_tuya(link_info.reason_code);
     *stat = s_wifi.sta_status;
+    if ((s_wifi.sta_status == WSS_CONN_SUCCESS) || (s_wifi.sta_status == WSS_GOT_IP)) {
+        __wifi_plain_conn_settled();
+    }
     return OPRT_OK;
 }
 

@@ -1009,12 +1009,12 @@ int wlan_sta_set(
 		if (network) {
 			config.u.pairwise_cipher = network->pairwise_cipher;
 		} else {
-#endif
 		config.u.pairwise_cipher = WPA_CIPHER_CCMP | WPA_CIPHER_TKIP
 								   | WPA_CIPHER_CCMP_256;
-#if CONFIG_QUICK_TRACK
 		}
-#endif /* CONFIG_QUICK_TRACK */
+#else
+		config.u.pairwise_cipher = WPA_CIPHER_CCMP | WPA_CIPHER_TKIP;
+#endif
 		BK_RETURN_ON_ERR(wpa_ctrl_request(WPA_CTRL_CMD_STA_SET, &config));
 
 		/* group: CCMP | TKIP | WEP40 | WEP104 */
@@ -2250,7 +2250,7 @@ void wlan_clear_fast_connect_info(struct wlan_fast_connect_info *fci)
 					   sizeof(struct wlan_fast_connect_info));
 #endif
 		os_memset(&g_fci, 0, sizeof(struct wlan_fast_connect_info));
-		WIFI_LOGD("clear fast connect info\n");
+		WIFI_LOGW("clear fast connect info\n");
 	}
 	if (bk_feature_fast_dhcp_enable()) {
 		sta_ip_mode_set(1);

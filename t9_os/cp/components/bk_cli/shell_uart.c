@@ -357,7 +357,14 @@ static bool_t shell_uart_init(shell_dev_t * shell_dev)
 
 	if(CONFIG_UART_PRINT_PORT != uart_id)
 	{
-		bk_uart_init(uart_id, &config);
+		// Modified by TUYA Start
+		uart_config_t cfg = config;
+		extern bool ate_is_enabled(void);
+		if (ate_is_enabled()) {
+			cfg.baud_rate = 115200;
+		}
+		bk_uart_init(uart_id, &cfg);
+		// Modified by TUYA End
 	}
 	else
 	{
