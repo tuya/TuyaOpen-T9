@@ -5,6 +5,7 @@ import os
 import platform
 import urllib.request
 import ssl
+import zipfile
 
 from tools.util import (
     get_country_code, rm_rf, calc_sha256,
@@ -273,21 +274,56 @@ def download_toolchain(toolchain_root) -> bool:
     return False
 
 
+def _bashtools_path(tools_root):
+    for rel in (("bash", "bin", "bash.exe"), ("bash", "bin", "bash")):
+        path = os.path.join(tools_root, *rel)
+        if os.path.isfile(path):
+            return path
+    return ""
+
+
+def _zip_is_valid(package) -> bool:
+    try:
+        with zipfile.ZipFile(package, "r") as zip_ref:
+            return zip_ref.testzip() is None
+    except Exception as e:
+        print(f"Error: invalid package {package}: {e}")
+        return False
+
+
 def download_bashtools(tools_root) -> bool:
     name = "bash.zip"
     url = "https://images.tuyacn.com/smart/embed/package/vscode/data/bash.zip"
     download_file = os.path.join(tools_root, name)
 
-    if os.path.exists(download_file):
-        print(f"[Bashtools package exists]: {download_file}")
+    bash = _bashtools_path(tools_root)
+    if bash:
+        print(f"[Bashtools is exists]: {bash}")
         return True
 
-    print(f"[Downloading bashtools package]: {url}")
-    if not _download_from_url(url, download_file):
-        return False
+    if os.path.exists(download_file) and not _zip_is_valid(download_file):
+        print(f"[Removing invalid bashtools package]: {download_file}")
+        rm_rf(download_file)
+
+    if not os.path.exists(download_file):
+        print(f"[Downloading bashtools package]: {url}")
+        if not _download_from_url(url, download_file):
+            return False
+        if not _zip_is_valid(download_file):
+            print(f"[Removing invalid bashtools package]: {download_file}")
+            rm_rf(download_file)
+            return False
 
     print(f"[Extracting bashtools package]: {download_file}")
     if not extract_archive(download_file, tools_root):
+        rm_rf(os.path.join(tools_root, "bash"))
         return False
 
+    bash = _bashtools_path(tools_root)
+    if not bash:
+        print("Error: bash not found after extracting bashtools package.")
+        rm_rf(os.path.join(tools_root, "bash"))
+        return False
+
+    print(f"[Bashtools installed]: {bash}")
     return True
