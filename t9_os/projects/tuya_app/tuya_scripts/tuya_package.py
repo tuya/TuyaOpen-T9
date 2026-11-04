@@ -442,13 +442,13 @@ class TuyaPackager:
         # CP调试文件
         copy_files(f"build/{self.platform}/tuya_app/{self.platform}/app*", cp_debug)
         copy_files(f"build/{self.platform}/tuya_app/{self.platform}/size_map*", cp_debug)
-        copy_files(f"build/{self.platform}/tuya_app/{self.platform}/sdkconfig", cp_debug)
+        copy_files(f"build/{self.platform}/tuya_app/{self.platform}/config/sdkconfig*", cp_debug)
         copy_files(f"projects/tuya_app/cp/config/{self.platform}/*", cp_debug)
 
         # AP调试文件
         copy_files(f"build/{self.platform}/tuya_app/{self.platform}_ap/app*", ap_debug)
         copy_files(f"build/{self.platform}/tuya_app/{self.platform}_ap/size_map*", ap_debug)
-        copy_files(f"build/{self.platform}/tuya_app/{self.platform}_ap/sdkconfig", ap_debug)
+        copy_files(f"build/{self.platform}/tuya_app/{self.platform}_ap/config/sdkconfig*", ap_debug)
         copy_files(f"projects/tuya_app/ap/config/{self.platform}_ap/*", ap_debug)
 
         # 分区表
