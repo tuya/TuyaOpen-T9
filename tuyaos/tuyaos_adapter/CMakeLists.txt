@@ -50,7 +50,8 @@ set(incs
     $ENV{ARMINO_PATH}/../../tuyaos/tuyaos_adapter/include/audio
     $ENV{ARMINO_PATH}/../../tuyaos/tuyaos_adapter/include/tal_mtd/include
     # $ENV{ARMINO_PATH}/../../tuyaos/tuyaos_adapter/include/asr
-    # $ENV{ARMINO_PATH}/../../tuyaos/tuyaos_adapter/include/vad
+    $ENV{ARMINO_PATH}/../../tuyaos/tuyaos_adapter/include/vad
+    $ENV{ARMINO_PATH}/../../tuyaos/tuyaos_adapter/include/kws
 )
 
 # TuyaOpen: OPEN_HEADER_DIR from build_param.json. TuyaOS: scan project include/.
@@ -99,7 +100,7 @@ else()
         # src/driver/tkl_video_in.c
         # src/driver/tkl_mic.c
         # src/driver/tkl_speaker.c
-        # src/driver/tkl_audio.c
+        src/driver/tkl_audio.c
         # src/driver/tkl_cellular.c
         src/driver/tkl_pinmux.c
         # src/driver/tkl_rgb.c
