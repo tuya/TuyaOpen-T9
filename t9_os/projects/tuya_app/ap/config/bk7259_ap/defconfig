@@ -201,8 +201,10 @@ CONFIG_EASY_FLASH_V4=n
 # vfs
 CONFIG_VFS=y
 CONFIG_FATFS=y
-CONFIG_LITTLEFS=y
-CONFIG_LITTLEFS_NO_CONFIG_PARTITION=y
+# The TuyaOpen KV store ships its own lfs.c inside libtuyaos; keep the vendor
+# littlefs out of the image so only that copy defines the lfs_* symbols.
+# CONFIG_LITTLEFS is not set
+# CONFIG_LITTLEFS_NO_CONFIG_PARTITION=y
 # CONFIG_LFS_THREADSAFE=y
 
 # sdcard
