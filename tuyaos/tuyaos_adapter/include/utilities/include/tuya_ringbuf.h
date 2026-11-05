@@ -86,6 +86,16 @@ UINT32_T tuya_ring_buff_used_size_get(TUYA_RINGBUFF_T ringbuff);
 UINT32_T tuya_ring_buff_read(TUYA_RINGBUFF_T ringbuff, VOID_T *data, UINT32_T len);
 
 /**
+ * @brief ringbuff data discard
+ * this API drops data without copying it out (advances the read position)
+ *
+ * @param[in]   ringbuff: ringbuff handle
+ * @param[in]   len:      discard len
+ * @return  length of the data discarded
+ */
+UINT32_T tuya_ring_buff_discard(TUYA_RINGBUFF_T ringbuff, UINT32_T len);
+
+/**
  * @brief ringbuff data peek 
  * this API read data but not output position
  * 
