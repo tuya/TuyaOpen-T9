@@ -40,30 +40,6 @@ OPERATE_RET tkl_thread_create(TKL_THREAD_HANDLE* thread,
                               CONST THREAD_FUNC_T func,
                               VOID_T* CONST arg);
 
-#if (CONFIG_FREERTOS_SMP)
-/**
-* @brief Create thread with affinity
-*
-* @param[out] thread: thread handle
-* @param[in] affinity: thread bind cpu mask
-* @param[in] name: thread name
-* @param[in] stack_size: stack size of thread
-* @param[in] priority: priority of thread
-* @param[in] func: the main thread process function
-* @param[in] arg: the args of the func, can be null
-*
-* @note This API is used for creating thread.
-*
-* @return OPRT_OK on success. Others on error, please refer to tuya_error_code.h
-*/
-OPERATE_RET tkl_thread_smp_create(TKL_THREAD_HANDLE* thread,
-                           UINT_T affinity,
-                           CONST CHAR_T* name,
-                           UINT_T stack_size,
-                           UINT_T priority,
-                           THREAD_FUNC_T func,
-                           VOID_T* CONST arg);
-#endif
 /**
 * @brief Terminal thread and release thread resources
 *

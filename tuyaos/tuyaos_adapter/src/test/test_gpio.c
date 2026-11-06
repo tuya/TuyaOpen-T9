@@ -8,6 +8,7 @@
 #include "cli.h"
 #include "cli_tuya_test.h"
 #include "tkl_gpio.h"
+#include "tkl_gpio_internal.h"
 #include "tkl_system.h"
 #include "sys_driver.h"
 #include <stdint.h>
@@ -21,16 +22,6 @@
 #define GPIO_API_TEST_PIN_A          TUYA_GPIO_NUM_2
 #define GPIO_API_TEST_PIN_B          TUYA_GPIO_NUM_3
 #define GPIO_API_TEST_UNAVAILABLE_PIN TUYA_GPIO_NUM_12
-
-/* Keep in sync with tkl_gpio.c TKL_GPIO_UNAVAILABLE_MASK */
-#define GPIO_TEST_UNAVAILABLE_MASK \
-    ((UINT64_T)((1ULL << TUYA_GPIO_NUM_12) | (1ULL << TUYA_GPIO_NUM_13) | \
-                (1ULL << TUYA_GPIO_NUM_56) | (1ULL << TUYA_GPIO_NUM_57) | \
-                (1ULL << TUYA_GPIO_NUM_58) | (1ULL << TUYA_GPIO_NUM_61) | \
-                (1ULL << TUYA_GPIO_NUM_62) | (1ULL << TUYA_GPIO_NUM_63) | \
-                (1ULL << TUYA_GPIO_NUM_66) | (1ULL << TUYA_GPIO_NUM_67) | \
-                (1ULL << TUYA_GPIO_NUM_68) | (1ULL << TUYA_GPIO_NUM_69) | \
-                (1ULL << TUYA_GPIO_NUM_70) | (1ULL << TUYA_GPIO_NUM_71)))
 
 extern void bk_printf(const char *fmt, ...);
 
@@ -77,7 +68,10 @@ static int gpio_test_parse_pin(const char *s, TUYA_GPIO_NUM_E *pin)
 
 static int gpio_test_is_auto_skip(TUYA_GPIO_NUM_E pin)
 {
-    return (GPIO_TEST_UNAVAILABLE_MASK & (1ULL << pin)) != 0;
+    /* One source of truth: tkl_gpio owns the board's pin availability. The old
+     * local mask duplicated it, and its P66~P71 terms were 1ULL << 66..71 -
+     * undefined behaviour that GCC folds to 0. */
+    return (__t9_gpio_is_valid_pin(pin) != TRUE);
 }
 
 static void gpio_test_dump_pin_state(const char *tag, TUYA_GPIO_NUM_E pin, OPERATE_RET ret)
