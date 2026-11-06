@@ -42,6 +42,21 @@ typedef uint32_t sspl_data_t[SSPL_SIZE];
 #define BK_SYS_SW_REGS_AP_EXTRA_DUMP_MAX        8U
 #define BK_SYS_SW_REGS_ADC_KEY_VALID            0x41444B59U
 
+/*
+ * OTP APB power holder count, shared by AP and CP (see otp_driver_v1_1.c).
+ *   [7:0]  CP-side holder count
+ *   [15:8] AP-side holder count
+ *   bit16  TURNING_OFF: the last holder is voting the domain off, no new
+ *          holder may pass while this bit is set
+ * Either side increments its own count and votes ON (idempotent) before it
+ * enters an OTP transaction; only the holder that drops the count to zero
+ * votes OFF.
+ */
+#define BK_SWR_OTP_PWR_CNT_CP_MASK   (0x000000FFU)
+#define BK_SWR_OTP_PWR_CNT_AP_MASK   (0x0000FF00U)
+#define BK_SWR_OTP_PWR_CNT_ALL_MASK  (BK_SWR_OTP_PWR_CNT_CP_MASK | BK_SWR_OTP_PWR_CNT_AP_MASK)
+#define BK_SWR_OTP_PWR_TURNING_OFF   (0x00010000U)
+
 #if CONFIG_AP_EMUBOOT
 #define BK_SYS_SW_REGS_FLASH_INIT_NOT_DONE 0U
 #define BK_SYS_SW_REGS_FLASH_INIT_DONE     1U
@@ -119,10 +134,11 @@ typedef union {
         volatile uint32_t cp_uid_ptr; /**< Addr of CP bk_uid_snapshot_t (chip UID); 0 = not published */
         volatile uint32_t ap_exception_record_ptr; /**< Addr of the CP-owned AP exception record slot; 0 = not published */
         volatile uint32_t hspl_owner_shadow_ptr; /**< Addr of the AP-owned hspl_owner_shadow_t block; 0 = not published */
+        volatile uint32_t otp_apb_pwr_hold; /**< OTP APB power holder count + TURNING_OFF, shared by AP/CP */
         /* Explicit tail padding: keeps the named struct exactly 1024 bytes so the
          * sizeof() assert below fails if a new member is added without shrinking
          * this array. Shrink it by the size of whatever you add. */
-        volatile uint8_t reserved1[156];
+        volatile uint8_t reserved1[152];
     };
     volatile uint32_t reserved[256]; /**< Reserved for future use */
 } sys_sw_regs_t;
