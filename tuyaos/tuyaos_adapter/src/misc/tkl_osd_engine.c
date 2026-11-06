@@ -9,6 +9,7 @@
 #include "tuya_cloud_types.h"
 #include "tkl_osd_engine.h"
 #include "tkl_media_buf.h"
+#include "tkl_media_fmt.h"
 #include "tkl_output.h"
 
 #include <stdint.h>
@@ -30,7 +31,7 @@ typedef struct {
     UINT16_T dst_y;
     UINT16_T w;
     UINT16_T h;
-    UINT16_T rotate;
+    TUYA_FRAME_ROTATE_E rotate;
 } tkl_osd_slot_state_t;
 
 typedef struct {
@@ -80,7 +81,7 @@ STATIC VOID_T tkl_osd_business_data_done(VOID_T *buffer, VOID_T *args)
 STATIC VOID_T tkl_osd_clear_buffer_free(VOID_T *buffer, VOID_T *args)
 {
     (void)args;
-    tkl_media_buf_free(TUYA_MEDIA_BUF_OWNER_OSD, buffer);
+    __t9_media_buf_free(TUYA_MEDIA_BUF_OWNER_OSD, buffer);
 }
 
 STATIC INT_T tkl_osd_find_slot(CONST tkl_osd_engine_ctx_t *ctx, UINT16_T dst_x, UINT16_T dst_y)
@@ -134,17 +135,17 @@ STATIC OPERATE_RET tkl_osd_gpu_geometry(CONST tkl_osd_engine_ctx_t *ctx,
     INT_T geometry_w;
     INT_T geometry_h;
 
-    if (osd->rotate == 0U) {
+    if (osd->rotate == TUYA_FRAME_ROTATE_0) {
         mapped_x = (INT_T)osd->dst_x;
         mapped_y = (INT_T)osd->dst_y;
         geometry_w = (INT_T)osd->w;
         geometry_h = (INT_T)osd->h;
-    } else if (osd->rotate == 90U) {
+    } else if (osd->rotate == TUYA_FRAME_ROTATE_90) {
         mapped_x = (INT_T)ctx->target_w - (INT_T)osd->dst_y - (INT_T)osd->h;
         mapped_y = (INT_T)osd->dst_x;
         geometry_w = (INT_T)osd->h;
         geometry_h = (INT_T)osd->w;
-    } else if (osd->rotate == 270U) {
+    } else if (osd->rotate == TUYA_FRAME_ROTATE_270) {
         mapped_x = (INT_T)osd->dst_y;
         mapped_y = (INT_T)ctx->target_h - (INT_T)osd->dst_x - (INT_T)osd->w;
         geometry_w = (INT_T)osd->h;
@@ -185,11 +186,11 @@ STATIC OPERATE_RET tkl_osd_submit_gpu(tkl_osd_engine_ctx_t *ctx,
      * hardware-written frame needs no conversion before the overlay. Anything
      * else is refused rather than silently reinterpreted as ARGB. */
     src_format = ctx->src_format;
-    if (osd->format == (UINT32_T)TUYA_FRAME_FMT_NV12) {
+    if (osd->format == TUYA_FRAME_FMT_NV12) {
         src_format = (UINT32_T)BK_PIXEL_FORMAT_NV12;
-    } else if (osd->format == (UINT32_T)TUYA_FRAME_FMT_ARGB8888) {
+    } else if (osd->format == TUYA_FRAME_FMT_ARGB8888) {
         src_format = (UINT32_T)BK_PIXEL_FORMAT_ARGB8888;
-    } else if (osd->format != 0U) {
+    } else if (osd->format != 0) {
         return OPRT_NOT_SUPPORTED;
     }
 
@@ -208,7 +209,7 @@ STATIC OPERATE_RET tkl_osd_submit_gpu(tkl_osd_engine_ctx_t *ctx,
     blit.src_format = (bk_pixel_format_t)src_format;
     blit.dst_x = dst_x;
     blit.dst_y = dst_y;
-    blit.rotate_degree = osd->rotate;
+    blit.rotate_degree = __t9_rotate_to_deg(osd->rotate);
     blit.alpha_blend = 1U;
     blit.osd_slot = slot;
     blit.args = NULL;
@@ -227,7 +228,7 @@ STATIC OPERATE_RET tkl_osd_submit_vcenc(tkl_osd_engine_ctx_t *ctx,
     bk_h264_encode_osd_t bk_osd;
     avdk_err_t ret;
 
-    if (osd->rotate != 0U) {
+    if (osd->rotate != TUYA_FRAME_ROTATE_0) {
         return OPRT_NOT_SUPPORTED;
     }
     if (ctx->target_w != 0U && ctx->target_h != 0U &&
@@ -284,7 +285,7 @@ STATIC OPERATE_RET tkl_osd_gpu_blank_slot(tkl_osd_engine_ctx_t *ctx, UINT8_T slo
     }
 
     bytes = (UINT32_T)w * h * TKL_OSD_BYTES_PER_PIXEL;
-    buffer = (uint32_t *)tkl_media_buf_alloc(TKL_BUF_USE_PIXEL, bytes,
+    buffer = (uint32_t *)__t9_media_buf_alloc(TKL_BUF_USE_PIXEL, bytes,
                                               TUYA_MEDIA_BUF_OWNER_OSD);
     if (buffer == NULL) {
         return OPRT_MALLOC_FAILED;
@@ -299,7 +300,7 @@ STATIC OPERATE_RET tkl_osd_gpu_blank_slot(tkl_osd_engine_ctx_t *ctx, UINT8_T slo
     blit.src_format = (bk_pixel_format_t)ctx->src_format;
     blit.dst_x = dst_x;
     blit.dst_y = dst_y;
-    blit.rotate_degree = old_osd.rotate;
+    blit.rotate_degree = __t9_rotate_to_deg(old_osd.rotate);
     blit.alpha_blend = 1U;
     blit.osd_slot = slot;
     blit.free = tkl_osd_clear_buffer_free;
@@ -308,7 +309,7 @@ STATIC OPERATE_RET tkl_osd_gpu_blank_slot(tkl_osd_engine_ctx_t *ctx, UINT8_T slo
     (void)foot_h;
     ret = bk_gpu_blit_set((bk_gpu_ctlr_handle_t)ctx->bk_handle, buffer, &blit);
     if (ret != AVDK_ERR_OK) {
-        tkl_media_buf_free(TUYA_MEDIA_BUF_OWNER_OSD, buffer);
+        __t9_media_buf_free(TUYA_MEDIA_BUF_OWNER_OSD, buffer);
         return tkl_osd_map_err(ret);
     }
 
@@ -352,7 +353,7 @@ STATIC OPERATE_RET tkl_osd_clear_slot(tkl_osd_engine_ctx_t *ctx, UINT8_T slot)
     return ret;
 }
 
-OPERATE_RET tkl_osd_engine_open(TKL_OSD_BACKEND_E backend,
+OPERATE_RET __t9_osd_engine_open(TKL_OSD_BACKEND_E backend,
                                 VOID *bk_handle,
                                 CONST TKL_OSD_ENGINE_CFG_T *cfg,
                                 TKL_OSD_ENGINE_HANDLE *handle)
@@ -385,7 +386,7 @@ OPERATE_RET tkl_osd_engine_open(TKL_OSD_BACKEND_E backend,
     return OPRT_OK;
 }
 
-OPERATE_RET tkl_osd_engine_close(TKL_OSD_ENGINE_HANDLE handle)
+OPERATE_RET __t9_osd_engine_close(TKL_OSD_ENGINE_HANDLE handle)
 {
     tkl_osd_engine_ctx_t *ctx = tkl_osd_ctx_get(handle);
 
@@ -407,7 +408,7 @@ OPERATE_RET tkl_osd_engine_close(TKL_OSD_ENGINE_HANDLE handle)
     return OPRT_OK;
 }
 
-OPERATE_RET tkl_osd_engine_submit(TKL_OSD_ENGINE_HANDLE handle, CONST TUYA_OSD_T *osd)
+OPERATE_RET __t9_osd_engine_submit(TKL_OSD_ENGINE_HANDLE handle, CONST TUYA_OSD_T *osd)
 {
     tkl_osd_engine_ctx_t *ctx = tkl_osd_ctx_get(handle);
     INT_T slot;
@@ -442,7 +443,7 @@ OPERATE_RET tkl_osd_engine_submit(TKL_OSD_ENGINE_HANDLE handle, CONST TUYA_OSD_T
             return ret;
         }
     } else {
-        if (osd->rotate != 0U) {
+        if (osd->rotate != TUYA_FRAME_ROTATE_0) {
             return OPRT_NOT_SUPPORTED;
         }
         if ((osd->w & 1U) != 0U || (osd->h & 1U) != 0U ||

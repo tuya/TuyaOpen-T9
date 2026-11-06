@@ -24,7 +24,6 @@
 #define __TKL_MEDIA_BUF_H__
 
 #include "tuya_cloud_types.h"
-#include "tkl_media_types.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -91,7 +90,7 @@ typedef VOID_T (*TUYA_MEDIA_BUF_FREE_CB)(UINT8_T *buffer);
  *       an allocation path. The guard inside only catches repeat calls from
  *       this module; other code calls the vendor function directly.
  */
-VOID_T tkl_media_buf_init(VOID_T);
+VOID_T __t9_media_buf_init(VOID_T);
 
 /**
  * @brief Allocate a media buffer and charge it to an owner.
@@ -107,10 +106,10 @@ VOID_T tkl_media_buf_init(VOID_T);
  *
  * @return buffer pointer on success, NULL on error
  */
-VOID_T *tkl_media_buf_alloc(TKL_BUF_USE_E use, UINT32_T size, TUYA_MEDIA_BUF_OWNER_E owner);
+VOID_T *__t9_media_buf_alloc(TKL_BUF_USE_E use, UINT32_T size, TUYA_MEDIA_BUF_OWNER_E owner);
 
 /**
- * @brief Release a buffer obtained from tkl_media_buf_alloc().
+ * @brief Release a buffer obtained from __t9_media_buf_alloc().
  *
  * @param[in] owner  the same owner the buffer was allocated with
  * @param[in] buffer buffer pointer; NULL is ignored
@@ -118,7 +117,7 @@ VOID_T *tkl_media_buf_alloc(TKL_BUF_USE_E use, UINT32_T size, TUYA_MEDIA_BUF_OWN
  * @note Safe from any context the vendor pool is safe from, including the GPU
  *       flexa thread and the encoder worker thread.
  */
-VOID_T tkl_media_buf_free(TUYA_MEDIA_BUF_OWNER_E owner, VOID_T *buffer);
+VOID_T __t9_media_buf_free(TUYA_MEDIA_BUF_OWNER_E owner, VOID_T *buffer);
 
 /**
  * @brief Get the release callback to embed in a frame handed to business.
@@ -128,7 +127,7 @@ VOID_T tkl_media_buf_free(TUYA_MEDIA_BUF_OWNER_E owner, VOID_T *buffer);
  * @return a stable function pointer that frees the buffer and settles the
  *         owner's in-flight count; NULL if @p owner is out of range
  */
-TUYA_MEDIA_BUF_FREE_CB tkl_media_buf_free_cb(TUYA_MEDIA_BUF_OWNER_E owner);
+TUYA_MEDIA_BUF_FREE_CB __t9_media_buf_free_cb(TUYA_MEDIA_BUF_OWNER_E owner);
 
 /**
  * @brief Number of buffers this owner allocated but has not got back yet.
@@ -137,7 +136,7 @@ TUYA_MEDIA_BUF_FREE_CB tkl_media_buf_free_cb(TUYA_MEDIA_BUF_OWNER_E owner);
  *
  * @return in-flight count, 0 if @p owner is out of range
  */
-UINT32_T tkl_media_buf_inflight(TUYA_MEDIA_BUF_OWNER_E owner);
+UINT32_T __t9_media_buf_inflight(TUYA_MEDIA_BUF_OWNER_E owner);
 
 /**
  * @brief Wait for an owner's in-flight buffers to come back.
@@ -160,14 +159,14 @@ UINT32_T tkl_media_buf_inflight(TUYA_MEDIA_BUF_OWNER_E owner);
  *         OPRT_TIMEOUT if more than that are still out, OPRT_INVALID_PARM if
  *         @p owner is out of range
  */
-OPERATE_RET tkl_media_buf_drain(TUYA_MEDIA_BUF_OWNER_E owner,
+OPERATE_RET __t9_media_buf_drain(TUYA_MEDIA_BUF_OWNER_E owner,
                                 UINT32_T expect_residual,
                                 UINT32_T timeout_ms);
 
 /**
  * @brief Log every owner that still holds buffers. Leak-hunting aid.
  */
-VOID_T tkl_media_buf_dump(VOID_T);
+VOID_T __t9_media_buf_dump(VOID_T);
 
 /* ---------------------------------------------------------------------------
  * On-chip buffer placement (SRAM / HSRAM)
@@ -220,17 +219,17 @@ typedef enum {
  *
  * @return buffer pointer on success, NULL when both regions are exhausted
  */
-VOID_T *tkl_media_ring_alloc(TKL_MEDIA_RING_PLACE_E place, UINT32_T size, CONST CHAR_T *tag);
+VOID_T *__t9_media_ring_alloc(TKL_MEDIA_RING_PLACE_E place, UINT32_T size, CONST CHAR_T *tag);
 
 /**
- * @brief Release a buffer obtained from tkl_media_ring_alloc().
+ * @brief Release a buffer obtained from __t9_media_ring_alloc().
  *
  * @param[in] ptr buffer pointer; NULL is ignored
  *
  * @note One free path covers both regions - hsram_free is aliased to os_free,
  *       which dispatches on the address.
  */
-VOID_T tkl_media_ring_free(VOID_T *ptr);
+VOID_T __t9_media_ring_free(VOID_T *ptr);
 
 /* ---------------------------------------------------------------------------
  * Media hardware arbitration
@@ -265,7 +264,7 @@ typedef enum {
  *
  * @return OPRT_OK, or OPRT_RESOURCE_NOT_READY when the other claimant holds it
  */
-OPERATE_RET tkl_media_hw_claim(TUYA_MEDIA_HW_E hw, TUYA_MEDIA_HW_CLAIMANT_E who);
+OPERATE_RET __t9_media_hw_claim(TUYA_MEDIA_HW_E hw, TUYA_MEDIA_HW_CLAIMANT_E who);
 
 /**
  * @brief Give one media hardware instance back.
@@ -273,14 +272,14 @@ OPERATE_RET tkl_media_hw_claim(TUYA_MEDIA_HW_E hw, TUYA_MEDIA_HW_CLAIMANT_E who)
  * Releasing while the other claimant holds it logs a mismatch and changes
  * nothing.
  */
-VOID_T tkl_media_hw_release(TUYA_MEDIA_HW_E hw, TUYA_MEDIA_HW_CLAIMANT_E who);
+VOID_T __t9_media_hw_release(TUYA_MEDIA_HW_E hw, TUYA_MEDIA_HW_CLAIMANT_E who);
 
 /**
  * @brief Bitrate (bps) for one TUYA_ENCODE_BITRATE_LEVEL_E on T9.
  *
  * LOW 0.75 / MEDIUM 1.5 / HIGH 3 Mbps; MAX or out-of-range yields MEDIUM.
  */
-UINT32_T tkl_media_bitrate_from_level(TUYA_ENCODE_BITRATE_LEVEL_E level);
+UINT32_T __t9_media_bitrate_from_level(TUYA_ENCODE_BITRATE_LEVEL_E level);
 
 #ifdef __cplusplus
 }

@@ -83,7 +83,7 @@ STATIC VOID_T __inflight_dec(TUYA_MEDIA_BUF_OWNER_E owner)
  * Public API
  * ------------------------------------------------------------------------- */
 
-VOID_T tkl_media_buf_init(VOID_T)
+VOID_T __t9_media_buf_init(VOID_T)
 {
     if (s_media_buf_inited == TRUE) {
         return;
@@ -93,7 +93,7 @@ VOID_T tkl_media_buf_init(VOID_T)
     s_media_buf_inited = TRUE;
 }
 
-VOID_T *tkl_media_buf_alloc(TKL_BUF_USE_E use, UINT32_T size, TUYA_MEDIA_BUF_OWNER_E owner)
+VOID_T *__t9_media_buf_alloc(TKL_BUF_USE_E use, UINT32_T size, TUYA_MEDIA_BUF_OWNER_E owner)
 {
     frame_buffer_heap_type_t heap;
     VOID_T *buffer;
@@ -166,14 +166,14 @@ VOID_T *tkl_media_buf_alloc(TKL_BUF_USE_E use, UINT32_T size, TUYA_MEDIA_BUF_OWN
     return buffer;
 }
 
-VOID_T tkl_media_buf_free(TUYA_MEDIA_BUF_OWNER_E owner, VOID_T *buffer)
+VOID_T __t9_media_buf_free(TUYA_MEDIA_BUF_OWNER_E owner, VOID_T *buffer)
 {
     if (buffer == NULL || __owner_valid(owner) != TRUE) {
         return;
     }
 
     /* free first, then settle the count: once inflight hits 0 the caller of
-     * tkl_media_buf_drain() is entitled to assume every release has completed.
+     * __t9_media_buf_drain() is entitled to assume every release has completed.
      * The pool detaches the write-through channel on its own here. */
     bk_frame_buffer_free(buffer);
     __inflight_dec(owner);
@@ -185,7 +185,7 @@ VOID_T tkl_media_buf_free(TUYA_MEDIA_BUF_OWNER_E owner, VOID_T *buffer)
 #define TUYA_MEDIA_BUF_OWNER_THUNK(sym, name)                    \
     STATIC VOID_T __media_buf_free_##sym(UINT8_T *buffer)       \
     {                                                           \
-        tkl_media_buf_free(sym, (VOID_T *)buffer);              \
+        __t9_media_buf_free(sym, (VOID_T *)buffer);              \
     }
 TUYA_MEDIA_BUF_OWNER_LIST(TUYA_MEDIA_BUF_OWNER_THUNK)
 #undef TUYA_MEDIA_BUF_OWNER_THUNK
@@ -196,7 +196,7 @@ STATIC CONST TUYA_MEDIA_BUF_FREE_CB s_owner_free_cb[TUYA_MEDIA_BUF_OWNER_MAX] = 
 #undef TUYA_MEDIA_BUF_OWNER_CB
 };
 
-TUYA_MEDIA_BUF_FREE_CB tkl_media_buf_free_cb(TUYA_MEDIA_BUF_OWNER_E owner)
+TUYA_MEDIA_BUF_FREE_CB __t9_media_buf_free_cb(TUYA_MEDIA_BUF_OWNER_E owner)
 {
     if (__owner_valid(owner) != TRUE) {
         return NULL;
@@ -205,7 +205,7 @@ TUYA_MEDIA_BUF_FREE_CB tkl_media_buf_free_cb(TUYA_MEDIA_BUF_OWNER_E owner)
     return s_owner_free_cb[owner];
 }
 
-UINT32_T tkl_media_buf_inflight(TUYA_MEDIA_BUF_OWNER_E owner)
+UINT32_T __t9_media_buf_inflight(TUYA_MEDIA_BUF_OWNER_E owner)
 {
     if (__owner_valid(owner) != TRUE) {
         return 0U;
@@ -214,7 +214,7 @@ UINT32_T tkl_media_buf_inflight(TUYA_MEDIA_BUF_OWNER_E owner)
     return s_inflight[owner];
 }
 
-OPERATE_RET tkl_media_buf_drain(TUYA_MEDIA_BUF_OWNER_E owner,
+OPERATE_RET __t9_media_buf_drain(TUYA_MEDIA_BUF_OWNER_E owner,
                                 UINT32_T expect_residual,
                                 UINT32_T timeout_ms)
 {
@@ -243,7 +243,7 @@ OPERATE_RET tkl_media_buf_drain(TUYA_MEDIA_BUF_OWNER_E owner,
     return OPRT_OK;
 }
 
-VOID_T tkl_media_buf_dump(VOID_T)
+VOID_T __t9_media_buf_dump(VOID_T)
 {
     UINT32_T i;
     UINT32_T total = 0U;
@@ -264,7 +264,7 @@ VOID_T tkl_media_buf_dump(VOID_T)
  * On-chip buffer placement (SRAM / HSRAM)
  * ------------------------------------------------------------------------- */
 
-VOID_T *tkl_media_ring_alloc(TKL_MEDIA_RING_PLACE_E place, UINT32_T size, CONST CHAR_T *tag)
+VOID_T *__t9_media_ring_alloc(TKL_MEDIA_RING_PLACE_E place, UINT32_T size, CONST CHAR_T *tag)
 {
     CONST CHAR_T *log_tag = (tag != NULL) ? tag : "media";
     CONST CHAR_T *first_name;
@@ -305,7 +305,7 @@ VOID_T *tkl_media_ring_alloc(TKL_MEDIA_RING_PLACE_E place, UINT32_T size, CONST 
         tkl_log_output("tkl_media_ring: %s %u sram full (hsram free %d), falling back\r\n",
                        log_tag,
                        (unsigned int)size,
-                       (int)tkl_system_hsram_get_free_heap_size());
+                       (int)xPortGetHsramFreeHeapSize());
         ptr = hsram_malloc(size);
     }
 
@@ -320,7 +320,7 @@ VOID_T *tkl_media_ring_alloc(TKL_MEDIA_RING_PLACE_E place, UINT32_T size, CONST 
     return ptr;
 }
 
-VOID_T tkl_media_ring_free(VOID_T *ptr)
+VOID_T __t9_media_ring_free(VOID_T *ptr)
 {
     /* os_free dispatches on the address, so one call covers both regions
      * (hsram_free and os_sram_free are both aliases of it). */
@@ -337,7 +337,7 @@ STATIC volatile UINT8_T s_hw_holder[TUYA_MEDIA_HW_MAX];
 STATIC CONST CHAR_T *CONST s_hw_name[TUYA_MEDIA_HW_MAX] = {"gpu", "vpu_enc"};
 STATIC CONST CHAR_T *CONST s_hw_claimant_name[TUYA_MEDIA_HW_CLAIM_MAX] = {"none", "csi", "uvc"};
 
-OPERATE_RET tkl_media_hw_claim(TUYA_MEDIA_HW_E hw, TUYA_MEDIA_HW_CLAIMANT_E who)
+OPERATE_RET __t9_media_hw_claim(TUYA_MEDIA_HW_E hw, TUYA_MEDIA_HW_CLAIMANT_E who)
 {
     UINT32_T flags;
     UINT8_T holder;
@@ -363,7 +363,7 @@ OPERATE_RET tkl_media_hw_claim(TUYA_MEDIA_HW_E hw, TUYA_MEDIA_HW_CLAIMANT_E who)
     return OPRT_RESOURCE_NOT_READY;
 }
 
-VOID_T tkl_media_hw_release(TUYA_MEDIA_HW_E hw, TUYA_MEDIA_HW_CLAIMANT_E who)
+VOID_T __t9_media_hw_release(TUYA_MEDIA_HW_E hw, TUYA_MEDIA_HW_CLAIMANT_E who)
 {
     UINT32_T flags;
     UINT8_T holder;
@@ -388,7 +388,7 @@ VOID_T tkl_media_hw_release(TUYA_MEDIA_HW_E hw, TUYA_MEDIA_HW_CLAIMANT_E who)
     }
 }
 
-UINT32_T tkl_media_bitrate_from_level(TUYA_ENCODE_BITRATE_LEVEL_E level)
+UINT32_T __t9_media_bitrate_from_level(TUYA_ENCODE_BITRATE_LEVEL_E level)
 {
     switch (level) {
     case TUYA_ENCODE_BITRATE_LEVEL_LOW:

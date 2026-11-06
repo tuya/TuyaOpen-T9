@@ -46,7 +46,7 @@ typedef struct {
 /** Destination picture. */
 typedef struct {
     UINT8_T *buffer;    /**< destination, must be hardware-reachable (tkl_media_buf) */
-    UINT32_T size;      /**< destination capacity in bytes, see tkl_pp_output_size() */
+    UINT32_T size;      /**< destination capacity in bytes, see __t9_pp_output_size() */
     UINT16_T width;     /**< 0 = same as source */
     UINT16_T height;    /**< 0 = same as source */
     UINT32_T format;    /**< bk_pixel_format_t: NV12 / RGB565 / RGB888 */
@@ -63,7 +63,7 @@ typedef struct {
  *
  * @return OPRT_OK on success. Others on error, please refer to tuya_error_code.h
  */
-OPERATE_RET tkl_pp_open(UINT32_T timeout_ms, TKL_PP_HANDLE *handle);
+OPERATE_RET __t9_pp_open(UINT32_T timeout_ms, TKL_PP_HANDLE *handle);
 
 /**
  * @brief Tear down a processor and release the handle.
@@ -72,7 +72,7 @@ OPERATE_RET tkl_pp_open(UINT32_T timeout_ms, TKL_PP_HANDLE *handle);
  *
  * @return OPRT_OK on success. Others on error, please refer to tuya_error_code.h
  */
-OPERATE_RET tkl_pp_close(TKL_PP_HANDLE handle);
+OPERATE_RET __t9_pp_close(TKL_PP_HANDLE handle);
 
 /**
  * @brief Run one scale and/or format conversion. Blocks until complete.
@@ -80,7 +80,7 @@ OPERATE_RET tkl_pp_close(TKL_PP_HANDLE handle);
  * @param[in] handle processor handle
  * @param[in] in     NV12 source
  * @param[in] out    destination; @p out->buffer must hold at least
- *                   tkl_pp_output_size(out->format, w, h) bytes
+ *                   __t9_pp_output_size(out->format, w, h) bytes
  *
  * @note Serialised per handle by an internal mutex, so several threads may share
  *       one handle. Blocks the calling thread - never call from an ISR, from the
@@ -89,7 +89,7 @@ OPERATE_RET tkl_pp_close(TKL_PP_HANDLE handle);
  * @return OPRT_OK on success, OPRT_NOT_SUPPORTED for a format the hardware
  *         cannot do. Others on error, please refer to tuya_error_code.h
  */
-OPERATE_RET tkl_pp_process(TKL_PP_HANDLE handle, CONST TKL_PP_IN_T *in, CONST TKL_PP_OUT_T *out);
+OPERATE_RET __t9_pp_process(TKL_PP_HANDLE handle, CONST TKL_PP_IN_T *in, CONST TKL_PP_OUT_T *out);
 
 /**
  * @brief Bytes the hardware needs for one output picture.
@@ -103,7 +103,7 @@ OPERATE_RET tkl_pp_process(TKL_PP_HANDLE handle, CONST TKL_PP_IN_T *in, CONST TK
  *
  * @return required byte count, 0 for an unsupported format or zero geometry
  */
-UINT32_T tkl_pp_output_size(UINT32_T format, UINT16_T width, UINT16_T height);
+UINT32_T __t9_pp_output_size(UINT32_T format, UINT16_T width, UINT16_T height);
 
 #ifdef __cplusplus
 }

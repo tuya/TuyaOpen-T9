@@ -19,7 +19,7 @@ extern "C" {
 /**
  * @brief Opaque per-pipeline handle.
  *
- * @note One handle == one bk_gpu controller instance. See tkl_gpu_init() for
+ * @note One handle == one bk_gpu controller instance. See __t9_gpu_init() for
  *       the (vendor-imposed) limit on how many may be live at once.
  */
 typedef VOID_T *TKL_GPU_HANDLE;
@@ -89,16 +89,16 @@ typedef struct {
  * @param[out] handle receives the new pipeline handle
  *
  * @note No vendor resource is touched here - the bk_gpu controller is created
- *       by tkl_gpu_set_source(), which is where the source geometry becomes
+ *       by __t9_gpu_set_source(), which is where the source geometry becomes
  *       known.
  * @warning Only **one** pipeline may hold a live bk_gpu controller at a time -
  *          GPU bring-up reaches global state that is not reference counted, so
  *          a second instance's teardown powers the domain down under the first.
- *          tkl_gpu_set_source() refuses with OPRT_RESOURCE_BUSY.
+ *          __t9_gpu_set_source() refuses with OPRT_RESOURCE_BUSY.
  *
  * @return OPRT_OK on success. Others on error, please refer to tuya_error_code.h
  */
-OPERATE_RET tkl_gpu_init(CONST TUYA_GPU_CFG_T *config, TKL_GPU_HANDLE *handle);
+OPERATE_RET __t9_gpu_init(CONST TUYA_GPU_CFG_T *config, TKL_GPU_HANDLE *handle);
 
 /**
  * @brief Stop, destroy the bk_gpu controller and release the context.
@@ -107,7 +107,7 @@ OPERATE_RET tkl_gpu_init(CONST TUYA_GPU_CFG_T *config, TKL_GPU_HANDLE *handle);
  *
  * @return OPRT_OK on success. Others on error, please refer to tuya_error_code.h
  */
-OPERATE_RET tkl_gpu_deinit(TKL_GPU_HANDLE handle);
+OPERATE_RET __t9_gpu_deinit(TKL_GPU_HANDLE handle);
 
 /**
  * @brief Install the frame alloc / free / done callbacks.
@@ -117,7 +117,7 @@ OPERATE_RET tkl_gpu_deinit(TKL_GPU_HANDLE handle);
  *
  * @return OPRT_OK on success. Others on error, please refer to tuya_error_code.h
  */
-OPERATE_RET tkl_gpu_set_sink(TKL_GPU_HANDLE handle, CONST TUYA_GPU_SINK_T *sink);
+OPERATE_RET __t9_gpu_set_sink(TKL_GPU_HANDLE handle, CONST TUYA_GPU_SINK_T *sink);
 
 /**
  * @brief Bind the flexa source and build the bk_gpu controller.
@@ -131,7 +131,7 @@ OPERATE_RET tkl_gpu_set_sink(TKL_GPU_HANDLE handle, CONST TUYA_GPU_SINK_T *sink)
  *
  * @return OPRT_OK on success. Others on error, please refer to tuya_error_code.h
  */
-OPERATE_RET tkl_gpu_set_source(TKL_GPU_HANDLE handle, CONST TUYA_GPU_SOURCE_T *source);
+OPERATE_RET __t9_gpu_set_source(TKL_GPU_HANDLE handle, CONST TUYA_GPU_SOURCE_T *source);
 
 /**
  * @brief Open the controller and start the flexa bond.
@@ -140,19 +140,19 @@ OPERATE_RET tkl_gpu_set_source(TKL_GPU_HANDLE handle, CONST TUYA_GPU_SOURCE_T *s
  *
  * @return OPRT_OK on success. Others on error, please refer to tuya_error_code.h
  */
-OPERATE_RET tkl_gpu_start(TKL_GPU_HANDLE handle);
+OPERATE_RET __t9_gpu_start(TKL_GPU_HANDLE handle);
 
 /**
  * @brief Stop the flexa bond and close the controller. The instance survives.
  *
  * @param[in] handle pipeline handle
  *
- * @note Close only, never destroy: tkl_gpu_start() can be called again on the
+ * @note Close only, never destroy: __t9_gpu_start() can be called again on the
  *       same handle as long as the source geometry has not changed.
  *
  * @return OPRT_OK on success. Others on error, please refer to tuya_error_code.h
  */
-OPERATE_RET tkl_gpu_stop(TKL_GPU_HANDLE handle);
+OPERATE_RET __t9_gpu_stop(TKL_GPU_HANDLE handle);
 
 /**
  * @brief Get the underlying bk_gpu controller handle, for bonding by peers.
@@ -162,7 +162,7 @@ OPERATE_RET tkl_gpu_stop(TKL_GPU_HANDLE handle);
  *
  * @return OPRT_OK on success. Others on error, please refer to tuya_error_code.h
  */
-OPERATE_RET tkl_gpu_get_handle(TKL_GPU_HANDLE handle, VOID **raw_handle);
+OPERATE_RET __t9_gpu_get_handle(TKL_GPU_HANDLE handle, VOID **raw_handle);
 
 #ifdef __cplusplus
 }

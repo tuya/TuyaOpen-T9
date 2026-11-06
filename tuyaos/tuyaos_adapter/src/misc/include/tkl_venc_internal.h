@@ -12,7 +12,6 @@
 #define __TKL_VENC_INTERNAL_H__
 
 #include "tuya_cloud_types.h"
-#include "tkl_media_types.h"
 #include "tkl_vcodec_types.h"
 
 #ifdef __cplusplus
@@ -83,14 +82,14 @@ typedef struct {
     };
 } TUYA_VENC_SOURCE_T;
 
-OPERATE_RET tkl_venc_init(TUYA_VENC_HANDLE *handle, const TUYA_VENC_CFG_T *config);
-OPERATE_RET tkl_venc_deinit(TUYA_VENC_HANDLE handle);
-OPERATE_RET tkl_venc_set_source(TUYA_VENC_HANDLE handle, const TUYA_VENC_SOURCE_T *source);
-OPERATE_RET tkl_venc_set_sink(TUYA_VENC_HANDLE handle, const TUYA_VENC_SINK_T *sink);
-OPERATE_RET tkl_venc_start(TUYA_VENC_HANDLE handle);
-OPERATE_RET tkl_venc_stop(TUYA_VENC_HANDLE handle);
-OPERATE_RET tkl_venc_set_rate_ctrl(TUYA_VENC_HANDLE handle, const TUYA_VENC_RATE_CTRL_T *rate_ctrl);
-OPERATE_RET tkl_venc_request_idr(TUYA_VENC_HANDLE handle);
+OPERATE_RET __t9_venc_init(TUYA_VENC_HANDLE *handle, const TUYA_VENC_CFG_T *config);
+OPERATE_RET __t9_venc_deinit(TUYA_VENC_HANDLE handle);
+OPERATE_RET __t9_venc_set_source(TUYA_VENC_HANDLE handle, const TUYA_VENC_SOURCE_T *source);
+OPERATE_RET __t9_venc_set_sink(TUYA_VENC_HANDLE handle, const TUYA_VENC_SINK_T *sink);
+OPERATE_RET __t9_venc_start(TUYA_VENC_HANDLE handle);
+OPERATE_RET __t9_venc_stop(TUYA_VENC_HANDLE handle);
+OPERATE_RET __t9_venc_set_rate_ctrl(TUYA_VENC_HANDLE handle, const TUYA_VENC_RATE_CTRL_T *rate_ctrl);
+OPERATE_RET __t9_venc_request_idr(TUYA_VENC_HANDLE handle);
 /**
  * @brief Set or clear one encode-path pre-composed ARGB8888 overlay.
  * @param[in] handle venc handle
@@ -100,8 +99,8 @@ OPERATE_RET tkl_venc_request_idr(TUYA_VENC_HANDLE handle);
  * @note The caller owns the bitmap data. Same coordinates update one of the
  *       eight backend slots; NULL data clears that coordinate.
  */
-OPERATE_RET tkl_venc_set_osd(TUYA_VENC_HANDLE handle, CONST TUYA_OSD_T *osd);
-OPERATE_RET tkl_venc_get_handle(TUYA_VENC_HANDLE handle, VOID **backend_handle);
+OPERATE_RET __t9_venc_set_osd(TUYA_VENC_HANDLE handle, CONST TUYA_OSD_T *osd);
+OPERATE_RET __t9_venc_get_handle(TUYA_VENC_HANDLE handle, VOID **backend_handle);
 
 /* JPEG still-image encode and the NV12->YUYV helper moved to tkl_image.h:
  * they are one-shot, host-less operations with no encoder state, which is the

@@ -404,7 +404,7 @@ static void *tkl_venc_outbuf_malloc(uint32_t outbuf_size, void *args)
          * bitstream, so the choice is not the caller's to make - and it must
          * not come from the ordinary heap, which is neither DMA-safe nor big
          * enough (see tkl_media_buf.h). */
-        payload = tkl_media_buf_alloc(TKL_BUF_USE_STREAM, outbuf_size,
+        payload = __t9_media_buf_alloc(TKL_BUF_USE_STREAM, outbuf_size,
                                       TUYA_MEDIA_BUF_OWNER_VENC);
     }
 
@@ -442,7 +442,7 @@ static VOID tkl_venc_release_outbuf(TUYA_VENC_CTX_T *ctx, VOID *payload)
     if (ctx->sink.free_cb != NULL) {
         (void)ctx->sink.free_cb(payload, ctx->sink.cb_arg);
     } else {
-        tkl_media_buf_free(TUYA_MEDIA_BUF_OWNER_VENC, payload);
+        __t9_media_buf_free(TUYA_MEDIA_BUF_OWNER_VENC, payload);
     }
 }
 
@@ -684,7 +684,7 @@ static OPERATE_RET tkl_venc_osd_open(TUYA_VENC_CTX_T *ctx)
     osd_cfg.target_w = width;
     osd_cfg.target_h = height;
 
-    return tkl_osd_engine_open(TKL_OSD_BACKEND_VCENC, ctx->backend.h264, &osd_cfg, &ctx->osd);
+    return __t9_osd_engine_open(TKL_OSD_BACKEND_VCENC, ctx->backend.h264, &osd_cfg, &ctx->osd);
 }
 
 /**
@@ -697,7 +697,7 @@ static VOID tkl_venc_osd_close(TUYA_VENC_CTX_T *ctx)
         return;
     }
 
-    (void)tkl_osd_engine_close(ctx->osd);
+    (void)__t9_osd_engine_close(ctx->osd);
     ctx->osd = NULL;
 }
 
@@ -891,7 +891,7 @@ static BOOL_T tkl_venc_backend_ready(const TUYA_VENC_CTX_T *ctx)
     return FALSE;
 }
 
-OPERATE_RET tkl_venc_init(TUYA_VENC_HANDLE *handle, const TUYA_VENC_CFG_T *config)
+OPERATE_RET __t9_venc_init(TUYA_VENC_HANDLE *handle, const TUYA_VENC_CFG_T *config)
 {
     TUYA_VENC_CTX_T *ctx = NULL;
 
@@ -921,7 +921,7 @@ OPERATE_RET tkl_venc_init(TUYA_VENC_HANDLE *handle, const TUYA_VENC_CFG_T *confi
     return OPRT_OK;
 }
 
-OPERATE_RET tkl_venc_deinit(TUYA_VENC_HANDLE handle)
+OPERATE_RET __t9_venc_deinit(TUYA_VENC_HANDLE handle)
 {
     TUYA_VENC_CTX_T *ctx = tkl_venc_ctx_get(handle);
     OPERATE_RET ret;
@@ -930,7 +930,7 @@ OPERATE_RET tkl_venc_deinit(TUYA_VENC_HANDLE handle)
         return OPRT_INVALID_PARM;
     }
 
-    ret = tkl_venc_stop(handle);
+    ret = __t9_venc_stop(handle);
     if (ret != OPRT_OK && ret != OPRT_NOT_SUPPORTED) {
         return ret;
     }
@@ -940,7 +940,7 @@ OPERATE_RET tkl_venc_deinit(TUYA_VENC_HANDLE handle)
     return OPRT_OK;
 }
 
-OPERATE_RET tkl_venc_set_source(TUYA_VENC_HANDLE handle, const TUYA_VENC_SOURCE_T *source)
+OPERATE_RET __t9_venc_set_source(TUYA_VENC_HANDLE handle, const TUYA_VENC_SOURCE_T *source)
 {
     TUYA_VENC_CTX_T *ctx = tkl_venc_ctx_get(handle);
     OPERATE_RET ret;
@@ -971,7 +971,7 @@ OPERATE_RET tkl_venc_set_source(TUYA_VENC_HANDLE handle, const TUYA_VENC_SOURCE_
     return OPRT_OK;
 }
 
-OPERATE_RET tkl_venc_set_sink(TUYA_VENC_HANDLE handle, const TUYA_VENC_SINK_T *sink)
+OPERATE_RET __t9_venc_set_sink(TUYA_VENC_HANDLE handle, const TUYA_VENC_SINK_T *sink)
 {
     TUYA_VENC_CTX_T *ctx = tkl_venc_ctx_get(handle);
     OPERATE_RET ret;
@@ -993,7 +993,7 @@ OPERATE_RET tkl_venc_set_sink(TUYA_VENC_HANDLE handle, const TUYA_VENC_SINK_T *s
     return OPRT_OK;
 }
 
-OPERATE_RET tkl_venc_start(TUYA_VENC_HANDLE handle)
+OPERATE_RET __t9_venc_start(TUYA_VENC_HANDLE handle)
 {
     TUYA_VENC_CTX_T *ctx = tkl_venc_ctx_get(handle);
     OPERATE_RET ret;
@@ -1038,7 +1038,7 @@ OPERATE_RET tkl_venc_start(TUYA_VENC_HANDLE handle)
     return OPRT_OK;
 }
 
-OPERATE_RET tkl_venc_stop(TUYA_VENC_HANDLE handle)
+OPERATE_RET __t9_venc_stop(TUYA_VENC_HANDLE handle)
 {
     TUYA_VENC_CTX_T *ctx = tkl_venc_ctx_get(handle);
     OPERATE_RET ret;
@@ -1090,7 +1090,7 @@ OPERATE_RET tkl_venc_stop(TUYA_VENC_HANDLE handle)
  * @return OPRT_OK on success
  * @note May be called before start to preset RC; applied to hardware at backend open.
  */
-OPERATE_RET tkl_venc_set_rate_ctrl(TUYA_VENC_HANDLE handle, const TUYA_VENC_RATE_CTRL_T *rate_ctrl)
+OPERATE_RET __t9_venc_set_rate_ctrl(TUYA_VENC_HANDLE handle, const TUYA_VENC_RATE_CTRL_T *rate_ctrl)
 {
     TUYA_VENC_CTX_T *ctx = tkl_venc_ctx_get(handle);
 
@@ -1106,7 +1106,7 @@ OPERATE_RET tkl_venc_set_rate_ctrl(TUYA_VENC_HANDLE handle, const TUYA_VENC_RATE
     return tkl_venc_h264_apply_rate_ctrl(ctx, rate_ctrl, TRUE);
 }
 
-OPERATE_RET tkl_venc_request_idr(TUYA_VENC_HANDLE handle)
+OPERATE_RET __t9_venc_request_idr(TUYA_VENC_HANDLE handle)
 {
     TUYA_VENC_CTX_T *ctx = tkl_venc_ctx_get(handle);
     avdk_err_t ret;
@@ -1132,7 +1132,7 @@ OPERATE_RET tkl_venc_request_idr(TUYA_VENC_HANDLE handle)
  * @brief Set or clear one encode-path pre-composed ARGB8888 overlay.
  * @note Same coordinates update one backend slot; NULL data clears it.
  */
-OPERATE_RET tkl_venc_set_osd(TUYA_VENC_HANDLE handle, CONST TUYA_OSD_T *osd)
+OPERATE_RET __t9_venc_set_osd(TUYA_VENC_HANDLE handle, CONST TUYA_OSD_T *osd)
 {
     TUYA_VENC_CTX_T *ctx = tkl_venc_ctx_get(handle);
 
@@ -1148,10 +1148,10 @@ OPERATE_RET tkl_venc_set_osd(TUYA_VENC_HANDLE handle, CONST TUYA_OSD_T *osd)
         return OPRT_RESOURCE_NOT_READY;
     }
 
-    return tkl_osd_engine_submit(ctx->osd, osd);
+    return __t9_osd_engine_submit(ctx->osd, osd);
 }
 
-OPERATE_RET tkl_venc_get_handle(TUYA_VENC_HANDLE handle, VOID **backend_handle)
+OPERATE_RET __t9_venc_get_handle(TUYA_VENC_HANDLE handle, VOID **backend_handle)
 {
     TUYA_VENC_CTX_T *ctx = tkl_venc_ctx_get(handle);
 

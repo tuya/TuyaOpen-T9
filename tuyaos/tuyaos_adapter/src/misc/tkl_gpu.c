@@ -211,7 +211,7 @@ static void *tkl_gpu_frame_malloc(uint32_t size)
      * needs a PSRAM write-through mapping - the one place in the tree that
      * genuinely does. tkl_media_buf owns the channel and the 64-byte rounding
      * the vendor pool demands (see tkl_media_buf.h). */
-    return tkl_media_buf_alloc(TKL_BUF_USE_PIXEL_WT, size, TUYA_MEDIA_BUF_OWNER_GPU);
+    return __t9_media_buf_alloc(TKL_BUF_USE_PIXEL_WT, size, TUYA_MEDIA_BUF_OWNER_GPU);
 }
 
 static OPERATE_RET tkl_gpu_frame_free(VOID *ptr)
@@ -226,7 +226,7 @@ static OPERATE_RET tkl_gpu_frame_free(VOID *ptr)
         return ctx->sink.free_cb(ptr, ctx->sink.cb_arg);
     }
 
-    tkl_media_buf_free(TUYA_MEDIA_BUF_OWNER_GPU, ptr);
+    __t9_media_buf_free(TUYA_MEDIA_BUF_OWNER_GPU, ptr);
     return OPRT_OK;
 }
 
@@ -315,10 +315,10 @@ static OPERATE_RET tkl_gpu_backend_destroy(tkl_gpu_ctx_t *ctx)
 
     /* Only now: the controller held the parked addresses until the delete, and
      * it never frees them itself (both were parked with release_cb NULL). */
-    tkl_media_ring_free(ctx->vg_mem_buf);
+    __t9_media_ring_free(ctx->vg_mem_buf);
     ctx->vg_mem_buf = NULL;
     ctx->vg_mem_size = 0U;
-    tkl_media_ring_free(ctx->output_buf);
+    __t9_media_ring_free(ctx->output_buf);
     ctx->output_buf = NULL;
     ctx->output_size = 0U;
 
@@ -426,7 +426,7 @@ static void tkl_gpu_vg_mem_park(tkl_gpu_ctx_t *ctx, const bk_gpu_ctlr_config_t *
         return;
     }
 
-    ctx->vg_mem_buf = tkl_media_ring_alloc(TKL_MEDIA_RING_SRAM_FIRST, query.size, "gpu_vg");
+    ctx->vg_mem_buf = __t9_media_ring_alloc(TKL_MEDIA_RING_SRAM_FIRST, query.size, "gpu_vg");
     if (ctx->vg_mem_buf == NULL) {
         tkl_log_output("tkl_gpu: vg mem %u bytes alloc failed, vendor allocates\r\n",
                        (unsigned int)query.size);
@@ -443,7 +443,7 @@ static void tkl_gpu_vg_mem_park(tkl_gpu_ctx_t *ctx, const bk_gpu_ctlr_config_t *
     ret = bk_gpu_ioctl(ctx->gpu_handle, BK_GPU_IOCTL_SET_VG_MEM_BUF, &park);
     if (ret != AVDK_ERR_OK) {
         tkl_log_output("tkl_gpu: vg mem park failed (%d), vendor allocates\r\n", (int)ret);
-        tkl_media_ring_free(ctx->vg_mem_buf);
+        __t9_media_ring_free(ctx->vg_mem_buf);
         ctx->vg_mem_buf = NULL;
         ctx->vg_mem_size = 0U;
         return;
@@ -489,7 +489,7 @@ static void tkl_gpu_output_buf_park(tkl_gpu_ctx_t *ctx)
         return;
     }
 
-    ctx->output_buf = tkl_media_ring_alloc(TKL_MEDIA_RING_SRAM_FIRST, query.size, "gpu_pp");
+    ctx->output_buf = __t9_media_ring_alloc(TKL_MEDIA_RING_SRAM_FIRST, query.size, "gpu_pp");
     if (ctx->output_buf == NULL) {
         tkl_log_output("tkl_gpu: output buf %u bytes alloc failed, vendor allocates\r\n",
                        (unsigned int)query.size);
@@ -503,7 +503,7 @@ static void tkl_gpu_output_buf_park(tkl_gpu_ctx_t *ctx)
     ret = bk_gpu_ioctl(ctx->gpu_handle, BK_GPU_IOCTL_SET_OUTPUT_BUF, &park);
     if (ret != AVDK_ERR_OK) {
         tkl_log_output("tkl_gpu: output buf park failed (%d), vendor allocates\r\n", (int)ret);
-        tkl_media_ring_free(ctx->output_buf);
+        __t9_media_ring_free(ctx->output_buf);
         ctx->output_buf = NULL;
         ctx->output_size = 0U;
         return;
@@ -562,7 +562,7 @@ static OPERATE_RET tkl_gpu_backend_create(tkl_gpu_ctx_t *ctx, const bk_gpu_ctlr_
         ctx->gpu_handle = NULL;
         /* This path bypasses tkl_gpu_backend_destroy(), so the parked vg buffer
          * has to be released here or it leaks until the next create. */
-        tkl_media_ring_free(ctx->vg_mem_buf);
+        __t9_media_ring_free(ctx->vg_mem_buf);
         ctx->vg_mem_buf = NULL;
         ctx->vg_mem_size = 0U;
         s_active_ctx = NULL;
@@ -630,7 +630,7 @@ static OPERATE_RET tkl_gpu_bind_source(tkl_gpu_ctx_t *ctx)
     return OPRT_OK;
 }
 
-OPERATE_RET tkl_gpu_init(CONST TUYA_GPU_CFG_T *config, TKL_GPU_HANDLE *handle)
+OPERATE_RET __t9_gpu_init(CONST TUYA_GPU_CFG_T *config, TKL_GPU_HANDLE *handle)
 {
     OPERATE_RET ret;
     TUYA_GPU_CFG_T cfg_local;
@@ -659,7 +659,7 @@ OPERATE_RET tkl_gpu_init(CONST TUYA_GPU_CFG_T *config, TKL_GPU_HANDLE *handle)
     return OPRT_OK;
 }
 
-OPERATE_RET tkl_gpu_deinit(TKL_GPU_HANDLE handle)
+OPERATE_RET __t9_gpu_deinit(TKL_GPU_HANDLE handle)
 {
     tkl_gpu_ctx_t *ctx = tkl_gpu_ctx_get(handle);
     OPERATE_RET ret;
@@ -668,7 +668,7 @@ OPERATE_RET tkl_gpu_deinit(TKL_GPU_HANDLE handle)
         return OPRT_OK;
     }
 
-    ret = tkl_gpu_stop(handle);
+    ret = __t9_gpu_stop(handle);
     if (ret != OPRT_OK) {
         return ret;
     }
@@ -682,7 +682,7 @@ OPERATE_RET tkl_gpu_deinit(TKL_GPU_HANDLE handle)
     return OPRT_OK;
 }
 
-OPERATE_RET tkl_gpu_set_sink(TKL_GPU_HANDLE handle, CONST TUYA_GPU_SINK_T *sink)
+OPERATE_RET __t9_gpu_set_sink(TKL_GPU_HANDLE handle, CONST TUYA_GPU_SINK_T *sink)
 {
     tkl_gpu_ctx_t *ctx = tkl_gpu_ctx_get(handle);
     OPERATE_RET ret;
@@ -705,7 +705,7 @@ OPERATE_RET tkl_gpu_set_sink(TKL_GPU_HANDLE handle, CONST TUYA_GPU_SINK_T *sink)
     return OPRT_OK;
 }
 
-OPERATE_RET tkl_gpu_set_source(TKL_GPU_HANDLE handle, CONST TUYA_GPU_SOURCE_T *source)
+OPERATE_RET __t9_gpu_set_source(TKL_GPU_HANDLE handle, CONST TUYA_GPU_SOURCE_T *source)
 {
     tkl_gpu_ctx_t *ctx = tkl_gpu_ctx_get(handle);
     bk_gpu_ctlr_config_t gpu_cfg;
@@ -769,7 +769,7 @@ OPERATE_RET tkl_gpu_set_source(TKL_GPU_HANDLE handle, CONST TUYA_GPU_SOURCE_T *s
     return OPRT_OK;
 }
 
-OPERATE_RET tkl_gpu_start(TKL_GPU_HANDLE handle)
+OPERATE_RET __t9_gpu_start(TKL_GPU_HANDLE handle)
 {
     tkl_gpu_ctx_t *ctx = tkl_gpu_ctx_get(handle);
     OPERATE_RET ret;
@@ -806,7 +806,7 @@ OPERATE_RET tkl_gpu_start(TKL_GPU_HANDLE handle)
     return OPRT_OK;
 }
 
-OPERATE_RET tkl_gpu_stop(TKL_GPU_HANDLE handle)
+OPERATE_RET __t9_gpu_stop(TKL_GPU_HANDLE handle)
 {
     tkl_gpu_ctx_t *ctx = tkl_gpu_ctx_get(handle);
     OPERATE_RET ret;
@@ -822,7 +822,7 @@ OPERATE_RET tkl_gpu_stop(TKL_GPU_HANDLE handle)
     }
 
     /* Q3 (OSD before stream) is enforced by the owning facade, which calls
-     * tkl_osd_engine_close() before it gets here - tkl_gpu no longer owns OSD. */
+     * __t9_osd_engine_close() before it gets here - tkl_gpu no longer owns OSD. */
     tkl_gpu_release_bond(ctx);
 
     ret = tkl_gpu_backend_close(ctx);
@@ -834,7 +834,7 @@ OPERATE_RET tkl_gpu_stop(TKL_GPU_HANDLE handle)
     return OPRT_OK;
 }
 
-OPERATE_RET tkl_gpu_get_handle(TKL_GPU_HANDLE handle, VOID **raw_handle)
+OPERATE_RET __t9_gpu_get_handle(TKL_GPU_HANDLE handle, VOID **raw_handle)
 {
     tkl_gpu_ctx_t *ctx = tkl_gpu_ctx_get(handle);
 

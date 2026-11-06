@@ -85,17 +85,17 @@ static const char *test_image_fmt_name(UINT32_T fmt)
  * Going through tkl_media_buf also puts them in its accounting. */
 static UINT8_T *test_image_pixel_alloc(UINT32_T size)
 {
-    return (UINT8_T *)tkl_media_buf_alloc(TKL_BUF_USE_PIXEL, size, TUYA_MEDIA_BUF_OWNER_TEST);
+    return (UINT8_T *)__t9_media_buf_alloc(TKL_BUF_USE_PIXEL, size, TUYA_MEDIA_BUF_OWNER_TEST);
 }
 
 static UINT8_T *test_image_stream_alloc(UINT32_T size)
 {
-    return (UINT8_T *)tkl_media_buf_alloc(TKL_BUF_USE_STREAM, size, TUYA_MEDIA_BUF_OWNER_TEST);
+    return (UINT8_T *)__t9_media_buf_alloc(TKL_BUF_USE_STREAM, size, TUYA_MEDIA_BUF_OWNER_TEST);
 }
 
 static void test_image_buf_free(UINT8_T *ptr)
 {
-    tkl_media_buf_free(TUYA_MEDIA_BUF_OWNER_TEST, ptr);
+    __t9_media_buf_free(TUYA_MEDIA_BUF_OWNER_TEST, ptr);
 }
 
 static OPERATE_RET test_image_write_file(const char *path, const UINT8_T *data, UINT32_T size)
@@ -314,7 +314,7 @@ static OPERATE_RET test_image_get_info_file(const char *path)
  *
  * @details
  * NV12 stores an even row count, RGB rounds up to a 16-row block -
- * tkl_pp_output_size() is where this lives for real. The file on the card
+ * __t9_pp_output_size() is where this lives for real. The file on the card
  * therefore holds more rows than were asked for, and ffplay has to be told the
  * stored count or the picture shears, which looks exactly like a decoder bug.
  *
@@ -329,7 +329,7 @@ static UINT16_T test_image_stored_rows(UINT32_T fmt, UINT16_T height)
     if (fmt == (UINT32_T)TUYA_FRAME_FMT_NV12) {
         /* UV plane = height/2 rows on 16-row DMA segments -> height to a
          * multiple of 32. 320x240 would store 256 rows (see the adapter's
-         * tkl_pp_output_size note). */
+         * __t9_pp_output_size note). */
         return (UINT16_T)(((UINT32_T)height + 31U) & ~31U);
     }
     return (UINT16_T)(((UINT32_T)height + 1U) & ~1U);
@@ -1317,7 +1317,7 @@ void cli_tuya_image_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char
      * asserts with "type:0 not init". Same call, same reason, as test_uvc.c's
      * and test_camera.c's open. Idempotent: safe to repeat while the camera
      * or display already has the slabs up. */
-    tkl_media_buf_init();
+    __t9_media_buf_init();
 
     if (argc < 2) {
         snprintf(pcWriteBuffer, xWriteBufferLen,

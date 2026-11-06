@@ -347,7 +347,7 @@ static void recog_task(void *arg)
             s_model->setVerifyEnabled(mode != RECOG_MODE_DETECT);
             ret = s_model->run(frame.data,
                                frame.size,
-                               (bk_pixel_format_t)tkl_media_fmt_to_bk(frame.format));
+                               (bk_pixel_format_t)__t9_media_fmt_to_bk(frame.format));
             s_model->getLastDetectDebug(&max_score, &pass_count);
             bk_printf("[xrecog] round %u done faces=%d mode=%d ok=%d fmt=%u max_score=%.3f pass=%d\r\n",
                       (unsigned)(index + 1),
