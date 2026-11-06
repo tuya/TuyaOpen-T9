@@ -25,6 +25,64 @@
 
 #define DBH_HASH_DMA_ADDR(p) ((uint32_t)SOC_SRAM_PERI_ADDR((uintptr_t)(p)))
 
+/*
+ * The TE200 DMA master can only reach SRAM (CPU alias 0x2Cxxxxxx, peripheral
+ * alias 0x28/0x38xxxxxx). A buffer in PSRAM (0x60/0x64xxxxxx) or flash
+ * (0x02/0x04xxxxxx) is silently ignored: the command still completes with
+ * ret == 0 but nothing is written back, which looks exactly like
+ * "arm_ce_hash_finish() returned 0 and the digest buffer was untouched".
+ *
+ * libtuyaos.a hands us contexts and output buffers that live in PSRAM, so
+ * every buffer that is given to the engine is staged through SRAM first.
+ * The staging buffers are static (.bss -> SRAM) and are only touched while
+ * DBH_HASH_MUTEX is held, see arm_ce_hash_update()/arm_ce_hash_finish().
+ */
+#define DUBHE_HASH_IO_STAGE_LEN    64
+#define DUBHE_HASH_EXTRA_STAGE_LEN 64
+#define DUBHE_HASH_IN_STAGE_LEN    512
+
+static uint8_t s_hash_io_stage[DUBHE_HASH_IO_STAGE_LEN];
+static uint8_t s_hash_extra_stage[DUBHE_HASH_EXTRA_STAGE_LEN];
+static uint8_t s_hash_in_stage[DUBHE_HASH_IN_STAGE_LEN];
+
+static int dubhe_hash_dma_is_sram( const void *p )
+{
+    switch ( ( (uint32_t)(uintptr_t)p ) >> 24 ) {
+    case 0x28:
+    case 0x2C:
+    case 0x2D:
+    case 0x38:
+    case 0x3C:
+        return 1;
+    default:
+        return 0;
+    }
+}
+
+/* DMA address of ctx->extra_data, staged through SRAM when the context
+ * itself lives in PSRAM. The engine only reads this buffer. */
+static uint32_t dubhe_hash_extra_dma_addr( arm_ce_hash_context_t *ctx )
+{
+    if ( dubhe_hash_dma_is_sram( ctx->extra_data ) )
+        return DBH_HASH_DMA_ADDR( ctx->extra_data );
+
+    pal_memcpy( s_hash_extra_stage, ctx->extra_data,
+                sizeof( ctx->extra_data ) );
+    return DBH_HASH_DMA_ADDR( s_hash_extra_stage );
+}
+
+static uint32_t dubhe_hash_digest_len( arm_ce_hash_mode_t mode )
+{
+    switch ( mode ) {
+    case ARM_HASH_MODE_SHA1:
+        return 20;
+    case ARM_HASH_MODE_SHA224:
+        return 28;
+    default:
+        return 32;
+    }
+}
+
 #define GET_HASH_LEN( ctx )                                                    \
     ( ( ctx->mode == ARM_HASH_MODE_SHA1 )                                      \
           ? DBH_HASH_SHA1_TEMP_DATA_LEN                                        \
@@ -256,6 +314,15 @@ static int arm_ce_hash_execute_hash_init( arm_ce_hash_context_t *ctx,
             return ( DBH_HASH_VECT_SRC_ERR );
         }
 
+        /* hash_temp lives inside the (possibly PSRAM) context. */
+        if ( ( vect_is_addr == DBH_HASH_IV_IS_ADDR )
+             && !dubhe_hash_dma_is_sram( external_vector ) ) {
+            if ( iv_len > sizeof( s_hash_io_stage ) )
+                return ( DBH_HASH_VECT_SRC_ERR );
+            pal_memcpy( s_hash_io_stage, external_vector, iv_len );
+            external_vector = s_hash_io_stage;
+        }
+
         /* Set initial vector source external value */
         value |= DBH_HASH_VECT_SRC_EXTERNAL;
         /* Set initial length */
@@ -322,7 +389,7 @@ static int arm_ce_hash_execute_hash_process( arm_ce_hash_context_t *ctx,
             /* HASH_process function part */
             DBH_WRITE_REGISTER( HASH, HASH_QUEUE, value );
             /* HASH process parameter part */
-            addr = DBH_HASH_DMA_ADDR( ctx->extra_data );
+            addr = dubhe_hash_extra_dma_addr( ctx );
             DBH_WRITE_REGISTER( HASH, HASH_QUEUE, addr );
 
             DBH_WRITE_REGISTER( HASH, HASH_QUEUE, old_extra_len );
@@ -385,10 +452,23 @@ static int arm_ce_hash_execute_hash_finish( arm_ce_hash_context_t *ctx,
                                             uint8_t padding,
                                             unsigned char *buf )
 {
-    uint32_t data          = DBH_HASH_DMA_ADDR( buf );
     uint32_t process_value = 0, finish_value = 0;
-    uint32_t extra_data = DBH_HASH_DMA_ADDR( ctx->extra_data );
-    int ret             = 0;
+    uint32_t extra_data    = 0;
+    uint32_t data          = 0;
+    uint8_t *stage_buf     = NULL;
+    int ret                = 0;
+
+    /* The engine writes the intermediate value / digest straight to buf; if
+     * buf is not SRAM the write is dropped, so redirect it to the staging
+     * buffer and copy the result back once the command is done. */
+    if ( dubhe_hash_dma_is_sram( buf ) ) {
+        data = DBH_HASH_DMA_ADDR( buf );
+    } else {
+        stage_buf = s_hash_io_stage;
+        pal_memset( stage_buf, 0, sizeof( s_hash_io_stage ) );
+        data = DBH_HASH_DMA_ADDR( stage_buf );
+    }
+    extra_data = dubhe_hash_extra_dma_addr( ctx );
 
     /* filter uninitialized finish request */
     if ( !ctx->finish_flag ) {
@@ -406,6 +486,8 @@ static int arm_ce_hash_execute_hash_finish( arm_ce_hash_context_t *ctx,
         DBH_WRITE_REGISTER( HASH, HASH_QUEUE, data );
         ret = arm_ce_hash_wait_engine_idle( );
         CHECK_RET( );
+        if ( stage_buf != NULL )
+            pal_memcpy( buf, stage_buf, GET_HASH_LEN( ctx ) );
         ctx->hash_temp_valid = 1;
         ctx->finish_flag     = 0;
         return ret;
@@ -432,6 +514,8 @@ static int arm_ce_hash_execute_hash_finish( arm_ce_hash_context_t *ctx,
     /* Wait for the command execution to complete */
     ret = arm_ce_hash_wait_engine_idle( );
     CHECK_RET( );
+    if ( stage_buf != NULL )
+        pal_memcpy( buf, stage_buf, dubhe_hash_digest_len( ctx->mode ) );
     dubhe_zeroize( ctx, sizeof( arm_ce_hash_context_t ) );
     return ret;
 }
@@ -650,8 +734,29 @@ int arm_ce_hash_update( arm_ce_hash_context_t *ctx,
         _g_ce_hash_ctx = ctx;
     }
 
-    /* Execute Dubhe HASH_process command */
-    ret = arm_ce_hash_execute_hash_process( ctx, input, ilen );
+    /* Execute Dubhe HASH_process command. When the input does not live in
+     * SRAM (TLS hashes records that sit in PSRAM or flash) feed it to the
+     * engine in SRAM-sized slices; the hash state carries across calls. */
+    if ( dubhe_hash_dma_is_sram( input ) ) {
+        ret = arm_ce_hash_execute_hash_process( ctx, input, ilen );
+    } else {
+        const unsigned char *src = input;
+        size_t left              = ilen;
+
+        ret = 0;
+        while ( left != 0 ) {
+            size_t n = left > sizeof( s_hash_in_stage )
+                           ? sizeof( s_hash_in_stage )
+                           : left;
+
+            pal_memcpy( s_hash_in_stage, src, n );
+            ret = arm_ce_hash_execute_hash_process( ctx, s_hash_in_stage, n );
+            if ( ret != 0 )
+                break;
+            src += n;
+            left -= n;
+        }
+    }
     if ( ret != 0 ) {
         PAL_LOG_ERR( " execute hash process failed when update, reason: %x\n",
                      ret );

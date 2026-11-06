@@ -6,6 +6,20 @@ menu "PSA Mbedtls"
 		help
 			enable psa mbedtls v3.6.6
 
+	# TRUSTENGINE must stay outside the "PSA Mbedtls Options" menu: that menu
+	# depends on PSA_MBEDTLS, so keeping it inside silently drops
+	# CONFIG_TRUSTENGINE=y whenever PSA_MBEDTLS=n, leaving every
+	# "if (CONFIG_TRUSTENGINE)" / "#if CONFIG_TRUSTENGINE" permanently false.
+	# The hardware backend is independent of PSA mbedtls -- it selects the TE200
+	# crypto backend and does not provide a PSA server. MBEDTLS_USE_PSRAM and
+	# MBEDTLS_CUSTOM_CONFIG_FILE below are deliberately outside for the same
+	# reason.
+	config TRUSTENGINE
+		bool "Enable TrustEngine hardware crypto"
+		help
+			Classic mbedtls crypto backend via TE200 hardware.
+			Mutually exclusive with SW_CRYPTO. Does not provide PSA server.
+
 	menu "PSA Mbedtls Options"
 		depends on PSA_MBEDTLS
 
@@ -32,12 +46,6 @@ menu "PSA Mbedtls"
 		config MBEDTLS_SSL_OUT_CONTENT_LEN
 			int "Config MBEDTLS_SSL_OUT_CONTENT_LEN"
 			default 4096
-
-		config TRUSTENGINE
-			bool "Enable TrustEngine hardware crypto"
-			help
-				Classic mbedtls crypto backend via TE200 hardware.
-				Mutually exclusive with SW_CRYPTO. Does not provide PSA server.
 
 		config SW_CRYPTO
 			bool "Enable software crypto"

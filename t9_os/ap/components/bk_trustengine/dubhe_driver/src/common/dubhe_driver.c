@@ -364,8 +364,16 @@ void dubhe_driver_cleanup( void )
 
 #if defined( ARM_CE_DUBHE_ACA )
     dubhe_aca_driver_cleanup( );
+#if defined( DUBHE_MBEDTLS_LIB )
+    /* mbedtls_dubhe_cleanup() lives in dubhe_lib/bignum.c. dubhe_lib replaces
+     * mbedtls sources and is therefore never built here (it would collide with
+     * libtuyaos.a), so this call has no definition to bind to. Previously the
+     * whole cleanup stayed unreferenced and -gc-sections dropped it; once
+     * dubhe_lv_enter() started calling in, the reference became live and the
+     * link failed with "undefined reference to 'mbedtls_dubhe_cleanup'". */
     extern void mbedtls_dubhe_cleanup( );
     mbedtls_dubhe_cleanup( );
+#endif
 #endif
 
     dubhe_event_cleanup( );
