@@ -18,10 +18,10 @@
 #include "tkl_dvp.h"
 #include "tkl_output.h"
 
-OPERATE_RET tkl_dvp_init(TUYA_DVP_CFG_T *dvp_cfg)
+OPERATE_RET tkl_dvp_init(const TUYA_DVP_BASE_CFG_T *cfg)
 {
     /* 初始化 DVP 摄像头。T9 无 DVP 接口，请使用 tkl_mipi_csi_init。 */
-    (void)dvp_cfg;
+    (void)cfg;
 
     tkl_log_output("tkl_dvp_init: DVP not available on T9, use tkl_mipi_csi_*\r\n");
     return OPRT_NOT_SUPPORTED;

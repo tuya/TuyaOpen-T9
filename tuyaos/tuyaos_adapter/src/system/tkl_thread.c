@@ -43,57 +43,13 @@ OPERATE_RET tkl_thread_create(TKL_THREAD_HANDLE* thread,
     }
 
     BaseType_t ret = 0;
-#if (CONFIG_FREERTOS_SMP)
-    // ret = xTaskCreatePinnedToCore(func, name, stack_size / sizeof(portSTACK_TYPE), (void *const)arg, priority, (TaskHandle_t * const )thread, tskNO_AFFINITY);
-    ret = xTaskCreateInPsram(func, name, stack_size / sizeof(portSTACK_TYPE), (void *const)arg, priority, (TaskHandle_t * const )thread, tskNO_AFFINITY);
-#else
     ret = xTaskCreate(func, name, stack_size / sizeof(portSTACK_TYPE), (void *const)arg, priority, (TaskHandle_t * const )thread);
-#endif
     if (ret != pdPASS) {
         return OPRT_OS_ADAPTER_THRD_CREAT_FAILED;
     }
 
     return OPRT_OK;
 }
-
-#if (CONFIG_FREERTOS_SMP)
-/**
- * @brief Create thread
- *
- * @param[out] thread: thread handle
- * @param[in] affinity: thread bind cpu id
- * @param[in] name: thread name
- * @param[in] stack_size: stack size of thread
- * @param[in] priority: priority of thread
- * @param[in] func: the main thread process function
- * @param[in] arg: the args of the func, can be null
- *
- * @note This API is used for creating thread.
- *
- * @return OPRT_OK on success. Others on error, please refer to tuya_error_code.h
- */
-OPERATE_RET tkl_thread_smp_create(TKL_THREAD_HANDLE* thread,
-                        UINT_T coreID,
-                        CONST CHAR_T* name,
-                        UINT_T stack_size,
-                        UINT_T priority,
-                        THREAD_FUNC_T func,
-                        VOID_T* CONST arg)
-{
-    //smp仅支持核1、2
-    if (!thread || (coreID > (CONFIG_CPU_CNT - 1))) {
-        return OPRT_INVALID_PARM;
-    }
-
-    BaseType_t ret = 0;
-    ret = xTaskCreatePinnedToCore(func, name, stack_size / sizeof(portSTACK_TYPE), (void *const)arg, priority, (TaskHandle_t * const )thread, coreID);
-    if (ret != pdPASS) {
-        return OPRT_OS_ADAPTER_THRD_CREAT_FAILED;
-    }
-
-    return OPRT_OK;
-}
-#endif
 
 /**
  * @brief Terminal thread and release thread resources
@@ -241,51 +197,3 @@ OPERATE_RET tkl_thread_create_in_psram(TKL_THREAD_HANDLE* thread,
 #endif  // CONFIG_CPU_INDEX != 0
 
 #endif // defined(ENABLE_EXT_RAM) && (ENABLE_EXT_RAM==1)
-
-#if defined(ENABLE_HIGH_SPEED_RAM) && (ENABLE_HIGH_SPEED_RAM==1)
-#if  (CONFIG_CPU_INDEX != 0)
-/**
- * @brief Create thread in HSRAM
- *
- * @param[out] thread: thread handle
- * @param[in] name: thread name
- * @param[in] stack_size: stack size of thread
- * @param[in] priority: priority of thread
- * @param[in] func: the main thread process function
- * @param[in] arg: the args of the func, can be null
- *
- * @note This API is used for creating thread.
- *
- * @return OPRT_OK on success. Others on error, please refer to tuya_error_code.h
- */
-OPERATE_RET tkl_thread_create_in_hsram(TKL_THREAD_HANDLE* thread,
-                        CONST CHAR_T* name,
-                        UINT_T stack_size,
-                        UINT_T priority,
-                        THREAD_FUNC_T func,
-                        VOID_T* CONST arg)
-{
-if (!thread) {
-    return OPRT_INVALID_PARM;
-}
-
-BaseType_t ret = 0;
-#if (CONFIG_FREERTOS_SMP == 1)
-ret = xTaskCreateInHsram(func, name, stack_size / sizeof(portSTACK_TYPE),
-                            (void *const)arg, priority,
-                            (TaskHandle_t * const)thread, tskNO_AFFINITY);
-#else
-ret = xTaskCreateInHsram(func, name, stack_size / sizeof(portSTACK_TYPE),
-                            (void *const)arg, priority,
-                            (TaskHandle_t * const)thread);
-#endif // CONFIG_FREERTOS_SMP
-
-if (ret != pdPASS) {
-    return OPRT_OS_ADAPTER_THRD_CREAT_FAILED;
-}
-
-return OPRT_OK;
-}
-#endif  // CONFIG_CPU_INDEX != 0
-
-#endif // defined(ENABLE_HIGH_SPEED_RAM) && (ENABLE_HIGH_SPEED_RAM==1)

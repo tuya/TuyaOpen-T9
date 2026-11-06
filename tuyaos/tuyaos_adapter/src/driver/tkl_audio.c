@@ -167,18 +167,19 @@ static uint32_t __ring_read(TKL_AUDIO_CTX_T *ctx, uint8_t *data, uint32_t len)
 }
 
 /* ADC DMA ISR: copy PCM into the ring and let the worker do the real work. */
-static VOID_T __tkl_audio_adc_cb(TUYA_AUDIO_FRAME_EVT_E event, uint8_t *buf, uint32_t len, VOID_T *args)
+static VOID_T __tkl_audio_adc_cb(TUYA_AUDIO_INPUT_BUFFER_T *buffer)
 {
-    TKL_AUDIO_CTX_T *ctx = (TKL_AUDIO_CTX_T *)args;
+    TKL_AUDIO_CTX_T *ctx = (buffer != NULL) ? (TKL_AUDIO_CTX_T *)buffer->args : NULL;
 
-    if ((event != TUYA_AUDIO_FRAME_EVENT_ADC_RX) || (ctx == NULL) || (buf == NULL) || (len == 0U)) {
+    if ((ctx == NULL) || (buffer->event != TUYA_AUDIO_FRAME_EVENT_ADC_RX) ||
+        (buffer->data == NULL) || (buffer->data_len == 0U)) {
         return;
     }
     if (!ctx->ai_started || (ctx->cfg.put_cb == NULL)) {
         return;
     }
 
-    if (__ring_write(ctx, buf, len) != len) {
+    if (__ring_write(ctx, buffer->data, buffer->data_len) != buffer->data_len) {
         /* Overflow: drop the frame rather than block in the ISR. */
         return;
     }
@@ -296,14 +297,13 @@ static void __tkl_audio_apply_spk_volume(TKL_AUDIO_CTX_T *ctx)
 
 static OPERATE_RET __tkl_audio_ao_open(TKL_AUDIO_CTX_T *ctx)
 {
-    TKL_AUD_DAC_CFG_T cfg;
+    TUYA_AUDIO_DAC_BASE_CFG_T cfg;
 
     memset(&cfg, 0, sizeof(cfg));
-    cfg.chan_num     = 1;
-    cfg.sample_bits  = 16;
+    cfg.dac_chan     = TUYA_AUDIO_DAC_CHANNEL_0;
+    cfg.sample_bits  = TUYA_AUDIO_SAMPLE_BITS_16;
     cfg.sample_rate  = (ctx->cfg.spk_sample > 0) ? (uint32_t)ctx->cfg.spk_sample : ctx->sample_rate;
     cfg.frame_time_ms = TKL_AUDIO_FRAME_MS;
-    cfg.src          = TKL_AUD_DAC_SRC_AUTO;
     cfg.frame_cb     = NULL;
     cfg.args         = NULL;
 
@@ -345,7 +345,7 @@ static void __tkl_audio_ao_close(TKL_AUDIO_CTX_T *ctx)
 
 static OPERATE_RET __tkl_audio_ai_open(TKL_AUDIO_CTX_T *ctx)
 {
-    TKL_AUD_ADC_CFG_T cfg;
+    TUYA_AUDIO_ADC_BASE_CFG_T cfg;
     uint8_t *ring = NULL;
     uint32_t ring_size;
     OPERATE_RET rt;
@@ -353,12 +353,13 @@ static OPERATE_RET __tkl_audio_ai_open(TKL_AUDIO_CTX_T *ctx)
     BOOL_T stop_sem_ok = FALSE;
 
     /* One capture lane; the ADC driver extracts it from its raw DMA frame.
-     * TUYA_T9_EVB: MIC1 (CHANNEL_L) is not wired/populated -- measured
-     * min/max +-5 at dig 16dB/ana 20dB -- MIC2 (CHANNEL_R) carries the talk
-     * mic. */
+     * TUYA_T9_EVB: MIC1 (ADC lane 0) is not wired/populated -- measured
+     * min/max +-5 at dig 16dB/ana 20dB -- MIC2 (ADC lane 1) carries the talk
+     * mic. chan is a bitmap now, so the gain call below must name the same
+     * bit. */
     memset(&cfg, 0, sizeof(cfg));
-    cfg.chan          = TUYA_AUDIO_ADC_CHANNEL_R;
-    cfg.sample_bits   = 16;
+    cfg.chan          = TUYA_AUDIO_ADC_CHANNEL_1;
+    cfg.sample_bits   = TUYA_AUDIO_SAMPLE_BITS_16;
     cfg.sample_rate   = ctx->sample_rate;
     cfg.frame_time_ms = TKL_AUDIO_FRAME_MS;
     cfg.upper_cb      = __tkl_audio_adc_cb;

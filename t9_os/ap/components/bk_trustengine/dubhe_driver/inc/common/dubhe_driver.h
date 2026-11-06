@@ -47,6 +47,15 @@ int dubhe_clk_enable( dubhe_module_type_t type );
 int dubhe_clk_disable( dubhe_module_type_t type );
 
 /**
+ * \brief          Enable the engine AHB master (CLK_CTRL.DMA_AHB_EN).
+ *
+ *                 The driver clears this bit at init and never restores it;
+ *                 with it cleared the command queue still runs but no data is
+ *                 transferred. Bring-up / diagnosis helper only.
+ */
+void dubhe_dma_ahb_enable( void );
+
+/**
  * \brief               This function init dubhe driver.
  *
  * \param dbh_base_addr Dubhe system address.

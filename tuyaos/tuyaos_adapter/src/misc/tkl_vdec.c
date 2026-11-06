@@ -308,7 +308,7 @@ static OPERATE_RET tkl_vdec_backend_create(TUYA_VDEC_CTX_T *ctx)
      * not queue behind this one - it takes over the interrupt routing and both
      * stall for good (see tkl_codec_gate_internal.h). Hold the gate for the whole
      * life of this decoder; backend_destroy() releases it. */
-    op_ret = tkl_codec_gate_acquire(TKL_CODEC_GATE_DEC, TKL_VDEC_HWJPEG_WAIT_MS);
+    op_ret = __t9_codec_gate_acquire(TKL_CODEC_GATE_DEC, TKL_VDEC_HWJPEG_WAIT_MS);
     if (op_ret != OPRT_OK) {
         return op_ret;
     }
@@ -370,7 +370,7 @@ static OPERATE_RET tkl_vdec_backend_create(TUYA_VDEC_CTX_T *ctx)
 
 err_release:
     ctx->hwjpeg_held = FALSE;
-    tkl_codec_gate_release(TKL_CODEC_GATE_DEC);
+    __t9_codec_gate_release(TKL_CODEC_GATE_DEC);
     return op_ret;
 }
 
@@ -446,7 +446,7 @@ static OPERATE_RET tkl_vdec_backend_destroy(TUYA_VDEC_CTX_T *ctx)
     /* The hardware session is gone, so let the next one in. */
     if (ctx->hwjpeg_held == TRUE) {
         ctx->hwjpeg_held = FALSE;
-        tkl_codec_gate_release(TKL_CODEC_GATE_DEC);
+        __t9_codec_gate_release(TKL_CODEC_GATE_DEC);
     }
 
     return op_ret;
@@ -461,7 +461,7 @@ static VOID *tkl_vdec_frame_alloc(TUYA_VDEC_CTX_T *ctx, UINT32_T size)
     /* No sink allocator: TKL picks the pool. A decoder output is always a pixel
      * frame, and the decoder DMAs into it, so it cannot come from the ordinary
      * heap (see tkl_media_buf.h). */
-    return tkl_media_buf_alloc(TKL_BUF_USE_PIXEL, size, TUYA_MEDIA_BUF_OWNER_VDEC);
+    return __t9_media_buf_alloc(TKL_BUF_USE_PIXEL, size, TUYA_MEDIA_BUF_OWNER_VDEC);
 }
 
 static VOID tkl_vdec_frame_free(TUYA_VDEC_CTX_T *ctx, VOID *ptr)
@@ -473,11 +473,11 @@ static VOID tkl_vdec_frame_free(TUYA_VDEC_CTX_T *ctx, VOID *ptr)
     if (ctx->sink.free_cb != NULL) {
         (void)ctx->sink.free_cb(ptr, ctx->sink.cb_arg);
     } else {
-        tkl_media_buf_free(TUYA_MEDIA_BUF_OWNER_VDEC, ptr);
+        __t9_media_buf_free(TUYA_MEDIA_BUF_OWNER_VDEC, ptr);
     }
 }
 
-OPERATE_RET tkl_vdec_init(TUYA_VDEC_HANDLE *handle, const TUYA_VDEC_CFG_T *config)
+OPERATE_RET __t9_vdec_init(TUYA_VDEC_HANDLE *handle, const TUYA_VDEC_CFG_T *config)
 {
     TUYA_VDEC_CTX_T *ctx = NULL;
     OPERATE_RET ret;
@@ -507,7 +507,7 @@ OPERATE_RET tkl_vdec_init(TUYA_VDEC_HANDLE *handle, const TUYA_VDEC_CFG_T *confi
     return OPRT_OK;
 }
 
-OPERATE_RET tkl_vdec_deinit(TUYA_VDEC_HANDLE handle)
+OPERATE_RET __t9_vdec_deinit(TUYA_VDEC_HANDLE handle)
 {
     TUYA_VDEC_CTX_T *ctx = tkl_vdec_ctx_get(handle);
     OPERATE_RET ret;
@@ -517,14 +517,14 @@ OPERATE_RET tkl_vdec_deinit(TUYA_VDEC_HANDLE handle)
         return OPRT_INVALID_PARM;
     }
 
-    ret = tkl_vdec_stop(handle);
+    ret = __t9_vdec_stop(handle);
     destroy_ret = tkl_vdec_backend_destroy(ctx);
 
     tkl_system_free(ctx);
     return (ret != OPRT_OK) ? ret : destroy_ret;
 }
 
-OPERATE_RET tkl_vdec_set_sink(TUYA_VDEC_HANDLE handle, const TUYA_VDEC_SINK_T *sink)
+OPERATE_RET __t9_vdec_set_sink(TUYA_VDEC_HANDLE handle, const TUYA_VDEC_SINK_T *sink)
 {
     TUYA_VDEC_CTX_T *ctx = tkl_vdec_ctx_get(handle);
     OPERATE_RET ret;
@@ -564,7 +564,7 @@ OPERATE_RET tkl_vdec_set_sink(TUYA_VDEC_HANDLE handle, const TUYA_VDEC_SINK_T *s
     return OPRT_OK;
 }
 
-OPERATE_RET tkl_vdec_set_pp(TUYA_VDEC_HANDLE handle, const TUYA_VDEC_PP_T *pp)
+OPERATE_RET __t9_vdec_set_pp(TUYA_VDEC_HANDLE handle, const TUYA_VDEC_PP_T *pp)
 {
     TUYA_VDEC_CTX_T *ctx = tkl_vdec_ctx_get(handle);
     TUYA_VDEC_PP_T old_pp;
@@ -603,7 +603,7 @@ OPERATE_RET tkl_vdec_set_pp(TUYA_VDEC_HANDLE handle, const TUYA_VDEC_PP_T *pp)
     return OPRT_OK;
 }
 
-OPERATE_RET tkl_vdec_start(TUYA_VDEC_HANDLE handle)
+OPERATE_RET __t9_vdec_start(TUYA_VDEC_HANDLE handle)
 {
     TUYA_VDEC_CTX_T *ctx = tkl_vdec_ctx_get(handle);
     OPERATE_RET ret;
@@ -630,7 +630,7 @@ OPERATE_RET tkl_vdec_start(TUYA_VDEC_HANDLE handle)
     return OPRT_OK;
 }
 
-OPERATE_RET tkl_vdec_stop(TUYA_VDEC_HANDLE handle)
+OPERATE_RET __t9_vdec_stop(TUYA_VDEC_HANDLE handle)
 {
     TUYA_VDEC_CTX_T *ctx = tkl_vdec_ctx_get(handle);
 
@@ -649,7 +649,7 @@ OPERATE_RET tkl_vdec_stop(TUYA_VDEC_HANDLE handle)
     return tkl_vdec_backend_close(ctx);
 }
 
-OPERATE_RET tkl_vdec_reset(TUYA_VDEC_HANDLE handle)
+OPERATE_RET __t9_vdec_reset(TUYA_VDEC_HANDLE handle)
 {
     TUYA_VDEC_CTX_T *ctx = tkl_vdec_ctx_get(handle);
 
@@ -666,7 +666,7 @@ OPERATE_RET tkl_vdec_reset(TUYA_VDEC_HANDLE handle)
                                                      NULL));
 }
 
-OPERATE_RET tkl_vdec_submit_stream(TUYA_VDEC_HANDLE handle, const TUYA_VCODEC_STREAM_T *stream)
+OPERATE_RET __t9_vdec_submit_stream(TUYA_VDEC_HANDLE handle, const TUYA_VCODEC_STREAM_T *stream)
 {
     TUYA_VDEC_CTX_T *ctx = tkl_vdec_ctx_get(handle);
     bk_jpeg_decode_input_t input;
@@ -742,7 +742,7 @@ OPERATE_RET tkl_vdec_submit_stream(TUYA_VDEC_HANDLE handle, const TUYA_VCODEC_ST
     return tkl_vdec_ret_convert(ret);
 }
 
-OPERATE_RET tkl_vdec_get_frame_size(TUYA_VDEC_HANDLE handle,
+OPERATE_RET __t9_vdec_get_frame_size(TUYA_VDEC_HANDLE handle,
                                    const TUYA_VCODEC_STREAM_T *stream,
                                    UINT32_T *size)
 {
@@ -770,7 +770,7 @@ OPERATE_RET tkl_vdec_get_frame_size(TUYA_VDEC_HANDLE handle,
     return OPRT_OK;
 }
 
-OPERATE_RET tkl_vdec_get_handle(TUYA_VDEC_HANDLE handle, VOID **backend_handle)
+OPERATE_RET __t9_vdec_get_handle(TUYA_VDEC_HANDLE handle, VOID **backend_handle)
 {
     TUYA_VDEC_CTX_T *ctx = tkl_vdec_ctx_get(handle);
 
@@ -786,7 +786,7 @@ OPERATE_RET tkl_vdec_get_handle(TUYA_VDEC_HANDLE handle, VOID **backend_handle)
     return OPRT_OK;
 }
 
-OPERATE_RET tkl_vdec_get_flexa_source(TUYA_VDEC_HANDLE handle, TUYA_VCODEC_FLEXA_BUFFER_T *flexa)
+OPERATE_RET __t9_vdec_get_flexa_source(TUYA_VDEC_HANDLE handle, TUYA_VCODEC_FLEXA_BUFFER_T *flexa)
 {
     TUYA_VDEC_CTX_T *ctx = tkl_vdec_ctx_get(handle);
 

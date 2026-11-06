@@ -17,13 +17,13 @@
 #define LOGE(...) BK_LOGE(TAG, ##__VA_ARGS__)
 #define LOGD(...) BK_LOGD(TAG, ##__VA_ARGS__)
 
-extern int tkl_gpu_get_handle(void **handle) __attribute__((weak));
+extern int __t9_gpu_get_handle(void **handle) __attribute__((weak));
 
 __attribute__((weak)) bk_gpu_ctlr_handle_t app_gpu_handle_get(void)
 {
     void *gpu_handle = NULL;
 
-    if (tkl_gpu_get_handle != NULL && tkl_gpu_get_handle(&gpu_handle) == 0) {
+    if (__t9_gpu_get_handle != NULL && __t9_gpu_get_handle(&gpu_handle) == 0) {
         return (bk_gpu_ctlr_handle_t)gpu_handle;
     }
 

@@ -9,6 +9,7 @@
 #include "tuya_cloud_types.h"
 #include "tkl_wakeup.h"
 #include "tkl_memory.h"
+#include "tkl_gpio_internal.h"
 
 #include <modules/pm.h>
 #include <driver/gpio.h>
@@ -93,6 +94,15 @@ static OPERATE_RET __gpio_wakeup_source_set(TUYA_GPIO_NUM_E gpio_num,
     gpio_int_type_t         int_type;
     pm_gpio_wakeup_config_t cfg;
     bk_err_t                err;
+
+    /* Last line before the vendor driver, which does not range-check its id.
+     * TUYA_GPIO_NUM_MAX is the cross-platform enum bound (171), not this SoC's
+     * pin count (72) - asking tkl_gpio is the only correct test. */
+    if (__t9_gpio_is_valid_pin(gpio_num) != TRUE) {
+        bk_printf("gpio wakeup source %d: pin not available on this board\r\n",
+                  (int)gpio_num);
+        return OPRT_INVALID_PARM;
+    }
 
     switch (level) {
         case TUYA_GPIO_WAKEUP_LOW:
@@ -213,6 +223,16 @@ OPERATE_RET tkl_wakeup_source_set(CONST TUYA_WAKEUP_SOURCE_BASE_CFG_T *param)
     if ((param->source != TUYA_WAKEUP_SOURCE_GPIO) &&
         (param->source != TUYA_WAKEUP_SOURCE_RTC)) {
         bk_printf("unsupport wakeup source: %d\r\n", (int)param->source);
+        return OPRT_INVALID_PARM;
+    }
+
+    /* Reject an unusable pin here, not at arm time: an entry that can never be
+     * armed would otherwise occupy a slot in the RAM table and fail every
+     * later arm pass. The vendor GPIO driver does not range-check the id. */
+    if ((param->source == TUYA_WAKEUP_SOURCE_GPIO) &&
+        (__t9_gpio_is_valid_pin(param->wakeup_para.gpio_param.gpio_num) != TRUE)) {
+        bk_printf("wakeup: gpio pin %d not available on this board\r\n",
+                  (int)param->wakeup_para.gpio_param.gpio_num);
         return OPRT_INVALID_PARM;
     }
 

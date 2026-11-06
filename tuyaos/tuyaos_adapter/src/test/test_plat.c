@@ -4890,10 +4890,10 @@ static void xplat_run_psram_nc_matrix(void)
 #if CONFIG_PSRAM && XPLAT_HAS_FB_UNCODED
     /* The slab heaps are normally brought up by the video subsystem, which this
      * app never starts, so bk_frame_buffer_malloc() would assert "not init".
-     * Routed through tkl_media_buf_init(): it owns the one guard, and
+     * Routed through __t9_media_buf_init(): it owns the one guard, and
      * bk_frame_buffer_init() is destructive. */
     if (s_uncoded_slab_inited == 0) {
-        tkl_media_buf_init();
+        __t9_media_buf_init();
         s_uncoded_slab_inited = 1;
         bk_printf("[xplat] INFO psram_nc slab init done (MEM_SLAB_HEAP_UNCODED)\r\n");
     }

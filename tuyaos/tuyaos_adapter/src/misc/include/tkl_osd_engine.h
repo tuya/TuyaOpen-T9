@@ -21,7 +21,6 @@
 #define __TKL_OSD_ENGINE_H__
 
 #include "tuya_cloud_types.h"
-#include "tkl_media_types.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -55,7 +54,7 @@ typedef struct {
  *
  * @return OPRT_OK on success. Others on error, please refer to tuya_error_code.h
  */
-OPERATE_RET tkl_osd_engine_open(TKL_OSD_BACKEND_E backend,
+OPERATE_RET __t9_osd_engine_open(TKL_OSD_BACKEND_E backend,
                                 VOID *bk_handle,
                                 CONST TKL_OSD_ENGINE_CFG_T *cfg,
                                 TKL_OSD_ENGINE_HANDLE *handle);
@@ -70,7 +69,7 @@ OPERATE_RET tkl_osd_engine_open(TKL_OSD_BACKEND_E backend,
  *
  * @return OPRT_OK on success. Others on error, please refer to tuya_error_code.h
  */
-OPERATE_RET tkl_osd_engine_close(TKL_OSD_ENGINE_HANDLE handle);
+OPERATE_RET __t9_osd_engine_close(TKL_OSD_ENGINE_HANDLE handle);
 
 /**
  * @brief Submit or clear one pre-composed overlay bitmap.
@@ -85,7 +84,7 @@ OPERATE_RET tkl_osd_engine_close(TKL_OSD_ENGINE_HANDLE handle);
  *         or the requested rotation is unsupported. Others on error, please
  *         refer to tuya_error_code.h
  */
-OPERATE_RET tkl_osd_engine_submit(TKL_OSD_ENGINE_HANDLE handle, CONST TUYA_OSD_T *osd);
+OPERATE_RET __t9_osd_engine_submit(TKL_OSD_ENGINE_HANDLE handle, CONST TUYA_OSD_T *osd);
 
 #ifdef __cplusplus
 }

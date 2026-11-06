@@ -130,13 +130,13 @@ typedef DWORD_T *PDWORD_T;
 typedef int bool_t;
 #endif
 
-#ifndef true
-#define true 1
-#endif
+//#ifndef true
+//#define true 1
+//#endif
 
-#ifndef false
-#define false 0
-#endif
+//#ifndef false
+//#define false 0
+//#endif
 
 typedef size_t SIZE_T;
 
@@ -316,7 +316,6 @@ typedef UINT_T TUYA_IP_ADDR_T;
 #define TUYA_IP_ADDR_IPV6_UADDR_EQ(a, b) (0)
 #define NW_IP_S_IPV6_IP_STR(_nw)         ((CHAR_T *)(_nw)->ip)
 #define TUYA_IP_ADDR_MAKE_IP4(val)       ((TUYA_IP_ADDR_T)(val))
-
 #endif
 
 #define MAC_ADDR_LEN 6
@@ -466,21 +465,21 @@ typedef struct{
 
 /**
  * @brief flash type
- *
+ * 
  */
 typedef enum {
     TUYA_FLASH_TYPE_BTL0 = 0,
     TUYA_FLASH_TYPE_BTL1,
     TUYA_FLASH_TYPE_STACK,
-    TUYA_FLASH_TYPE_APP_BIN,
     TUYA_FLASH_TYPE_APP,
+    TUYA_FLASH_TYPE_APP_BIN,
     TUYA_FLASH_TYPE_OTA,
     TUYA_FLASH_TYPE_USER0,
     TUYA_FLASH_TYPE_USER1,
     TUYA_FLASH_TYPE_KV_DATA,
     TUYA_FLASH_TYPE_KV_SWAP,
     TUYA_FLASH_TYPE_KV_KEY,
-    TUYA_FLASH_TYPE_UF,
+    TUYA_FLASH_TYPE_UF,    
     TUYA_FLASH_TYPE_INFO,
     TUYA_FLASH_TYPE_KV_UF,
     TUYA_FLASH_TYPE_KV_PROTECT,
@@ -499,7 +498,7 @@ typedef enum {
 
 /**
  * @brief flash partition information
- *
+ * 
  */
 typedef struct {
     UINT_T block_size;
@@ -509,7 +508,7 @@ typedef struct {
 
 /**
  * @brief flash type base information
- *
+ * 
  */
 #ifndef TUYA_FLASH_TYPE_MAX_PARTITION_NUM
 #define TUYA_FLASH_TYPE_MAX_PARTITION_NUM (TUYA_FLASH_TYPE_MAX)
@@ -786,7 +785,106 @@ typedef enum {
     TUYA_GPIO_NUM_69,
     TUYA_GPIO_NUM_70,
     TUYA_GPIO_NUM_71,
-    TUYA_GPIO_NUM_MAX = 0xFFU,
+    TUYA_GPIO_NUM_72,
+    TUYA_GPIO_NUM_73,
+    TUYA_GPIO_NUM_74,
+    TUYA_GPIO_NUM_75,
+    TUYA_GPIO_NUM_76,
+    TUYA_GPIO_NUM_77,
+    TUYA_GPIO_NUM_78,
+    TUYA_GPIO_NUM_79,
+    TUYA_GPIO_NUM_80,
+    TUYA_GPIO_NUM_81,
+    TUYA_GPIO_NUM_82,
+    TUYA_GPIO_NUM_83,
+    TUYA_GPIO_NUM_84,
+    TUYA_GPIO_NUM_85,
+    TUYA_GPIO_NUM_86,
+    TUYA_GPIO_NUM_87,
+    TUYA_GPIO_NUM_88,
+    TUYA_GPIO_NUM_89,
+    TUYA_GPIO_NUM_90,
+    TUYA_GPIO_NUM_91,
+    TUYA_GPIO_NUM_92,
+    TUYA_GPIO_NUM_93,
+    TUYA_GPIO_NUM_94,
+    TUYA_GPIO_NUM_95,
+    TUYA_GPIO_NUM_96,
+    TUYA_GPIO_NUM_97,
+    TUYA_GPIO_NUM_98,
+    TUYA_GPIO_NUM_99,
+    TUYA_GPIO_NUM_100,
+    TUYA_GPIO_NUM_101,
+    TUYA_GPIO_NUM_102,
+    TUYA_GPIO_NUM_103,
+    TUYA_GPIO_NUM_104,
+    TUYA_GPIO_NUM_105,
+    TUYA_GPIO_NUM_106,
+    TUYA_GPIO_NUM_107,
+    TUYA_GPIO_NUM_108,
+    TUYA_GPIO_NUM_109,
+    TUYA_GPIO_NUM_110,
+    TUYA_GPIO_NUM_111,
+    TUYA_GPIO_NUM_112,
+    TUYA_GPIO_NUM_113,
+    TUYA_GPIO_NUM_114,
+    TUYA_GPIO_NUM_115,
+    TUYA_GPIO_NUM_116,
+    TUYA_GPIO_NUM_117,
+    TUYA_GPIO_NUM_118,
+    TUYA_GPIO_NUM_119,
+    TUYA_GPIO_NUM_120,
+    TUYA_GPIO_NUM_121,
+    TUYA_GPIO_NUM_122,
+    TUYA_GPIO_NUM_123,
+    TUYA_GPIO_NUM_124,
+    TUYA_GPIO_NUM_125,
+    TUYA_GPIO_NUM_126,
+    TUYA_GPIO_NUM_127,
+    TUYA_GPIO_NUM_128,
+    TUYA_GPIO_NUM_129,
+    TUYA_GPIO_NUM_130,
+    TUYA_GPIO_NUM_131,
+    TUYA_GPIO_NUM_132,
+    TUYA_GPIO_NUM_133,
+    TUYA_GPIO_NUM_134,
+    TUYA_GPIO_NUM_135,
+    TUYA_GPIO_NUM_136,
+    TUYA_GPIO_NUM_137,
+    TUYA_GPIO_NUM_138,
+    TUYA_GPIO_NUM_139,
+    TUYA_GPIO_NUM_140,
+    TUYA_GPIO_NUM_141,
+    TUYA_GPIO_NUM_142,
+    TUYA_GPIO_NUM_143,
+    TUYA_GPIO_NUM_144,
+    TUYA_GPIO_NUM_145,
+    TUYA_GPIO_NUM_146,
+    TUYA_GPIO_NUM_147,
+    TUYA_GPIO_NUM_148,
+    TUYA_GPIO_NUM_149,
+    TUYA_GPIO_NUM_150,
+    TUYA_GPIO_NUM_151,
+    TUYA_GPIO_NUM_152,
+    TUYA_GPIO_NUM_153,
+    TUYA_GPIO_NUM_154,
+    TUYA_GPIO_NUM_155,
+    TUYA_GPIO_NUM_156,
+    TUYA_GPIO_NUM_157,
+    TUYA_GPIO_NUM_158,
+    TUYA_GPIO_NUM_159,
+    TUYA_GPIO_NUM_160,
+    TUYA_GPIO_NUM_161,
+    TUYA_GPIO_NUM_162,
+    TUYA_GPIO_NUM_163,
+    TUYA_GPIO_NUM_164,
+    TUYA_GPIO_NUM_165,
+    TUYA_GPIO_NUM_166,
+    TUYA_GPIO_NUM_167,
+    TUYA_GPIO_NUM_168,
+    TUYA_GPIO_NUM_169,
+    TUYA_GPIO_NUM_170,
+    TUYA_GPIO_NUM_MAX,
 } TUYA_GPIO_NUM_E;
 
 /**
@@ -805,7 +903,6 @@ typedef enum {
     TUYA_GPIO_WAKEUP_FALL,
     TUYA_GPIO_WAKEUP_MAX,
 } TUYA_GPIO_WAKE_TYPE_E;
-
 
 /**
  * @brief gpio direction
@@ -838,12 +935,11 @@ typedef enum {
     TUYA_GPIO_IRQ_LOW,
     TUYA_GPIO_IRQ_HIGH,
 } TUYA_GPIO_IRQ_E;
-
 /**
  * @brief gpio drive capability
  */
 
- typedef enum {
+typedef enum {
     TUYA_GPIO_DRIVE_CAP_0 = 0,
     TUYA_GPIO_DRIVE_CAP_1,
     TUYA_GPIO_DRIVE_CAP_2,
@@ -875,7 +971,7 @@ typedef struct {
 
 /**
  * @brief i2c num
- *
+ * 
  */
 typedef enum {
     TUYA_I2C_NUM_0,		    // I2C 0
@@ -955,7 +1051,7 @@ typedef VOID_T (*TUYA_I2C_IRQ_CB)(TUYA_I2C_NUM_E port, TUYA_IIC_IRQ_EVT_E event)
 
 /**
  * @brief i2c flag
- *
+ * 
  */
 // #define TUYA_I2C_FLAG_WR              (1u << 0) // write flag
 // #define TUYA_I2C_FLAG_RD              (1u << 1) // read flag
@@ -967,7 +1063,7 @@ typedef VOID_T (*TUYA_I2C_IRQ_CB)(TUYA_I2C_NUM_E port, TUYA_IIC_IRQ_EVT_E event)
 
 /**
  * @brief i2c message struct
- *
+ * 
  */
 // typedef struct {
 //     UINT32_T        flags;
@@ -978,7 +1074,7 @@ typedef VOID_T (*TUYA_I2C_IRQ_CB)(TUYA_I2C_NUM_E port, TUYA_IIC_IRQ_EVT_E event)
 
 /**
  * @brief PWM flag
- *
+ * 
  */
 typedef enum {
     TUYA_PWM_NUM_0,		    // PWM 0
@@ -991,8 +1087,8 @@ typedef enum {
     TUYA_PWM_NUM_7,	        // PWM 7
     TUYA_PWM_NUM_8,	        // PWM 8
     TUYA_PWM_NUM_9,	        // PWM 9
-    TUYA_PWM_NUM_10,	    // PWM 10
-    TUYA_PWM_NUM_11,	    // PWM 11
+    TUYA_PWM_NUM_10,        // PWM 10
+    TUYA_PWM_NUM_11,        // PWM 11
     TUYA_PWM_NUM_MAX,
 } TUYA_PWM_NUM_E;
 
@@ -1056,7 +1152,7 @@ typedef struct {
 
 /**
  * @brief spi mode
- *
+ * 
  */
 typedef enum {
     TUYA_SPI_NUM_0,		    // SPI 0
@@ -1077,7 +1173,7 @@ typedef enum {
 
 /**
  * @brief spi bit order
- *
+ * 
  */
 typedef enum {
     TUYA_SPI_ORDER_MSB2LSB  = 0,    // SPI Bit order from MSB to LSB
@@ -1095,7 +1191,7 @@ typedef enum {
 
 /**
  * @brief spi databits
- *
+ * 
  */
 typedef enum {
     TUYA_SPI_DATA_BIT8  = 0,
@@ -1104,7 +1200,7 @@ typedef enum {
 
 /**
  * @brief spi cs mode
- *
+ * 
  */
 typedef enum {
     TUYA_SPI_AUTO_TYPE  = 0,            // hardware auto set
@@ -1114,7 +1210,7 @@ typedef enum {
 
 /**
  * @brief spi config
- *
+ * 
  */
 typedef struct {
     TUYA_SPI_ROLE_E      role;
@@ -1123,7 +1219,7 @@ typedef struct {
     TUYA_SPI_DATABITS_E  databits;
     TUYA_SPI_BIT_ORDER_E bitorder;
     UINT_T               freq_hz;
-    UINT_T               spi_dma_flags; /*!< SPI dma format , 1 use dma */
+    UINT_T               spi_dma_flags; /*!< SPI dma format , 1 use dma */ 
 } TUYA_SPI_BASE_CFG_T;
 
 /****** SPI Event *****/
@@ -1137,13 +1233,13 @@ typedef enum {
 
 /**
  * @brief spi cb,used in irq mode
- *
+ * 
  */
 typedef VOID_T (*TUYA_SPI_IRQ_CB)(TUYA_SPI_NUM_E port, TUYA_SPI_IRQ_EVT_E event);
 
 /**
  * @brief SPI Status
- *
+ * 
  */
 typedef struct {
     UINT32_T busy       : 1;              ///< Transmitter/Receiver busy flag,1 is busy
@@ -1162,27 +1258,27 @@ typedef enum {
 } TUYA_QSPI_NUM_E;
 
 typedef enum {
-	TUYA_QSPI_READ = 0, /**< QSPI read operation */
-	TUYA_QSPI_WRITE,    /**< QSPI write operation */
+    TUYA_QSPI_READ = 0, /**< QSPI read operation */
+    TUYA_QSPI_WRITE,    /**< QSPI write operation */
 } TUYA_QSPI_OP_E;
 
 typedef enum {
-	TUYA_QSPI_1WIRE = 0, /**< QSPI 1_wire mode, standard SPI */
-	TUYA_QSPI_2WIRE,     /**< QSPI 2_wire mode, DUAL SPI */
-	TUYA_QSPI_4WIRE,     /**< QSPI 4_wire mode, QUAD SPI */
+    TUYA_QSPI_1WIRE = 0, /**< QSPI 1_wire mode, standard SPI */
+    TUYA_QSPI_2WIRE,     /**< QSPI 2_wire mode, DUAL SPI */
+    TUYA_QSPI_4WIRE,     /**< QSPI 4_wire mode, QUAD SPI */
 } TUYA_QSPI_WIRE_MODE_E;
 
 typedef struct {
     TUYA_QSPI_OP_E op;        /**< QSPI operation */
-	UCHAR_T cmd[4];               /**< QSPI command */
+    UCHAR_T cmd[4];               /**< QSPI command */
     UINT8_T  cmd_size;          /**< QSPI data length */
     TUYA_QSPI_WIRE_MODE_E cmd_lines;               /**< QSPI command lines */
-	UCHAR_T addr[4];              /**< QSPI address */
+    UCHAR_T addr[4];              /**< QSPI address */
     UINT8_T addr_size;               /**< QSPI address len */
     TUYA_QSPI_WIRE_MODE_E addr_lines;               /**< QSPI address lines */
     UCHAR_T *data;
-	UINT_T data_size;          /**< QSPI data length */
-	TUYA_QSPI_WIRE_MODE_E data_lines;               /**< QSPI data lines */
+    UINT_T data_size;          /**< QSPI data length */
+    TUYA_QSPI_WIRE_MODE_E data_lines;               /**< QSPI data lines */
     UINT_T dummy_cycle;       /**< QSPI dummy cycle */
 } TUYA_QSPI_CMD_T;
 
@@ -1200,13 +1296,13 @@ typedef enum {
 
 /****** QSPI LCD Refresh enum *****/
 typedef enum {
-    TUYA_QSPI_LCD_REFRESH_BY_LINE = 0,
+    TUYA_QSPI_LCD_REFRESH_BY_LINE = 0,   
     TUYA_QSPI_LCD_REFRESH_BY_FRAME,
 }TUYA_QSPI_LCD_REFRESH_METHOD_E;
 
 /****** QSPI LCD Refresh enum *****/
 typedef enum {
-    TUYA_QSPI_TYPE_FLASH = 0,
+    TUYA_QSPI_TYPE_FLASH = 0,   
     TUYA_QSPI_TYPE_PSRAM,
     TUYA_QSPI_TYPE_LCD
 }TUYA_QSPI_MODULE_TYPE_E;
@@ -1218,8 +1314,8 @@ typedef enum {
 typedef struct {
     TUYA_QSPI_ROLE_E      role; /** QSPI Master / Slave */
     TUYA_QSPI_MODE_E      mode;
-	UINT_T freq_hz;       /**< QSPI controller clock divide number */
-	BOOL_T use_dma;       /**< QSPI dma mode*/
+    UINT_T freq_hz;       /**< QSPI controller clock divide number */
+    BOOL_T use_dma;       /**< QSPI dma mode*/
     TUYA_QSPI_WIRE_MODE_E dma_data_lines;
     TUYA_QSPI_MODULE_TYPE_E type;
     // TUYA_QSPI_LCD_REFRESH_METHOD_E refresh_method;  /**< QSPI lcd mode*/
@@ -1240,7 +1336,7 @@ typedef VOID_T (*TUYA_QSPI_IRQ_CB)(TUYA_QSPI_NUM_E port, TUYA_QSPI_IRQ_EVT_E eve
 
 /**
  * @brief i2s message struct
- *
+ * 
  */
 
 /**
@@ -1249,7 +1345,7 @@ typedef VOID_T (*TUYA_QSPI_IRQ_CB)(TUYA_QSPI_NUM_E port, TUYA_QSPI_IRQ_EVT_E eve
 typedef enum {
     TUYA_I2S_NUM_0 = 0,                 /*!< I2S port 0 */
     TUYA_I2S_NUM_1 = 1,                 /*!< I2S port 1 */
-    TUYA_I2S_NUM_2 = 2,                 /*!< I2S port 1 */
+    TUYA_I2S_NUM_2 = 2,                 /*!< I2S port 2 */
     TUYA_I2S_NUM_MAX,                   /*!< I2S port max */
 } TUYA_I2S_NUM_E;
 
@@ -1297,7 +1393,7 @@ typedef struct {
     UINT32_T                    i2s_dma_flags;              /*!< I2S dma format , 1 use dma */
     VOID_T                     *upper_rx_cb;                 /*!< RX data callback (TKL_AUD_INPUT_CB), NULL if unused */
     VOID_T                     *rx_args;                    /*!< RX callback user data */
-    VOID_T                     *upper_tx_cb;                /*!< TX frame-done callback (TKL_AUD_DAC_FRAME_CB), NULL if unused */
+    VOID_T                     *upper_tx_cb;                /*!< TX frame-done callback (TUYA_AUDIO_OUTPUT_CB), NULL if unused */
     VOID_T                     *tx_args;                    /*!< TX frame-done callback user data */
 }TUYA_I2S_BASE_CFG_T;
 
@@ -1313,26 +1409,25 @@ typedef enum {
     TUYA_SDIO_NUM_MAX,
 } TUYA_SDIO_NUM_E;
 
-
     // 文件访问权限
 #define TUYA_IRUSR  0400    /* Read by owner.  */
 #define TUYA_IWUSR  0200    /* Write by owner.  */
 #define TUYA_IXUSR  0100    /* Execute by owner.  */
-
-
+     
+     
     // 缓冲区搜索起始位置类型
 #define TUYA_SEEK_SET   0   /* Seek from beginning of file.  */
 #define TUYA_SEEK_CUR   1   /* Seek from current position.  */
 #define TUYA_SEEK_END   2   /* Seek from end of file.  */
-
+     
 #define TUYA_R_OK       4
 #define TUYA_W_OK       2
 #define TUYA_X_OK       1
 #define TUYA_F_OK       0
-
+ 
 typedef VOID_T* TUYA_DIR;
 typedef VOID_T* TUYA_FILEINFO;
-typedef VOID_T* TUYA_FILE;
+typedef VOID_T* TUYA_FILE; 
 
 
 /**
@@ -1429,17 +1524,17 @@ typedef struct {
  *  ota pack data, write to flash addr(start_addr + offset)
  */
 typedef struct {
-    UINT_T   total_len;     ///< ota image totle len
-    UINT_T   start_addr;    ///< ota flash start addr
+    UINT_T   total_len;     ///< ota image totle len   
     UINT_T   offset;        ///< ota image offset
     UCHAR_T* data;          ///< ota data
     UINT_T   len;           ///< ota data len
     VOID_T*  pri_data;      ///< private pointer
+    UINT_T   start_addr;    ///< ota flash start addr 
 } TUYA_OTA_DATA_T;
 
 /**
  * @brief uart type
- *
+ * 
  */
 typedef enum {
     TUYA_UART_NUM_0,		    // UART 0
@@ -1455,12 +1550,13 @@ typedef enum {
     TUYA_UART_SYS = 0,
     TUYA_UART_USB,
     TUYA_UART_SDIO,
+    TUYA_UART_WCH,
     TUYA_UART_MAX_TYPE,
 } TUYA_UART_TYPE_E;
 
 /**
  * @brief uart databits
- *
+ * 
  */
 typedef enum {
     TUYA_UART_DATA_LEN_5BIT      = 0x05,
@@ -1471,7 +1567,7 @@ typedef enum {
 
 /**
  * @brief uart stop bits
- *
+ * 
  */
 typedef enum {
     TUYA_UART_STOP_LEN_1BIT      = 0x01,
@@ -1481,7 +1577,7 @@ typedef enum {
 
 /**
  * @brief uart parity
- *
+ * 
  */
 typedef enum {
     TUYA_UART_PARITY_TYPE_NONE    = 0,
@@ -1502,7 +1598,7 @@ typedef enum {
 
 /**
  * @brief uart config
- *
+ * 
  */
 typedef struct {
     UINT_T                      baudrate;
@@ -1515,7 +1611,7 @@ typedef struct {
 
 /**
  * @brief uart irq callback
- *
+ * 
  * @param[in] port_id: uart port id
  *                     the high 16bit - uart type
  *                                      it's value must be one of the TUYA_UART_TYPE_E type
@@ -1612,128 +1708,310 @@ typedef struct {
 	DISPLAY_PIXEL_FORMAT_E pixel_fmt;
 } TUYA_8080_BASE_CFG_T;
 
+/**
+ * @brief Pixel layout or coded format of a frame's content.
+ *
+ * The values are **bit flags** - one bit per format - so a port that reports or
+ * accepts a set of formats may OR them together. Each format therefore owns
+ * exactly one bit: never reuse or renumber a released value, and append new
+ * formats on the next free bit.
+ */
 typedef enum {
-    TUYA_FRAME_FMT_UNKNOWN = 0,
-    TUYA_FRAME_FMT_YUYV = (1U << 0),           /**< YUYV format (LCD/JPEG decode support) */
-    TUYA_FRAME_FMT_VYUY = (1U << 1),           /**< VYUY format (JPEG decode support) */
-    TUYA_FRAME_FMT_UYVY = (1U << 2),           /**< UYVY format */
-    TUYA_FRAME_FMT_YYUV = (1U << 3),           /**< YYUV format (JPEG decode support) */
-    TUYA_FRAME_FMT_VUYY = (1U << 4),           /**< VUYY format (JPEG decode support) */
-    TUYA_FRAME_FMT_UVYY = (1U << 5),           /**< UVYY format */
-    TUYA_FRAME_FMT_YUV422 = (1U << 6),
-    TUYA_FRAME_FMT_YUV420 = (1U << 7),
-    TUYA_FRAME_FMT_RGB565 = (1U << 8),
-    TUYA_FRAME_FMT_RGB888 = (1U << 9),
-    TUYA_FRAME_FMT_JPEG = (1U << 10),
-    TUYA_FRAME_FMT_H264 = (1U << 11),
-    TUYA_FRAME_FMT_H264_I = (1U << 12),  /**< H.264 I-frame */
-    TUYA_FRAME_FMT_H264_P = (1U << 13),  /**< H.264 P-frame */
-    TUYA_FRAME_FMT_H264_B = (1U << 14),  /**< H.264 B-frame */
-    TUYA_FRAME_FMT_H265 = (1U << 15),
-    /* --- T9 multimedia additions; appended, do not renumber above --- */
-    TUYA_FRAME_FMT_NV12 = (1U << 16),      /* YCbCr 4:2:0 semiplanar, Y plane then interleaved CbCr; != YUV420 */
-    TUYA_FRAME_FMT_ARGB8888 = (1U << 17),
-    TUYA_FRAME_FMT_ABGR8888 = (1U << 18),
-    /* Raw Bayer phase, CMOS sensor output format */
-    TUYA_FRAME_FMT_BGGR10 = (1U << 19),    /* B G / G R, 10-bit */
-    TUYA_FRAME_FMT_GBRG10 = (1U << 20),    /* G B / R G, 10-bit */
-    TUYA_FRAME_FMT_GRBG10 = (1U << 21),    /* G R / B G, 10-bit */
-    TUYA_FRAME_FMT_RGGB10 = (1U << 22),    /* R G / G B, 10-bit */
+    TUYA_FRAME_FMT_UNKNOWN  = 0,           /**< not specified / unrecognized */
+
+    /* --- packed YUV 4:2:2 --- */
+    TUYA_FRAME_FMT_YUYV     = (1U << 0),   /**< YUYV (LCD / JPEG decode support) */
+    TUYA_FRAME_FMT_VYUY     = (1U << 1),   /**< VYUY (JPEG decode support) */
+    TUYA_FRAME_FMT_UYVY     = (1U << 2),   /**< UYVY */
+    TUYA_FRAME_FMT_YYUV     = (1U << 3),   /**< YYUV (JPEG decode support) */
+    TUYA_FRAME_FMT_VUYY     = (1U << 4),   /**< VUYY (JPEG decode support) */
+    TUYA_FRAME_FMT_UVYY     = (1U << 5),   /**< UVYY */
+
+    /* --- planar / semi-planar YUV --- */
+    TUYA_FRAME_FMT_YUV422   = (1U << 6),   /**< YCbCr 4:2:2 planar */
+    TUYA_FRAME_FMT_YUV420   = (1U << 7),   /**< YCbCr 4:2:0 planar */
+    TUYA_FRAME_FMT_YUV444   = (1U << 8),   /**< YCbCr 4:4:4 planar */
+    TUYA_FRAME_FMT_NV12     = (1U << 9),   /**< YCbCr 4:2:0 semiplanar, Y plane then interleaved CbCr; != YUV420 */
+
+    /* --- RGB / ARGB --- */
+    TUYA_FRAME_FMT_RGB565   = (1U << 10),  /**< RGB565 */
+    TUYA_FRAME_FMT_RGB666   = (1U << 11),  /**< RGB666 */
+    TUYA_FRAME_FMT_RGB888   = (1U << 12),  /**< RGB888 */
+    TUYA_FRAME_FMT_ARGB8888 = (1U << 13),  /**< ARGB8888; the overlay default */
+    TUYA_FRAME_FMT_ABGR8888 = (1U << 14),  /**< ABGR8888 */
+
+    /* --- coded streams --- */
+    TUYA_FRAME_FMT_JPEG     = (1U << 15),  /**< JPEG / MJPEG */
+    TUYA_FRAME_FMT_H264     = (1U << 16),  /**< H.264 bitstream, frame type unspecified */
+    TUYA_FRAME_FMT_H264_I   = (1U << 17),  /**< H.264 I-frame */
+    TUYA_FRAME_FMT_H264_P   = (1U << 18),  /**< H.264 P-frame */
+    TUYA_FRAME_FMT_H264_B   = (1U << 19),  /**< H.264 B-frame */
+    TUYA_FRAME_FMT_H265     = (1U << 20),  /**< H.265 bitstream */
+
+    /* --- raw Bayer phase, CMOS sensor output --- */
+    TUYA_FRAME_FMT_BGGR10   = (1U << 21),  /**< B G / G R, 10-bit */
+    TUYA_FRAME_FMT_GBRG10   = (1U << 22),  /**< G B / R G, 10-bit */
+    TUYA_FRAME_FMT_GRBG10   = (1U << 23),  /**< G R / B G, 10-bit */
+    TUYA_FRAME_FMT_RGGB10   = (1U << 24),  /**< R G / G B, 10-bit */
+
+    /* bits 25..31 stay free for future formats */
 } TUYA_FRAME_FMT_E;
 
 typedef enum {
-    TUYA_CAMERA_OUTPUT_YUV422,
-    TUYA_CAMERA_OUTPUT_JPEG,
-    TUYA_CAMERA_OUTPUT_H264,
-    TUYA_CAMERA_OUTPUT_JPEG_YUV422_BOTH,
-    TUYA_CAMERA_OUTPUT_H264_YUV422_BOTH,
-} TUYA_CAMERA_OUTPUT_MODE;
+	TUYA_FRAME_ROTATE_0,
+	TUYA_FRAME_ROTATE_90,
+	TUYA_FRAME_ROTATE_180,
+	TUYA_FRAME_ROTATE_270,
+} TUYA_FRAME_ROTATE_E;
 
+/** Output channel address - one address space across configuration,
+ *  get_frame()/set_pp()/set_osd()/set_gop()/resume/cancel and
+ *  TUYA_MEDIA_BUF_T.channel. What each channel carries is defined by the
+ *  per-peripheral topology tables in tkl_mipi_csi.h and tkl_uvc.h. This
+ *  version accepts channels 0..3; 4..9 are reserved. */
 typedef enum {
-    TUYA_DVP_SYNC_MODE_0,      /* hsync: high valid,   vsync: high valid */
-    TUYA_DVP_SYNC_MODE_1,      /* hsync: high valid,   vsync: low valid */
-    TUYA_DVP_SYNC_MODE_2,      /* hsync: low valid,    vsync: high valid */
-    TUYA_DVP_SYNC_MODE_3,      /* hsync: low valid,    vsync: low valid */
-} TUYA_DVP_SYNC_MODE;
+    TUYA_CAMERA_FRAME_CHANNEL_0     = 0,
+    TUYA_CAMERA_FRAME_CHANNEL_1     = 1,
+    TUYA_CAMERA_FRAME_CHANNEL_2     = 2,
+    TUYA_CAMERA_FRAME_CHANNEL_3     = 3,
+    TUYA_CAMERA_FRAME_CHANNEL_4     = 4,
+    TUYA_CAMERA_FRAME_CHANNEL_5     = 5,
+    TUYA_CAMERA_FRAME_CHANNEL_6     = 6,
+    TUYA_CAMERA_FRAME_CHANNEL_7     = 7,
+    TUYA_CAMERA_FRAME_CHANNEL_8     = 8,
+    TUYA_CAMERA_FRAME_CHANNEL_9     = 9,
+    TUYA_CAMERA_FRAME_CHANNEL_MAX   = 10,
+} TUYA_CAMERA_FRAME_CHANNEL_E;
 
-typedef struct
-{
-    UINT32_T frame_id;
-    UINT8_T is_frame_complete;
-    UINT8_T is_i_frame;
-    TUYA_FRAME_FMT_E frame_fmt;
-    UINT16_T width;
-	UINT16_T height;
-    UINT32_T data_len;
-    UINT8_T *data;
-    UINT32_T total_frame_len;
-} TUYA_DVP_FRAME_MANAGE_T;
+/* forward typedef: free_cb below takes the buffer's own type, which is not
+ * complete until the struct closes - C forbids the naked self-reference */
+typedef struct TUYA_MEDIA_BUF_S TUYA_MEDIA_BUF_T;
 
-// H.264 编码质量参数
+/**
+ * @brief One media buffer, plus everything needed to release it.
+ *
+ * @note **The release function travels with the buffer.** Frames come from
+ *       different pools and only the producing peripheral knows which, so call
+ *       @ref free_cb on the struct when done - it releases @ref buffer and the
+ *       struct itself when TKL owns them. The caller only ever calls free_cb,
+ *       never free().
+ * @note @ref free_cb may be NULL for a buffer the caller already owns, such as
+ *       the destination of tkl_image_codec_convert().
+ * @note @ref channel names the output channel that produced this buffer
+ *       (TUYA_CAMERA_FRAME_CHANNEL_E; what each channel carries is defined by
+ *       the per-peripheral topology tables in tkl_mipi_csi.h / tkl_uvc.h).
+ *       Business demuxes on it when two channels deliver the same format.
+ * @note @ref format describes the content in @ref buffer. For pixel formats,
+ *       width/height describe the image layout. For coded H.264 the format
+ *       names the frame type directly: TUYA_FRAME_FMT_H264_I / H264_P / H264_B.
+ */
+struct TUYA_MEDIA_BUF_S {
+    UINT8_T  *buffer;
+    UINT32_T  length;         /**< bytes of valid content */
+    VOID_T  (*free_cb)(TUYA_MEDIA_BUF_T *frame);  /**< release @ref buffer (and the struct
+                                          itself when TKL owns it); NULL = caller owns it */
+
+    TUYA_CAMERA_FRAME_CHANNEL_E channel;
+    TUYA_FRAME_FMT_E format; /**< content pixel layout or coded format */
+    UINT64_T  timestamp;          /**< milliseconds since boot */
+
+    /* pixel formats */
+    UINT16_T  width;
+    UINT16_T  height;
+
+    VOID_T *priv;           /**< peripheral-private; never touch */
+    VOID_T *user_args;      /**< the arg registered with the callback that
+                                 delivered this buffer */
+};
+
+
+#define TUYA_MEDIA_BUF_HDR  (((UINT32_T)sizeof(TUYA_MEDIA_BUF_T) + 63U) & ~(UINT32_T)63U)
+
+/**
+ * @brief Camera lifecycle and error events, reported via TUYA_CAMERA_EVENT_CB.
+ *
+ * Channel-scoped faults name the channel in the event value itself (what each
+ * channel carries is defined by the per-peripheral topology tables in
+ * tkl_mipi_csi.h / tkl_uvc.h); hardware-scoped faults name the hardware, whose
+ * channel the topology pins. Handlers run on a vendor or delivery thread -
+ * keep them short.
+ */
+typedef enum {
+    /* lifecycle */
+    TUYA_CAMERA_EVENT_NONE = 0,
+    TUYA_CAMERA_EVENT_CONNECT,              /**< UVC: device plugged */
+    TUYA_CAMERA_EVENT_DISCONNECT,           /**< UVC: device unplugged */
+    TUYA_CAMERA_EVENT_INIT,
+    TUYA_CAMERA_EVENT_START,
+    TUYA_CAMERA_EVENT_STOP,
+    TUYA_CAMERA_EVENT_DEINIT,
+    /* channel-scoped flow faults; values 7-15 reserved */
+    TUYA_CAMERA_EVENT_ERR_INIT = 16,
+    TUYA_CAMERA_EVENT_ERR_START,
+    TUYA_CAMERA_EVENT_ERR_STOP,
+    TUYA_CAMERA_EVENT_ERR_DEINIT,
+    TUYA_CAMERA_EVENT_ERR_OVERFLOW_CH1,     /**< ch1 delivery/parking consumer too slow */
+    TUYA_CAMERA_EVENT_ERR_OVERFLOW_CH2,     /**< ch2 display path dropped frames */
+    TUYA_CAMERA_EVENT_ERR_OVERFLOW_CH3,     /**< ch3 encode path dropped frames */
+    TUYA_CAMERA_EVENT_ERR_TIMEOUT_CH1,      /**< ch1 no frame for >3 s */
+    TUYA_CAMERA_EVENT_ERR_TIMEOUT_CH2,      /**< ch2 no frame for >3 s */
+    TUYA_CAMERA_EVENT_ERR_TIMEOUT_CH3,      /**< ch3 no frame for >3 s */
+    /* hardware-scoped faults; the topology pins each to one channel */
+    TUYA_CAMERA_EVENT_ERR_GPU,              /**< ch2 display pipeline failure */
+    TUYA_CAMERA_EVENT_ERR_VENC,             /**< ch3 encode failure */
+    TUYA_CAMERA_EVENT_ERR_VDEC,             /**< UVC ch1 decode failure */
+    /* peripheral-scoped faults */
+    TUYA_CAMERA_EVENT_ERR_SENSOR,           /**< CSI: I2C / power / detect failure */
+    TUYA_CAMERA_EVENT_ERR_CSI,              /**< CSI: MIPI bus / ISP error */
+    TUYA_CAMERA_EVENT_ERR_USB,              /**< UVC: transfer / enumeration error (reserved) */
+    TUYA_CAMERA_EVENT_ERR_ALLOC,            /**< media buffer allocation failure */
+    TUYA_CAMERA_EVENT_ERR_BAD_FORMAT ,      /**< UVC: device advertised an unsupported format (reserved) */
+} TUYA_CAMERA_EVENT_E;
+
+/** Camera event notification; channel info travels in the event value, so the
+ *  callback carries no channel argument. Runs on a vendor or delivery thread. */
+typedef VOID (*TUYA_CAMERA_EVENT_CB)(TUYA_CAMERA_EVENT_E event, VOID_T *arg);
+
+/**
+ * @brief Delivery callback for a produced buffer.
+ * @param[in] buf produced buffer; valid only for the duration of the call
+ *                unless the callee takes ownership via buf->free_cb. The
+ *                context registered with this callback arrives in
+ *                buf->user_args.
+ */
+typedef VOID_T (*TUYA_MEDIA_BUF_CB)(CONST TUYA_MEDIA_BUF_T *buf);
+
+/** Encoder bitrate presets for TUYA_MEDIA_OUTPUT_CFG_T.level (ch3 only). */
+typedef enum {
+    TUYA_ENCODE_BITRATE_LEVEL_LOW     = 1, // low bitrate
+    TUYA_ENCODE_BITRATE_LEVEL_MEDIUM  = 2, // medium bitrate
+    TUYA_ENCODE_BITRATE_LEVEL_HIGH    = 3, // high bitrate
+    TUYA_ENCODE_BITRATE_LEVEL_MAX = 4,
+} TUYA_ENCODE_BITRATE_LEVEL_E;
+
+/** Camera input frame: sensor (MIPI CSI) or USB device (UVC) geometry. */
 typedef struct {
-    UINT8_T enable;
-    UINT8_T init_qp;
-    UINT8_T i_min_qp;
-    UINT8_T i_max_qp;
-    UINT8_T p_min_qp;
-    UINT8_T p_max_qp;
-	UINT16_T i_block_bits;
-	UINT16_T p_block_bits;
-} H264_CFG;
+    UINT16_T         width;
+    UINT16_T         height;
+    UINT8_T          fps;
+    TUYA_FRAME_FMT_E format;
+} TUYA_CAMERA_FRAME_CFG_T;
 
-// JPEG 编码质量参数
+/**
+ * @brief One output channel request, addressed by @ref channel.
+ *
+ * One struct serves every channel. The per-peripheral topology tables in
+ * tkl_mipi_csi.h / tkl_uvc.h define what each channel is and which fields it
+ * honors; fields a channel does not honor must be 0 - init() rejects the
+ * request otherwise. Rules common to both peripherals:
+ *  - one entry per channel; channels 0..3 are accepted in this version;
+ *  - ch2 (display) / ch3 (encode) require @ref cb - they are push outputs;
+ *  - a channel configured with @ref cb is push-only: get_frame() on it fails;
+ *  - @ref gop / @ref level are encode-only (ch3); gop 0 = encoder default,
+ *    level selects a bitrate preset;
+ *  - @ref rotate is honored on ch2 only, where 0/90/270 are supported;
+ *  - ch0/ch1 geometry: width/height 0 on a pull channel means the MP output
+ *    geometry, not the sensor's native size (a ch1-only camera has no MP
+ *    consumer, and there the MP falls back to the full sensor frame);
+ *    an NV12 pull channel additionally needs even dimensions.
+ * init() deep-copies the outputs array, so the caller may release its cfg
+ * after init() returns.
+ */
 typedef struct {
-    UINT8_T enable;
-    UINT16_T max_size; // uint: KB
-    UINT16_T min_size; // uint: KB
-} JPEG_CFG;
+    TUYA_CAMERA_FRAME_CHANNEL_E channel;
+    TUYA_FRAME_ROTATE_E         rotate;
+    UINT16_T         width;
+    UINT16_T         height;
+    TUYA_FRAME_FMT_E format;
+    UINT32_T        gop; // H.264/H.265 (ch3); 0 = encoder default
+    TUYA_ENCODE_BITRATE_LEVEL_E     level; // H.264/H.265 bitrate level (ch3)
+    TUYA_MEDIA_BUF_CB cb;
+    VOID_T          *arg;
+} TUYA_MEDIA_OUTPUT_CFG_T;
 
-typedef struct
-{
-    JPEG_CFG jpeg_cfg;
-    H264_CFG h264_cfg;
-} TUYA_DVP_ENCODED_QUALITY;
+/* ---------------------------------------------------------------------------
+ * OSD overlay
+ * --------------------------------------------------------------------------- */
 
-typedef OPERATE_RET (*DVP_SET_UP_CB)(VOID_T *args);
-typedef TUYA_DVP_FRAME_MANAGE_T *(*DVP_FRAME_ASSIGN_CB)(TUYA_FRAME_FMT_E fmt, VOID_T *args);
-typedef OPERATE_RET (*DVP_FRAME_POST_CB)(TUYA_DVP_FRAME_MANAGE_T *dvp_frame, VOID_T *args);
-
-typedef struct
-{
-    DVP_SET_UP_CB setup_cb;
-    DVP_FRAME_ASSIGN_CB assign_cb;
-    DVP_FRAME_POST_CB post_cb;
-    VOID_T *cb_param;
-    UINT32_T sensor_clk;
-    /*ToDo: Add param which tkl_dvp needed*/
-} TUYA_DVP_TKL_CFG_T;
-
+/**
+ * @brief One pre-composed overlay bitmap.
+ *
+ * @note The caller composes text, icons and masks before submitting. @ref data
+ *       is a contiguous bitmap in @ref format with no stride padding (row
+ *       stride equals the packed row width of the format).
+ * @note @ref format carries a TUYA_FRAME_FMT_E value. 0 keeps the facade
+ *       default TUYA_FRAME_FMT_ARGB8888. The display path (ch2) additionally
+ *       accepts TUYA_FRAME_FMT_NV12, which it consumes natively. The encode
+ *       path (ch3) accepts TUYA_FRAME_FMT_ARGB8888 only.
+ * @note TKL neither allocates, copies nor releases @ref data. The buffer must
+ *       remain hardware-readable for as long as the backend retains it.
+ * @note A non-NULL @ref data updates the overlay identified by (@ref dst_x,
+ *       @ref dst_y), or consumes one hardware overlay slot for a new position.
+ *       A NULL @ref data clears that position; w/h/rotate are ignored then.
+ */
 typedef struct {
-    UINT16_T fps;
-    UINT16_T width;
-    UINT16_T height;
-    TUYA_DVP_SYNC_MODE sync_polarity;
-    TUYA_CAMERA_OUTPUT_MODE output_mode;
-    TUYA_DVP_ENCODED_QUALITY encoded_quality;
-    TUYA_DVP_TKL_CFG_T inter_cfg;
-} TUYA_DVP_CFG_T;
+    UINT16_T dst_x;  /**< overlay origin in the channel coordinate system */
+    UINT16_T dst_y;
+    UINT16_T w;      /**< bitmap width in pixels */
+    UINT16_T h;      /**< bitmap height in pixels */
+    TUYA_FRAME_ROTATE_E rotate; /**< ch2 (display): 0/90/270; ch3 (encode): 0 only */
+    TUYA_FRAME_FMT_E format; /**< TUYA_FRAME_FMT_E of @p data; 0 = default TUYA_FRAME_FMT_ARGB8888 */
+    CONST VOID *data; /**< contiguous pixels in @ref format, owned by the caller */
+} TUYA_OSD_T;
 
 typedef VOID_T *TKL_AUDIO_INPUT_HANDLE;
 typedef VOID_T *TKL_AUDIO_OUTPUT_HANDLE;
 
 /**
- * @brief audio adc channel
+ * @brief audio dac channel
  *
+ * @note The playback path has no per-channel gain axis - the output is
+ *       described by @ref TUYA_AUDIO_DAC_BASE_CFG_T.dac_chan alone - so this enum
+ *       only names the channel argument of @ref tkl_aud_dac_set_gain. The
+ *       reference implementation ignores it.
  */
 typedef enum {
-    TUYA_AUDIO_ADC_CHANNEL_L,
-    TUYA_AUDIO_ADC_CHANNEL_R,
-    TUYA_AUDIO_ADC_CHANNEL_LR,
-    TUYA_AUDIO_ADC_CHANNEL_MIC3,   /**< AEC-reference mic, index 2 in [mic1,mic2,mic3] frame */
-    TUYA_AUDIO_ADC_CHANNEL_RAW3, /**< Full 3ch interleaved [mic1,mic2,mic3] to upper_cb */
-    TUYA_AUDIO_ADC_CHANNEL_MAX
-} TUYA_AUDIO_ADC_CHAN_E;
+    TUYA_AUDIO_DAC_CHANNEL_0 = BIT(0),
+    TUYA_AUDIO_DAC_CHANNEL_1 = BIT(1),
+    TUYA_AUDIO_DAC_CHANNEL_2 = BIT(2),
+    TUYA_AUDIO_DAC_CHANNEL_3 = BIT(3),
+    TUYA_AUDIO_DAC_CHANNEL_4 = BIT(4),
+    TUYA_AUDIO_DAC_CHANNEL_5 = BIT(5),
+    TUYA_AUDIO_DAC_CHANNEL_6 = BIT(6),
+    TUYA_AUDIO_DAC_CHANNEL_7 = BIT(7),
+    TUYA_AUDIO_DAC_CHANNEL_8 = BIT(8),
+    TUYA_AUDIO_DAC_CHANNEL_9 = BIT(9),
 
+    /* bitmap mask bit marking the end of the channel bitmap, NOT a channel count */
+    TUYA_AUDIO_DAC_CHANNEL_MAX = BIT(10)
+} TUYA_AUDIO_DAC_CHANNEL_E;
+
+/**
+ * @brief audio mic channel bitmap
+ *
+ * @note ADC channels occupy bit0~bit3, DMIC channels occupy bit8~bit11,
+ *       I2S channels occupy bit16~bit19, UVC channels occupy bit24~bit27.
+ *       Multiple channels can be enabled by OR-ing their bits together.
+ */
+typedef enum {
+    TUYA_AUDIO_ADC_CHANNEL_0 = BIT(0),
+    TUYA_AUDIO_ADC_CHANNEL_1 = BIT(1),
+    TUYA_AUDIO_ADC_CHANNEL_2 = BIT(2),
+    TUYA_AUDIO_ADC_CHANNEL_3 = BIT(3),
+
+    TUYA_AUDIO_DMIC_CHANNEL_0 = BIT(8),
+    TUYA_AUDIO_DMIC_CHANNEL_1 = BIT(9),
+    TUYA_AUDIO_DMIC_CHANNEL_2 = BIT(10),
+    TUYA_AUDIO_DMIC_CHANNEL_3 = BIT(11),
+
+    /* bitmap mask bit marking the end of the channel bitmap, NOT a channel count */
+    TUYA_AUDIO_MIC_CHANNEL_MAX = BIT(31)
+} TUYA_AUDIO_MIC_CHANNEL_E;
+
+/**
+ * @brief audio adc port
+ *
+ */
 typedef enum {
     TUYA_AUDIO_ADC_PORT_0,
     TUYA_AUDIO_ADC_PORT_1,
@@ -1741,6 +2019,14 @@ typedef enum {
     TUYA_AUDIO_ADC_PORT_MAX
 } TUYA_AUDIO_ADC_PORT_E;
 
+/**
+ * @brief Event carried by an input (capture) callback.
+ *
+ * Split into one range per capture family: analog ADC in 0x000..0x0FF, digital
+ * DMIC in 0x100..0x1FF. Each family has its own `_MAX` sentinel, so the
+ * sentinels are not a bound on the whole enum - TUYA_AUDIO_FRAME_EVENT_ADC_MAX
+ * sits at 1 - and must not be used to terminate a loop.
+ */
 typedef enum {
     TUYA_AUDIO_FRAME_EVENT_ADC_RX = 0,
     TUYA_AUDIO_FRAME_EVENT_ADC_MAX,
@@ -1752,10 +2038,34 @@ typedef enum {
     TUYA_AUDIO_FRAME_EVENT_I2S_MAX
 } TUYA_AUDIO_FRAME_EVT_E;
 
-typedef VOID_T (*TKL_AUD_INPUT_CB)(TUYA_AUDIO_FRAME_EVT_E event, uint8_t *buf, uint32_t buf_len, VOID_T *args);
+/**
+ * @brief audio input data reported to the upper layer
+ *
+ * @note @p data is owned by the driver and is only valid inside the callback.
+ *       @p buffer itself is also callback-scoped (usually stack allocated by the
+ *       driver), so it must not be stored for later use.
+ *       Each element of @p chan is a single channel enumerator, and the
+ *       elements are ordered exactly as the channel samples are arranged in
+ *       @p data. Only entries [0, @p chan_num) are valid; @p chan_num is the
+ *       number of channels contained in @p data and is at most 8.
+ */
+typedef struct {
+    TUYA_AUDIO_FRAME_EVT_E event;       /* frame event: ADC/DMIC/I2S RX */
+    UINT8_T *data;                      /* PCM data buffer */
+    UINT32_T data_len;                  /* PCM data length in bytes */
+    TUYA_AUDIO_MIC_CHANNEL_E chan[8];      /* data中音频数据对应通道排列顺序 */
+    UINT8_T chan_num;                   /* data中包含数据通道个数 */
+    VOID_T *args;                       /* user private data registered in the device config */
+} TUYA_AUDIO_INPUT_BUFFER_T;
 
 /**
- * @brief audio digital
+ * @brief audio input data callback
+ * @param[in] buffer audio input data and metadata
+ */
+typedef VOID_T (*TUYA_AUDIO_INPUT_CB)(TUYA_AUDIO_INPUT_BUFFER_T *buffer);
+
+/**
+ * @brief audio dmic port
  *
  */
 typedef enum {
@@ -1765,16 +2075,8 @@ typedef enum {
     TUYA_AUDIO_DMIC_PORT_MAX
 } TUYA_AUDIO_DMIC_PORT_E;
 
-typedef enum {
-    TUYA_AUDIO_DMIC_CHANNEL_L,
-    TUYA_AUDIO_DMIC_CHANNEL_R,
-    TUYA_AUDIO_DMIC_CHANNEL_LR,
-    TUYA_AUDIO_DMIC_CHANNEL_MAX
-} TUYA_AUDIO_DMIC_CHAN_E;
-
-
 /**
- * @brief audio dac
+ * @brief audio dac port
  *
  */
 typedef enum {
@@ -1784,12 +2086,23 @@ typedef enum {
     TUYA_AUDIO_DAC_PORT_MAX
 } TUYA_AUDIO_DAC_PORT_E;
 
+/**
+ * @brief Event carried by an output (playback) callback.
+ */
 typedef enum {
     TUYA_AUDIO_DAC_FRAME_EVENT_TX_COMPLETE = 0,
     TUYA_AUDIO_DAC_FRAME_EVENT_MAX
-}TUYA_AUDIO_DAC_FRAME_EVT_E;
+} TUYA_AUDIO_DAC_FRAME_EVT_E;
 
-
+/**
+ * @brief Playback callback.
+ *
+ * @param[in] event Why the callback fired; see @ref TUYA_AUDIO_DAC_FRAME_EVT_E.
+ * @param[in] args  Opaque pointer from the config struct.
+ *
+ * @note Runs in the DMA interrupt context and must not block.
+ */
+typedef VOID_T (*TUYA_AUDIO_OUTPUT_CB)(TUYA_AUDIO_DAC_FRAME_EVT_E event, VOID_T *args);
 
 /**
  * @brief audio sample
@@ -1799,12 +2112,12 @@ typedef enum {
     TUYA_AUDIO_SAMPLE_BITS_8 = 8,
     TUYA_AUDIO_SAMPLE_BITS_16 = 16,
     TUYA_AUDIO_SAMPLE_BITS_24 = 24,
-    TUYA_AUDIO_SAMPLE_BITS_32 = 32,
+    TUYA_AUDIO_SAMPLE_BITS_32 = 32
 } TUYA_AUDIO_SAMPLE_BITS_E;
 
 /**
  * @brief timer num
- *
+ * 
  */
 typedef enum {
     TUYA_TIMER_NUM_0,		    // TIMER 0
@@ -1820,7 +2133,7 @@ typedef enum {
         (__CFG)->mode = __MODE;                         \
         (__CFG)->cb   = __CB;                           \
         (__CFG)->arg  = __ARG
-
+    
 typedef enum {
     TUYA_TIMER_MODE_ONCE = 0,
     TUYA_TIMER_MODE_PERIOD
@@ -1840,7 +2153,7 @@ typedef struct {
  */
 typedef struct {
     TUYA_GPIO_NUM_E gpio_num;
-    TUYA_GPIO_WAKE_TYPE_E  level;
+    TUYA_GPIO_WAKE_TYPE_E level;
 } TUYA_WAKEUP_SOURCE_GPIO_T;
 
 /**
@@ -1854,7 +2167,7 @@ typedef struct {
 
 /**
  * @brief timer num
- *
+ * 
  */
 typedef enum {
     TUYA_RTC_NUM_0,         // RTC 0
@@ -1941,6 +2254,7 @@ typedef enum {
     TUYA_NETIF_STA_IDX = 0,
     TUYA_NETIF_AP_IDX,
     TUYA_NETIF_ETH_IDX,
+    TUYA_NETIF_CEL_IDX,
     TUYA_NETIF_NUM
 } TUYA_NETIF_TYPE_E;
 
@@ -1950,14 +2264,18 @@ typedef enum {
     MTD_IF_QSPI,       // Quad-SPI接口
 } MTD_INTERFACE_E;
 
-/* CELLULAR */
+/* cellular interface type enum */
 typedef enum {
     TUYA_CELLULAR_IF_USB = 0,
     TUYA_CELLULAR_IF_UART,
+    TUYA_CELLULAR_IF_MAX,
 }TUYA_CELLULAR_IF_E;
 
+/* cellular protocol enum */
 typedef enum {
-    TUYA_CELLULAR_PROTOCOL_PPP = 0,
+    TUYA_CELLULAR_PROTOCOL_PPP = 0,//Point-to-Point Protocol
+    TUYA_CELLULAR_PROTOCOL_NIC,   // Network Interface Card
+    TUYA_CELLULAR_PROTOCOL_MAX,
 }TUYA_CELLULAR_PROTOCOL_E;
 
 /* tuyaos errorno */
@@ -1994,8 +2312,8 @@ typedef INT_T TUYA_ERRNO;
 #define UNW_EMSGSIZE      -29
 #define TUYA_ERRNO_NOT_SUPPORT 255
 
-/**
-* tkl thread priority define
+/** 
+* tkl thread priority define 
 **/
 
 #define TKL_THREAD_PRI_HIGHEST      8
