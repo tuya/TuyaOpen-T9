@@ -1,13 +1,20 @@
 /**
  * @file tkl_aud_dmic.c
  * @brief TKL audio digital (DMIC) driver implementation
- * @version 1.0
- * @date 2025-03-25
+ * @version 1.1
+ * @date 2026-10-21
  * @copyright Copyright (c) Tuya Inc.
+ *
+ * On BK7259 (CONFIG_AUD_DRIVER_V2) the digital mic is not a separate capture
+ * path: its samples are injected into ADC lanes 0..2 through sys_cfg.digmic_en
+ * and drained by the same GDMA channel the analog mic uses. All of that lives in
+ * tkl_aud_capture.c, which is shared with tkl_aud_adc.c. This file only keeps
+ * the public TKL surface and the pad configuration.
  */
 
 #include <common/bk_include.h>
 #include <os/os.h>
+#include <os/mem.h>
 
 #if CONFIG_AUD_DRIVER_V2
 #include <driver/aud_adc_types.h>
@@ -26,6 +33,10 @@
 #include "tkl_aud_dmic.h"
 #include "gpio_driver.h"
 
+#if CONFIG_AUD_DRIVER_V2
+#include "tkl_aud_capture.h"
+#endif
+
 extern void bk_printf(const char *fmt, ...);
 
 #define MODULE_LOG_HELPER(fmt, ...) \
@@ -35,16 +46,14 @@ extern void bk_printf(const char *fmt, ...);
 /* ---------------------------------------------------------------------------
  * Macros
  * --------------------------------------------------------------------------- */
-#define AUD_DMIC_FRAME_SIZE(sr, sb, t, ch)  (((sr) * ((sb) / 8) / 1000) * (ch) * (t))
-
-#define DMIC_DMA_BUF_SAFE_INTERVAL    (8)
 #define TKL_AUD_DMIC_GAIN_NUM         (2U)        /* dig then ana */
 #if CONFIG_AUD_DRIVER_V2
-#define TKL_AUD_DMIC_DEFAULT_DIG_DB   (16.0f)     /* OEM DEFAULT_AUD_ADC_CONFIG dig_gain */
-#define TKL_AUD_DMIC_DEFAULT_ANA_DB   (20)        /* OEM DEFAULT_AUD_ADC_CONFIG ana_gain */
 #define TKL_DMIC_CLK_GPIO             GPIO_6
 #define TKL_DMIC_DAT_GPIO             GPIO_5
 #else
+#define AUD_DMIC_FRAME_SIZE(sr, sb, t, ch)  (((sr) * ((sb) / 8) / 1000) * (ch) * (t))
+
+#define DMIC_DMA_BUF_SAFE_INTERVAL    (8)
 #define TKL_DMIC_CLK_GPIO             GPIO_8
 #define TKL_DMIC_DAT_GPIO             GPIO_9
 #endif
@@ -53,25 +62,6 @@ extern void bk_printf(const char *fmt, ...);
  * Type definitions
  * --------------------------------------------------------------------------- */
 typedef struct {
-    TKL_AUD_DMIC_CFG_T   cfg;
-    bool                    is_open;
-    bool                    dma_started;    /* GDMA was started; REPEAT cannot dma_stop */
-#if CONFIG_AUD_DRIVER_V2
-    aud_dmic_mode_t          dmic_mode;
-    uint32_t                 adc_ch_bitmap;
-    float                    dig_db[AUD_ADC_CHL_MAX]; /**< Last dig gain per ch (dB) */
-    int32_t                  ana_db[AUD_ADC_CHL_MAX]; /**< Last ana gain per ch (dB) */
-#endif
-    BOOL_T                  gain_set;       /**< TRUE after first successful set_gain */
-    uint32_t                frame_size;
-    uint32_t                dma_frame_size;
-    dma_id_t                dmic_dma_id;
-    RingBufferContext       dmic_rb;
-    int8_t                 *dmic_dma_buf;
-    uint8_t                *read_buf;
-} tkl_aud_dmic_ctx_t;
-
-typedef struct {
     gpio_id_t clk_gpio;
     gpio_id_t data_gpio;
 } tkl_aud_dmic_pinmux_cfg_t;
@@ -79,15 +69,13 @@ typedef struct {
 /* ---------------------------------------------------------------------------
  * File scope variables
  * --------------------------------------------------------------------------- */
-STATIC tkl_aud_dmic_ctx_t *gl_dmic_ctx = NULL;
-STATIC tkl_aud_dmic_pinmux_cfg_t gl_dmic_pinmux = {
-    .clk_gpio = TKL_DMIC_CLK_GPIO,
-    .data_gpio = TKL_DMIC_DAT_GPIO,
+/* One pad pair per port: MODE_0 and MODE_1 are different pad functions
+ * (DMIC0_* vs DMIC1_*), so the two ports cannot share a pin. */
+STATIC tkl_aud_dmic_pinmux_cfg_t gl_dmic_pinmux[2] = {
+    { .clk_gpio = TKL_DMIC_CLK_GPIO, .data_gpio = TKL_DMIC_DAT_GPIO },
+    { .clk_gpio = TKL_DMIC_CLK_GPIO, .data_gpio = TKL_DMIC_DAT_GPIO },
 };
 
-/* ---------------------------------------------------------------------------
- * Internal helpers
- * --------------------------------------------------------------------------- */
 STATIC OPERATE_RET __tkl_aud_dmic_pinmux_validate(UINT32_T clk_gpio, UINT32_T data_gpio)
 {
     if ((clk_gpio >= GPIO_NUM) || (data_gpio >= GPIO_NUM)) {
@@ -98,20 +86,343 @@ STATIC OPERATE_RET __tkl_aud_dmic_pinmux_validate(UINT32_T clk_gpio, UINT32_T da
     return OPRT_OK;
 }
 
-STATIC VOID_T __tkl_aud_dmic_pinmux_apply(gpio_dev_t clk_dev, gpio_dev_t data_dev)
-{
-    gpio_dev_unmap(gl_dmic_pinmux.clk_gpio);
-    gpio_dev_map(gl_dmic_pinmux.clk_gpio, clk_dev);
+/* ===========================================================================
+ * CONFIG_AUD_DRIVER_V2: thin wrapper over the shared capture core
+ * =========================================================================== */
+#if CONFIG_AUD_DRIVER_V2
 
-    gpio_dev_unmap(gl_dmic_pinmux.data_gpio);
-    gpio_dev_map(gl_dmic_pinmux.data_gpio, data_dev);
+/**
+ * @brief Map a public DMIC port onto its capture-core user
+ * @param[in] port TUYA_AUDIO_DMIC_PORT_0 / _1
+ * @return the core user, or TKL_AUD_CAP_USER_MAX if @p port is invalid
+ */
+STATIC TKL_AUD_CAP_USER_E __tkl_aud_dmic_user(TUYA_AUDIO_DMIC_PORT_E port)
+{
+    switch (port) {
+        case TUYA_AUDIO_DMIC_PORT_0:
+            return TKL_AUD_CAP_USER_DMIC0;
+        case TUYA_AUDIO_DMIC_PORT_1:
+            return TKL_AUD_CAP_USER_DMIC1;
+        default:
+            return TKL_AUD_CAP_USER_MAX;
+    }
 }
 
-/* ---------------------------------------------------------------------------
- * Function implementations
- * --------------------------------------------------------------------------- */
+/**
+ * @brief Whether @p port is open on the shared core
+ * @param[in] port digital port
+ * @return TRUE if that port (and only that port) is attached
+ */
+STATIC BOOL_T __tkl_aud_dmic_attached(TUYA_AUDIO_DMIC_PORT_E port)
+{
+    TKL_AUD_CAP_USER_E user = __tkl_aud_dmic_user(port);
 
-OPERATE_RET tkl_aud_dmic_pinmux_config(UINT32_T clk_gpio, UINT32_T data_gpio)
+    if (user == TKL_AUD_CAP_USER_MAX) {
+        return FALSE;
+    }
+
+    return __t9_aud_cap_user_attached(user);
+}
+
+/**
+ * @brief The DMIC channel bits a port owns
+ * @param[in] port digital port
+ * @return bitmap: BIT(8) for port 0, BIT(9)|BIT(10) for port 1
+ */
+STATIC UINT32_T __tkl_aud_dmic_own_mask(TUYA_AUDIO_DMIC_PORT_E port)
+{
+    if (port == TUYA_AUDIO_DMIC_PORT_0) {
+        return (UINT32_T)TUYA_AUDIO_DMIC_CHANNEL_0;
+    }
+
+    return (UINT32_T)TUYA_AUDIO_DMIC_CHANNEL_1 |
+           (UINT32_T)TUYA_AUDIO_DMIC_CHANNEL_2;
+}
+
+/**
+ * @brief Turn a single DMIC channel bit into an ADC lane index
+ * @param[in]  port    digital port that must own the channel
+ * @param[in]  channel channel bitmap with exactly one bit of @p port
+ * @param[out] lane    lane index 0..2
+ * @return OPRT_OK on success; OPRT_INVALID_PARM otherwise
+ */
+STATIC OPERATE_RET __tkl_aud_dmic_channel_lane(TUYA_AUDIO_DMIC_PORT_E port,
+                                                TUYA_AUDIO_MIC_CHANNEL_E channel,
+                                                UINT32_T *lane)
+{
+    UINT32_T bit = (UINT32_T)channel;
+    UINT32_T own = __tkl_aud_dmic_own_mask(port);
+    UINT32_T idx;
+
+    if ((bit == 0U) || ((bit & ~own) != 0U)) {
+        return OPRT_INVALID_PARM;
+    }
+
+    for (idx = 0U; idx < 3U; idx++) {
+        if (bit == ((UINT32_T)TUYA_AUDIO_DMIC_CHANNEL_0 << idx)) {
+            *lane = idx;
+            return OPRT_OK;
+        }
+    }
+
+    return OPRT_INVALID_PARM;
+}
+
+/**
+ * @brief Configure DMIC pinmux before init
+ * @param[in] port Digital audio port number whose pads are set
+ * @param[in] clk_gpio DMIC clock gpio id
+ * @param[in] data_gpio DMIC data gpio id
+ * @return OPRT_OK on success, error code on failure
+ * @note Only the pads are recorded here; the core muxes them when the DMIC
+ *       interface attaches and releases them when it detaches.
+ */
+OPERATE_RET tkl_aud_dmic_pinmux_config(TUYA_AUDIO_DMIC_PORT_E port,
+                                       UINT32_T clk_gpio, UINT32_T data_gpio)
+{
+    OPERATE_RET ret;
+
+    if (__tkl_aud_dmic_user(port) == TKL_AUD_CAP_USER_MAX) {
+        TKL_AUD_DMIC_LOG("dmic: pinmux port %d not support\n", port);
+        return OPRT_INVALID_PARM;
+    }
+
+    ret = __tkl_aud_dmic_pinmux_validate(clk_gpio, data_gpio);
+    if (ret != OPRT_OK) {
+        return ret;
+    }
+
+    if (__tkl_aud_dmic_attached(port) == TRUE) {
+        TKL_AUD_DMIC_LOG("dmic: pinmux config should be set before init\n");
+        return OPRT_COM_ERROR;
+    }
+
+    gl_dmic_pinmux[port].clk_gpio = (gpio_id_t)clk_gpio;
+    gl_dmic_pinmux[port].data_gpio = (gpio_id_t)data_gpio;
+
+    TKL_AUD_DMIC_LOG("dmic: port %d pinmux configured clk=%u data=%u\n",
+                     port,
+                     (uint32_t)gl_dmic_pinmux[port].clk_gpio,
+                     (uint32_t)gl_dmic_pinmux[port].data_gpio);
+
+    return OPRT_OK;
+}
+
+/**
+ * @brief Initialize audio digital (DMIC) input
+ * @param[in] port Digital audio port number
+ * @param[in] config DMIC configuration
+ * @return OPRT_OK on success, error code on failure
+ * @note Gain is set via tkl_aud_dmic_set_gain(); init keeps OEM default dig/ana.
+ * @note @c config->chan is a bitmap of this port's own DMIC bits; the callback
+ *       receives only those lanes, interleaved in ascending lane order.
+ *       Re-initializing reconfigures the port and returns OPRT_OK.
+ */
+OPERATE_RET tkl_aud_dmic_init(TUYA_AUDIO_DMIC_PORT_E port, CONST TUYA_AUDIO_DMIC_BASE_CFG_T *config)
+{
+    TKL_AUD_CAP_REQ_T req;
+    TKL_AUD_CAP_USER_E user = __tkl_aud_dmic_user(port);
+    UINT32_T mask;
+    UINT32_T own;
+    OPERATE_RET ret;
+    BOOL_T reopening;
+
+    if ((config == NULL) || (config->upper_cb == NULL)) {
+        return OPRT_INVALID_PARM;
+    }
+
+    if (user == TKL_AUD_CAP_USER_MAX) {
+        TKL_AUD_DMIC_LOG("dmic: port %d not support\n", port);
+        return OPRT_INVALID_PARM;
+    }
+
+    mask = (UINT32_T)config->chan;
+    own = __tkl_aud_dmic_own_mask(port);
+    if ((mask == 0U) || ((mask & ~own) != 0U)) {
+        TKL_AUD_DMIC_LOG("dmic: chan 0x%x not support on port %d\n",
+                         (unsigned)mask, port);
+        return OPRT_INVALID_PARM;
+    }
+
+    if (config->sample_bits != TUYA_AUDIO_SAMPLE_BITS_16) {
+        TKL_AUD_DMIC_LOG("dmic: bits %d not support, only 16bits\n", config->sample_bits);
+        return OPRT_INVALID_PARM;
+    }
+
+    if ((config->sample_rate == 0U) || (config->frame_time_ms == 0U)) {
+        return OPRT_INVALID_PARM;
+    }
+
+    TKL_AUD_DMIC_LOG("dmic: init request port=%d chan=0x%x bits=%u rate=%u frame_ms=%u args=%p\n",
+                     port, (unsigned)mask, config->sample_bits, config->sample_rate,
+                     config->frame_time_ms, config->args);
+
+    os_memset(&req, 0, sizeof(req));
+    req.sample_rate = config->sample_rate;
+    req.sample_bits = (UINT8_T)config->sample_bits;
+    req.frame_time_ms = config->frame_time_ms;
+    req.upper_cb = config->upper_cb;
+    req.args = config->args;
+    req.chan = config->chan;
+    req.dmic_port = port;
+    req.dmic_clk_gpio = (UINT32_T)gl_dmic_pinmux[port].clk_gpio;
+    req.dmic_data_gpio = (UINT32_T)gl_dmic_pinmux[port].data_gpio;
+
+    /* Contract: a second init reconfigures the instance and returns OK.
+     * Propagate the core's error code verbatim - callers must be able to tell
+     * a lane/pad conflict (OPRT_INVALID_PARM) from a core failure. */
+    reopening = __t9_aud_cap_user_attached(user);
+    ret = (reopening == TRUE) ? __t9_aud_cap_reopen(user, &req)
+                              : __t9_aud_cap_open(user, &req);
+    if (ret != OPRT_OK) {
+        TKL_AUD_DMIC_LOG("dmic: capture core %s failed: %d\n",
+                         (reopening == TRUE) ? "reopen" : "open", (int)ret);
+        return ret;
+    }
+
+    TKL_AUD_DMIC_LOG("dmic: init success, port=%d clk=%u data=%u\n",
+                     port, req.dmic_clk_gpio, req.dmic_data_gpio);
+    return OPRT_OK;
+}
+
+/**
+ * @brief Start audio digital (DMIC) capture
+ * @param[in] port Digital audio port number
+ * @return OPRT_OK on success, error code on failure
+ * @note Start is reference counted by the core: the first start brings the
+ *       stream up, a start while the other port is already running only adds
+ *       this port's callback.
+ */
+OPERATE_RET tkl_aud_dmic_start(TUYA_AUDIO_DMIC_PORT_E port)
+{
+    TKL_AUD_CAP_USER_E user = __tkl_aud_dmic_user(port);
+
+    if ((user == TKL_AUD_CAP_USER_MAX) || (__t9_aud_cap_user_attached(user) != TRUE)) {
+        return OPRT_COM_ERROR;
+    }
+
+    return __t9_aud_cap_start(user);
+}
+
+/**
+ * @brief Set DMIC dig/ana gain for one physical channel
+ * @param[in] port Digital audio port number
+ * @param[in] channel one DMIC bit of TUYA_AUDIO_MIC_CHANNEL_E owned by @p port
+ * @param[in] gain gain[0]=dig, gain[1]=ana; AUDIO_DMIC_INVALID_GAIN_VALUE to skip
+ * @param[in] num 1 (dig only) or 2 (dig then ana)
+ * @return OPRT_OK on success
+ * @note dig is the effective gain for DMIC; ana maps to the analog MIC PGA.
+ * @note Only the lanes the DMIC port actually owns may be moved: port 0 owns
+ *       CH0, port 1 owns CH1/CH2. The analog lane belongs to tkl_aud_adc.
+ */
+OPERATE_RET tkl_aud_dmic_set_gain(TUYA_AUDIO_DMIC_PORT_E port, TUYA_AUDIO_MIC_CHANNEL_E channel,
+                                  INT32_T gain[], UINT32_T num)
+{
+    TKL_AUD_CAP_USER_E user = __tkl_aud_dmic_user(port);
+    BOOL_T set_dig;
+    BOOL_T set_ana;
+    FLOAT_T dig_db = 0.0f;
+    INT32_T ana_db = 0;
+    UINT32_T lane = 0U;
+
+    if ((user == TKL_AUD_CAP_USER_MAX) || (__t9_aud_cap_user_attached(user) != TRUE)) {
+        return OPRT_COM_ERROR;
+    }
+
+    if ((gain == NULL) || (num == 0U) || (num > TKL_AUD_DMIC_GAIN_NUM)) {
+        return OPRT_INVALID_PARM;
+    }
+
+    if (__tkl_aud_dmic_channel_lane(port, channel, &lane) != OPRT_OK) {
+        return OPRT_INVALID_PARM;
+    }
+
+    set_dig = ((UINT32_T)gain[0] == (UINT32_T)AUDIO_DMIC_INVALID_GAIN_VALUE) ? FALSE : TRUE;
+    if (num >= 2U) {
+        set_ana = ((UINT32_T)gain[1] == (UINT32_T)AUDIO_DMIC_INVALID_GAIN_VALUE) ? FALSE : TRUE;
+    } else {
+        set_ana = FALSE;
+    }
+
+    if ((set_dig == FALSE) && (set_ana == FALSE)) {
+        return OPRT_INVALID_PARM;
+    }
+
+    if (set_dig == TRUE) {
+        dig_db = (FLOAT_T)gain[0];
+    }
+    if (set_ana == TRUE) {
+        ana_db = gain[1];
+    }
+
+    return __t9_aud_cap_set_gain(user, lane,
+                                set_dig, dig_db, set_ana, ana_db);
+}
+
+/**
+ * @brief Stop audio digital (DMIC) capture
+ * @param[in] port Digital audio port number
+ * @return OPRT_OK on success, error code on failure
+ */
+OPERATE_RET tkl_aud_dmic_stop(TUYA_AUDIO_DMIC_PORT_E port)
+{
+    TKL_AUD_CAP_USER_E user = __tkl_aud_dmic_user(port);
+
+    if ((user == TKL_AUD_CAP_USER_MAX) || (__t9_aud_cap_user_attached(user) != TRUE)) {
+        return OPRT_COM_ERROR;
+    }
+
+    return __t9_aud_cap_stop(user);
+}
+
+/**
+ * @brief Deinitialize audio digital (DMIC) input
+ * @param[in] port Digital audio port number
+ * @return OPRT_OK on success, error code on failure
+ * @note Detaches only this port from the shared capture core. The hardware is
+ *       only released when no other interface is using it either.
+ */
+OPERATE_RET tkl_aud_dmic_deinit(TUYA_AUDIO_DMIC_PORT_E port)
+{
+    TKL_AUD_CAP_USER_E user = __tkl_aud_dmic_user(port);
+
+    if ((user == TKL_AUD_CAP_USER_MAX) || (__t9_aud_cap_user_attached(user) != TRUE)) {
+        return OPRT_OK;
+    }
+
+    return __t9_aud_cap_close(user);
+}
+
+/* ===========================================================================
+ * CONFIG_AUD_DRIVER_V1 (LEGACY): DMIC has its own fifo and DMA
+ * =========================================================================== */
+#else
+
+typedef struct {
+    TUYA_AUDIO_DMIC_BASE_CFG_T cfg;
+    bool                    is_open;
+    bool                    dma_started;    /* GDMA was started; REPEAT cannot dma_stop */
+    uint32_t                frame_size;
+    uint32_t                dma_frame_size;
+    dma_id_t                dmic_dma_id;
+    RingBufferContext       dmic_rb;
+    int8_t                 *dmic_dma_buf;
+    uint8_t                *read_buf;
+} tkl_aud_dmic_ctx_t;
+
+STATIC tkl_aud_dmic_ctx_t *gl_dmic_ctx = NULL;
+
+STATIC VOID_T __tkl_aud_dmic_pinmux_apply(gpio_dev_t clk_dev, gpio_dev_t data_dev)
+{
+    gpio_dev_unmap(gl_dmic_pinmux[0].clk_gpio);
+    gpio_dev_map(gl_dmic_pinmux[0].clk_gpio, clk_dev);
+
+    gpio_dev_unmap(gl_dmic_pinmux[0].data_gpio);
+    gpio_dev_map(gl_dmic_pinmux[0].data_gpio, data_dev);
+}
+
+OPERATE_RET tkl_aud_dmic_pinmux_config(TUYA_AUDIO_DMIC_PORT_E port,
+                                       UINT32_T clk_gpio, UINT32_T data_gpio)
 {
     OPERATE_RET ret = __tkl_aud_dmic_pinmux_validate(clk_gpio, data_gpio);
     if (ret != OPRT_OK) {
@@ -123,12 +434,14 @@ OPERATE_RET tkl_aud_dmic_pinmux_config(UINT32_T clk_gpio, UINT32_T data_gpio)
         return OPRT_COM_ERROR;
     }
 
-    gl_dmic_pinmux.clk_gpio = (gpio_id_t)clk_gpio;
-    gl_dmic_pinmux.data_gpio = (gpio_id_t)data_gpio;
+    /* V1 keeps a single FIFO/pad pair for both ports. */
+    (void)port;
+    gl_dmic_pinmux[0].clk_gpio = (gpio_id_t)clk_gpio;
+    gl_dmic_pinmux[0].data_gpio = (gpio_id_t)data_gpio;
 
     TKL_AUD_DMIC_LOG("dmic: pinmux configured clk=%u data=%u\n",
-                     (uint32_t)gl_dmic_pinmux.clk_gpio,
-                     (uint32_t)gl_dmic_pinmux.data_gpio);
+                     (uint32_t)gl_dmic_pinmux[0].clk_gpio,
+                     (uint32_t)gl_dmic_pinmux[0].data_gpio);
 
     return OPRT_OK;
 }
@@ -136,11 +449,11 @@ OPERATE_RET tkl_aud_dmic_pinmux_config(UINT32_T clk_gpio, UINT32_T data_gpio)
 /**
  * @brief DMA finish ISR for DMIC
  * @return none
- * @note Reads one DMA frame from ring buffer, extracts single channel
- *       if needed, then calls upper_cb.
  */
 STATIC VOID_T __tkl_aud_dmic_dma_finish_isr(void)
 {
+    TUYA_AUDIO_INPUT_BUFFER_T frame;
+
     if (gl_dmic_ctx == NULL || !gl_dmic_ctx->is_open) {
         return;
     }
@@ -163,18 +476,24 @@ STATIC VOID_T __tkl_aud_dmic_dma_finish_isr(void)
         return;
     }
 
-#if 1
-    gl_dmic_ctx->cfg.upper_cb(TUYA_AUDIO_FRAME_EVENT_DMIC_RX,
-            gl_dmic_ctx->read_buf,
-            gl_dmic_ctx->frame_size,
-            gl_dmic_ctx->cfg.args);
-#endif
+    os_memset(&frame, 0, sizeof(frame));
+    frame.event = TUYA_AUDIO_FRAME_EVENT_DMIC_RX;
+    frame.data = gl_dmic_ctx->read_buf;
+    frame.data_len = gl_dmic_ctx->frame_size;
+    frame.args = gl_dmic_ctx->cfg.args;
+
+    /* V1 always captures LR interleaved; report exactly the selected lanes. */
+    frame.chan_num = 0U;
+    if (((UINT32_T)gl_dmic_ctx->cfg.chan & (UINT32_T)TUYA_AUDIO_DMIC_CHANNEL_0) != 0U) {
+        frame.chan[frame.chan_num++] = TUYA_AUDIO_DMIC_CHANNEL_0;
+    }
+    if (((UINT32_T)gl_dmic_ctx->cfg.chan & (UINT32_T)TUYA_AUDIO_DMIC_CHANNEL_1) != 0U) {
+        frame.chan[frame.chan_num++] = TUYA_AUDIO_DMIC_CHANNEL_1;
+    }
+
+    gl_dmic_ctx->cfg.upper_cb(&frame);
 }
 
-/**
- * @brief Release DMA channel and ring buffer
- * @return BK_OK on success
- */
 STATIC bk_err_t __tkl_aud_dmic_dma_deconfig(void)
 {
     if (gl_dmic_ctx == NULL) {
@@ -193,10 +512,6 @@ STATIC bk_err_t __tkl_aud_dmic_dma_deconfig(void)
     return BK_OK;
 }
 
-/**
- * @brief Configure DMA channel for DMIC ring buffer transfer
- * @return BK_OK on success, BK_FAIL on error
- */
 STATIC bk_err_t __tkl_aud_dmic_dma_config(void)
 {
     bk_err_t ret = BK_OK;
@@ -221,20 +536,12 @@ STATIC bk_err_t __tkl_aud_dmic_dma_config(void)
     dma_config.mode = DMA_WORK_MODE_REPEAT;
     dma_config.chan_prio = 1;
     dma_config.trans_type = DMA_TRANS_DEFAULT;
-    #if CONFIG_AUD_DRIVER_V2
-    dma_config.src.dev = DMA_DEV_AUD_MIC0;
-    #else
     dma_config.src.dev = DMA_DEV_AUD_DMIC;
-    #endif
     dma_config.dst.dev = DMA_DEV_DTCM;
     dma_config.src.width = DMA_DATA_WIDTH_32BITS;
     dma_config.dst.width = DMA_DATA_WIDTH_32BITS;
 
-    #if CONFIG_AUD_DRIVER_V2
-    if (bk_aud_adc_get_fifo_addr(AUD_ADC_MIC_DATA_BUS_0, &dmic_port_addr) != BK_OK) {
-    #else
     if (bk_aud_dmic_get_fifo_addr(&dmic_port_addr) != BK_OK) {
-    #endif
         TKL_AUD_DMIC_LOG("dmic: get fifo address failed\n");
         goto exit;
     }
@@ -285,10 +592,6 @@ exit:
 
 /**
  * @brief Rebuild the DMIC GDMA channel without bk_dma_stop()
- * @return BK_OK on success
- * @note REPEAT-mode GDMA src-stalls after analog is stopped while the channel
- *       stays enabled. bk_dma_deinit() (inside deconfig) resets the channel;
- *       that is not the unsupported repeat-mode stop.
  */
 STATIC bk_err_t __tkl_aud_dmic_dma_reset(void)
 {
@@ -298,10 +601,6 @@ STATIC bk_err_t __tkl_aud_dmic_dma_reset(void)
 
 /**
  * @brief Pause GDMA by parking dst_pause_addr at the ring end
- * @return none
- * @note BK GDMA in REPEAT mode does not support bk_dma_stop(). Clearing the
- *       WRITE ring sets dma_set_dst_pause_addr so the channel stalls without
- *       being disabled.
  */
 STATIC VOID_T __tkl_aud_dmic_pause_dma(VOID_T)
 {
@@ -311,190 +610,66 @@ STATIC VOID_T __tkl_aud_dmic_pause_dma(VOID_T)
     ring_buffer_clear(&gl_dmic_ctx->dmic_rb);
 }
 
-#if CONFIG_AUD_DRIVER_V2
-/**
- * @brief Check whether gain value means "do not change"
- * @param[in] v gain value from caller
- * @return TRUE if invalid/skip
- */
-STATIC BOOL_T __tkl_aud_dmic_gain_is_invalid(INT32_T v)
+OPERATE_RET tkl_aud_dmic_init(TUYA_AUDIO_DMIC_PORT_E port, CONST TUYA_AUDIO_DMIC_BASE_CFG_T *config)
 {
-    return ((UINT32_T)v == (UINT32_T)AUDIA_DMIC_INVALID_GAIN_VALUE) ? TRUE : FALSE;
-}
+    UINT32_T mask;
 
-/**
- * @brief Map Tuya DMIC channel enum to OEM aud_adc_chl_t
- * @param[in] channel TUYA_AUDIO_DMIC_CHANNEL_0/1/2
- * @param[out] out OEM ADC channel
- * @return OPRT_OK on success
- */
-STATIC OPERATE_RET __tkl_aud_dmic_map_channel(TUYA_AUDIO_DMIC_CHANNEL_E channel, aud_adc_chl_t *out)
-{
-    if ((out == NULL) || ((UINT32_T)channel >= (UINT32_T)AUD_ADC_CHL_MAX)) {
+    if ((config == NULL) || (config->upper_cb == NULL)) {
         return OPRT_INVALID_PARM;
     }
 
-    *out = (aud_adc_chl_t)channel;
-    return OPRT_OK;
-}
-
-/**
- * @brief Apply dig and/or ana gain to one DMIC-backed ADC channel
- * @param[in] ch OEM ADC channel
- * @param[in] set_dig TRUE to set digital gain
- * @param[in] dig_db digital gain in dB
- * @param[in] set_ana TRUE to set analog gain
- * @param[in] ana_db analog gain in dB
- * @return OPRT_OK on success
- * @note Dig is the effective DMIC gain; ana targets analog MIC PGA.
- */
-STATIC OPERATE_RET __tkl_aud_dmic_apply_v2_ch_gain(aud_adc_chl_t ch,
-                                                    BOOL_T set_dig, float dig_db,
-                                                    BOOL_T set_ana, int32_t ana_db)
-{
-    if ((UINT32_T)ch >= (UINT32_T)AUD_ADC_CHL_MAX) {
+    /* V1 has a single LR FIFO: L -> BIT(8), R -> BIT(9), both -> BIT(8)|BIT(9). */
+    mask = (UINT32_T)config->chan;
+    if ((mask != (UINT32_T)TUYA_AUDIO_DMIC_CHANNEL_0) &&
+        (mask != (UINT32_T)TUYA_AUDIO_DMIC_CHANNEL_1) &&
+        (mask != ((UINT32_T)TUYA_AUDIO_DMIC_CHANNEL_0 |
+                  (UINT32_T)TUYA_AUDIO_DMIC_CHANNEL_1))) {
+        TKL_AUD_DMIC_LOG("dmic: chan 0x%x not support\n", (unsigned)mask);
         return OPRT_INVALID_PARM;
     }
 
-    if (set_dig == TRUE) {
-        if (dig_db > BK_AUD_ADC_DIG_GAIN_DB_MAX) {
-            dig_db = BK_AUD_ADC_DIG_GAIN_DB_MAX;
-        }
-        if (bk_aud_adc_set_dig_gain_db(ch, dig_db) != BK_OK) {
-            TKL_AUD_DMIC_LOG("dmic: set dig gain fail, ch=%u\n", (unsigned)ch);
-            return OPRT_COM_ERROR;
-        }
-        gl_dmic_ctx->dig_db[ch] = dig_db;
-    }
-
-    if (set_ana == TRUE) {
-        if (ana_db > BK_AUD_ADC_ANA_GAIN_DB_MAX) {
-            ana_db = BK_AUD_ADC_ANA_GAIN_DB_MAX;
-        }
-        if (ana_db < 0) {
-            ana_db = 0;
-        }
-        if (bk_aud_adc_set_ana_gain_db(ch, ana_db) != BK_OK) {
-            TKL_AUD_DMIC_LOG("dmic: set ana gain fail, ch=%u\n", (unsigned)ch);
-            return OPRT_COM_ERROR;
-        }
-        gl_dmic_ctx->ana_db[ch] = ana_db;
-    }
-
-    TKL_AUD_DMIC_LOG("dmic: gain ch=%u dig=%s%.1f ana=%s%d\n",
-                     (unsigned)ch,
-                     (set_dig == TRUE) ? "" : "keep/",
-                     (set_dig == TRUE) ? dig_db : gl_dmic_ctx->dig_db[ch],
-                     (set_ana == TRUE) ? "" : "keep/",
-                     (set_ana == TRUE) ? ana_db : gl_dmic_ctx->ana_db[ch]);
-    return OPRT_OK;
-}
-#endif
-
-/**
- * @brief Initialize audio digital (DMIC) input
- * @param[in] port Digital audio port number
- * @param[in] config DMIC configuration
- * @return OPRT_OK on success, error code on failure
- * @note Gain is set via tkl_aud_dmic_set_gain(); init keeps OEM default dig/ana.
- */
-OPERATE_RET tkl_aud_dmic_init(TUYA_AUDIO_DMIC_PORT_E port, TKL_AUD_DMIC_CFG_T *config)
-{
-    if (config == NULL) {
-        return OPRT_INVALID_PARM;
-    }
-
-    if (config->chan != TUYA_AUDIO_DMIC_CHANNEL_LR) {
-        TKL_AUD_DMIC_LOG("dmic: chan %d not support\n", config->chan);
-        return OPRT_INVALID_PARM;
-    }
-
-    if (config->sample_bits != 16) {
+    if (config->sample_bits != TUYA_AUDIO_SAMPLE_BITS_16) {
         TKL_AUD_DMIC_LOG("dmic: bits %d not support, only 16bits\n", config->sample_bits);
         return OPRT_INVALID_PARM;
     }
 
-    TKL_AUD_DMIC_LOG("dmic: init request port=%d chan=%d bits=%u rate=%u frame_ms=%u cb_set=%d args=%p\n",
-                     port, config->chan, config->sample_bits, config->sample_rate,
-                     config->frame_time_ms, config->upper_cb != NULL, config->args);
+    if ((config->sample_rate == 0U) || (config->frame_time_ms == 0U)) {
+        return OPRT_INVALID_PARM;
+    }
+
+    TKL_AUD_DMIC_LOG("dmic: init request port=%d chan=0x%x bits=%u rate=%u frame_ms=%u args=%p\n",
+                     port, (unsigned)mask, config->sample_bits, config->sample_rate,
+                     config->frame_time_ms, config->args);
 
     if (gl_dmic_ctx != NULL) {
-        TKL_AUD_DMIC_LOG("dmic: already initialized\n");
-        return OPRT_COM_ERROR;
+        /* Contract: a second init reconfigures the instance and returns OK. */
+        TKL_AUD_DMIC_LOG("dmic: already initialized, reconfigure\n");
+        (void)tkl_aud_dmic_deinit(port);
     }
 
     bk_err_t ret = BK_OK;
     gpio_dev_t dmic_clk_func = GPIO_DEV_DMIC0_CLK;
     gpio_dev_t dmic_data_func = GPIO_DEV_DMIC0_DAT;
-#if CONFIG_AUD_DRIVER_V2
-    aud_dmic_channel_t dmic_chl = AUD_DMIC_CHANNEL_L;
-    aud_dmic_mode_t dmic_mode = AUD_DMIC_MODE_0;
-    aud_adc_config_t tkl_aud_adc_cfg = DEFAULT_AUD_ADC_CONFIG();
-    uint32_t adc_ch_bitmap = (1 << AUD_ADC_CHL_0);
-#else
     (void)port;
     aud_dmic_chl_t dmic_chl = AUD_DMIC_CHL_LR;
-#endif
 
-    // 初始化上下文控制块
     gl_dmic_ctx = (tkl_aud_dmic_ctx_t *)tkl_system_psram_malloc(sizeof(tkl_aud_dmic_ctx_t));
     if (gl_dmic_ctx == NULL) {
         TKL_AUD_DMIC_LOG("dmic: malloc context fail\n");
         return OPRT_MALLOC_FAILED;
     }
     os_memset(gl_dmic_ctx, 0, sizeof(tkl_aud_dmic_ctx_t));
-    os_memcpy(&gl_dmic_ctx->cfg, config, sizeof(TKL_AUD_DMIC_CFG_T));
-    gl_dmic_ctx->gain_set = FALSE;
-#if CONFIG_AUD_DRIVER_V2
-    for (uint32_t ch = 0; ch < AUD_ADC_CHL_MAX; ch++) {
-        gl_dmic_ctx->dig_db[ch] = TKL_AUD_DMIC_DEFAULT_DIG_DB;
-        gl_dmic_ctx->ana_db[ch] = TKL_AUD_DMIC_DEFAULT_ANA_DB;
-    }
-#endif
+    os_memcpy(&gl_dmic_ctx->cfg, config, sizeof(TUYA_AUDIO_DMIC_BASE_CFG_T));
 
-#if CONFIG_AUD_DRIVER_V2
-    if (port == TUYA_AUDIO_DMIC_PORT_1) {
-        dmic_mode = AUD_DMIC_MODE_1;
-        dmic_clk_func = GPIO_DEV_DMIC1_CLK;
-        dmic_data_func = GPIO_DEV_DMIC1_DAT;
-        adc_ch_bitmap |= (1 << AUD_ADC_CHL_1) | (1 << AUD_ADC_CHL_2);
-    }
-#endif
-
-    // 配置DMIC
     aud_dmic_config_t tkl_aud_dmic_cfg = DEFAULT_AUD_DMIC_CONFIG();
-#if CONFIG_AUD_DRIVER_V2
-    tkl_aud_dmic_cfg.channel = dmic_chl;
-    tkl_aud_dmic_cfg.dmic_mode = dmic_mode;
-    tkl_aud_dmic_cfg.dmic_clk_gpio = gl_dmic_pinmux.clk_gpio;
-    tkl_aud_dmic_cfg.dmic_data_gpio = gl_dmic_pinmux.data_gpio;
-    /* Gain applied later via tkl_aud_dmic_set_gain(); keep OEM default dig/ana. */
-    tkl_aud_adc_cfg.sample_rate = config->sample_rate;
-    for (uint32_t ch = 0; ch < AUD_ADC_CHL_MAX; ch++) {
-        if (adc_ch_bitmap & (1U << ch)) {
-            tkl_aud_adc_cfg.chl_cfg[ch].dig_gain = gl_dmic_ctx->dig_db[ch];
-            tkl_aud_adc_cfg.chl_cfg[ch].ana_gain = gl_dmic_ctx->ana_db[ch];
-        }
-    }
-    ret = bk_aud_adc_init(&tkl_aud_adc_cfg);
-    if (ret != BK_OK) {
-        TKL_AUD_DMIC_LOG("dmic: bk_aud_adc_init fail\n");
-        goto __dmic_init_exit;
-    }
-
-    gl_dmic_ctx->dmic_mode = dmic_mode;
-    gl_dmic_ctx->adc_ch_bitmap = adc_ch_bitmap;
-#else
     tkl_aud_dmic_cfg.dmic_chl = dmic_chl;
     tkl_aud_dmic_cfg.samp_rate = config->sample_rate;
     tkl_aud_dmic_cfg.clk_src = AUD_CLK_APLL;
-#endif
 
     TKL_AUD_DMIC_LOG("dmic config, chl=%d clk_gpio=%u data_gpio=%u\n",
                      dmic_chl,
-                     (uint32_t)gl_dmic_pinmux.clk_gpio,
-                     (uint32_t)gl_dmic_pinmux.data_gpio);
-
+                     (uint32_t)gl_dmic_pinmux[0].clk_gpio,
+                     (uint32_t)gl_dmic_pinmux[0].data_gpio);
 
     ret = bk_aud_dmic_init(&tkl_aud_dmic_cfg);
     if (ret != BK_OK) {
@@ -504,13 +679,11 @@ OPERATE_RET tkl_aud_dmic_init(TUYA_AUDIO_DMIC_PORT_E port, TKL_AUD_DMIC_CFG_T *c
 
     __tkl_aud_dmic_pinmux_apply(dmic_clk_func, dmic_data_func);
 
-    // 计算帧大小
     gl_dmic_ctx->frame_size = AUD_DMIC_FRAME_SIZE(config->sample_rate, config->sample_bits, config->frame_time_ms, 2);
     gl_dmic_ctx->dma_frame_size = AUD_DMIC_FRAME_SIZE(config->sample_rate, config->sample_bits, config->frame_time_ms, 2);
     TKL_AUD_DMIC_LOG("dmic: computed frame_size=%u dma_frame_size=%u\n",
                      gl_dmic_ctx->frame_size, gl_dmic_ctx->dma_frame_size);
 
-    // 配置DMA
     ret = __tkl_aud_dmic_dma_config();
     TKL_AUD_DMIC_LOG("dmic: __tkl_aud_dmic_dma_config ret=%d\n", ret);
     if (ret != BK_OK) {
@@ -518,7 +691,6 @@ OPERATE_RET tkl_aud_dmic_init(TUYA_AUDIO_DMIC_PORT_E port, TKL_AUD_DMIC_CFG_T *c
         goto __dmic_init_exit;
     }
 
-    // 分配读缓冲区，临时存储一帧数据，用于上层回调处理
     gl_dmic_ctx->read_buf = (uint8_t *)tkl_system_psram_malloc(gl_dmic_ctx->dma_frame_size);
     if (gl_dmic_ctx->read_buf == NULL) {
         TKL_AUD_DMIC_LOG("dmic: malloc read buffer fail\n");
@@ -531,11 +703,7 @@ OPERATE_RET tkl_aud_dmic_init(TUYA_AUDIO_DMIC_PORT_E port, TKL_AUD_DMIC_CFG_T *c
 
 __dmic_init_exit:
     __tkl_aud_dmic_dma_deconfig();
-#if CONFIG_AUD_DRIVER_V2
-    bk_aud_adc_deinit();
-#else
     bk_aud_dmic_deinit();
-#endif
 
     if (gl_dmic_ctx) {
         if (gl_dmic_ctx->read_buf) {
@@ -550,13 +718,6 @@ __dmic_init_exit:
     return OPRT_COM_ERROR;
 }
 
-/**
- * @brief Start audio digital (DMIC) capture
- * @param[in] port Digital audio port number
- * @return OPRT_OK on success, error code on failure
- * @note After stop, the GDMA channel is rebuilt (deinit+init, not dma_stop)
- *       so src-stall is cleared.
- */
 OPERATE_RET tkl_aud_dmic_start(TUYA_AUDIO_DMIC_PORT_E port)
 {
     bk_err_t ret = BK_OK;
@@ -591,35 +752,6 @@ OPERATE_RET tkl_aud_dmic_start(TUYA_AUDIO_DMIC_PORT_E port)
     }
     gl_dmic_ctx->dma_started = true;
 
-#if CONFIG_AUD_DRIVER_V2
-    ret = bk_aud_adc_start(AUD_ADC_CHL_0);
-    if (ret != BK_OK) {
-        TKL_AUD_DMIC_LOG("dmic: bk_aud_adc_start(ch0) fail\n");
-        __tkl_aud_dmic_pause_dma();
-        return OPRT_COM_ERROR;
-    }
-
-    if (gl_dmic_ctx->dmic_mode == AUD_DMIC_MODE_1) {
-        ret = bk_aud_adc_start(AUD_ADC_CHL_1);
-        if (ret != BK_OK) {
-            TKL_AUD_DMIC_LOG("dmic: bk_aud_adc_start(ch1) fail\n");
-            bk_aud_adc_stop(AUD_ADC_CHL_0);
-            __tkl_aud_dmic_pause_dma();
-            return OPRT_COM_ERROR;
-        }
-
-        ret = bk_aud_adc_start(AUD_ADC_CHL_2);
-        if (ret != BK_OK) {
-            TKL_AUD_DMIC_LOG("dmic: bk_aud_adc_start(ch2) fail\n");
-            bk_aud_adc_stop(AUD_ADC_CHL_1);
-            bk_aud_adc_stop(AUD_ADC_CHL_0);
-            __tkl_aud_dmic_pause_dma();
-            return OPRT_COM_ERROR;
-        }
-    }
-
-    bk_aud_adc_enable_used_channel(gl_dmic_ctx->adc_ch_bitmap);
-#else
     ret = bk_aud_dmic_start();
     TKL_AUD_DMIC_LOG("dmic: bk_aud_dmic_start ret=%d\n", ret);
     if (ret != BK_OK) {
@@ -627,7 +759,6 @@ OPERATE_RET tkl_aud_dmic_start(TUYA_AUDIO_DMIC_PORT_E port)
         __tkl_aud_dmic_pause_dma();
         return OPRT_COM_ERROR;
     }
-#endif
 
     gl_dmic_ctx->is_open = true;
     TKL_AUD_DMIC_LOG("dmic: start ok\n");
@@ -635,87 +766,16 @@ OPERATE_RET tkl_aud_dmic_start(TUYA_AUDIO_DMIC_PORT_E port)
     return OPRT_OK;
 }
 
-/**
- * @brief Set DMIC dig/ana gain for one physical channel
- * @param[in] port Digital audio port number (unused on this platform)
- * @param[in] channel TUYA_AUDIO_DMIC_CHANNEL_0/1/2 -> ADC dig path CH0/1/2
- * @param[in] gain gain[0]=dig, gain[1]=ana; AUDIA_DMIC_INVALID_GAIN_VALUE to skip
- * @param[in] num 1 (dig only) or 2 (dig then ana)
- * @return OPRT_OK on success
- * @note V2: dig is effective for DMIC; ana maps to analog MIC PGA.
- *       V1 returns OPRT_NOT_SUPPORTED.
- */
-OPERATE_RET tkl_aud_dmic_set_gain(TUYA_AUDIO_DMIC_PORT_E port, TUYA_AUDIO_DMIC_CHANNEL_E channel,
+OPERATE_RET tkl_aud_dmic_set_gain(TUYA_AUDIO_DMIC_PORT_E port, TUYA_AUDIO_MIC_CHANNEL_E channel,
                                   INT32_T gain[], UINT32_T num)
 {
     (void)port;
-
-    if (gl_dmic_ctx == NULL) {
-        return OPRT_COM_ERROR;
-    }
-
-    if ((gain == NULL) || (num == 0U) || (num > TKL_AUD_DMIC_GAIN_NUM)) {
-        return OPRT_INVALID_PARM;
-    }
-
-#if CONFIG_AUD_DRIVER_V2
-    {
-        aud_adc_chl_t ch;
-        BOOL_T set_dig;
-        BOOL_T set_ana;
-        float dig_db = 0.0f;
-        int32_t ana_db = 0;
-
-        if (__tkl_aud_dmic_map_channel(channel, &ch) != OPRT_OK) {
-            return OPRT_INVALID_PARM;
-        }
-
-        if (!(gl_dmic_ctx->adc_ch_bitmap & (1U << (UINT32_T)ch))) {
-            TKL_AUD_DMIC_LOG("dmic: set_gain ch=%u not in open bitmap=0x%x\n",
-                             (unsigned)ch, gl_dmic_ctx->adc_ch_bitmap);
-            return OPRT_INVALID_PARM;
-        }
-
-        set_dig = (__tkl_aud_dmic_gain_is_invalid(gain[0]) == TRUE) ? FALSE : TRUE;
-        if (num >= 2U) {
-            set_ana = (__tkl_aud_dmic_gain_is_invalid(gain[1]) == TRUE) ? FALSE : TRUE;
-        } else {
-            set_ana = FALSE;
-        }
-
-        if ((set_dig == FALSE) && (set_ana == FALSE)) {
-            return OPRT_INVALID_PARM;
-        }
-
-        if (set_dig == TRUE) {
-            dig_db = (float)gain[0];
-        }
-        if (set_ana == TRUE) {
-            ana_db = gain[1];
-        }
-
-        if (__tkl_aud_dmic_apply_v2_ch_gain(ch, set_dig, dig_db, set_ana, ana_db) != OPRT_OK) {
-            return OPRT_COM_ERROR;
-        }
-        gl_dmic_ctx->gain_set = TRUE;
-        return OPRT_OK;
-    }
-#else
     (void)channel;
     (void)gain;
     (void)num;
     return OPRT_NOT_SUPPORTED;
-#endif
 }
 
-/**
- * @brief Stop audio digital (DMIC) capture
- * @param[in] port Digital audio port number
- * @return OPRT_OK on success, error code on failure
- * @note REPEAT mode cannot bk_dma_stop(); the WRITE ring is cleared to park
- *       dst_pause_addr. The channel is rebuilt on the next start via
- *       dma_deinit+init.
- */
 OPERATE_RET tkl_aud_dmic_stop(TUYA_AUDIO_DMIC_PORT_E port)
 {
     bk_err_t ret = BK_OK;
@@ -730,17 +790,8 @@ OPERATE_RET tkl_aud_dmic_stop(TUYA_AUDIO_DMIC_PORT_E port)
         return OPRT_OK;
     }
 
-#if CONFIG_AUD_DRIVER_V2
-    if (gl_dmic_ctx->dmic_mode == AUD_DMIC_MODE_1) {
-        (void)bk_aud_adc_stop(AUD_ADC_CHL_2);
-        (void)bk_aud_adc_stop(AUD_ADC_CHL_1);
-    }
-    ret = bk_aud_adc_stop(AUD_ADC_CHL_0);
-    TKL_AUD_DMIC_LOG("dmic: bk_aud_adc_stop(ch0) ret=%d\n", ret);
-#else
     ret = bk_aud_dmic_stop();
     TKL_AUD_DMIC_LOG("dmic: bk_aud_dmic_stop ret=%d\n", ret);
-#endif
 
     /* Pause GDMA without bk_dma_stop() (unsupported in REPEAT mode). */
     __tkl_aud_dmic_pause_dma();
@@ -755,15 +806,10 @@ OPERATE_RET tkl_aud_dmic_stop(TUYA_AUDIO_DMIC_PORT_E port)
     return OPRT_OK;
 }
 
-/**
- * @brief Deinitialize audio digital (DMIC) input
- * @param[in] port Digital audio port number
- * @return none
- */
-VOID_T tkl_aud_dmic_deinit(TUYA_AUDIO_DMIC_PORT_E port)
+OPERATE_RET tkl_aud_dmic_deinit(TUYA_AUDIO_DMIC_PORT_E port)
 {
     if (gl_dmic_ctx == NULL) {
-        return;
+        return OPRT_OK;
     }
 
     if (gl_dmic_ctx->is_open) {
@@ -771,11 +817,7 @@ VOID_T tkl_aud_dmic_deinit(TUYA_AUDIO_DMIC_PORT_E port)
     }
 
     __tkl_aud_dmic_dma_deconfig();
-#if CONFIG_AUD_DRIVER_V2
-    bk_aud_adc_deinit();
-#else
     bk_aud_dmic_deinit();
-#endif
 
     if (gl_dmic_ctx->read_buf) {
         tkl_system_psram_free(gl_dmic_ctx->read_buf);
@@ -783,4 +825,8 @@ VOID_T tkl_aud_dmic_deinit(TUYA_AUDIO_DMIC_PORT_E port)
 
     tkl_system_psram_free(gl_dmic_ctx);
     gl_dmic_ctx = NULL;
+
+    return OPRT_OK;
 }
+
+#endif /* CONFIG_AUD_DRIVER_V2 */

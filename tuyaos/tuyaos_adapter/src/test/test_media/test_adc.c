@@ -9,11 +9,12 @@
 #include "tkl_aud_adc.h"
 #include "tkl_aud_dac.h"
 #include "tkl_gpio.h"
+#include "tkl_memory.h"
 #include "tkl_output.h"
 #include "tkl_system.h"
 
 #define ADC_TEST_DEFAULT_PORT          TUYA_AUDIO_ADC_PORT_0
-#define ADC_TEST_DEFAULT_CHAN          TUYA_AUDIO_ADC_CHANNEL_L
+#define ADC_TEST_DEFAULT_CHAN          ADC_TEST_MODE_L
 #define ADC_TEST_DEFAULT_SAMPLE_RATE   16000U
 #define ADC_TEST_DEFAULT_SAMPLE_BITS   TUYA_AUDIO_SAMPLE_BITS_16
 #define ADC_TEST_DEFAULT_FRAME_TIME_MS 20U
@@ -28,11 +29,25 @@
 #define ADC_TEST_DUMP_MAX_SAMPLES      32U
 #define ADC_TEST_DUMP_DEFAULT_SAMPLES  12U
 
+/* The CLI's ADC mode selector. TKL replaced its L/R/LR/MIC3/RAW3/MIC23 enum
+ * with a channel bitmap (TUYA_AUDIO_MIC_CHANNEL_E), so the mode label lives
+ * here now: it is a command-line convenience, not an ABI type. Values must stay
+ * contiguous from 0 - the CLI parses a bare integer and casts to this type. */
+typedef enum {
+    ADC_TEST_MODE_L = 0,
+    ADC_TEST_MODE_R,
+    ADC_TEST_MODE_LR,
+    ADC_TEST_MODE_MIC3,
+    ADC_TEST_MODE_RAW3,
+    ADC_TEST_MODE_MIC23,
+    ADC_TEST_MODE_MAX
+} ADC_TEST_MODE_E;
+
 typedef struct {
     bool initialized;
     bool started;
     TUYA_AUDIO_ADC_PORT_E port;
-    TUYA_AUDIO_ADC_CHAN_E chan;
+    ADC_TEST_MODE_E chan;
     uint32_t sample_rate;
     uint8_t sample_bits;
     uint32_t frame_time_ms;
@@ -101,58 +116,107 @@ static test_adc_ctx_t s_adc_ctx = {
 static OPERATE_RET test_adc_init(uint32_t port, uint32_t chan, uint32_t sample_rate, uint32_t frame_time_ms, INT32_T dig_db, INT32_T ana_db);
 static OPERATE_RET test_adc_start(void);
 static OPERATE_RET test_adc_deinit(void);
+static TUYA_AUDIO_MIC_CHANNEL_E test_adc_lane_bit(UINT32_T lane);
+static TUYA_AUDIO_MIC_CHANNEL_E test_adc_chan_to_bitmap(ADC_TEST_MODE_E chan);
 
 /**
- * @brief Apply dig/ana gain to every open physical MIC for current cfg.chan
+ * @brief Apply dig/ana gain to every lane the current mode owns
  * @param[in] port ADC port
  * @param[in] dig_db digital gain dB
  * @param[in] ana_db analog gain dB
  * @return OPRT_OK on success
+ * @note Iterates the mode's own lane bitmap. A fixed lane list is wrong: the
+ *       capture core rejects (OPRT_INVALID_PARM) any lane the user does not
+ *       own, so LR (lane0+1) must not touch lane2, and MIC3 (lane2 only) must
+ *       not start from lane0.
  */
 static OPERATE_RET test_adc_apply_gain_active(TUYA_AUDIO_ADC_PORT_E port, INT32_T dig_db, INT32_T ana_db)
 {
     OPERATE_RET ret;
     INT32_T gain[2];
-    UINT32_T ch;
+    UINT32_T lane;
+    UINT32_T mask;
 
     gain[0] = dig_db;
     gain[1] = ana_db;
 
-    switch (s_adc_ctx.chan) {
-        case TUYA_AUDIO_ADC_CHANNEL_L:
-            return tkl_aud_adc_set_gain(port, TUYA_AUDIO_ADC_CHANNEL_0, gain, ADC_TEST_GAIN_NUM);
-        case TUYA_AUDIO_ADC_CHANNEL_R:
-            return tkl_aud_adc_set_gain(port, TUYA_AUDIO_ADC_CHANNEL_1, gain, ADC_TEST_GAIN_NUM);
-        case TUYA_AUDIO_ADC_CHANNEL_MIC3:
-        case TUYA_AUDIO_ADC_CHANNEL_LR:
-        case TUYA_AUDIO_ADC_CHANNEL_RAW3:
-            /* These modes open MIC1/2/3 (or extract from 3ch); set each MIC. */
-            for (ch = 0U; ch < 3U; ch++) {
-                ret = tkl_aud_adc_set_gain(port, (TUYA_AUDIO_ADC_CHANNEL_E)ch, gain, ADC_TEST_GAIN_NUM);
-                if (ret != OPRT_OK) {
-                    return ret;
-                }
-            }
-            return OPRT_OK;
-        default:
-            return OPRT_INVALID_PARM;
+    mask = (UINT32_T)test_adc_chan_to_bitmap(s_adc_ctx.chan);
+    if ((mask == 0U) || (mask > 0x7U)) {
+        return OPRT_INVALID_PARM;
     }
+
+    for (lane = 0U; lane < 3U; lane++) {
+        if ((mask & (1U << lane)) == 0U) {
+            continue;
+        }
+
+        ret = tkl_aud_adc_set_gain(port, test_adc_lane_bit(lane), gain, ADC_TEST_GAIN_NUM);
+        if (ret != OPRT_OK) {
+            return ret;
+        }
+    }
+
+    return OPRT_OK;
 }
 
-static uint32_t test_adc_channel_count(TUYA_AUDIO_ADC_CHAN_E chan)
+static uint32_t test_adc_channel_count(ADC_TEST_MODE_E chan)
 {
-    if (chan == TUYA_AUDIO_ADC_CHANNEL_L ||
-        chan == TUYA_AUDIO_ADC_CHANNEL_R ||
-        chan == TUYA_AUDIO_ADC_CHANNEL_MIC3) {
+    if (chan == ADC_TEST_MODE_L ||
+        chan == ADC_TEST_MODE_R ||
+        chan == ADC_TEST_MODE_MIC3) {
         return 1U;
     }
-    if (chan == TUYA_AUDIO_ADC_CHANNEL_LR) {
+    if (chan == ADC_TEST_MODE_LR ||
+        chan == ADC_TEST_MODE_MIC23) {
         return 2U;
     }
-    if (chan == TUYA_AUDIO_ADC_CHANNEL_RAW3) {
+    if (chan == ADC_TEST_MODE_RAW3) {
         return 3U;
     }
     return 0U;
+}
+
+/**
+ * @brief Convert an ADC lane index 0..2 into its TUYA_AUDIO_MIC_CHANNEL_E bit
+ * @param[in] lane lane index
+ * @return the channel bit, or TUYA_AUDIO_MIC_CHANNEL_MAX if out of range
+ */
+static TUYA_AUDIO_MIC_CHANNEL_E test_adc_lane_bit(UINT32_T lane)
+{
+    if (lane > 2U) {
+        return TUYA_AUDIO_MIC_CHANNEL_MAX;
+    }
+
+    return (TUYA_AUDIO_MIC_CHANNEL_E)((UINT32_T)TUYA_AUDIO_ADC_CHANNEL_0 << lane);
+}
+
+/**
+ * @brief Convert the test CLI's mode selector into the TKL channel bitmap
+ * @param[in] chan test mode (ADC_TEST_MODE_E)
+ * @return the matching TUYA_AUDIO_MIC_CHANNEL_E bitmap
+ */
+static TUYA_AUDIO_MIC_CHANNEL_E test_adc_chan_to_bitmap(ADC_TEST_MODE_E chan)
+{
+    switch (chan) {
+        case ADC_TEST_MODE_L:
+            return TUYA_AUDIO_ADC_CHANNEL_0;
+        case ADC_TEST_MODE_R:
+            return TUYA_AUDIO_ADC_CHANNEL_1;
+        case ADC_TEST_MODE_LR:
+            return (TUYA_AUDIO_MIC_CHANNEL_E)((UINT32_T)TUYA_AUDIO_ADC_CHANNEL_0 |
+                                              (UINT32_T)TUYA_AUDIO_ADC_CHANNEL_1);
+        case ADC_TEST_MODE_MIC3:
+            return TUYA_AUDIO_ADC_CHANNEL_2;
+        case ADC_TEST_MODE_RAW3:
+            return (TUYA_AUDIO_MIC_CHANNEL_E)((UINT32_T)TUYA_AUDIO_ADC_CHANNEL_0 |
+                                              (UINT32_T)TUYA_AUDIO_ADC_CHANNEL_1 |
+                                              (UINT32_T)TUYA_AUDIO_ADC_CHANNEL_2);
+        case ADC_TEST_MODE_MIC23:
+            return (TUYA_AUDIO_MIC_CHANNEL_E)((UINT32_T)TUYA_AUDIO_ADC_CHANNEL_1 |
+                                              (UINT32_T)TUYA_AUDIO_ADC_CHANNEL_2);
+        default:
+            return TUYA_AUDIO_MIC_CHANNEL_MAX;
+    }
 }
 
 static uint32_t test_adc_calc_frame_size(uint32_t sample_rate, uint8_t sample_bits, uint32_t frame_ms, uint32_t chan_num)
@@ -277,16 +341,19 @@ static void test_adc_mix_raw3_drop_ref_to_mono_16(const uint8_t *in_buf, uint32_
     }
 }
 
-static void test_adc_input_cb(TUYA_AUDIO_FRAME_EVT_E event, uint8_t *buf, uint32_t buf_len, void *args)
+static void test_adc_input_cb(TUYA_AUDIO_INPUT_BUFFER_T *buffer)
 {
+    uint8_t *buf;
+    uint32_t buf_len;
     uint32_t mono_len;
     OPERATE_RET ret;
 
-    (void)args;
-
-    if (event != TUYA_AUDIO_FRAME_EVENT_ADC_RX) {
+    if ((buffer == NULL) || (buffer->event != TUYA_AUDIO_FRAME_EVENT_ADC_RX)) {
         return;
     }
+
+    buf = buffer->data;
+    buf_len = buffer->data_len;
 
     s_adc_ctx.frame_cnt++;
     s_adc_ctx.total_bytes += buf_len;
@@ -302,7 +369,8 @@ static void test_adc_input_cb(TUYA_AUDIO_FRAME_EVT_E event, uint8_t *buf, uint32
         return;
     }
 
-    if (s_adc_ctx.chan == TUYA_AUDIO_ADC_CHANNEL_LR) {
+    if (s_adc_ctx.chan == ADC_TEST_MODE_LR ||
+        s_adc_ctx.chan == ADC_TEST_MODE_MIC23) {
         if (buf_len & 0x3U) {
             s_adc_ctx.loop_write_err_cnt++;
             return;
@@ -314,7 +382,7 @@ static void test_adc_input_cb(TUYA_AUDIO_FRAME_EVT_E event, uint8_t *buf, uint32
         }
         test_adc_mix_stereo_to_mono_16(buf, buf_len, s_adc_ctx.loop_mix_buf);
         ret = tkl_aud_dac_write(s_adc_ctx.dac_port, s_adc_ctx.loop_mix_buf, mono_len);
-    } else if (s_adc_ctx.chan == TUYA_AUDIO_ADC_CHANNEL_RAW3) {
+    } else if (s_adc_ctx.chan == ADC_TEST_MODE_RAW3) {
         /* 3ch interleaved; each sample triple is 6 bytes. */
         if ((buf_len % 6U) != 0U) {
             s_adc_ctx.loop_write_err_cnt++;
@@ -425,7 +493,7 @@ static OPERATE_RET test_adc_dac_init_start(uint32_t dac_port, uint32_t sample_ra
                                            uint32_t mono_frame_size)
 {
     OPERATE_RET ret;
-    TKL_AUD_DAC_CFG_T cfg;
+    TUYA_AUDIO_DAC_BASE_CFG_T cfg;
 
     if (dac_port >= TUYA_AUDIO_DAC_PORT_MAX || sample_rate == 0U || frame_time_ms == 0U) {
         return OPRT_INVALID_PARM;
@@ -437,8 +505,9 @@ static OPERATE_RET test_adc_dac_init_start(uint32_t dac_port, uint32_t sample_ra
 
     test_adc_dac_deinit();
 
-    if ((s_adc_ctx.chan == TUYA_AUDIO_ADC_CHANNEL_LR) ||
-        (s_adc_ctx.chan == TUYA_AUDIO_ADC_CHANNEL_RAW3)) {
+    if ((s_adc_ctx.chan == ADC_TEST_MODE_LR) ||
+        (s_adc_ctx.chan == ADC_TEST_MODE_MIC23) ||
+        (s_adc_ctx.chan == ADC_TEST_MODE_RAW3)) {
         s_adc_ctx.loop_mix_buf = (uint8_t *)tkl_system_malloc(mono_frame_size);
         if (s_adc_ctx.loop_mix_buf == NULL) {
             return OPRT_MALLOC_FAILED;
@@ -447,7 +516,11 @@ static OPERATE_RET test_adc_dac_init_start(uint32_t dac_port, uint32_t sample_ra
     }
 
     (void)os_memset(&cfg, 0, sizeof(cfg));
-    cfg.chan_num = 1U;
+    /* The CLI still takes a DAC port; map it to the channel bitmap here so
+     * the port never decides the side inside the driver. */
+    cfg.dac_chan = (dac_port == (uint32_t)TUYA_AUDIO_DAC_PORT_0)
+                 ? TUYA_AUDIO_DAC_CHANNEL_0
+                 : TUYA_AUDIO_DAC_CHANNEL_1;
     cfg.sample_bits = TUYA_AUDIO_SAMPLE_BITS_16;
     cfg.sample_rate = sample_rate;
     cfg.frame_time_ms = frame_time_ms;
@@ -497,7 +570,7 @@ static OPERATE_RET test_adc_loop_start(uint32_t adc_port, uint32_t chan, uint32_
     OPERATE_RET ret;
     uint32_t mono_frame_size;
 
-    if ((chan == (uint32_t)TUYA_AUDIO_ADC_CHANNEL_RAW3) &&
+    if ((chan == (uint32_t)ADC_TEST_MODE_RAW3) &&
         ((ref_mic < 1U) || (ref_mic > 3U))) {
         return OPRT_INVALID_PARM;
     }
@@ -507,7 +580,7 @@ static OPERATE_RET test_adc_loop_start(uint32_t adc_port, uint32_t chan, uint32_
         return ret;
     }
 
-    if (s_adc_ctx.chan == TUYA_AUDIO_ADC_CHANNEL_RAW3) {
+    if (s_adc_ctx.chan == ADC_TEST_MODE_RAW3) {
         s_adc_ctx.loop_ref_mic = (uint8_t)ref_mic;
     }
 
@@ -517,9 +590,10 @@ static OPERATE_RET test_adc_loop_start(uint32_t adc_port, uint32_t chan, uint32_
      * ADC start re-applies rate/mode/gain after any shared reset.
      */
     mono_frame_size = s_adc_ctx.frame_size;
-    if (s_adc_ctx.chan == TUYA_AUDIO_ADC_CHANNEL_LR) {
+    if (s_adc_ctx.chan == ADC_TEST_MODE_LR ||
+        s_adc_ctx.chan == ADC_TEST_MODE_MIC23) {
         mono_frame_size = mono_frame_size / 2U;
-    } else if (s_adc_ctx.chan == TUYA_AUDIO_ADC_CHANNEL_RAW3) {
+    } else if (s_adc_ctx.chan == ADC_TEST_MODE_RAW3) {
         /* Drop 回采 lane, mix remaining 2 talk mics -> mono. */
         mono_frame_size = mono_frame_size / 3U;
     }
@@ -570,15 +644,15 @@ static OPERATE_RET test_adc_init(uint32_t port, uint32_t chan, uint32_t sample_r
                                  INT32_T dig_db, INT32_T ana_db)
 {
     OPERATE_RET ret;
-    TKL_AUD_ADC_CFG_T cfg;
+    TUYA_AUDIO_ADC_BASE_CFG_T cfg;
     uint32_t chan_num;
 
-    if (port >= TUYA_AUDIO_ADC_PORT_MAX || chan >= TUYA_AUDIO_ADC_CHANNEL_MAX ||
+    if (port >= TUYA_AUDIO_ADC_PORT_MAX || chan >= ADC_TEST_MODE_MAX ||
         sample_rate == 0U || frame_time_ms == 0U) {
         return OPRT_INVALID_PARM;
     }
 
-    chan_num = test_adc_channel_count((TUYA_AUDIO_ADC_CHAN_E)chan);
+    chan_num = test_adc_channel_count((ADC_TEST_MODE_E)chan);
     if (chan_num == 0U) {
         return OPRT_INVALID_PARM;
     }
@@ -595,7 +669,7 @@ static OPERATE_RET test_adc_init(uint32_t port, uint32_t chan, uint32_t sample_r
     }
 
     (void)os_memset(&cfg, 0, sizeof(cfg));
-    cfg.chan = (TUYA_AUDIO_ADC_CHAN_E)chan;
+    cfg.chan = test_adc_chan_to_bitmap((ADC_TEST_MODE_E)chan);
     cfg.sample_bits = ADC_TEST_DEFAULT_SAMPLE_BITS;
     cfg.sample_rate = sample_rate;
     cfg.frame_time_ms = frame_time_ms;
@@ -609,7 +683,7 @@ static OPERATE_RET test_adc_init(uint32_t port, uint32_t chan, uint32_t sample_r
     }
 
     /* Chan must be stored before apply_gain_active selects MIC targets. */
-    s_adc_ctx.chan = (TUYA_AUDIO_ADC_CHAN_E)chan;
+    s_adc_ctx.chan = (ADC_TEST_MODE_E)chan;
     ret = test_adc_apply_gain_active((TUYA_AUDIO_ADC_PORT_E)port, dig_db, ana_db);
     if (ret != OPRT_OK) {
         tkl_log_output("adc set_gain failed: %d\r\n", ret);
@@ -620,7 +694,7 @@ static OPERATE_RET test_adc_init(uint32_t port, uint32_t chan, uint32_t sample_r
     s_adc_ctx.initialized = true;
     s_adc_ctx.started = false;
     s_adc_ctx.port = (TUYA_AUDIO_ADC_PORT_E)port;
-    s_adc_ctx.chan = (TUYA_AUDIO_ADC_CHAN_E)chan;
+    s_adc_ctx.chan = (ADC_TEST_MODE_E)chan;
     s_adc_ctx.sample_rate = sample_rate;
     s_adc_ctx.sample_bits = ADC_TEST_DEFAULT_SAMPLE_BITS;
     s_adc_ctx.frame_time_ms = frame_time_ms;
@@ -693,8 +767,8 @@ static OPERATE_RET test_adc_set_gain(INT32_T dig_db, INT32_T ana_db)
 /**
  * @brief Set gain for one physical MIC (0=MIC1, 1=MIC2, 2=MIC3)
  * @param[in] mic_ch physical MIC channel
- * @param[in] dig_db digital gain, or AUDIA_ADC_INVALID_GAIN_VALUE to keep
- * @param[in] ana_db analog gain, or AUDIA_ADC_INVALID_GAIN_VALUE to keep
+ * @param[in] dig_db digital gain, or AUDIO_ADC_INVALID_GAIN_VALUE to keep
+ * @param[in] ana_db analog gain, or AUDIO_ADC_INVALID_GAIN_VALUE to keep
  * @return OPRT_OK on success
  */
 static OPERATE_RET test_adc_set_gain_mic(UINT32_T mic_ch, INT32_T dig_db, INT32_T ana_db)
@@ -707,7 +781,7 @@ static OPERATE_RET test_adc_set_gain_mic(UINT32_T mic_ch, INT32_T dig_db, INT32_
 
     gain[0] = dig_db;
     gain[1] = ana_db;
-    return tkl_aud_adc_set_gain(s_adc_ctx.port, (TUYA_AUDIO_ADC_CHANNEL_E)mic_ch, gain, ADC_TEST_GAIN_NUM);
+    return tkl_aud_adc_set_gain(s_adc_ctx.port, test_adc_lane_bit(mic_ch), gain, ADC_TEST_GAIN_NUM);
 }
 
 static void test_adc_dump_last_pcm(char *pcWriteBuffer, int xWriteBufferLen, uint32_t req_cnt)
@@ -803,7 +877,7 @@ void cli_adc_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv
 
     if (argc < 2) {
         snprintf(pcWriteBuffer, xWriteBufferLen,
-                 "Usage: xadc <init [port] [chan 0=L 1=R 2=LR 3=MIC3 4=RAW3] [rate] [frame_ms] [dig_db] [ana_db]|start|rec [ms]|gain <dig_db> [ana_db]|loop_start [adc_port] [chan] [dac_port] [rate] [frame_ms] [dac_dig] [dac_ana] [adc_dig] [adc_ana] [ref_mic 1..3 for RAW3]|loop_stop|stop|deinit|close|status|stat|dump [n]>");
+                 "Usage: xadc <init [port] [chan 0=L 1=R 2=LR 3=MIC3 4=RAW3 5=MIC23] [rate] [frame_ms] [dig_db] [ana_db]|start|rec [ms]|gain <dig_db> [ana_db]|loop_start [adc_port] [chan] [dac_port] [rate] [frame_ms] [dac_dig] [dac_ana] [adc_dig] [adc_ana] [ref_mic 1..3 for RAW3]|loop_stop|stop|deinit|close|status|stat|dump [n]>");
         return;
     }
 
@@ -869,25 +943,25 @@ void cli_adc_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv
         if (argc < 3) {
             snprintf(pcWriteBuffer, xWriteBufferLen,
                      "Usage: xadc gain <dig_db|x> [ana_db|x] [mic 0|1|2]\r\n"
-                     "  x = keep (AUDIA_ADC_INVALID_GAIN_VALUE); mic omit = all active MICs\r\n");
+                     "  x = keep (AUDIO_ADC_INVALID_GAIN_VALUE); mic omit = all active MICs\r\n");
             return;
         }
         if ((argv[2][0] == 'x' || argv[2][0] == 'X') && argv[2][1] == '\0') {
             dig_keep = TRUE;
-            dig_db = (INT32_T)AUDIA_ADC_INVALID_GAIN_VALUE;
+            dig_db = (INT32_T)AUDIO_ADC_INVALID_GAIN_VALUE;
         } else {
             dig_db = test_parse_s32(argv[2]);
         }
         if (argc >= 4) {
             if ((argv[3][0] == 'x' || argv[3][0] == 'X') && argv[3][1] == '\0') {
                 ana_keep = TRUE;
-                ana_db = (INT32_T)AUDIA_ADC_INVALID_GAIN_VALUE;
+                ana_db = (INT32_T)AUDIO_ADC_INVALID_GAIN_VALUE;
             } else {
                 ana_db = test_parse_s32(argv[3]);
             }
         } else {
             ana_keep = TRUE;
-            ana_db = (INT32_T)AUDIA_ADC_INVALID_GAIN_VALUE;
+            ana_db = (INT32_T)AUDIO_ADC_INVALID_GAIN_VALUE;
         }
         if (argc >= 5) {
             mic_ch = os_strtoul(argv[4], NULL, 10);
@@ -896,25 +970,11 @@ void cli_adc_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv
         if (mic_ch != 0xFFU) {
             ret = test_adc_set_gain_mic(mic_ch, dig_db, ana_db);
         } else if ((dig_keep == TRUE) || (ana_keep == TRUE)) {
-            /* Partial update on all active MICs */
-            UINT32_T ch;
-            INT32_T gain[2];
-
-            gain[0] = dig_db;
-            gain[1] = ana_db;
-            ret = OPRT_OK;
-            if (s_adc_ctx.chan == TUYA_AUDIO_ADC_CHANNEL_L) {
-                ret = tkl_aud_adc_set_gain(s_adc_ctx.port, TUYA_AUDIO_ADC_CHANNEL_0, gain, ADC_TEST_GAIN_NUM);
-            } else if (s_adc_ctx.chan == TUYA_AUDIO_ADC_CHANNEL_R) {
-                ret = tkl_aud_adc_set_gain(s_adc_ctx.port, TUYA_AUDIO_ADC_CHANNEL_1, gain, ADC_TEST_GAIN_NUM);
-            } else {
-                for (ch = 0U; ch < 3U; ch++) {
-                    ret = tkl_aud_adc_set_gain(s_adc_ctx.port, (TUYA_AUDIO_ADC_CHANNEL_E)ch, gain, ADC_TEST_GAIN_NUM);
-                    if (ret != OPRT_OK) {
-                        break;
-                    }
-                }
-            }
+            /* Partial update (one side is "keep") on all active MICs. Reuse the
+             * shared helper so the lane set comes from the mode's bitmap - the
+             * old inline copy here looped lanes 0..2 unconditionally, which the
+             * capture core rejects for L/R/LR/MIC3 (they own only some lanes). */
+            ret = test_adc_apply_gain_active(s_adc_ctx.port, dig_db, ana_db);
         } else {
             ret = test_adc_set_gain(dig_db, ana_db);
         }
@@ -974,7 +1034,7 @@ void cli_adc_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv
                  (int)dac_ana_db,
                  (int)dig_db,
                  (int)ana_db,
-                 (unsigned int)((chan == (uint32_t)TUYA_AUDIO_ADC_CHANNEL_RAW3) ?
+                 (unsigned int)((chan == (uint32_t)ADC_TEST_MODE_RAW3) ?
                                 ref_mic : 0U));
     } else if (os_strcmp(cmd, "loop_stop") == 0) {
         ret = test_adc_loop_stop();
@@ -1044,6 +1104,6 @@ void cli_adc_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv
         test_adc_dump_last_pcm(pcWriteBuffer, xWriteBufferLen, dump_cnt);
     } else {
         snprintf(pcWriteBuffer, xWriteBufferLen,
-                 "Usage: xadc <init [port] [chan 0=L 1=R 2=LR 3=MIC3 4=RAW3] [rate] [frame_ms] [dig_db] [ana_db]|start|rec [ms]|gain <dig_db> [ana_db]|loop_start [adc_port] [chan] [dac_port] [rate] [frame_ms] [dac_dig] [dac_ana] [adc_dig] [adc_ana] [ref_mic 1..3 for RAW3]|loop_stop|stop|deinit|close|status|stat|dump [n]>");
+                 "Usage: xadc <init [port] [chan 0=L 1=R 2=LR 3=MIC3 4=RAW3 5=MIC23] [rate] [frame_ms] [dig_db] [ana_db]|start|rec [ms]|gain <dig_db> [ana_db]|loop_start [adc_port] [chan] [dac_port] [rate] [frame_ms] [dac_dig] [dac_ana] [adc_dig] [adc_ana] [ref_mic 1..3 for RAW3]|loop_stop|stop|deinit|close|status|stat|dump [n]>");
     }
 }
