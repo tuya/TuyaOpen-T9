@@ -101,7 +101,6 @@ else()
         # src/driver/tkl_video_in.c
         # src/driver/tkl_mic.c
         # src/driver/tkl_speaker.c
-        src/driver/tkl_audio.c
         # src/driver/tkl_cellular.c
         src/driver/tkl_pinmux.c
         # src/driver/tkl_rgb.c
