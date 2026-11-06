@@ -170,7 +170,7 @@ typedef enum {
 
 typedef struct {
     tkl_cam_state_e state;
-    TUYA_MIPI_CSI_CFG_T cfg;    /* outputs[] deep-copied at init; freed at deinit */
+    TUYA_MIPI_CSI_BASE_CFG_T cfg;    /* outputs[] deep-copied at init; freed at deinit */
 
     /* Output channels that are currently running. Seeded from the configured
      * set at start(); cancel_channel() clears an entry and resume_channel()
@@ -233,7 +233,7 @@ STATIC tkl_cam_out_ctx_t s_cam_out;
  * cb returns block base + header, and the header is padded to 64 bytes so the
  * write-through payload address stays 64-byte aligned (bk_mem_slab refuses a
  * misaligned WT mapping). */
-/* one-block frame layout: see TUYA_MEDIA_BUF_HDR in tkl_media_types.h */
+/* one-block frame layout: see TUYA_MEDIA_BUF_HDR in tuya_cloud_types.h */
 #define TUYA_MIPI_CSI_BUF_HDR  TUYA_MEDIA_BUF_HDR
 
 /* ---------------------------------------------------------------------------
@@ -570,7 +570,7 @@ static OPERATE_RET cam_mipi_flexa_buf_park(bk_isp_camera_ctlr_handle_t ctlr,
         return OPRT_COM_ERROR;
     }
 
-    s_cam_ctx.flexa_buf[channel] = tkl_media_ring_alloc(TKL_MEDIA_RING_HSRAM_FIRST,
+    s_cam_ctx.flexa_buf[channel] = __t9_media_ring_alloc(TKL_MEDIA_RING_HSRAM_FIRST,
                                                         query.size, "isp_flexa");
     if (s_cam_ctx.flexa_buf[channel] == NULL) {
         tkl_log_output("camera: flexa ring %u bytes alloc failed, ch%u\r\n",
@@ -590,7 +590,7 @@ static OPERATE_RET cam_mipi_flexa_buf_park(bk_isp_camera_ctlr_handle_t ctlr,
     if (ret != AVDK_ERR_OK) {
         tkl_log_output("camera: flexa ring park failed (%d), ch%u\r\n",
                        (int)ret, (unsigned int)channel);
-        tkl_media_ring_free(s_cam_ctx.flexa_buf[channel]);
+        __t9_media_ring_free(s_cam_ctx.flexa_buf[channel]);
         s_cam_ctx.flexa_buf[channel] = NULL;
         s_cam_ctx.flexa_buf_size[channel] = 0U;
         return OPRT_COM_ERROR;
@@ -613,7 +613,7 @@ static void cam_mipi_flexa_buf_release_all(void)
 
     for (channel = 0U; channel < (UINT8_T)ISP_CHANNEL_INSTANCE_MAX; channel++) {
         if (s_cam_ctx.flexa_buf[channel] != NULL) {
-            tkl_media_ring_free(s_cam_ctx.flexa_buf[channel]);
+            __t9_media_ring_free(s_cam_ctx.flexa_buf[channel]);
             s_cam_ctx.flexa_buf[channel] = NULL;
             s_cam_ctx.flexa_buf_size[channel] = 0U;
         }
@@ -1288,7 +1288,7 @@ STATIC OPERATE_RET cam_mipi_stop(void)
      * rounds of xrecog before surfacing as "alloc failed". Report, never force:
      * business may still hold the pointer. */
     {
-        UINT32_T held = tkl_media_buf_inflight(TUYA_MEDIA_BUF_OWNER_CAMERA_FRAME);
+        UINT32_T held = __t9_media_buf_inflight(TUYA_MEDIA_BUF_OWNER_CAMERA_FRAME);
 
         if (held != 0U) {
             tkl_log_output("camera stop: %u pulled frame(s) never released - "
@@ -1440,7 +1440,7 @@ STATIC VOID_T tkl_mipi_csi_frame_free(TUYA_MEDIA_BUF_T *frame)
     if (frame == NULL) {
         return;
     }
-    tkl_media_buf_free(TUYA_MEDIA_BUF_OWNER_CAMERA_FRAME, (UINT8_T *)frame);
+    __t9_media_buf_free(TUYA_MEDIA_BUF_OWNER_CAMERA_FRAME, (UINT8_T *)frame);
 }
 
 OPERATE_RET tkl_mipi_csi_get_frame(TUYA_CAMERA_FRAME_CHANNEL_E channel,
@@ -1497,7 +1497,7 @@ OPERATE_RET tkl_mipi_csi_get_frame(TUYA_CAMERA_FRAME_CHANNEL_E channel,
      * slab heaps carry the same non-cacheable MPU attribute. It keeps a 1.4 MB
      * pixel frame out of the bitstream budget. One block carries the struct
      * and the frame, so a single free returns both. */
-    buf = (TUYA_MEDIA_BUF_T *)tkl_media_buf_alloc(TKL_BUF_USE_PIXEL,
+    buf = (TUYA_MEDIA_BUF_T *)__t9_media_buf_alloc(TKL_BUF_USE_PIXEL,
                     (UINT32_T)sizeof(TUYA_MEDIA_BUF_T) + size,
                     TUYA_MEDIA_BUF_OWNER_CAMERA_FRAME);
     if (buf == NULL) {
@@ -1509,7 +1509,7 @@ OPERATE_RET tkl_mipi_csi_get_frame(TUYA_CAMERA_FRAME_CHANNEL_E channel,
     op_ret = cam_mipi_pop_copy_frame(isp_channel_id, format, width, height,
                                               (UINT8_T *)(buf + 1), size, wait_ms, &out_len);
     if (op_ret != OPRT_OK) {
-        tkl_media_buf_free(TUYA_MEDIA_BUF_OWNER_CAMERA_FRAME, (UINT8_T *)buf);
+        __t9_media_buf_free(TUYA_MEDIA_BUF_OWNER_CAMERA_FRAME, (UINT8_T *)buf);
         return op_ret;
     }
 
@@ -1522,7 +1522,7 @@ OPERATE_RET tkl_mipi_csi_get_frame(TUYA_CAMERA_FRAME_CHANNEL_E channel,
     buf->timestamp = (UINT64_T)tkl_system_get_millisecond();
     buf->width = width;
     buf->height = height;
-    buf->format = tkl_media_fmt_from_bk(format);
+    buf->format = __t9_media_fmt_from_bk(format);
 
     *out = buf;
     return OPRT_OK;
@@ -1765,7 +1765,7 @@ STATIC VOID *tkl_cam_out_display_alloc(UINT32_T size, VOID *arg)
 
     (void)arg;
 
-    block = tkl_media_buf_alloc(TKL_BUF_USE_PIXEL_WT, TUYA_MIPI_CSI_BUF_HDR + size,
+    block = __t9_media_buf_alloc(TKL_BUF_USE_PIXEL_WT, TUYA_MIPI_CSI_BUF_HDR + size,
                                 TUYA_MEDIA_BUF_OWNER_CAMERA_DISPLAY);
     if (block == NULL) {
         tkl_cam_out_event_throttled(TUYA_CAMERA_EVENT_ERR_ALLOC);
@@ -1783,7 +1783,7 @@ STATIC OPERATE_RET tkl_cam_out_display_free(VOID *ptr, VOID *arg)
         return OPRT_INVALID_PARM;
     }
 
-    tkl_media_buf_free(TUYA_MEDIA_BUF_OWNER_CAMERA_DISPLAY,
+    __t9_media_buf_free(TUYA_MEDIA_BUF_OWNER_CAMERA_DISPLAY,
                        (UINT8_T *)ptr - TUYA_MIPI_CSI_BUF_HDR);
     return OPRT_OK;
 }
@@ -1795,7 +1795,7 @@ STATIC VOID_T tkl_cam_out_display_buf_free(TUYA_MEDIA_BUF_T *frame)
     if (frame == NULL) {
         return;
     }
-    tkl_media_buf_free(TUYA_MEDIA_BUF_OWNER_CAMERA_DISPLAY, (UINT8_T *)frame);
+    __t9_media_buf_free(TUYA_MEDIA_BUF_OWNER_CAMERA_DISPLAY, (UINT8_T *)frame);
 }
 
 /**
@@ -1849,7 +1849,7 @@ STATIC VOID *tkl_cam_out_stream_alloc(UINT32_T size, VOID *arg)
 
     (void)arg;
 
-    block = tkl_media_buf_alloc(TKL_BUF_USE_STREAM, size, TUYA_MEDIA_BUF_OWNER_CAMERA_STREAM);
+    block = __t9_media_buf_alloc(TKL_BUF_USE_STREAM, size, TUYA_MEDIA_BUF_OWNER_CAMERA_STREAM);
     if (block == NULL) {
         tkl_cam_out_event_throttled(TUYA_CAMERA_EVENT_ERR_ALLOC);
     }
@@ -1864,7 +1864,7 @@ STATIC OPERATE_RET tkl_cam_out_stream_free(VOID *ptr, VOID *arg)
         return OPRT_INVALID_PARM;
     }
 
-    tkl_media_buf_free(TUYA_MEDIA_BUF_OWNER_CAMERA_STREAM, ptr);
+    __t9_media_buf_free(TUYA_MEDIA_BUF_OWNER_CAMERA_STREAM, ptr);
     return OPRT_OK;
 }
 
@@ -1974,7 +1974,7 @@ STATIC UINT32_T tkl_cam_out_deliver_one(VOID_T)
         return 0U;
     }
 
-    buf = (TUYA_MEDIA_BUF_T *)tkl_media_buf_alloc(TKL_BUF_USE_PIXEL,
+    buf = (TUYA_MEDIA_BUF_T *)__t9_media_buf_alloc(TKL_BUF_USE_PIXEL,
                     (UINT32_T)sizeof(TUYA_MEDIA_BUF_T) + size,
                     TUYA_MEDIA_BUF_OWNER_CAMERA_FRAME);
     if (buf == NULL) {
@@ -1987,7 +1987,7 @@ STATIC UINT32_T tkl_cam_out_deliver_one(VOID_T)
                                   (UINT8_T *)(buf + 1), size, TUYA_MIPI_CSI_DELIVER_POP_MS,
                                   &out_len);
     if (ret != OPRT_OK) {
-        tkl_media_buf_free(TUYA_MEDIA_BUF_OWNER_CAMERA_FRAME, (UINT8_T *)buf);
+        __t9_media_buf_free(TUYA_MEDIA_BUF_OWNER_CAMERA_FRAME, (UINT8_T *)buf);
         return 0U;
     }
 
@@ -1999,7 +1999,7 @@ STATIC UINT32_T tkl_cam_out_deliver_one(VOID_T)
     buf->timestamp = (UINT64_T)tkl_system_get_millisecond();
     buf->width = width;
     buf->height = height;
-    buf->format = tkl_media_fmt_from_bk(format);
+    buf->format = __t9_media_fmt_from_bk(format);
     buf->user_args = ch->arg;
 
     ch->cb(buf);
@@ -2113,7 +2113,7 @@ STATIC VOID_T tkl_cam_out_deliver_stop(VOID_T)
  * @param[out] old receives the legacy config
  * @return OPRT_OK on success
  */
-STATIC OPERATE_RET tkl_cam_out_build_camera_cfg(CONST TUYA_MIPI_CSI_CFG_T *cfg,
+STATIC OPERATE_RET tkl_cam_out_build_camera_cfg(CONST TUYA_MIPI_CSI_BASE_CFG_T *cfg,
                                                 TUYA_MIPI_CSI_HW_CFG_T *old)
 {
     CONST TUYA_MEDIA_OUTPUT_CFG_T *ch1 = NULL;
@@ -2140,7 +2140,7 @@ STATIC OPERATE_RET tkl_cam_out_build_camera_cfg(CONST TUYA_MIPI_CSI_CFG_T *cfg,
     /* UNKNOWN stays 0 so the driver applies its own default */
     old->sensor_input_format =
         (cfg->sensor_cfg.format != TUYA_FRAME_FMT_UNKNOWN)
-            ? tkl_media_fmt_to_bk(cfg->sensor_cfg.format) : 0U;
+            ? __t9_media_fmt_to_bk(cfg->sensor_cfg.format) : 0U;
     old->hmirror = 0U;
     old->vflip = 0U;
     old->read_timeout_ms = TUYA_MIPI_CSI_READ_TIMEOUT_MS;
@@ -2182,7 +2182,7 @@ STATIC OPERATE_RET tkl_cam_out_build_camera_cfg(CONST TUYA_MIPI_CSI_CFG_T *cfg,
         /* the caller's choice, not a constant: NV12 to encode or transform the
          * frame, RGB888 to feed the face model directly */
         old->sp_format = (ch1->format != TUYA_FRAME_FMT_UNKNOWN)
-                             ? tkl_media_fmt_to_bk(ch1->format)
+                             ? __t9_media_fmt_to_bk(ch1->format)
                              : (UINT32_T)BK_PIXEL_FORMAT_NV12;
         old->sp_buf_cnt = TUYA_MIPI_CSI_SP_BUF_CNT;
         /* always frame mode - SP has no bond to be in flexa for */
@@ -2213,15 +2213,15 @@ STATIC OPERATE_RET tkl_cam_out_display_open(CONST TUYA_MIPI_CSI_FLEXA_SOURCE_T *
     os_memset(&gpu_cfg, 0, sizeof(gpu_cfg));
     gpu_cfg.dst_width = ch->width;
     gpu_cfg.dst_height = ch->height;
-    gpu_cfg.rotate_degree = ch->rotate;
-    gpu_cfg.dst_format = tkl_media_fmt_to_bk(ch->format);
+    gpu_cfg.rotate_degree = __t9_rotate_to_deg(ch->rotate);
+    gpu_cfg.dst_format = __t9_media_fmt_to_bk(ch->format);
     gpu_cfg.scale = TRUE;
     /* always compressed: a display frame goes straight to the DPU, which
      * decompresses. Exposing this as a choice only invites getting it wrong. */
     gpu_cfg.dst_compress = TRUE;
     gpu_cfg.flexa_lines = TUYA_MIPI_CSI_FLEXA_LINES;
 
-    ret = tkl_gpu_init(&gpu_cfg, &s_cam_out.gpu);
+    ret = __t9_gpu_init(&gpu_cfg, &s_cam_out.gpu);
     if (ret != OPRT_OK) {
         tkl_log_output("tkl_cam_out: gpu init failed: %d\r\n", ret);
         return ret;
@@ -2232,7 +2232,7 @@ STATIC OPERATE_RET tkl_cam_out_display_open(CONST TUYA_MIPI_CSI_FLEXA_SOURCE_T *
     sink.free_cb = tkl_cam_out_display_free;
     sink.frame_done_cb = tkl_cam_out_display_done;
 
-    ret = tkl_gpu_set_sink(s_cam_out.gpu, &sink);
+    ret = __t9_gpu_set_sink(s_cam_out.gpu, &sink);
     if (ret != OPRT_OK) {
         goto err;
     }
@@ -2246,7 +2246,7 @@ STATIC OPERATE_RET tkl_cam_out_display_open(CONST TUYA_MIPI_CSI_FLEXA_SOURCE_T *
     source.isp.flexa.height = flexa->height;
     source.isp.flexa.format = flexa->format;
 
-    ret = tkl_gpu_set_source(s_cam_out.gpu, &source);
+    ret = __t9_gpu_set_source(s_cam_out.gpu, &source);
     if (ret != OPRT_OK) {
         tkl_log_output("tkl_cam_out: gpu set_source failed: %d\r\n", ret);
         goto err;
@@ -2255,7 +2255,7 @@ STATIC OPERATE_RET tkl_cam_out_display_open(CONST TUYA_MIPI_CSI_FLEXA_SOURCE_T *
     return OPRT_OK;
 
 err:
-    (void)tkl_gpu_deinit(s_cam_out.gpu);
+    (void)__t9_gpu_deinit(s_cam_out.gpu);
     s_cam_out.gpu = NULL;
     return ret;
 }
@@ -2289,7 +2289,7 @@ STATIC OPERATE_RET tkl_cam_out_encode_open(CONST TUYA_MIPI_CSI_FLEXA_SOURCE_T *f
     venc_cfg.codec = (UINT32_T)TUYA_VCODEC_TYPE_H264;
     venc_cfg.input_format = flexa->format;
 
-    ret = tkl_venc_init(&s_cam_out.venc, &venc_cfg);
+    ret = __t9_venc_init(&s_cam_out.venc, &venc_cfg);
     if (ret != OPRT_OK) {
         tkl_log_output("tkl_cam_out: venc init failed: %d\r\n", ret);
         return ret;
@@ -2298,15 +2298,15 @@ STATIC OPERATE_RET tkl_cam_out_encode_open(CONST TUYA_MIPI_CSI_FLEXA_SOURCE_T *f
     /* the level presets the bitrate (LOW 0.75 / MEDIUM 1.5 / HIGH 3 Mbps);
      * tkl_mipi_csi_set_bitrate() fine-tunes from there */
     os_memset(&rc, 0, sizeof(rc));
-    rc.bitrate = tkl_media_bitrate_from_level(ch->level);
-    (void)tkl_venc_set_rate_ctrl(s_cam_out.venc, &rc);
+    rc.bitrate = __t9_media_bitrate_from_level(ch->level);
+    (void)__t9_venc_set_rate_ctrl(s_cam_out.venc, &rc);
 
     os_memset(&sink, 0, sizeof(sink));
     sink.stream_cb = tkl_cam_out_stream_cb;
     sink.alloc_cb = tkl_cam_out_stream_alloc;
     sink.free_cb = tkl_cam_out_stream_free;
 
-    ret = tkl_venc_set_sink(s_cam_out.venc, &sink);
+    ret = __t9_venc_set_sink(s_cam_out.venc, &sink);
     if (ret != OPRT_OK) {
         goto err;
     }
@@ -2324,7 +2324,7 @@ STATIC OPERATE_RET tkl_cam_out_encode_open(CONST TUYA_MIPI_CSI_FLEXA_SOURCE_T *f
     source.isp.flexa.u_addr = flexa->u_addr;
     source.isp.flexa.v_addr = flexa->v_addr;
 
-    ret = tkl_venc_set_source(s_cam_out.venc, &source);
+    ret = __t9_venc_set_source(s_cam_out.venc, &source);
     if (ret != OPRT_OK) {
         tkl_log_output("tkl_cam_out: venc set_source failed: %d\r\n", ret);
         goto err;
@@ -2333,7 +2333,7 @@ STATIC OPERATE_RET tkl_cam_out_encode_open(CONST TUYA_MIPI_CSI_FLEXA_SOURCE_T *f
     return OPRT_OK;
 
 err:
-    (void)tkl_venc_deinit(s_cam_out.venc);
+    (void)__t9_venc_deinit(s_cam_out.venc);
     s_cam_out.venc = NULL;
     return ret;
 }
@@ -2347,7 +2347,7 @@ STATIC OPERATE_RET tkl_cam_out_osd_display_open(VOID_T)
     VOID *gpu_raw = NULL;
     OPERATE_RET ret;
 
-    ret = tkl_gpu_get_handle(s_cam_out.gpu, &gpu_raw);
+    ret = __t9_gpu_get_handle(s_cam_out.gpu, &gpu_raw);
     if (ret != OPRT_OK) {
         return ret;
     }
@@ -2364,7 +2364,7 @@ STATIC OPERATE_RET tkl_cam_out_osd_display_open(VOID_T)
     /* the caller supplies the rotation per overlay request */
     cfg.src_format = (UINT32_T)BK_PIXEL_FORMAT_ARGB8888;
 
-    return tkl_osd_engine_open(TKL_OSD_BACKEND_GPU, gpu_raw, &cfg, &s_cam_out.osd_display);
+    return __t9_osd_engine_open(TKL_OSD_BACKEND_GPU, gpu_raw, &cfg, &s_cam_out.osd_display);
 }
 
 /* ---------------------------------------------------------------------------
@@ -2384,14 +2384,14 @@ static BOOL_T tkl_mipi_csi_is_bayer_input(TUYA_FRAME_FMT_E format)
     }
 }
 
-static OPERATE_RET tkl_mipi_csi_validate_formats(CONST TUYA_MIPI_CSI_CFG_T *cfg)
+static OPERATE_RET tkl_mipi_csi_validate_formats(CONST TUYA_MIPI_CSI_BASE_CFG_T *cfg)
 {
     UINT32_T i;
     UINT32_T j;
 
     if (cfg->sensor_cfg.format != TUYA_FRAME_FMT_UNKNOWN &&
         (!tkl_mipi_csi_is_bayer_input(cfg->sensor_cfg.format) ||
-         tkl_media_fmt_to_bk(cfg->sensor_cfg.format) == (UINT32_T)BK_PIXEL_FORMAT_INVALID)) {
+         __t9_media_fmt_to_bk(cfg->sensor_cfg.format) == (UINT32_T)BK_PIXEL_FORMAT_INVALID)) {
         return OPRT_INVALID_PARM;
     }
 
@@ -2430,10 +2430,10 @@ static OPERATE_RET tkl_mipi_csi_validate_formats(CONST TUYA_MIPI_CSI_CFG_T *cfg)
         case TUYA_CAMERA_FRAME_CHANNEL_1:
             /* SP carries the caller's pixel format; zero size = source size */
             if (e->format != TUYA_FRAME_FMT_UNKNOWN &&
-                tkl_media_fmt_to_bk(e->format) == (UINT32_T)BK_PIXEL_FORMAT_INVALID) {
+                __t9_media_fmt_to_bk(e->format) == (UINT32_T)BK_PIXEL_FORMAT_INVALID) {
                 return OPRT_NOT_SUPPORTED;
             }
-            if (e->rotate != 0U || e->gop != 0U || e->level != 0U) {
+            if (e->rotate != TUYA_FRAME_ROTATE_0 || e->gop != 0U || e->level != 0U) {
                 return OPRT_INVALID_PARM;
             }
             break;
@@ -2449,12 +2449,14 @@ static OPERATE_RET tkl_mipi_csi_validate_formats(CONST TUYA_MIPI_CSI_CFG_T *cfg)
                 return OPRT_INVALID_PARM;
             }
             if (e->format == TUYA_FRAME_FMT_UNKNOWN ||
-                tkl_media_fmt_to_bk(e->format) == (UINT32_T)BK_PIXEL_FORMAT_INVALID) {
+                __t9_media_fmt_to_bk(e->format) == (UINT32_T)BK_PIXEL_FORMAT_INVALID) {
                 return OPRT_NOT_SUPPORTED;
             }
-            if (e->rotate != 0U && e->rotate != 90U && e->rotate != 270U) {
+            if (e->rotate != TUYA_FRAME_ROTATE_0 &&
+                e->rotate != TUYA_FRAME_ROTATE_90 &&
+                e->rotate != TUYA_FRAME_ROTATE_270) {
                 tkl_log_output("tkl_mipi_csi: ch2 rotate %u not supported (0/90/270)\r\n",
-                               (unsigned)e->rotate);
+                               (unsigned)__t9_rotate_to_deg(e->rotate));
                 return OPRT_NOT_SUPPORTED;
             }
             if (e->gop != 0U || e->level != 0U) {
@@ -2478,7 +2480,7 @@ static OPERATE_RET tkl_mipi_csi_validate_formats(CONST TUYA_MIPI_CSI_CFG_T *cfg)
                                "(H264-only encoder)\r\n", (unsigned)e->format);
                 return OPRT_NOT_SUPPORTED;
             }
-            if (e->rotate != 0U) {
+            if (e->rotate != TUYA_FRAME_ROTATE_0) {
                 return OPRT_INVALID_PARM;
             }
             break;
@@ -2491,7 +2493,7 @@ static OPERATE_RET tkl_mipi_csi_validate_formats(CONST TUYA_MIPI_CSI_CFG_T *cfg)
     return OPRT_OK;
 }
 
-OPERATE_RET tkl_mipi_csi_init(CONST TUYA_MIPI_CSI_CFG_T *cfg)
+OPERATE_RET tkl_mipi_csi_init(CONST TUYA_MIPI_CSI_BASE_CFG_T *cfg)
 {
     TUYA_MIPI_CSI_HW_CFG_T dev_cfg;
     UINT32_T t;
@@ -2515,6 +2517,11 @@ OPERATE_RET tkl_mipi_csi_init(CONST TUYA_MIPI_CSI_CFG_T *cfg)
     if (ret != OPRT_OK) {
         return ret;
     }
+
+    /* The media pool must be up before the ISP runs: the ISP takes its SP
+     * planes straight from bk_frame_buffer_malloc(), bypassing this adapter.
+     * Initialising lazily inside __t9_media_buf_alloc() would be too late. */
+    __t9_media_buf_init();
 
     os_memset(&s_cam_out, 0, sizeof(s_cam_out));
     s_cam_out.cfg = *cfg;               /* shallow: pointers first, then swap */
@@ -2553,7 +2560,7 @@ OPERATE_RET tkl_mipi_csi_init(CONST TUYA_MIPI_CSI_CFG_T *cfg)
     s_cam_out.state = TKL_CAM_ST_INIT;
     tkl_log_output("tkl_cam_out: init took %u ms (power %u)\r\n",
                    (unsigned)ms_power, (unsigned)ms_power);
-    tkl_cam_out_event(TUYA_CAMERA_EVENT_INITIALIZED);
+    tkl_cam_out_event(TUYA_CAMERA_EVENT_INIT);
     return OPRT_OK;
 }
 
@@ -2712,7 +2719,7 @@ OPERATE_RET tkl_mipi_csi_start(VOID_T)
     tkl_log_output("tkl_cam_out: start took %u ms (sensor %u, consumer %u)\r\n",
                    (unsigned)(ms_sensor + ms_consumer),
                    (unsigned)ms_sensor, (unsigned)ms_consumer);
-    tkl_cam_out_event(TUYA_CAMERA_EVENT_STARTED);
+    tkl_cam_out_event(TUYA_CAMERA_EVENT_START);
     return OPRT_OK;
 }
 
@@ -2737,8 +2744,8 @@ OPERATE_RET tkl_mipi_csi_stop(VOID_T)
 
     t = TUYA_MIPI_CSI_MS();
 
-    /* 1-3. overlays, then all bonds, then the backends. tkl_venc_stop() and
-     *      tkl_gpu_stop() each stop their own bond and close only their own
+    /* 1-3. overlays, then all bonds, then the backends. __t9_venc_stop() and
+     *      __t9_gpu_stop() each stop their own bond and close only their own
      *      backend, so calling them back to back keeps the rule that no backend
      *      is touched while any bond is still live. */
     tkl_cam_out_consumers_close();
@@ -2759,7 +2766,7 @@ OPERATE_RET tkl_mipi_csi_stop(VOID_T)
     tkl_log_output("tkl_cam_out: stop took %u ms (consumer %u, camera %u)\r\n",
                    (unsigned)(ms_consumer + ms_camera),
                    (unsigned)ms_consumer, (unsigned)ms_camera);
-    tkl_cam_out_event(TUYA_CAMERA_EVENT_STOPPED);
+    tkl_cam_out_event(TUYA_CAMERA_EVENT_STOP);
     return OPRT_OK;
 }
 
@@ -2785,12 +2792,12 @@ OPERATE_RET tkl_mipi_csi_deinit(VOID_T)
      * release - business may still hold the pointer. Display tolerates one: the
      * panel is still scanning the last frame and nothing will replace it. A
      * bitstream has no such holder, so stream must reach zero. */
-    (void)tkl_media_buf_drain(TUYA_MEDIA_BUF_OWNER_CAMERA_DISPLAY,
+    (void)__t9_media_buf_drain(TUYA_MEDIA_BUF_OWNER_CAMERA_DISPLAY,
                               TUYA_MIPI_CSI_OUTPUT_PIXEL_RESIDUAL, TUYA_MIPI_CSI_DRAIN_MS);
-    (void)tkl_media_buf_drain(TUYA_MEDIA_BUF_OWNER_CAMERA_STREAM, 0U, TUYA_MIPI_CSI_DRAIN_MS);
+    (void)__t9_media_buf_drain(TUYA_MEDIA_BUF_OWNER_CAMERA_STREAM, 0U, TUYA_MIPI_CSI_DRAIN_MS);
     /* Pulled frames have no such holder either: business asked for each one and
      * is expected to have released it before deinit. */
-    (void)tkl_media_buf_drain(TUYA_MEDIA_BUF_OWNER_CAMERA_FRAME, 0U, TUYA_MIPI_CSI_DRAIN_MS);
+    (void)__t9_media_buf_drain(TUYA_MEDIA_BUF_OWNER_CAMERA_FRAME, 0U, TUYA_MIPI_CSI_DRAIN_MS);
     ms_drain = TUYA_MIPI_CSI_MS() - t;
 
     tkl_log_output("tkl_cam_out: deinit took %u ms (camera %u, drain %u)\r\n",
@@ -2799,7 +2806,7 @@ OPERATE_RET tkl_mipi_csi_deinit(VOID_T)
 
     /* release the deep-copied outputs, then tell business - the handler must
      * not look at adapter state after this point anyway */
-    tkl_cam_out_event(TUYA_CAMERA_EVENT_DEINITIALIZED);
+    tkl_cam_out_event(TUYA_CAMERA_EVENT_DEINIT);
     if (s_cam_out.cfg.outputs != NULL) {
         tkl_system_free(s_cam_out.cfg.outputs);
         s_cam_out.cfg.outputs = NULL;
@@ -2819,7 +2826,7 @@ STATIC OPERATE_RET tkl_cam_out_display_start(VOID_T)
     TUYA_MIPI_CSI_FLEXA_SOURCE_T flexa;
     OPERATE_RET ret;
 
-    ret = tkl_media_hw_claim(TUYA_MEDIA_HW_GPU, TUYA_MEDIA_HW_CLAIM_CSI);
+    ret = __t9_media_hw_claim(TUYA_MEDIA_HW_GPU, TUYA_MEDIA_HW_CLAIM_CSI);
     if (ret != OPRT_OK) {
         return ret;
     }
@@ -2830,17 +2837,17 @@ STATIC OPERATE_RET tkl_cam_out_display_start(VOID_T)
         ret = tkl_cam_out_display_open(&flexa);
     }
     if (ret == OPRT_OK) {
-        ret = tkl_gpu_start(s_cam_out.gpu);
+        ret = __t9_gpu_start(s_cam_out.gpu);
     }
     if (ret == OPRT_OK) {
         ret = tkl_cam_out_osd_display_open();
     }
     if (ret != OPRT_OK) {
         if (s_cam_out.gpu != NULL) {
-            (void)tkl_gpu_deinit(s_cam_out.gpu);
+            (void)__t9_gpu_deinit(s_cam_out.gpu);
             s_cam_out.gpu = NULL;
         }
-        tkl_media_hw_release(TUYA_MEDIA_HW_GPU, TUYA_MEDIA_HW_CLAIM_CSI);
+        __t9_media_hw_release(TUYA_MEDIA_HW_GPU, TUYA_MEDIA_HW_CLAIM_CSI);
         return ret;
     }
 
@@ -2854,7 +2861,7 @@ STATIC OPERATE_RET tkl_cam_out_encode_start(VOID_T)
     TUYA_MIPI_CSI_FLEXA_SOURCE_T flexa;
     OPERATE_RET ret;
 
-    ret = tkl_media_hw_claim(TUYA_MEDIA_HW_VPU_ENC, TUYA_MEDIA_HW_CLAIM_CSI);
+    ret = __t9_media_hw_claim(TUYA_MEDIA_HW_VPU_ENC, TUYA_MEDIA_HW_CLAIM_CSI);
     if (ret != OPRT_OK) {
         return ret;
     }
@@ -2865,14 +2872,14 @@ STATIC OPERATE_RET tkl_cam_out_encode_start(VOID_T)
         ret = tkl_cam_out_encode_open(&flexa);
     }
     if (ret == OPRT_OK) {
-        ret = tkl_venc_start(s_cam_out.venc);
+        ret = __t9_venc_start(s_cam_out.venc);
     }
     if (ret != OPRT_OK) {
         if (s_cam_out.venc != NULL) {
-            (void)tkl_venc_deinit(s_cam_out.venc);
+            (void)__t9_venc_deinit(s_cam_out.venc);
             s_cam_out.venc = NULL;
         }
-        tkl_media_hw_release(TUYA_MEDIA_HW_VPU_ENC, TUYA_MEDIA_HW_CLAIM_CSI);
+        __t9_media_hw_release(TUYA_MEDIA_HW_VPU_ENC, TUYA_MEDIA_HW_CLAIM_CSI);
         return ret;
     }
 
@@ -2886,17 +2893,17 @@ STATIC VOID_T tkl_cam_out_display_stop_one(VOID_T)
     BOOL_T had_gpu = (s_cam_out.gpu != NULL);
 
     if (s_cam_out.osd_display != NULL) {
-        (void)tkl_osd_engine_close(s_cam_out.osd_display);
+        (void)__t9_osd_engine_close(s_cam_out.osd_display);
         s_cam_out.osd_display = NULL;
     }
     if (s_cam_out.gpu != NULL) {
-        (void)tkl_gpu_stop(s_cam_out.gpu);
-        (void)tkl_gpu_deinit(s_cam_out.gpu);
+        (void)__t9_gpu_stop(s_cam_out.gpu);
+        (void)__t9_gpu_deinit(s_cam_out.gpu);
         s_cam_out.gpu = NULL;
     }
 
     if (had_gpu == TRUE) {
-        tkl_media_hw_release(TUYA_MEDIA_HW_GPU, TUYA_MEDIA_HW_CLAIM_CSI);
+        __t9_media_hw_release(TUYA_MEDIA_HW_GPU, TUYA_MEDIA_HW_CLAIM_CSI);
     }
 }
 
@@ -2907,13 +2914,13 @@ STATIC VOID_T tkl_cam_out_encode_stop_one(VOID_T)
     BOOL_T had_venc = (s_cam_out.venc != NULL);
 
     if (s_cam_out.venc != NULL) {
-        (void)tkl_venc_stop(s_cam_out.venc);
-        (void)tkl_venc_deinit(s_cam_out.venc);
+        (void)__t9_venc_stop(s_cam_out.venc);
+        (void)__t9_venc_deinit(s_cam_out.venc);
         s_cam_out.venc = NULL;
     }
 
     if (had_venc == TRUE) {
-        tkl_media_hw_release(TUYA_MEDIA_HW_VPU_ENC, TUYA_MEDIA_HW_CLAIM_CSI);
+        __t9_media_hw_release(TUYA_MEDIA_HW_VPU_ENC, TUYA_MEDIA_HW_CLAIM_CSI);
     }
 }
 
@@ -2926,19 +2933,19 @@ STATIC VOID_T tkl_cam_out_encode_stop_one(VOID_T)
 STATIC VOID_T tkl_cam_out_consumers_close(VOID_T)
 {
     if (s_cam_out.osd_display != NULL) {
-        (void)tkl_osd_engine_close(s_cam_out.osd_display);
+        (void)__t9_osd_engine_close(s_cam_out.osd_display);
         s_cam_out.osd_display = NULL;
     }
     if (s_cam_out.osd_encode != NULL) {
-        (void)tkl_osd_engine_close(s_cam_out.osd_encode);
+        (void)__t9_osd_engine_close(s_cam_out.osd_encode);
         s_cam_out.osd_encode = NULL;
     }
 
     if (s_cam_out.venc != NULL) {
-        (void)tkl_venc_stop(s_cam_out.venc);
+        (void)__t9_venc_stop(s_cam_out.venc);
     }
     if (s_cam_out.gpu != NULL) {
-        (void)tkl_gpu_stop(s_cam_out.gpu);
+        (void)__t9_gpu_stop(s_cam_out.gpu);
     }
 
     tkl_cam_out_encode_stop_one();
@@ -3013,12 +3020,12 @@ STATIC OPERATE_RET tkl_cam_out_display_rebuild(UINT16_T width, UINT16_T height)
      * camera and the encode side keep running. The GPU claim stays with us -
      * the restart below re-claims it idempotently. */
     if (s_cam_out.osd_display != NULL) {
-        (void)tkl_osd_engine_close(s_cam_out.osd_display);
+        (void)__t9_osd_engine_close(s_cam_out.osd_display);
         s_cam_out.osd_display = NULL;
     }
     if (s_cam_out.gpu != NULL) {
-        (void)tkl_gpu_stop(s_cam_out.gpu);
-        (void)tkl_gpu_deinit(s_cam_out.gpu);
+        (void)__t9_gpu_stop(s_cam_out.gpu);
+        (void)__t9_gpu_deinit(s_cam_out.gpu);
         s_cam_out.gpu = NULL;
     }
 
@@ -3221,7 +3228,7 @@ OPERATE_RET tkl_mipi_csi_set_bitrate(UINT32_T bitrate)
 
     os_memset(&rc, 0, sizeof(rc));
     rc.bitrate = bitrate;
-    return tkl_venc_set_rate_ctrl(s_cam_out.venc, &rc);
+    return __t9_venc_set_rate_ctrl(s_cam_out.venc, &rc);
 }
 
 OPERATE_RET tkl_mipi_csi_set_gop(UINT32_T gop)
@@ -3249,7 +3256,7 @@ OPERATE_RET tkl_mipi_csi_force_idr(VOID_T)
         return OPRT_RESOURCE_NOT_READY;
     }
 
-    return tkl_venc_request_idr(s_cam_out.venc);
+    return __t9_venc_request_idr(s_cam_out.venc);
 }
 
 OPERATE_RET tkl_mipi_csi_set_osd(TUYA_CAMERA_FRAME_CHANNEL_E channel, CONST TUYA_OSD_T *osd)
@@ -3266,14 +3273,14 @@ OPERATE_RET tkl_mipi_csi_set_osd(TUYA_CAMERA_FRAME_CHANNEL_E channel, CONST TUYA
         if (s_cam_out.osd_display == NULL) {
             return OPRT_NOT_SUPPORTED;
         }
-        return tkl_osd_engine_submit(s_cam_out.osd_display, osd);
+        return __t9_osd_engine_submit(s_cam_out.osd_display, osd);
     }
 
     if (channel == TUYA_CAMERA_FRAME_CHANNEL_3) {
         if (s_cam_out.venc == NULL) {
             return OPRT_NOT_SUPPORTED;
         }
-        return tkl_venc_set_osd(s_cam_out.venc, osd);
+        return __t9_venc_set_osd(s_cam_out.venc, osd);
     }
 
     return OPRT_NOT_SUPPORTED;         /* ch0/ch1 carry no overlay */

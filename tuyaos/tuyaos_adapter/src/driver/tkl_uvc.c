@@ -28,7 +28,6 @@
 #include "tkl_image_codec.h"
 #include "tkl_media_buf.h"
 #include "tkl_media_fmt.h"
-#include "tkl_media_types.h"
 #include "tkl_memory.h"
 #include "tkl_osd_engine.h"
 #include "tkl_output.h"
@@ -263,7 +262,7 @@ static frame_buffer_t *uvc_dev_frame_malloc(bk_image_format_t format, uint32_t s
     } else {
         /* No sink allocator: TKL picks the pool. USB DMAs an encoded frame
          * straight into it, so it belongs in the stream slab, not the heap. */
-        payload = tkl_media_buf_alloc(TKL_BUF_USE_STREAM, size,
+        payload = __t9_media_buf_alloc(TKL_BUF_USE_STREAM, size,
                                       TUYA_MEDIA_BUF_OWNER_UVC_STREAM);
     }
 
@@ -293,7 +292,7 @@ static VOID uvc_dev_frame_free(TUYA_UVC_CTX_T *ctx, TUYA_UVC_FRAME_T *node)
         if (ctx != NULL && ctx->sink.free_cb != NULL) {
             (void)ctx->sink.free_cb(node->payload, ctx->sink.cb_arg);
         } else {
-            tkl_media_buf_free(TUYA_MEDIA_BUF_OWNER_UVC_STREAM, node->payload);
+            __t9_media_buf_free(TUYA_MEDIA_BUF_OWNER_UVC_STREAM, node->payload);
         }
     }
 
@@ -867,7 +866,7 @@ STATIC OPERATE_RET uvc_dev_stop(TUYA_UVC_HANDLE handle)
  * 64-aligned, and the write-through mapping the vendor pool installs refuses a
  * non-aligned payload address - so the struct is padded up to 64 and the
  * payload stays aligned no matter what the struct grows to. */
-/* one-block frame layout: see TUYA_MEDIA_BUF_HDR in tkl_media_types.h */
+/* one-block frame layout: see TUYA_MEDIA_BUF_HDR in tuya_cloud_types.h */
 #define TUYA_UVC_BUF_HDR  TUYA_MEDIA_BUF_HDR
 
 #define TUYA_UVC_INTERNAL_MS()             ((UINT32_T)tkl_system_get_millisecond())
@@ -909,7 +908,7 @@ typedef enum {
 
 typedef struct {
     tkl_uvc_state_e state;
-    TUYA_UVC_CFG_T cfg;         /**< outputs deep-copied at init() */
+    TUYA_UVC_BASE_CFG_T cfg;         /**< outputs deep-copied at init() */
 
     TUYA_UVC_HANDLE uvc;
     TUYA_VDEC_HANDLE vdec;      /**< decoder: flexa ring for ch2/ch3, FRAME sink for ch1 push */
@@ -1097,7 +1096,7 @@ STATIC OPERATE_RET tkl_uvc_pool_create(tkl_uvc_pool_t *pool,
     for (i = 0U; i < depth; i++) {
         tkl_uvc_slot_t *slot = &pool->slots[i];
 
-        slot->data = (UINT8_T *)tkl_media_buf_alloc(use, slot_size, owner);
+        slot->data = (UINT8_T *)__t9_media_buf_alloc(use, slot_size, owner);
         if (slot->data == NULL) {
             tkl_log_output("tkl_uvc_out: %s slot %u (%u bytes) failed\r\n",
                            name, (unsigned)i, (unsigned)slot_size);
@@ -1129,7 +1128,7 @@ STATIC VOID_T tkl_uvc_pool_destroy(tkl_uvc_pool_t *pool, TUYA_MEDIA_BUF_OWNER_E 
     if (pool->slots != NULL) {
         for (i = 0U; i < pool->depth; i++) {
             if (pool->slots[i].data != NULL) {
-                tkl_media_buf_free(owner, pool->slots[i].data);
+                __t9_media_buf_free(owner, pool->slots[i].data);
             }
         }
         tkl_system_free(pool->slots);
@@ -1378,7 +1377,7 @@ STATIC VOID tkl_uvc_out_stream_cb(CONST TUYA_VCODEC_STREAM_T *stream, VOID *arg)
              * a fresh one-block copy (struct + payload), so the slot goes back
              * to circulation right away and a slow consumer stalls nothing. */
             if (ch0 != NULL && ch0->cb != NULL) {
-                TUYA_MEDIA_BUF_T *buf = (TUYA_MEDIA_BUF_T *)tkl_media_buf_alloc(
+                TUYA_MEDIA_BUF_T *buf = (TUYA_MEDIA_BUF_T *)__t9_media_buf_alloc(
                     TKL_BUF_USE_STREAM,
                     (UINT32_T)sizeof(TUYA_MEDIA_BUF_T) + park->len,
                     TUYA_MEDIA_BUF_OWNER_UVC_FRAME);
@@ -1513,7 +1512,7 @@ STATIC VOID *tkl_uvc_out_display_alloc(UINT32_T size, VOID *arg)
     /* One block = padded header + payload. The header carries the public buf
      * struct; the padding keeps the write-through payload 64-aligned (see
      * TUYA_UVC_BUF_HDR). */
-    base = tkl_media_buf_alloc(TKL_BUF_USE_PIXEL_WT, TUYA_UVC_BUF_HDR + size,
+    base = __t9_media_buf_alloc(TKL_BUF_USE_PIXEL_WT, TUYA_UVC_BUF_HDR + size,
                                TUYA_MEDIA_BUF_OWNER_UVC_DISPLAY);
     if (base == NULL) {
         tkl_uvc_out_event_throttled(TUYA_CAMERA_EVENT_ERR_ALLOC);
@@ -1531,7 +1530,7 @@ STATIC OPERATE_RET tkl_uvc_out_display_free(VOID *ptr, VOID *arg)
         return OPRT_INVALID_PARM;
     }
 
-    tkl_media_buf_free(TUYA_MEDIA_BUF_OWNER_UVC_DISPLAY,
+    __t9_media_buf_free(TUYA_MEDIA_BUF_OWNER_UVC_DISPLAY,
                        (UINT8_T *)ptr - TUYA_UVC_BUF_HDR);
     return OPRT_OK;
 }
@@ -1555,7 +1554,7 @@ STATIC VOID_T tkl_uvc_out_display_buf_free(TUYA_MEDIA_BUF_T *frame)
         return;
     }
 
-    tkl_media_buf_free(TUYA_MEDIA_BUF_OWNER_UVC_DISPLAY, (UINT8_T *)frame);
+    __t9_media_buf_free(TUYA_MEDIA_BUF_OWNER_UVC_DISPLAY, (UINT8_T *)frame);
 }
 
 /**
@@ -1609,7 +1608,7 @@ STATIC VOID tkl_uvc_out_display_done(VOID *frame, UINT32_T frame_size, VOID *arg
 STATIC VOID *tkl_uvc_out_venc_alloc(UINT32_T size, VOID *arg)
 {
     (void)arg;
-    return tkl_media_buf_alloc(TKL_BUF_USE_STREAM, size, TUYA_MEDIA_BUF_OWNER_UVC_STREAM);
+    return __t9_media_buf_alloc(TKL_BUF_USE_STREAM, size, TUYA_MEDIA_BUF_OWNER_UVC_STREAM);
 }
 
 STATIC OPERATE_RET tkl_uvc_out_venc_free(VOID *ptr, VOID *arg)
@@ -1620,7 +1619,7 @@ STATIC OPERATE_RET tkl_uvc_out_venc_free(VOID *ptr, VOID *arg)
         return OPRT_INVALID_PARM;
     }
 
-    tkl_media_buf_free(TUYA_MEDIA_BUF_OWNER_UVC_STREAM, ptr);
+    __t9_media_buf_free(TUYA_MEDIA_BUF_OWNER_UVC_STREAM, ptr);
     return OPRT_OK;
 }
 
@@ -1683,7 +1682,7 @@ STATIC OPERATE_RET tkl_uvc_out_flexa_ring_alloc(UINT8_T depth)
     s_uvc_out.flexa_size = (UINT32_T)s_uvc_out.cfg.uvc_cfg.width *
                            TUYA_UVC_INTERNAL_FLEXA_LINES * 3U / 2U * (UINT32_T)depth;
 
-    s_uvc_out.flexa_ring = (UINT8_T *)tkl_media_buf_alloc(TKL_BUF_USE_PIXEL,
+    s_uvc_out.flexa_ring = (UINT8_T *)__t9_media_buf_alloc(TKL_BUF_USE_PIXEL,
                                                           s_uvc_out.flexa_size,
                                                           TUYA_MEDIA_BUF_OWNER_UVC_FRAME);
     if (s_uvc_out.flexa_ring == NULL) {
@@ -1708,7 +1707,7 @@ STATIC OPERATE_RET tkl_uvc_out_flexa_ring_alloc(UINT8_T depth)
         s_uvc_out.flexa_grab_ready = FALSE;
 
         s_uvc_out.flexa_grab_buf =
-            (UINT8_T *)tkl_media_buf_alloc(TKL_BUF_USE_PIXEL,
+            (UINT8_T *)__t9_media_buf_alloc(TKL_BUF_USE_PIXEL,
                                            s_uvc_out.flexa_grab_bytes,
                                            TUYA_MEDIA_BUF_OWNER_UVC_FRAME);
         if (s_uvc_out.flexa_grab_buf == NULL) {
@@ -1722,7 +1721,7 @@ STATIC OPERATE_RET tkl_uvc_out_flexa_ring_alloc(UINT8_T depth)
              * way to wait, so treat it like a failed allocation. */
             tkl_log_output("tkl_uvc_out: ch1 grab semaphore failed, "
                            "pull falls back to on-demand decode\r\n");
-            tkl_media_buf_free(TUYA_MEDIA_BUF_OWNER_UVC_FRAME, s_uvc_out.flexa_grab_buf);
+            __t9_media_buf_free(TUYA_MEDIA_BUF_OWNER_UVC_FRAME, s_uvc_out.flexa_grab_buf);
             s_uvc_out.flexa_grab_buf = NULL;
             s_uvc_out.flexa_grab_bytes = 0U;
             s_uvc_out.flexa_grab_segs = 0U;
@@ -1743,13 +1742,13 @@ STATIC OPERATE_RET tkl_uvc_out_flexa_ring_alloc(UINT8_T depth)
 STATIC VOID_T tkl_uvc_out_flexa_ring_free(VOID_T)
 {
     if (s_uvc_out.flexa_ring != NULL) {
-        tkl_media_buf_free(TUYA_MEDIA_BUF_OWNER_UVC_FRAME, s_uvc_out.flexa_ring);
+        __t9_media_buf_free(TUYA_MEDIA_BUF_OWNER_UVC_FRAME, s_uvc_out.flexa_ring);
         s_uvc_out.flexa_ring = NULL;
     }
     s_uvc_out.flexa_size = 0U;
 
     if (s_uvc_out.flexa_grab_buf != NULL) {
-        tkl_media_buf_free(TUYA_MEDIA_BUF_OWNER_UVC_FRAME, s_uvc_out.flexa_grab_buf);
+        __t9_media_buf_free(TUYA_MEDIA_BUF_OWNER_UVC_FRAME, s_uvc_out.flexa_grab_buf);
         s_uvc_out.flexa_grab_buf = NULL;
     }
     s_uvc_out.flexa_grab_bytes = 0U;
@@ -1861,7 +1860,7 @@ STATIC VOID tkl_uvc_out_frame_sink_cb(CONST TUYA_VCODEC_FRAME_T *frame, VOID *ar
      * 1280x1080. The source already carries the number, so no sizing rule is
      * re-derived here. */
     need = frame->size;
-    buf = (TUYA_MEDIA_BUF_T *)tkl_media_buf_alloc(
+    buf = (TUYA_MEDIA_BUF_T *)__t9_media_buf_alloc(
         TKL_BUF_USE_PIXEL,
         (UINT32_T)sizeof(TUYA_MEDIA_BUF_T) + need,
         TUYA_MEDIA_BUF_OWNER_UVC_FRAME);
@@ -1906,7 +1905,7 @@ STATIC OPERATE_RET tkl_uvc_out_decoder_open_frame(VOID_T)
     cfg.width = s_uvc_out.cfg.uvc_cfg.width;
     cfg.height = s_uvc_out.cfg.uvc_cfg.height;
 
-    ret = tkl_vdec_init(&s_uvc_out.vdec, &cfg);
+    ret = __t9_vdec_init(&s_uvc_out.vdec, &cfg);
     if (ret != OPRT_OK) {
         tkl_log_output("tkl_uvc_out: vdec init failed: %d\r\n", ret);
         return ret;
@@ -1921,8 +1920,8 @@ STATIC OPERATE_RET tkl_uvc_out_decoder_open_frame(VOID_T)
         os_memset(&pp, 0, sizeof(pp));
         pp.out_width = ch->width;
         pp.out_height = ch->height;
-        pp.output_format = tkl_media_fmt_to_bk(TUYA_FRAME_FMT_NV12);
-        ret = tkl_vdec_set_pp(s_uvc_out.vdec, &pp);
+        pp.output_format = __t9_media_fmt_to_bk(TUYA_FRAME_FMT_NV12);
+        ret = __t9_vdec_set_pp(s_uvc_out.vdec, &pp);
         if (ret != OPRT_OK) {
             tkl_log_output("tkl_uvc_out: vdec pp %ux%u failed: %d\r\n",
                            (unsigned)ch->width, (unsigned)ch->height, ret);
@@ -1934,13 +1933,13 @@ STATIC OPERATE_RET tkl_uvc_out_decoder_open_frame(VOID_T)
     sink.type = TUYA_VDEC_SINK_FRAME;
     sink.frame.frame_cb = tkl_uvc_out_frame_sink_cb;
 
-    ret = tkl_vdec_set_sink(s_uvc_out.vdec, &sink);
+    ret = __t9_vdec_set_sink(s_uvc_out.vdec, &sink);
     if (ret != OPRT_OK) {
         tkl_log_output("tkl_uvc_out: vdec frame sink failed: %d\r\n", ret);
         goto err;
     }
 
-    ret = tkl_vdec_start(s_uvc_out.vdec);
+    ret = __t9_vdec_start(s_uvc_out.vdec);
     if (ret != OPRT_OK) {
         tkl_log_output("tkl_uvc_out: vdec start failed: %d\r\n", ret);
         goto err;
@@ -1950,7 +1949,7 @@ STATIC OPERATE_RET tkl_uvc_out_decoder_open_frame(VOID_T)
     return OPRT_OK;
 
 err:
-    (void)tkl_vdec_deinit(s_uvc_out.vdec);
+    (void)__t9_vdec_deinit(s_uvc_out.vdec);
     s_uvc_out.vdec = NULL;
     return ret;
 }
@@ -1977,7 +1976,7 @@ STATIC OPERATE_RET tkl_uvc_out_decoder_open_flexa(TUYA_VCODEC_FLEXA_BUFFER_T *fl
     cfg.height = s_uvc_out.cfg.uvc_cfg.height;
     cfg.flexa_lines = (UINT8_T)TUYA_UVC_INTERNAL_FLEXA_LINES;
 
-    ret = tkl_vdec_init(&s_uvc_out.vdec, &cfg);
+    ret = __t9_vdec_init(&s_uvc_out.vdec, &cfg);
     if (ret != OPRT_OK) {
         tkl_log_output("tkl_uvc_out: vdec init failed: %d\r\n", ret);
         goto err_ring;
@@ -1992,7 +1991,7 @@ STATIC OPERATE_RET tkl_uvc_out_decoder_open_flexa(TUYA_VCODEC_FLEXA_BUFFER_T *fl
     sink.flexa.flexa.buf_cnt = TUYA_UVC_INTERNAL_FLEXA_DEPTH;
     sink.flexa.flexa_cb = tkl_uvc_out_flexa_done_cb;
 
-    ret = tkl_vdec_set_sink(s_uvc_out.vdec, &sink);
+    ret = __t9_vdec_set_sink(s_uvc_out.vdec, &sink);
     if (ret != OPRT_OK) {
         tkl_log_output("tkl_uvc_out: vdec flexa sink failed: %d\r\n", ret);
         goto err_vdec;
@@ -2000,14 +1999,14 @@ STATIC OPERATE_RET tkl_uvc_out_decoder_open_flexa(TUYA_VCODEC_FLEXA_BUFFER_T *fl
 
     /* start before asking for the source: the ring descriptor is only filled in
      * once the backend exists, and the bonds need the handle it carries. */
-    ret = tkl_vdec_start(s_uvc_out.vdec);
+    ret = __t9_vdec_start(s_uvc_out.vdec);
     if (ret != OPRT_OK) {
         tkl_log_output("tkl_uvc_out: vdec start failed: %d\r\n", ret);
         goto err_vdec;
     }
 
     os_memset(flexa, 0, sizeof(*flexa));
-    ret = tkl_vdec_get_flexa_source(s_uvc_out.vdec, flexa);
+    ret = __t9_vdec_get_flexa_source(s_uvc_out.vdec, flexa);
     if (ret != OPRT_OK || flexa->owner_handle == NULL) {
         tkl_log_output("tkl_uvc_out: vdec flexa source unavailable: %d\r\n", ret);
         ret = (ret != OPRT_OK) ? ret : OPRT_RESOURCE_NOT_READY;
@@ -2024,7 +2023,7 @@ STATIC OPERATE_RET tkl_uvc_out_decoder_open_flexa(TUYA_VCODEC_FLEXA_BUFFER_T *fl
     return OPRT_OK;
 
 err_vdec:
-    (void)tkl_vdec_deinit(s_uvc_out.vdec);
+    (void)__t9_vdec_deinit(s_uvc_out.vdec);
     s_uvc_out.vdec = NULL;
 err_ring:
     tkl_uvc_out_flexa_ring_free();
@@ -2052,15 +2051,15 @@ STATIC OPERATE_RET tkl_uvc_out_display_open(CONST TUYA_VCODEC_FLEXA_BUFFER_T *fl
     os_memset(&gpu_cfg, 0, sizeof(gpu_cfg));
     gpu_cfg.dst_width = ch->width;
     gpu_cfg.dst_height = ch->height;
-    gpu_cfg.rotate_degree = ch->rotate;
-    gpu_cfg.dst_format = tkl_media_fmt_to_bk(ch->format);
+    gpu_cfg.rotate_degree = __t9_rotate_to_deg(ch->rotate);
+    gpu_cfg.dst_format = __t9_media_fmt_to_bk(ch->format);
     gpu_cfg.scale = TRUE;
     /* always compressed: a display frame goes straight to the DPU, which
      * decompresses. Same call as the camera facade makes. */
     gpu_cfg.dst_compress = TRUE;
     gpu_cfg.flexa_lines = TUYA_UVC_INTERNAL_FLEXA_LINES;
 
-    ret = tkl_gpu_init(&gpu_cfg, &s_uvc_out.gpu);
+    ret = __t9_gpu_init(&gpu_cfg, &s_uvc_out.gpu);
     if (ret != OPRT_OK) {
         tkl_log_output("tkl_uvc_out: gpu init failed: %d "
                        "(only one display pipeline may be live - close the camera's)\r\n", ret);
@@ -2072,7 +2071,7 @@ STATIC OPERATE_RET tkl_uvc_out_display_open(CONST TUYA_VCODEC_FLEXA_BUFFER_T *fl
     sink.free_cb = tkl_uvc_out_display_free;
     sink.frame_done_cb = tkl_uvc_out_display_done;
 
-    ret = tkl_gpu_set_sink(s_uvc_out.gpu, &sink);
+    ret = __t9_gpu_set_sink(s_uvc_out.gpu, &sink);
     if (ret != OPRT_OK) {
         goto err;
     }
@@ -2086,7 +2085,7 @@ STATIC OPERATE_RET tkl_uvc_out_display_open(CONST TUYA_VCODEC_FLEXA_BUFFER_T *fl
     source.mjpeg.flexa.height = flexa->height;
     source.mjpeg.flexa.format = flexa->format;
 
-    ret = tkl_gpu_set_source(s_uvc_out.gpu, &source);
+    ret = __t9_gpu_set_source(s_uvc_out.gpu, &source);
     if (ret != OPRT_OK) {
         tkl_log_output("tkl_uvc_out: gpu set_source failed: %d\r\n", ret);
         goto err;
@@ -2095,7 +2094,7 @@ STATIC OPERATE_RET tkl_uvc_out_display_open(CONST TUYA_VCODEC_FLEXA_BUFFER_T *fl
     return OPRT_OK;
 
 err:
-    (void)tkl_gpu_deinit(s_uvc_out.gpu);
+    (void)__t9_gpu_deinit(s_uvc_out.gpu);
     s_uvc_out.gpu = NULL;
     return ret;
 }
@@ -2130,7 +2129,7 @@ STATIC OPERATE_RET tkl_uvc_out_encode_open(CONST TUYA_VCODEC_FLEXA_BUFFER_T *fle
     venc_cfg.codec = (UINT32_T)TUYA_VCODEC_TYPE_H264;
     venc_cfg.input_format = flexa->format;
 
-    ret = tkl_venc_init(&s_uvc_out.venc, &venc_cfg);
+    ret = __t9_venc_init(&s_uvc_out.venc, &venc_cfg);
     if (ret != OPRT_OK) {
         tkl_log_output("tkl_uvc_out: venc init failed: %d\r\n", ret);
         return ret;
@@ -2139,15 +2138,15 @@ STATIC OPERATE_RET tkl_uvc_out_encode_open(CONST TUYA_VCODEC_FLEXA_BUFFER_T *fle
     /* the ch3 preset decides the bitrate; tkl_uvc_set_bitrate() fine-tunes
      * from there while the stream is up */
     os_memset(&rc, 0, sizeof(rc));
-    rc.bitrate = tkl_media_bitrate_from_level(ch->level);
-    (void)tkl_venc_set_rate_ctrl(s_uvc_out.venc, &rc);
+    rc.bitrate = __t9_media_bitrate_from_level(ch->level);
+    (void)__t9_venc_set_rate_ctrl(s_uvc_out.venc, &rc);
 
     os_memset(&sink, 0, sizeof(sink));
     sink.stream_cb = tkl_uvc_out_venc_stream_cb;
     sink.alloc_cb = tkl_uvc_out_venc_alloc;
     sink.free_cb = tkl_uvc_out_venc_free;
 
-    ret = tkl_venc_set_sink(s_uvc_out.venc, &sink);
+    ret = __t9_venc_set_sink(s_uvc_out.venc, &sink);
     if (ret != OPRT_OK) {
         goto err;
     }
@@ -2157,7 +2156,7 @@ STATIC OPERATE_RET tkl_uvc_out_encode_open(CONST TUYA_VCODEC_FLEXA_BUFFER_T *fle
     source.vdec.vdec_handle = flexa->owner_handle;
     source.vdec.flexa = *flexa;
 
-    ret = tkl_venc_set_source(s_uvc_out.venc, &source);
+    ret = __t9_venc_set_source(s_uvc_out.venc, &source);
     if (ret != OPRT_OK) {
         tkl_log_output("tkl_uvc_out: venc set_source failed: %d\r\n", ret);
         goto err;
@@ -2166,7 +2165,7 @@ STATIC OPERATE_RET tkl_uvc_out_encode_open(CONST TUYA_VCODEC_FLEXA_BUFFER_T *fle
     return OPRT_OK;
 
 err:
-    (void)tkl_venc_deinit(s_uvc_out.venc);
+    (void)__t9_venc_deinit(s_uvc_out.venc);
     s_uvc_out.venc = NULL;
     return ret;
 }
@@ -2181,7 +2180,7 @@ STATIC OPERATE_RET tkl_uvc_out_osd_display_open(VOID_T)
     VOID *gpu_raw = NULL;
     OPERATE_RET ret;
 
-    ret = tkl_gpu_get_handle(s_uvc_out.gpu, &gpu_raw);
+    ret = __t9_gpu_get_handle(s_uvc_out.gpu, &gpu_raw);
     if (ret != OPRT_OK) {
         return ret;
     }
@@ -2197,7 +2196,7 @@ STATIC OPERATE_RET tkl_uvc_out_osd_display_open(VOID_T)
     /* the caller supplies the rotation per overlay request */
     cfg.src_format = (UINT32_T)BK_PIXEL_FORMAT_ABGR8888;
 
-    return tkl_osd_engine_open(TKL_OSD_BACKEND_GPU, gpu_raw, &cfg, &s_uvc_out.osd_display);
+    return __t9_osd_engine_open(TKL_OSD_BACKEND_GPU, gpu_raw, &cfg, &s_uvc_out.osd_display);
 }
 
 /* ---------------------------------------------------------------------------
@@ -2212,12 +2211,12 @@ STATIC OPERATE_RET tkl_uvc_out_display_start(VOID_T)
     TUYA_VCODEC_FLEXA_BUFFER_T flexa;
     OPERATE_RET ret;
 
-    ret = tkl_media_hw_claim(TUYA_MEDIA_HW_GPU, TUYA_MEDIA_HW_CLAIM_UVC);
+    ret = __t9_media_hw_claim(TUYA_MEDIA_HW_GPU, TUYA_MEDIA_HW_CLAIM_UVC);
     if (ret != OPRT_OK) {
         return ret;     /* the CSI camera side holds the GPU */
     }
 
-    ret = tkl_vdec_get_flexa_source(s_uvc_out.vdec, &flexa);
+    ret = __t9_vdec_get_flexa_source(s_uvc_out.vdec, &flexa);
     if (ret != OPRT_OK) {
         goto err;
     }
@@ -2227,10 +2226,10 @@ STATIC OPERATE_RET tkl_uvc_out_display_start(VOID_T)
         goto err;
     }
 
-    ret = tkl_gpu_start(s_uvc_out.gpu);
+    ret = __t9_gpu_start(s_uvc_out.gpu);
     if (ret != OPRT_OK) {
         tkl_log_output("tkl_uvc_out: gpu start failed: %d\r\n", ret);
-        (void)tkl_gpu_deinit(s_uvc_out.gpu);
+        (void)__t9_gpu_deinit(s_uvc_out.gpu);
         s_uvc_out.gpu = NULL;
         goto err;
     }
@@ -2240,7 +2239,7 @@ STATIC OPERATE_RET tkl_uvc_out_display_start(VOID_T)
     return OPRT_OK;
 
 err:
-    tkl_media_hw_release(TUYA_MEDIA_HW_GPU, TUYA_MEDIA_HW_CLAIM_UVC);
+    __t9_media_hw_release(TUYA_MEDIA_HW_GPU, TUYA_MEDIA_HW_CLAIM_UVC);
     return ret;
 }
 
@@ -2249,12 +2248,12 @@ STATIC OPERATE_RET tkl_uvc_out_encode_start(VOID_T)
     TUYA_VCODEC_FLEXA_BUFFER_T flexa;
     OPERATE_RET ret;
 
-    ret = tkl_media_hw_claim(TUYA_MEDIA_HW_VPU_ENC, TUYA_MEDIA_HW_CLAIM_UVC);
+    ret = __t9_media_hw_claim(TUYA_MEDIA_HW_VPU_ENC, TUYA_MEDIA_HW_CLAIM_UVC);
     if (ret != OPRT_OK) {
         return ret;     /* the CSI camera side holds the encoder */
     }
 
-    ret = tkl_vdec_get_flexa_source(s_uvc_out.vdec, &flexa);
+    ret = __t9_vdec_get_flexa_source(s_uvc_out.vdec, &flexa);
     if (ret != OPRT_OK) {
         goto err;
     }
@@ -2264,10 +2263,10 @@ STATIC OPERATE_RET tkl_uvc_out_encode_start(VOID_T)
         goto err;
     }
 
-    ret = tkl_venc_start(s_uvc_out.venc);
+    ret = __t9_venc_start(s_uvc_out.venc);
     if (ret != OPRT_OK) {
         tkl_log_output("tkl_uvc_out: venc start failed: %d\r\n", ret);
-        (void)tkl_venc_deinit(s_uvc_out.venc);
+        (void)__t9_venc_deinit(s_uvc_out.venc);
         s_uvc_out.venc = NULL;
         goto err;
     }
@@ -2275,7 +2274,7 @@ STATIC OPERATE_RET tkl_uvc_out_encode_start(VOID_T)
     return OPRT_OK;
 
 err:
-    tkl_media_hw_release(TUYA_MEDIA_HW_VPU_ENC, TUYA_MEDIA_HW_CLAIM_UVC);
+    __t9_media_hw_release(TUYA_MEDIA_HW_VPU_ENC, TUYA_MEDIA_HW_CLAIM_UVC);
     return ret;
 }
 
@@ -2284,16 +2283,16 @@ STATIC VOID_T tkl_uvc_out_display_stop_one(VOID_T)
     BOOL_T had_gpu = (s_uvc_out.gpu != NULL);
 
     if (s_uvc_out.osd_display != NULL) {
-        (void)tkl_osd_engine_close(s_uvc_out.osd_display);
+        (void)__t9_osd_engine_close(s_uvc_out.osd_display);
         s_uvc_out.osd_display = NULL;
     }
     if (s_uvc_out.gpu != NULL) {
-        (void)tkl_gpu_stop(s_uvc_out.gpu);
-        (void)tkl_gpu_deinit(s_uvc_out.gpu);
+        (void)__t9_gpu_stop(s_uvc_out.gpu);
+        (void)__t9_gpu_deinit(s_uvc_out.gpu);
         s_uvc_out.gpu = NULL;
     }
     if (had_gpu == TRUE) {
-        tkl_media_hw_release(TUYA_MEDIA_HW_GPU, TUYA_MEDIA_HW_CLAIM_UVC);
+        __t9_media_hw_release(TUYA_MEDIA_HW_GPU, TUYA_MEDIA_HW_CLAIM_UVC);
     }
 }
 
@@ -2302,12 +2301,12 @@ STATIC VOID_T tkl_uvc_out_encode_stop_one(VOID_T)
     BOOL_T had_venc = (s_uvc_out.venc != NULL);
 
     if (s_uvc_out.venc != NULL) {
-        (void)tkl_venc_stop(s_uvc_out.venc);
-        (void)tkl_venc_deinit(s_uvc_out.venc);
+        (void)__t9_venc_stop(s_uvc_out.venc);
+        (void)__t9_venc_deinit(s_uvc_out.venc);
         s_uvc_out.venc = NULL;
     }
     if (had_venc == TRUE) {
-        tkl_media_hw_release(TUYA_MEDIA_HW_VPU_ENC, TUYA_MEDIA_HW_CLAIM_UVC);
+        __t9_media_hw_release(TUYA_MEDIA_HW_VPU_ENC, TUYA_MEDIA_HW_CLAIM_UVC);
     }
 }
 
@@ -2367,7 +2366,7 @@ STATIC OPERATE_RET tkl_uvc_out_push_open(VOID_T)
     return OPRT_OK;
 
 err_vdec:
-    (void)tkl_vdec_deinit(s_uvc_out.vdec);
+    (void)__t9_vdec_deinit(s_uvc_out.vdec);
     s_uvc_out.vdec = NULL;
     tkl_uvc_out_flexa_ring_free();
     return ret;
@@ -2395,7 +2394,7 @@ STATIC VOID_T tkl_uvc_out_push_close(VOID_T)
     tkl_uvc_out_consumers_close();
 
     if (s_uvc_out.vdec != NULL) {
-        (void)tkl_vdec_deinit(s_uvc_out.vdec);
+        (void)__t9_vdec_deinit(s_uvc_out.vdec);
         s_uvc_out.vdec = NULL;
     }
     tkl_uvc_out_flexa_ring_free();
@@ -2491,7 +2490,7 @@ STATIC VOID_T tkl_uvc_out_frame_free(TUYA_MEDIA_BUF_T *frame)
     }
     /* ch0/ch1 blocks are one allocation: struct at the base, payload right
      * behind it - so the struct pointer IS the block base. */
-    tkl_media_buf_free(TUYA_MEDIA_BUF_OWNER_UVC_FRAME, (UINT8_T *)frame);
+    __t9_media_buf_free(TUYA_MEDIA_BUF_OWNER_UVC_FRAME, (UINT8_T *)frame);
 }
 
 /**
@@ -2532,12 +2531,12 @@ STATIC OPERATE_RET tkl_uvc_out_decode_parked(tkl_uvc_slot_t *slot, TUYA_MEDIA_BU
      * height is not already a multiple of 32 - 1280x720 needs 1280x736 worth of
      * bytes and came back OPRT_INVALID_PARM from the decoder. Same rule
      * tkl_image_codec sizes its own outputs by. */
-    need = tkl_pp_output_size(tkl_media_fmt_to_bk(TUYA_FRAME_FMT_NV12),
+    need = __t9_pp_output_size(__t9_media_fmt_to_bk(TUYA_FRAME_FMT_NV12),
                               ch->width, ch->height);
     if (need == 0U) {
         return OPRT_RESOURCE_NOT_READY;
     }
-    buf = (TUYA_MEDIA_BUF_T *)tkl_media_buf_alloc(
+    buf = (TUYA_MEDIA_BUF_T *)__t9_media_buf_alloc(
         TKL_BUF_USE_PIXEL,
         (UINT32_T)sizeof(TUYA_MEDIA_BUF_T) + need,
         TUYA_MEDIA_BUF_OWNER_UVC_FRAME);
@@ -2562,7 +2561,7 @@ STATIC OPERATE_RET tkl_uvc_out_decode_parked(tkl_uvc_slot_t *slot, TUYA_MEDIA_BU
 
     ret = tkl_image_codec_convert(&in, &dec);
     if (ret != OPRT_OK) {
-        tkl_media_buf_free(TUYA_MEDIA_BUF_OWNER_UVC_FRAME, (UINT8_T *)buf);
+        __t9_media_buf_free(TUYA_MEDIA_BUF_OWNER_UVC_FRAME, (UINT8_T *)buf);
         return ret;
     }
 
@@ -2652,7 +2651,7 @@ OPERATE_RET tkl_uvc_get_frame(TUYA_CAMERA_FRAME_CHANNEL_E channel,
         s_uvc_out.flexa_grab_want = TRUE;       /* and keep one coming */
 
         block_size = (UINT32_T)sizeof(TUYA_MEDIA_BUF_T) + s_uvc_out.flexa_grab_bytes;
-        buf = (TUYA_MEDIA_BUF_T *)tkl_media_buf_alloc(TKL_BUF_USE_STREAM, block_size,
+        buf = (TUYA_MEDIA_BUF_T *)__t9_media_buf_alloc(TKL_BUF_USE_STREAM, block_size,
                                                       TUYA_MEDIA_BUF_OWNER_UVC_FRAME);
         if (buf == NULL) {
             tkl_uvc_out_event_throttled(TUYA_CAMERA_EVENT_ERR_ALLOC);
@@ -2688,7 +2687,7 @@ OPERATE_RET tkl_uvc_get_frame(TUYA_CAMERA_FRAME_CHANNEL_E channel,
     } else {
         UINT32_T block_size = (UINT32_T)sizeof(TUYA_MEDIA_BUF_T) + slot->len;
 
-        buf = (TUYA_MEDIA_BUF_T *)tkl_media_buf_alloc(TKL_BUF_USE_STREAM, block_size,
+        buf = (TUYA_MEDIA_BUF_T *)__t9_media_buf_alloc(TKL_BUF_USE_STREAM, block_size,
                                                       TUYA_MEDIA_BUF_OWNER_UVC_FRAME);
         if (buf == NULL) {
             tkl_uvc_pool_give(&s_uvc_out.frame_pool, slot);
@@ -2883,7 +2882,7 @@ STATIC VOID_T tkl_uvc_out_retire_pool(tkl_uvc_pool_t *pool,
  *
  * @return OPRT_OK, or the rejection reason with a log line
  */
-STATIC OPERATE_RET tkl_uvc_out_validate(CONST TUYA_UVC_CFG_T *cfg)
+STATIC OPERATE_RET tkl_uvc_out_validate(CONST TUYA_UVC_BASE_CFG_T *cfg)
 {
     BOOL_T seen[TUYA_CAMERA_FRAME_CHANNEL_4] = {FALSE, FALSE, FALSE, FALSE};
     BOOL_T ch1_push = FALSE;
@@ -2913,7 +2912,7 @@ STATIC OPERATE_RET tkl_uvc_out_validate(CONST TUYA_UVC_CFG_T *cfg)
         switch (o->channel) {
         case TUYA_CAMERA_FRAME_CHANNEL_0:
             /* parked JPEG as captured - geometry comes from the USB negotiation */
-            if (o->rotate != 0U || o->gop != 0U || o->level != 0U) {
+            if (o->rotate != TUYA_FRAME_ROTATE_0 || o->gop != 0U || o->level != 0U) {
                 tkl_log_output("tkl_uvc_out: ch0 takes no rotate/gop/level\r\n");
                 return OPRT_INVALID_PARM;
             }
@@ -2922,7 +2921,7 @@ STATIC OPERATE_RET tkl_uvc_out_validate(CONST TUYA_UVC_CFG_T *cfg)
         case TUYA_CAMERA_FRAME_CHANNEL_1:
             /* decoded NV12; geometry 0 = source size. cb is checked against
              * ch2/ch3 after the scan. */
-            if (o->rotate != 0U || o->gop != 0U || o->level != 0U) {
+            if (o->rotate != TUYA_FRAME_ROTATE_0 || o->gop != 0U || o->level != 0U) {
                 tkl_log_output("tkl_uvc_out: ch1 takes no rotate/gop/level\r\n");
                 return OPRT_INVALID_PARM;
             }
@@ -2941,9 +2940,11 @@ STATIC OPERATE_RET tkl_uvc_out_validate(CONST TUYA_UVC_CFG_T *cfg)
                 tkl_log_output("tkl_uvc_out: ch2 needs size and format\r\n");
                 return OPRT_INVALID_PARM;
             }
-            if (o->rotate != 0U && o->rotate != 90U && o->rotate != 270U) {
+            if (o->rotate != TUYA_FRAME_ROTATE_0 &&
+                o->rotate != TUYA_FRAME_ROTATE_90 &&
+                o->rotate != TUYA_FRAME_ROTATE_270) {
                 tkl_log_output("tkl_uvc_out: ch2 rotate %u unsupported (0/90/270)\r\n",
-                               (unsigned)o->rotate);
+                               (unsigned)__t9_rotate_to_deg(o->rotate));
                 return OPRT_INVALID_PARM;
             }
             if (o->gop != 0U || o->level != 0U) {
@@ -2967,7 +2968,7 @@ STATIC OPERATE_RET tkl_uvc_out_validate(CONST TUYA_UVC_CFG_T *cfg)
                                "(H264-only encoder)\r\n", (unsigned)o->format);
                 return OPRT_NOT_SUPPORTED;
             }
-            if (o->rotate != 0U) {
+            if (o->rotate != TUYA_FRAME_ROTATE_0) {
                 tkl_log_output("tkl_uvc_out: ch3 takes no rotate\r\n");
                 return OPRT_INVALID_PARM;
             }
@@ -3004,7 +3005,7 @@ STATIC OPERATE_RET tkl_uvc_out_validate(CONST TUYA_UVC_CFG_T *cfg)
     return OPRT_OK;
 }
 
-OPERATE_RET tkl_uvc_init(CONST TUYA_UVC_CFG_T *cfg)
+OPERATE_RET tkl_uvc_init(CONST TUYA_UVC_BASE_CFG_T *cfg)
 {
     TUYA_MEDIA_OUTPUT_CFG_T *ch1;
     TUYA_MEDIA_OUTPUT_CFG_T *outputs_copy;
@@ -3030,6 +3031,12 @@ OPERATE_RET tkl_uvc_init(CONST TUYA_UVC_CFG_T *cfg)
 
     os_memset(&s_uvc_out, 0, sizeof(s_uvc_out));
     os_memcpy(&s_uvc_out.cfg, cfg, sizeof(s_uvc_out.cfg));
+
+    /* The media pool must be up before any hardware is programmed: the ISP and
+     * the encoders take buffers straight from bk_frame_buffer_malloc(),
+     * bypassing this adapter. Initialising lazily inside
+     * __t9_media_buf_alloc() would be too late. */
+    __t9_media_buf_init();
 
     /* Deep-copy the outputs so the caller may release its cfg right away. */
     outputs_copy = (TUYA_MEDIA_OUTPUT_CFG_T *)tkl_system_malloc(
@@ -3119,7 +3126,7 @@ OPERATE_RET tkl_uvc_init(CONST TUYA_UVC_CFG_T *cfg)
                    (unsigned)TUYA_UVC_INTERNAL_SLOT_SIZE,
                    (unsigned)(ms_pool + ms_device),
                    (unsigned)ms_pool, (unsigned)ms_device);
-    tkl_uvc_out_event(TUYA_CAMERA_EVENT_INITIALIZED);
+    tkl_uvc_out_event(TUYA_CAMERA_EVENT_INIT);
     return OPRT_OK;
 }
 
@@ -3172,7 +3179,7 @@ OPERATE_RET tkl_uvc_start(VOID_T)
         if (ret == OPRT_OK) {
             ret = tkl_uvc_out_task_start();
             if (ret != OPRT_OK) {
-                (void)tkl_vdec_deinit(s_uvc_out.vdec);
+                (void)__t9_vdec_deinit(s_uvc_out.vdec);
                 s_uvc_out.vdec = NULL;
                 s_uvc_out.vdec_frame_sink = FALSE;
             }
@@ -3202,7 +3209,7 @@ OPERATE_RET tkl_uvc_start(VOID_T)
     tkl_log_output("tkl_uvc_out: start took %u ms (consumer %u, stream %u)\r\n",
                    (unsigned)(ms_consumer + ms_stream),
                    (unsigned)ms_consumer, (unsigned)ms_stream);
-    tkl_uvc_out_event(TUYA_CAMERA_EVENT_STARTED);
+    tkl_uvc_out_event(TUYA_CAMERA_EVENT_START);
     return OPRT_OK;
 
 err_consumer:
@@ -3211,7 +3218,7 @@ err_consumer:
      * without paying the 539 ms enumeration a second time. */
     tkl_uvc_out_push_close();
     if (s_uvc_out.vdec != NULL) {
-        (void)tkl_vdec_deinit(s_uvc_out.vdec);
+        (void)__t9_vdec_deinit(s_uvc_out.vdec);
         s_uvc_out.vdec = NULL;
     }
     s_uvc_out.vdec_frame_sink = FALSE;
@@ -3275,7 +3282,7 @@ OPERATE_RET tkl_uvc_stop(VOID_T)
                    (unsigned)(ms_device + ms_consumer),
                    (unsigned)ms_device, (unsigned)ms_consumer,
                    (unsigned)unconsumed);
-    tkl_uvc_out_event(TUYA_CAMERA_EVENT_STOPPED);
+    tkl_uvc_out_event(TUYA_CAMERA_EVENT_STOP);
     return OPRT_OK;
 }
 
@@ -3320,11 +3327,11 @@ OPERATE_RET tkl_uvc_deinit(VOID_T)
      * nothing will replace it now - while a bitstream must reach zero. Waited
      * here rather than in stop(), where the memory does not yet go away. */
     if (s_uvc_out.want_display == TRUE) {
-        (void)tkl_media_buf_drain(TUYA_MEDIA_BUF_OWNER_UVC_DISPLAY,
+        (void)__t9_media_buf_drain(TUYA_MEDIA_BUF_OWNER_UVC_DISPLAY,
                                   TUYA_UVC_OUTPUT_PIXEL_RESIDUAL, TUYA_UVC_INTERNAL_DRAIN_MS);
     }
     if (s_uvc_out.want_encode == TRUE) {
-        (void)tkl_media_buf_drain(TUYA_MEDIA_BUF_OWNER_UVC_STREAM, 0U, TUYA_UVC_INTERNAL_DRAIN_MS);
+        (void)__t9_media_buf_drain(TUYA_MEDIA_BUF_OWNER_UVC_STREAM, 0U, TUYA_UVC_INTERNAL_DRAIN_MS);
     }
     ms_pool = TUYA_UVC_INTERNAL_MS() - t;
 
@@ -3332,7 +3339,7 @@ OPERATE_RET tkl_uvc_deinit(VOID_T)
                    (unsigned)(ms_device + ms_pool),
                    (unsigned)ms_device, (unsigned)ms_pool);
 
-    tkl_uvc_out_event(TUYA_CAMERA_EVENT_DEINITIALIZED);
+    tkl_uvc_out_event(TUYA_CAMERA_EVENT_DEINIT);
     if (s_uvc_out.cfg.outputs != NULL) {
         tkl_system_free(s_uvc_out.cfg.outputs);
     }
@@ -3387,7 +3394,7 @@ STATIC UINT32_T tkl_uvc_out_reclaim_idle(tkl_uvc_pool_t *pool, TUYA_MEDIA_BUF_OW
     if (pool->free_q != NULL) {
         while (rtos_pop_from_queue(&pool->free_q, &slot, BEKEN_NO_WAIT) == 0) {
             if (slot->data != NULL) {
-                tkl_media_buf_free(owner, slot->data);
+                __t9_media_buf_free(owner, slot->data);
                 slot->data = NULL;
                 n++;
             }
@@ -3397,7 +3404,7 @@ STATIC UINT32_T tkl_uvc_out_reclaim_idle(tkl_uvc_pool_t *pool, TUYA_MEDIA_BUF_OW
     if (pool->ready_q != NULL) {
         while (rtos_pop_from_queue(&pool->ready_q, &slot, BEKEN_NO_WAIT) == 0) {
             if (slot->data != NULL) {
-                tkl_media_buf_free(owner, slot->data);
+                __t9_media_buf_free(owner, slot->data);
                 slot->data = NULL;
                 n++;
             }
@@ -3486,7 +3493,7 @@ STATIC OPERATE_RET tkl_uvc_out_decode_frame(tkl_uvc_slot_t *slot)
      * comes back here - the output leaves in slices through the ring the GPU
      * and the encoder are bonded to, and their results reach business on
      * pixel_cb / stream_cb, from the vendor worker threads. */
-    ret = tkl_vdec_submit_stream(s_uvc_out.vdec, &stream);
+    ret = __t9_vdec_submit_stream(s_uvc_out.vdec, &stream);
 
     /* The frame has served its purpose the moment the decoder is done with it,
      * whether or not it decoded - hand the slot straight back so capture never
@@ -3615,7 +3622,7 @@ OPERATE_RET tkl_uvc_set_bitrate(UINT32_T bitrate)
      * ch3.level, and nothing records a manual bitrate across stop/start. */
     os_memset(&rc, 0, sizeof(rc));
     rc.bitrate = bitrate;
-    return tkl_venc_set_rate_ctrl(s_uvc_out.venc, &rc);
+    return __t9_venc_set_rate_ctrl(s_uvc_out.venc, &rc);
 }
 
 OPERATE_RET tkl_uvc_set_gop(UINT32_T gop)
@@ -3643,7 +3650,7 @@ OPERATE_RET tkl_uvc_force_idr(VOID_T)
         return OPRT_RESOURCE_NOT_READY;
     }
 
-    return tkl_venc_request_idr(s_uvc_out.venc);
+    return __t9_venc_request_idr(s_uvc_out.venc);
 }
 
 OPERATE_RET tkl_uvc_set_osd(TUYA_CAMERA_FRAME_CHANNEL_E channel, CONST TUYA_OSD_T *osd)
@@ -3661,13 +3668,13 @@ OPERATE_RET tkl_uvc_set_osd(TUYA_CAMERA_FRAME_CHANNEL_E channel, CONST TUYA_OSD_
         if (s_uvc_out.ch_active[channel] != TRUE || s_uvc_out.osd_display == NULL) {
             return OPRT_NOT_SUPPORTED;
         }
-        return tkl_osd_engine_submit(s_uvc_out.osd_display, osd);
+        return __t9_osd_engine_submit(s_uvc_out.osd_display, osd);
 
     case TUYA_CAMERA_FRAME_CHANNEL_3:
         if (s_uvc_out.ch_active[channel] != TRUE || s_uvc_out.venc == NULL) {
             return OPRT_NOT_SUPPORTED;
         }
-        return tkl_venc_set_osd(s_uvc_out.venc, osd);
+        return __t9_venc_set_osd(s_uvc_out.venc, osd);
 
     default:
         return OPRT_NOT_SUPPORTED;      /* ch0/ch1 carry no overlay */
@@ -3708,17 +3715,17 @@ OPERATE_RET tkl_uvc_set_pp(TUYA_CAMERA_FRAME_CHANNEL_E channel, UINT16_T width, 
             TUYA_VDEC_PP_T pp;
 
             s_uvc_out.ch_active[channel] = FALSE;
-            ret = tkl_vdec_stop(s_uvc_out.vdec);
+            ret = __t9_vdec_stop(s_uvc_out.vdec);
             if (ret == OPRT_OK) {
                 os_memset(&pp, 0, sizeof(pp));
                 pp.out_width = width;
                 pp.out_height = height;
-                pp.output_format = tkl_media_fmt_to_bk(TUYA_FRAME_FMT_NV12);
-                ret = tkl_vdec_set_pp(s_uvc_out.vdec, &pp);
+                pp.output_format = __t9_media_fmt_to_bk(TUYA_FRAME_FMT_NV12);
+                ret = __t9_vdec_set_pp(s_uvc_out.vdec, &pp);
                 if (ret == OPRT_OK) {
-                    ret = tkl_vdec_start(s_uvc_out.vdec);
+                    ret = __t9_vdec_start(s_uvc_out.vdec);
                 } else {
-                    (void)tkl_vdec_start(s_uvc_out.vdec);
+                    (void)__t9_vdec_start(s_uvc_out.vdec);
                 }
             }
             s_uvc_out.ch_active[channel] = s_uvc_out.want_sp;
@@ -3851,7 +3858,7 @@ OPERATE_RET tkl_uvc_cancel_channel(TUYA_CAMERA_FRAME_CHANNEL_E channel)
 
 #else /* CONFIG_USB_CAMERA */
 
-OPERATE_RET tkl_uvc_init(CONST TUYA_UVC_CFG_T *cfg)
+OPERATE_RET tkl_uvc_init(CONST TUYA_UVC_BASE_CFG_T *cfg)
 {
     (void)cfg;
     return OPRT_NOT_SUPPORTED;
