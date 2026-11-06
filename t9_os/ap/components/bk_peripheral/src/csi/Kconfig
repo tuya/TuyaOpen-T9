@@ -69,6 +69,13 @@ menu "CSI Camera"
         bool "Enable CSI_SC3336P"
         default n
 
+    # Modified by TUYA Start
+    config CSI_SC202CS
+        depends on CSI_CAMERA
+        bool "Enable CSI_SC202CS"
+        default n
+    # Modified by TUYA End
+
     config CSI_MIPI_BRIDGE
         depends on CSI_CAMERA
         bool "Enable CSI_MIPI_BRIDGE"

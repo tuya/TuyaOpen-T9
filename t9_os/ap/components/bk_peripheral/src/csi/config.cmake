@@ -57,6 +57,13 @@ if (CONFIG_CSI_CAMERA)
 		list(APPEND GLOBAL_FUNCTION_SYMBOLS "sc3336p_detect")
 	endif()
 
+	# Modified by TUYA Start
+	if (CONFIG_CSI_SC202CS)
+		list(APPEND CSI_CAMERA_DEVICE_FILES ${CSI_CAMERA_PATH}/csi_sc202cs.c)
+		list(APPEND GLOBAL_FUNCTION_SYMBOLS "sc202cs_detect")
+	endif()
+	# Modified by TUYA End
+
 	if (CONFIG_CSI_MIPI_BRIDGE)
 		list(APPEND CSI_CAMERA_DEVICE_FILES ${CSI_CAMERA_PATH}/csi_mipi_bridge.c)
 		list(APPEND GLOBAL_FUNCTION_SYMBOLS "mipi_bridge_detect")
