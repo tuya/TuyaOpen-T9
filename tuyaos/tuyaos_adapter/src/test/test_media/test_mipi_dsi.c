@@ -7,6 +7,7 @@
 #include <common/avdk_pixel_types.h>
 #include <driver/gpio.h>
 #include <driver/gpio_types.h>
+#include <driver/mipi_dsi.h>
 #include <os/mem.h>
 #include <os/os.h>
 #include <os/str.h>
@@ -34,6 +35,9 @@ extern int bk_rand(void);
 #define MIPI_TEST_BYTES_PER_PIXEL   2U
 #define MIPI_TEST_FRAME_COUNT       2U
 #define MIPI_TEST_REFRESH_MS        1000U
+#define MIPI_TEST_RGB_REFRESH_MS    3000U
+#define MIPI_TEST_RGB_COLOR_COUNT   3U
+#define MIPI_TEST_POWER_ON_DELAY_MS 100U
 
 typedef struct {
     BOOL_T enable;
@@ -41,6 +45,14 @@ typedef struct {
     TUYA_GPIO_CTRL_T bl;
     TUYA_GPIO_CTRL_T power_ctrl;
 } test_mipi_display_cfg_t;
+
+/* "flush" keeps the old random colour sequence; "flush RGB" cycles a fixed
+ * red -> green -> blue sequence so a panel colour cast is easy to spot. */
+typedef enum {
+    TEST_MIPI_FLUSH_MODE_NONE = 0,
+    TEST_MIPI_FLUSH_MODE_RANDOM,
+    TEST_MIPI_FLUSH_MODE_RGB,
+} test_mipi_flush_mode_t;
 
 /* TUYA_GPIO_NUM_MAX is the "not wired" sentinel, and it has to be set here:
  * zero-initialising would leave bl.pin == 0, which is a *real* pin, so
@@ -51,6 +63,21 @@ static test_mipi_display_cfg_t s_mipi_display_cfg = {
     .bl.pin = TUYA_GPIO_NUM_MAX,
     .reset.pin = TUYA_GPIO_NUM_MAX,
     .power_ctrl.pin = TUYA_GPIO_NUM_MAX,
+};
+
+/* Board wiring differs per panel, so the pins are picked by the resolved panel
+ * name instead of being compiled in. Panels not listed here keep the defaults
+ * set by test_mipi_runtime_reset() (the jd9165t wiring). */
+typedef struct {
+    const char *name;
+    TUYA_GPIO_NUM_E reset_pin;
+    TUYA_GPIO_NUM_E bl_pin;
+    TUYA_GPIO_NUM_E power_pin;
+} test_mipi_panel_pin_cfg_t;
+
+static const test_mipi_panel_pin_cfg_t s_mipi_panel_pin_cfg[] = {
+    { "jd9165t_mipi_1024x600", TUYA_GPIO_NUM_21, TUYA_GPIO_NUM_20, TUYA_GPIO_NUM_MAX },
+    { "st7102_mipi_480x960",   TUYA_GPIO_NUM_55, TUYA_GPIO_NUM_53, TUYA_GPIO_NUM_29 },
 };
 static TUYA_MIPI_BASE_CFG_T s_mipi_base_cfg;
 static tkl_mipi_dsi_flush_frame_t s_mipi_flush_frame;
@@ -64,6 +91,18 @@ static uint8_t *s_mipi_frames[MIPI_TEST_FRAME_COUNT] = {0};
 static size_t s_mipi_frame_size = 0;
 static uint8_t s_mipi_frame_index = 0;
 static uint32_t s_mipi_color_state = 0x13579BDFU;
+static test_mipi_flush_mode_t s_mipi_flush_mode = TEST_MIPI_FLUSH_MODE_NONE;
+static uint8_t s_mipi_rgb_index = 0;
+static const uint32_t s_mipi_rgb_colors[MIPI_TEST_RGB_COLOR_COUNT] = {
+    0x00FF0000U, /* red */
+    0x0000FF00U, /* green */
+    0x000000FFU, /* blue */
+};
+static const char *const s_mipi_rgb_color_names[MIPI_TEST_RGB_COLOR_COUNT] = {
+    "RED",
+    "GREEN",
+    "BLUE",
+};
 /* MP AE 预热跳帧数，由 "xmipi camera skip <n>" 设置。
  * 每个 open 都会先跑 test_mipi_camera_runtime_reset() 清空 s_mipi_camera_cfg，
  * 所以这个值单独存一份，reset 时再灌回去，否则设完就被抹掉。 */
@@ -92,36 +131,107 @@ static void test_mipi_backlight_set(bool enable)
     } else {
         bk_gpio_set_output_low((gpio_id_t)s_mipi_display_cfg.bl.pin);
     }
+
+    tkl_log_output("panel backlight %s: pin=%d out=%d in=%d\r\n",
+                   (enable == true) ? "on" : "off",
+                   (int)s_mipi_display_cfg.bl.pin,
+                   (int)bk_gpio_get_output((gpio_id_t)s_mipi_display_cfg.bl.pin),
+                   (int)bk_gpio_get_input((gpio_id_t)s_mipi_display_cfg.bl.pin));
 }
 
-static OPERATE_RET test_mipi_panel_reset(void)
+/* Panel supply enable. Must be driven before the DSI link is brought up so the
+ * panel is powered while RESETn is released. No-op when the board has no such
+ * pin (jd9165t). */
+static void test_mipi_power_set(bool enable)
 {
     gpio_id_t pin;
     bool active_level;
 
-    if (s_mipi_display_cfg.reset.pin >= TUYA_GPIO_NUM_MAX) {
-        return OPRT_OK;
+    if (s_mipi_display_cfg.power_ctrl.pin >= TUYA_GPIO_NUM_MAX) {
+        return;
     }
 
-    pin = (gpio_id_t)s_mipi_display_cfg.reset.pin;
-    active_level = (s_mipi_display_cfg.reset.active_level == TUYA_GPIO_LEVEL_HIGH);
+    pin = (gpio_id_t)s_mipi_display_cfg.power_ctrl.pin;
+    active_level = (s_mipi_display_cfg.power_ctrl.active_level == TUYA_GPIO_LEVEL_HIGH);
 
     gpio_dev_unmap(pin);
     BK_LOG_ON_ERR(bk_gpio_enable_output(pin));
     bk_gpio_set_capacity(pin, GPIO_DRIVER_CAPACITY_3);
 
-    if (active_level) {
-        bk_gpio_set_output_low(pin);
-        tkl_system_sleep(10);
+    if (enable == active_level) {
         bk_gpio_set_output_high(pin);
     } else {
-        bk_gpio_set_output_high(pin);
-        tkl_system_sleep(10);
         bk_gpio_set_output_low(pin);
-        tkl_system_sleep(10);
+    }
+
+    tkl_log_output("panel power %s: pin=%d out=%d in=%d\r\n",
+                   (enable == true) ? "on" : "off",
+                   (int)pin,
+                   (int)bk_gpio_get_output(pin),
+                   (int)bk_gpio_get_input(pin));
+}
+
+static OPERATE_RET test_mipi_panel_reset(const bk_display_dsi_panel_t *panel)
+{
+    gpio_id_t pin;
+    bool active_high = (panel != NULL) ? panel->reset_active_level : false;
+    uint16_t idle_ms = BK_DISPLAY_RESET_IDLE_MS_DEFAULT;
+    uint16_t active_ms = BK_DISPLAY_RESET_ACTIVE_MS_DEFAULT;
+    uint16_t release_ms = BK_DISPLAY_RESET_RELEASE_MS_DEFAULT;
+
+    if (s_mipi_display_cfg.reset.pin >= TUYA_GPIO_NUM_MAX) {
+        return OPRT_OK;
+    }
+
+    if (panel != NULL) {
+        if (panel->reset_timing.idle_ms != 0U) {
+            idle_ms = panel->reset_timing.idle_ms;
+        }
+        if (panel->reset_timing.active_ms != 0U) {
+            active_ms = panel->reset_timing.active_ms;
+        }
+        if (panel->reset_timing.release_ms != 0U) {
+            release_ms = panel->reset_timing.release_ms;
+        }
+    }
+
+    pin = (gpio_id_t)s_mipi_display_cfg.reset.pin;
+
+    gpio_dev_unmap(pin);
+    BK_LOG_ON_ERR(bk_gpio_enable_output(pin));
+    bk_gpio_set_capacity(pin, GPIO_DRIVER_CAPACITY_3);
+
+    /* IDLE -> ACTIVE pulse -> RELEASE, the waveform documented for
+     * bk_lcd_mipi_default_reset(). Per-panel timings come from the descriptor
+     * so a panel that needs a longer release (st7102: >120 ms) is honoured. */
+    if (active_high) {
+        bk_gpio_set_output_low(pin);
+    } else {
         bk_gpio_set_output_high(pin);
     }
-    tkl_system_sleep(120);
+    tkl_system_sleep(idle_ms);
+
+    if (active_high) {
+        bk_gpio_set_output_high(pin);
+    } else {
+        bk_gpio_set_output_low(pin);
+    }
+    tkl_system_sleep(active_ms);
+
+    if (active_high) {
+        bk_gpio_set_output_low(pin);
+    } else {
+        bk_gpio_set_output_high(pin);
+    }
+    tkl_system_sleep(release_ms);
+
+    tkl_log_output("panel reset: pin=%d active_high=%d idle=%ums active=%ums release=%ums, released_level=%d\r\n",
+                   (int)pin,
+                   (int)active_high,
+                   (unsigned int)idle_ms,
+                   (unsigned int)active_ms,
+                   (unsigned int)release_ms,
+                   (int)bk_gpio_get_input(pin));
 
     return OPRT_OK;
 }
@@ -141,7 +251,7 @@ static OPERATE_RET test_mipi_panel_init_with_desc(const bk_display_dsi_panel_t *
         return OPRT_INVALID_PARM;
     }
 
-    ret = test_mipi_panel_reset();
+    ret = test_mipi_panel_reset(panel);
     if (ret != OPRT_OK) {
         return ret;
     }
@@ -182,6 +292,8 @@ static void test_mipi_runtime_reset(void)
     s_mipi_frame_size = 0;
     s_mipi_frame_index = 0;
     s_mipi_color_state = 0x13579BDFU;
+    s_mipi_flush_mode = TEST_MIPI_FLUSH_MODE_NONE;
+    s_mipi_rgb_index = 0U;
     s_mipi_task_running = false;
     s_mipi_task = NULL;
     s_mipi_lcd_opened = false;
@@ -358,27 +470,74 @@ static OPERATE_RET test_mipi_flush_color(uint32_t color)
     return ret;
 }
 
+static const char *test_mipi_flush_mode_name(void)
+{
+    switch (s_mipi_flush_mode) {
+    case TEST_MIPI_FLUSH_MODE_RGB:
+        return "RGB";
+    case TEST_MIPI_FLUSH_MODE_RANDOM:
+        return "random";
+    default:
+        return "pure-color";
+    }
+}
+
+static uint32_t test_mipi_refresh_interval_ms(void)
+{
+    return (s_mipi_flush_mode == TEST_MIPI_FLUSH_MODE_RGB) ? MIPI_TEST_RGB_REFRESH_MS
+                                                           : MIPI_TEST_REFRESH_MS;
+}
+
+static OPERATE_RET test_mipi_rgb_flush_next(void)
+{
+    uint32_t color = s_mipi_rgb_colors[s_mipi_rgb_index];
+    const char *name = s_mipi_rgb_color_names[s_mipi_rgb_index];
+    OPERATE_RET ret;
+
+    ret = test_mipi_flush_color(color);
+    if (ret != OPRT_OK) {
+        return ret;
+    }
+
+    tkl_log_output("RGB flush: %s, color=0x%08x, rgb565=0x%04x\r\n",
+                   name,
+                   (unsigned int)color,
+                   (unsigned int)test_mipi_color_to_rgb565(color));
+
+    s_mipi_rgb_index = (uint8_t)((s_mipi_rgb_index + 1U) % MIPI_TEST_RGB_COLOR_COUNT);
+    return OPRT_OK;
+}
+
 static void test_mipi_task_main(void *arg)
 {
     uint32_t color;
+    OPERATE_RET ret;
     TKL_THREAD_HANDLE self = NULL;
 
     (void)arg;
 
     while (s_mipi_task_running == true) {
-        tkl_system_sleep(MIPI_TEST_REFRESH_MS);
+        tkl_system_sleep(test_mipi_refresh_interval_ms());
         if (s_mipi_task_running == false) {
             break;
         }
 
-        color = test_mipi_random_color_get();
-        if (test_mipi_flush_color(color) != OPRT_OK) {
+        if (s_mipi_flush_mode == TEST_MIPI_FLUSH_MODE_RGB) {
+            ret = test_mipi_rgb_flush_next();
+        } else {
+            color = test_mipi_random_color_get();
+            ret = test_mipi_flush_color(color);
+        }
+
+        if (ret != OPRT_OK) {
             tkl_log_output( "periodic flush failed, stop task\r\n");
             s_mipi_task_running = false;
             break;
         }
 
-        tkl_log_output( "random color flush: 0x%08x\r\n", (unsigned int)color);
+        if (s_mipi_flush_mode != TEST_MIPI_FLUSH_MODE_RGB) {
+            tkl_log_output( "random color flush: 0x%08x\r\n", (unsigned int)color);
+        }
     }
 
     s_mipi_task = NULL;
@@ -414,7 +573,7 @@ static OPERATE_RET test_mipi_task_stop(void)
 
     s_mipi_task_running = false;
     while (s_mipi_task != NULL) {
-        if (wait_ms >= (MIPI_TEST_REFRESH_MS + 500U)) {
+        if (wait_ms >= (test_mipi_refresh_interval_ms() + 500U)) {
             tkl_log_output( "stop refresh task timeout\r\n");
             return OPRT_TIMEOUT;
         }
@@ -496,6 +655,33 @@ static OPERATE_RET test_mipi_panel_resolve(const char *panel_name, const bk_disp
     return OPRT_NOT_FOUND;
 }
 
+static void test_mipi_display_cfg_apply_pins(const char *panel_name)
+{
+    size_t i;
+
+    if (panel_name == NULL) {
+        return;
+    }
+
+    for (i = 0; i < sizeof(s_mipi_panel_pin_cfg) / sizeof(s_mipi_panel_pin_cfg[0]); i++) {
+        if (os_strcmp(panel_name, s_mipi_panel_pin_cfg[i].name) == 0) {
+            s_mipi_display_cfg.reset.pin = s_mipi_panel_pin_cfg[i].reset_pin;
+            s_mipi_display_cfg.bl.pin = s_mipi_panel_pin_cfg[i].bl_pin;
+            s_mipi_display_cfg.power_ctrl.pin = s_mipi_panel_pin_cfg[i].power_pin;
+
+            tkl_log_output("panel %s pins: reset=%d bl=%d power=%d\r\n",
+                           panel_name,
+                           (int)s_mipi_display_cfg.reset.pin,
+                           (int)s_mipi_display_cfg.bl.pin,
+                           (s_mipi_display_cfg.power_ctrl.pin >= TUYA_GPIO_NUM_MAX)
+                               ? -1 : (int)s_mipi_display_cfg.power_ctrl.pin);
+            return;
+        }
+    }
+
+    tkl_log_output("panel %s not in pin table, keep default pins\r\n", panel_name);
+}
+
 static OPERATE_RET test_mipi_lcd_ensure_open(const char *panel_name)
 {
     const bk_display_dsi_panel_t *panel = NULL;
@@ -518,10 +704,17 @@ static OPERATE_RET test_mipi_lcd_ensure_open(const char *panel_name)
         return (ret == OPRT_OK) ? OPRT_NOT_FOUND : ret;
     }
 
+    /* Pins follow the resolved descriptor, so an empty/"auto" name still gets
+     * the right wiring. Power comes up before the DSI link and RESETn. */
+    test_mipi_display_cfg_apply_pins(panel->name);
+    test_mipi_power_set(true);
+    tkl_system_sleep(MIPI_TEST_POWER_ON_DELAY_MS);
+
     test_mipi_frame_buffer_init_once();
     ret = test_mipi_panel_cfg_apply();
     if (ret != OPRT_OK) {
         tkl_log_output("apply panel cfg failed: %d\r\n", ret);
+        test_mipi_power_set(false);
         test_mipi_runtime_reset();
         return ret;
     }
@@ -529,13 +722,16 @@ static OPERATE_RET test_mipi_lcd_ensure_open(const char *panel_name)
     ret = tkl_mipi_dsi_set_input_mode(s_mipi_input_decompress);
     if (ret != OPRT_OK) {
         tkl_log_output("set input mode failed: %d\r\n", ret);
+        test_mipi_power_set(false);
         test_mipi_runtime_reset();
         return ret;
     }
 
+    /* Panel VDDIO is voted by tkl_mipi_dsi_init() before the DSI bus exists. */
     ret = tkl_mipi_dsi_init(&s_mipi_base_cfg);
     if (ret != OPRT_OK) {
         tkl_log_output("panel io open failed: %d\r\n", ret);
+        test_mipi_power_set(false);
         test_mipi_runtime_reset();
         return ret;
     }
@@ -544,6 +740,7 @@ static OPERATE_RET test_mipi_lcd_ensure_open(const char *panel_name)
     if (ret != OPRT_OK) {
         tkl_log_output("panel init failed: %d\r\n", ret);
         tkl_mipi_dsi_deinit();
+        test_mipi_power_set(false);
         test_mipi_runtime_reset();
         return ret;
     }
@@ -552,6 +749,7 @@ static OPERATE_RET test_mipi_lcd_ensure_open(const char *panel_name)
     if (ret != OPRT_OK) {
         tkl_log_output( "update geometry failed: %d\r\n", ret);
         tkl_mipi_dsi_deinit();
+        test_mipi_power_set(false);
         test_mipi_runtime_reset();
         return ret;
     }
@@ -629,8 +827,10 @@ static OPERATE_RET test_mipi_lcd_open_gpu(const char *panel_name, BOOL_T decompr
     return OPRT_OK;
 }
 
-static OPERATE_RET test_mipi_lcd_flush(const char *panel_name)
+static OPERATE_RET test_mipi_lcd_flush(const char *panel_name, bool rgb_mode)
 {
+    test_mipi_flush_mode_t mode = (rgb_mode == true) ? TEST_MIPI_FLUSH_MODE_RGB
+                                                     : TEST_MIPI_FLUSH_MODE_RANDOM;
     OPERATE_RET ret;
     uint32_t color;
 
@@ -649,30 +849,58 @@ static OPERATE_RET test_mipi_lcd_flush(const char *panel_name)
         }
     }
 
-    color = test_mipi_random_color_get();
-    ret = test_mipi_flush_color(color);
-    if (ret != OPRT_OK) {
-        tkl_log_output( "initial flush failed: %d\r\n", ret);
-        return ret;
+    if (s_mipi_task_running == true) {
+        if (s_mipi_flush_mode == mode) {
+            tkl_log_output( "%s pure-color refresh already running\r\n",
+                            test_mipi_flush_mode_name());
+            return OPRT_OK;
+        }
+
+        /* Switching between random and RGB: stop the old task first, or two
+         * flushes would race on the frame pool. */
+        ret = test_mipi_task_stop();
+        if (ret != OPRT_OK) {
+            return ret;
+        }
     }
 
-    tkl_log_output( "flush path=direct, fmt=RGB565, frame_size=%u, buffers=%u, first_color=0x%08x\r\n",
-            (unsigned int)test_mipi_frame_size_get(),
-            (unsigned int)MIPI_TEST_FRAME_COUNT,
-            (unsigned int)color);
+    s_mipi_flush_mode = mode;
 
-    if (s_mipi_task_running == true) {
-        tkl_log_output( "random pure-color refresh already running\r\n");
-        return OPRT_OK;
+    if (mode == TEST_MIPI_FLUSH_MODE_RGB) {
+        s_mipi_rgb_index = 0U;
+        ret = test_mipi_rgb_flush_next();
+        if (ret != OPRT_OK) {
+            tkl_log_output( "initial RGB flush failed: %d\r\n", ret);
+            s_mipi_flush_mode = TEST_MIPI_FLUSH_MODE_NONE;
+            return ret;
+        }
+
+        tkl_log_output( "RGB pure-color order=RED->GREEN->BLUE, interval=%u ms\r\n",
+                (unsigned int)MIPI_TEST_RGB_REFRESH_MS);
+    } else {
+        color = test_mipi_random_color_get();
+        ret = test_mipi_flush_color(color);
+        if (ret != OPRT_OK) {
+            tkl_log_output( "initial flush failed: %d\r\n", ret);
+            s_mipi_flush_mode = TEST_MIPI_FLUSH_MODE_NONE;
+            return ret;
+        }
+
+        tkl_log_output( "flush path=direct, fmt=RGB565, frame_size=%u, buffers=%u, first_color=0x%08x\r\n",
+                (unsigned int)test_mipi_frame_size_get(),
+                (unsigned int)MIPI_TEST_FRAME_COUNT,
+                (unsigned int)color);
     }
 
     ret = test_mipi_task_start();
     if (ret != OPRT_OK) {
+        s_mipi_flush_mode = TEST_MIPI_FLUSH_MODE_NONE;
         return ret;
     }
 
-    tkl_log_output( "random pure-color refresh started, interval=%u ms\r\n",
-            (unsigned int)MIPI_TEST_REFRESH_MS);
+    tkl_log_output( "%s pure-color refresh started, interval=%u ms\r\n",
+            test_mipi_flush_mode_name(),
+            (unsigned int)test_mipi_refresh_interval_ms());
     return OPRT_OK;
 }
 
@@ -686,7 +914,8 @@ static OPERATE_RET test_mipi_lcd_stop_flush(void)
     }
 
     if (s_mipi_task_running != true && s_mipi_task == NULL) {
-        tkl_log_output( "random pure-color refresh already stopped\r\n");
+        tkl_log_output( "%s refresh already stopped\r\n", test_mipi_flush_mode_name());
+        s_mipi_flush_mode = TEST_MIPI_FLUSH_MODE_NONE;
         return OPRT_OK;
     }
 
@@ -696,7 +925,28 @@ static OPERATE_RET test_mipi_lcd_stop_flush(void)
         return ret;
     }
 
-    tkl_log_output( "random pure-color refresh stopped\r\n");
+    tkl_log_output( "%s refresh stopped\r\n", test_mipi_flush_mode_name());
+    s_mipi_flush_mode = TEST_MIPI_FLUSH_MODE_NONE;
+    s_mipi_rgb_index = 0U;
+    return OPRT_OK;
+}
+
+/* DSI host video test pattern. Bypasses the DPU/flush path: if the bars show
+ * up, panel power, RESETn, the init sequence and the DSI link are all working
+ * and the fault is above the bus. Test-only diagnostic. */
+static OPERATE_RET test_mipi_lcd_pattern(bool enable)
+{
+    if (s_mipi_lcd_opened != true) {
+        tkl_log_output( "mipi lcd is not open\r\n");
+        return OPRT_RESOURCE_NOT_READY;
+    }
+
+    if (mipi_dsi_panel_set_pattern(enable ? MIPI_DSI_PATTERN_BAR_VERTICAL
+                                          : MIPI_DSI_PATTERN_NONE) != BK_OK) {
+        return OPRT_COM_ERROR;
+    }
+
+    tkl_log_output("DSI test pattern %s\r\n", (enable == true) ? "on" : "off");
     return OPRT_OK;
 }
 
@@ -724,6 +974,7 @@ static OPERATE_RET test_mipi_lcd_close(void)
 
     test_mipi_backlight_set(false);
     ret = tkl_mipi_dsi_deinit();
+    test_mipi_power_set(false);
     test_mipi_frame_buffers_release();
     test_mipi_runtime_reset();
     s_mipi_panel_name[0] = '\0';
@@ -948,8 +1199,8 @@ void cli_tuya_mipi_dsi_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, c
 
     if (argc < 2) {
         snprintf(pcWriteBuffer, xWriteBufferLen,
-                 "Usage: xmipi dsi <open [panel]|open_gpu [panel] [compress]|flush|paste [w] [h]|"
-                 "stop_flush|close>");
+                 "Usage: xmipi dsi <open [panel]|open_gpu [panel] [compress]|flush [RGB]|paste [w] [h]|"
+                 "pattern [0|1]|stop_flush|close>");
         return;
     }
 
@@ -989,9 +1240,18 @@ void cli_tuya_mipi_dsi_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, c
                  s_mipi_height,
                  (unsigned int)decompress);
     } else if (os_strcmp(cmd, "flush") == 0) {
-        ret = test_mipi_lcd_flush(panel_name);
+        bool rgb_mode = false;
+
+        if (argc >= 3 &&
+            (os_strcmp(argv[2], "RGB") == 0 || os_strcmp(argv[2], "rgb") == 0)) {
+            rgb_mode = true;
+        }
+
+        ret = test_mipi_lcd_flush(panel_name, rgb_mode);
         snprintf(pcWriteBuffer, xWriteBufferLen,
-                 "xmipi dsi flush %s (%d)\r\n", (ret == OPRT_OK) ? "ok" : "failed", ret);
+                 "xmipi dsi flush%s %s (%d)\r\n",
+                 (rgb_mode == true) ? " RGB" : "",
+                 (ret == OPRT_OK) ? "ok" : "failed", ret);
     } else if (os_strcmp(cmd, "paste") == 0) {
         uint16_t win_w = 0U;
         uint16_t win_h = 0U;
@@ -1010,13 +1270,24 @@ void cli_tuya_mipi_dsi_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, c
         ret = test_mipi_lcd_stop_flush();
         snprintf(pcWriteBuffer, xWriteBufferLen,
                  "xmipi dsi stop_flush %s (%d)\r\n", (ret == OPRT_OK) ? "ok" : "failed", ret);
+    } else if (os_strcmp(cmd, "pattern") == 0) {
+        bool enable = true;
+
+        if (argc >= 3 &&
+            (os_strcmp(argv[2], "0") == 0 || os_strcmp(argv[2], "off") == 0)) {
+            enable = false;
+        }
+
+        ret = test_mipi_lcd_pattern(enable);
+        snprintf(pcWriteBuffer, xWriteBufferLen,
+                 "xmipi dsi pattern %s (%d)\r\n", (ret == OPRT_OK) ? "ok" : "failed", ret);
     } else if (os_strcmp(cmd, "close") == 0) {
         ret = test_mipi_lcd_close();
         snprintf(pcWriteBuffer, xWriteBufferLen,
                  "xmipi dsi close %s (%d)\r\n", (ret == OPRT_OK) ? "ok" : "failed", ret);
     } else {
         snprintf(pcWriteBuffer, xWriteBufferLen,
-                 "Usage: xmipi dsi <open [panel]|open_gpu [panel] [compress]|flush|paste [w] [h]|"
-                 "stop_flush|close>");
+                 "Usage: xmipi dsi <open [panel]|open_gpu [panel] [compress]|flush [RGB]|paste [w] [h]|"
+                 "pattern [0|1]|stop_flush|close>");
     }
 }

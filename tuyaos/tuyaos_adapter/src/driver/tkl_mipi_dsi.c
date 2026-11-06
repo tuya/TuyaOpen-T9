@@ -5,6 +5,7 @@
 #include <components/bk_display_bus.h>
 #include <driver/mipi_dsi.h>
 #include <driver/mipi_dsi_types.h>
+#include <modules/pm.h>
 #include <os/mem.h>
 #include <os/os.h>
 #include "tkl_mipi_dsi.h"
@@ -12,6 +13,7 @@
 
 typedef struct {
     BOOL_T inited;
+    BOOL_T vddio_on;
     bk_display_bus_handle_t dis_bus_handle;
 } tkl_mipi_dsi_runtime_t;
 
@@ -201,6 +203,42 @@ static VOID_T tkl_mipi_dpu_runtime_reset(VOID_T)
     s_dpu_runtime.input_decompress = TRUE;
 }
 
+/**
+ * @brief Vote the display 1.8V AUX LDO rail (panel VDDIO).
+ *
+ * The DSI bus only votes its own 2.8V/3V D-PHY rails; the panel I/O supply is
+ * the shared 1.8V AUX LDO and has to be live before any DSI traffic, otherwise
+ * the panel stays dark even though the link and the DPU look healthy.
+ *
+ * @param[in] enable TRUE to enable the rail, FALSE to release the vote
+ * @return OPRT_OK on success
+ */
+static OPERATE_RET __t9_mipi_dsi_panel_power_enable(BOOL_T enable)
+{
+    pm_auxldo_ctrl_cfg_t auxldo_cfg;
+
+    os_memset(&auxldo_cfg, 0, sizeof(auxldo_cfg));
+    auxldo_cfg.ldo   = AUXLDOS_SEL_1P8V;
+    auxldo_cfg.out   = PM_AUXLDO_1P8V_OUT_1P8V;
+    auxldo_cfg.user  = PM_AUXLDO_USER_DISPLAY;
+    auxldo_cfg.state = (enable != FALSE) ? PM_AUXLDO_ENABLE : PM_AUXLDO_DISABLE;
+
+    if (bk_pm_auxldo_ctrl_vote(&auxldo_cfg) != BK_OK) {
+        tkl_log_output("display panel vddio %s failed (1p8v)\r\n",
+                       (enable != FALSE) ? "on" : "off");
+        return OPRT_COM_ERROR;
+    }
+
+    tkl_log_output("display panel vddio %s (1p8v)\r\n",
+                   (enable != FALSE) ? "on" : "off");
+
+    if (enable != FALSE) {
+        rtos_delay_milliseconds(1);
+    }
+
+    return OPRT_OK;
+}
+
 OPERATE_RET tkl_mipi_dsi_set_input_mode(BOOL_T decompress)
 {
     if (s_dsi_runtime.inited == TRUE || s_dpu_runtime.inited == TRUE) {
@@ -222,6 +260,14 @@ OPERATE_RET tkl_mipi_dsi_init(const TUYA_MIPI_BASE_CFG_T *base_cfg)
     if (s_dsi_runtime.inited == TRUE) {
         return OPRT_OK;
     }
+
+    /* Panel VDDIO first: it has to be live before the DSI bus/PHY starts any
+     * traffic. Mirrors the vendor display bring-up (app_display_power_enable). */
+    ret = __t9_mipi_dsi_panel_power_enable(TRUE);
+    if (ret != OPRT_OK) {
+        return ret;
+    }
+    s_dsi_runtime.vddio_on = TRUE;
 
     ret = bk_display_dsi_bus_new(&s_dsi_runtime.dis_bus_handle, NULL);
     if (ret != OPRT_OK) {
@@ -256,6 +302,10 @@ OPERATE_RET tkl_mipi_dsi_deinit(VOID_T)
     if (s_dsi_runtime.dis_bus_handle != NULL) {
         bk_display_bus_delete(s_dsi_runtime.dis_bus_handle);
         s_dsi_runtime.dis_bus_handle = NULL;
+    }
+
+    if (s_dsi_runtime.vddio_on != FALSE) {
+        (void)__t9_mipi_dsi_panel_power_enable(FALSE);
     }
 
     tkl_mipi_dsi_runtime_reset();
