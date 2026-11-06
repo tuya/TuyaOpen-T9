@@ -34,7 +34,7 @@ static VOID_T tkl_codec_gate_create(TKL_CODEC_GATE_E which)
     rtos_exit_critical(flags);
 }
 
-OPERATE_RET tkl_codec_gate_acquire(TKL_CODEC_GATE_E which, UINT32_T timeout_ms)
+OPERATE_RET __t9_codec_gate_acquire(TKL_CODEC_GATE_E which, UINT32_T timeout_ms)
 {
     if ((UINT32_T)which >= (UINT32_T)TKL_CODEC_GATE_MAX) {
         return OPRT_INVALID_PARM;
@@ -53,7 +53,7 @@ OPERATE_RET tkl_codec_gate_acquire(TKL_CODEC_GATE_E which, UINT32_T timeout_ms)
     return OPRT_OK;
 }
 
-VOID_T tkl_codec_gate_release(TKL_CODEC_GATE_E which)
+VOID_T __t9_codec_gate_release(TKL_CODEC_GATE_E which)
 {
     if ((UINT32_T)which >= (UINT32_T)TKL_CODEC_GATE_MAX) {
         return;
@@ -64,7 +64,7 @@ VOID_T tkl_codec_gate_release(TKL_CODEC_GATE_E which)
     }
 }
 
-BOOL_T tkl_codec_gate_is_busy(TKL_CODEC_GATE_E which)
+BOOL_T __t9_codec_gate_is_busy(TKL_CODEC_GATE_E which)
 {
     if ((UINT32_T)which >= (UINT32_T)TKL_CODEC_GATE_MAX) {
         return FALSE;

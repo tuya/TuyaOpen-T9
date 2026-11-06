@@ -58,7 +58,7 @@ STATIC OPERATE_RET tkl_pp_map_err(avdk_err_t ret)
     return OPRT_COM_ERROR;
 }
 
-UINT32_T tkl_pp_output_size(UINT32_T format, UINT16_T width, UINT16_T height)
+UINT32_T __t9_pp_output_size(UINT32_T format, UINT16_T width, UINT16_T height)
 {
     UINT32_T stored_h;
 
@@ -93,7 +93,7 @@ UINT32_T tkl_pp_output_size(UINT32_T format, UINT16_T width, UINT16_T height)
     }
 }
 
-OPERATE_RET tkl_pp_open(UINT32_T timeout_ms, TKL_PP_HANDLE *handle)
+OPERATE_RET __t9_pp_open(UINT32_T timeout_ms, TKL_PP_HANDLE *handle)
 {
     tkl_pp_ctx_t *ctx;
     bk_pp_config_t cfg;
@@ -152,7 +152,7 @@ err_mutex:
     return tkl_pp_map_err(ret);
 }
 
-OPERATE_RET tkl_pp_close(TKL_PP_HANDLE handle)
+OPERATE_RET __t9_pp_close(TKL_PP_HANDLE handle)
 {
     tkl_pp_ctx_t *ctx = tkl_pp_ctx_get(handle);
     OPERATE_RET ret = OPRT_OK;
@@ -189,7 +189,7 @@ OPERATE_RET tkl_pp_close(TKL_PP_HANDLE handle)
     return ret;
 }
 
-OPERATE_RET tkl_pp_process(TKL_PP_HANDLE handle, CONST TKL_PP_IN_T *in, CONST TKL_PP_OUT_T *out)
+OPERATE_RET __t9_pp_process(TKL_PP_HANDLE handle, CONST TKL_PP_IN_T *in, CONST TKL_PP_OUT_T *out)
 {
     tkl_pp_ctx_t *ctx = tkl_pp_ctx_get(handle);
     bk_pp_process_req_t req;

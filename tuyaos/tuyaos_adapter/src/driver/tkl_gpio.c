@@ -1,4 +1,5 @@
 #include "tkl_gpio.h"
+#include "tkl_gpio_internal.h"
 #include <driver/gpio.h>
 #include "gpio_driver.h"
 #include "sdkconfig.h"
@@ -46,15 +47,21 @@ static pin_dev_map_t pinmap[] = {
 
 #define PINMAP_COUNT (sizeof(pinmap) / sizeof(pinmap[0]))
 
-/* P12/P13/P56-P58/P61-P63/P66-P71: not routed out on this board */
-#define TKL_GPIO_UNAVAILABLE_MASK \
-    ((UINT64_T)((1ULL << TUYA_GPIO_NUM_12) | (1ULL << TUYA_GPIO_NUM_13) | \
-                (1ULL << TUYA_GPIO_NUM_56) | (1ULL << TUYA_GPIO_NUM_57) | \
-                (1ULL << TUYA_GPIO_NUM_58) | (1ULL << TUYA_GPIO_NUM_61) | \
-                (1ULL << TUYA_GPIO_NUM_62) | (1ULL << TUYA_GPIO_NUM_63) | \
-                (1ULL << TUYA_GPIO_NUM_66) | (1ULL << TUYA_GPIO_NUM_67) | \
-                (1ULL << TUYA_GPIO_NUM_68) | (1ULL << TUYA_GPIO_NUM_69) | \
-                (1ULL << TUYA_GPIO_NUM_70) | (1ULL << TUYA_GPIO_NUM_71)))
+/* P12/P13/P56-P58/P61-P63/P66-P71: not routed out on this board.
+ *
+ * Deliberately a list rather than a 64-bit bit mask. pinmap[] runs 0..71, so a
+ * mask would need 1ULL << 66..71, and shifting a 64-bit type by >= 64 is
+ * undefined behaviour - GCC folds those terms to 0 and the pins silently stay
+ * "available". A linear scan over 14 entries is free at GPIO-op rates. */
+static const UINT8_T s_gpio_unavailable[] = {
+    TUYA_GPIO_NUM_12, TUYA_GPIO_NUM_13,
+    TUYA_GPIO_NUM_56, TUYA_GPIO_NUM_57, TUYA_GPIO_NUM_58,
+    TUYA_GPIO_NUM_61, TUYA_GPIO_NUM_62, TUYA_GPIO_NUM_63,
+    TUYA_GPIO_NUM_66, TUYA_GPIO_NUM_67, TUYA_GPIO_NUM_68,
+    TUYA_GPIO_NUM_69, TUYA_GPIO_NUM_70, TUYA_GPIO_NUM_71,
+};
+#define TKL_GPIO_UNAVAILABLE_CNT \
+    ((UINT32_T)(sizeof(s_gpio_unavailable) / sizeof(s_gpio_unavailable[0])))
 
 #define SYS_ANA_REG_BASE            (0x44010000)
 #define LDO_ANA_REG                 (0x69)
@@ -77,24 +84,31 @@ static void tkl_gpio_auxldo_enable(void)
 /**
  * @brief Check whether the GPIO pin is available on this board.
  * @param[in] pin_id gpio pin id
- * @return true if pin is valid and routed out, false otherwise
+ * @return TRUE if pin is valid and routed out, FALSE otherwise
  */
-static bool tkl_gpio_is_valid_pin(TUYA_GPIO_NUM_E pin_id)
+BOOL_T __t9_gpio_is_valid_pin(TUYA_GPIO_NUM_E pin_id)
 {
+    UINT32_T i;
+
+    /* pinmap[] is the hardware truth (0..PINMAP_COUNT-1). TUYA_GPIO_NUM_MAX is
+     * NOT usable here: it is the cross-platform enum bound, larger than this
+     * SoC's pin count. */
     if ((uint32_t)pin_id >= PINMAP_COUNT) {
-        return false;
+        return FALSE;
     }
 
-    if ((TKL_GPIO_UNAVAILABLE_MASK & (1ULL << pin_id)) != 0) {
-        return false;
+    for (i = 0U; i < TKL_GPIO_UNAVAILABLE_CNT; i++) {
+        if ((UINT32_T)s_gpio_unavailable[i] == (UINT32_T)pin_id) {
+            return FALSE;
+        }
     }
 
-    return true;
+    return TRUE;
 }
 
 #define PIN_DEV_CHECK_ERROR_RETURN(__PIN, __ERROR) \
     do { \
-        if (!tkl_gpio_is_valid_pin(__PIN)) { \
+        if (!__t9_gpio_is_valid_pin(__PIN)) { \
             return __ERROR; \
         } \
     } while (0)

@@ -36,14 +36,14 @@ typedef enum {
 } TKL_AUD_DAC_STAT_E;
 
 typedef struct {
-    TKL_AUD_DAC_CFG_T       cfg;
+    TUYA_AUDIO_DAC_BASE_CFG_T cfg;
     TUYA_AUDIO_DAC_PORT_E   port;
     TKL_AUD_DAC_STAT_E      stat;
     dma_id_t                spk_dma_id;
     RingBufferContext       spk_rb;
     int8_t                 *spk_dma_buf;
     uint32_t                frame_size;
-    TKL_AUD_DAC_FRAME_CB    frame_cb;
+    TUYA_AUDIO_OUTPUT_CB    frame_cb;
     VOID_T                 *frame_cb_arg;
 #if CONFIG_AUD_DRIVER_V2
     aud_dac_source_t        dac_source; /**< Resolved OEM digital source */
@@ -65,56 +65,90 @@ dma_id_t test_dma_id = DMA_ID_MAX;
 #define TKL_AUD_DAC_GAIN_NUM        (2U)       /* dig dB then ana dB */
 
 /**
+ * @brief Number of playback channels selected by a DAC channel bitmap.
+ *
+ * @details
+ * TUYA_AUDIO_DAC_CHANNEL_E is a bitmap (CHANNEL_n == BIT(n)), not an ordinal
+ * count. This port drives one channel or both:
+ *
+ *   CHANNEL_0                 -> 1  (L)
+ *   CHANNEL_1                 -> 1  (R)
+ *   CHANNEL_0 | CHANNEL_1     -> 2  (L/R)
+ *
+ * Every other value selects a channel this SoC does not have, or none at all.
+ *
+ * @param[in] ch channel bitmap
+ * @return 1, 2, or 0 when the bitmap is not usable on this port
+ */
+static UINT32_T __tkl_aud_dac_chan_count(TUYA_AUDIO_DAC_CHANNEL_E ch)
+{
+    switch ((UINT32_T)ch) {
+    case (UINT32_T)TUYA_AUDIO_DAC_CHANNEL_0:
+    case (UINT32_T)TUYA_AUDIO_DAC_CHANNEL_1:
+        return 1U;
+    case ((UINT32_T)TUYA_AUDIO_DAC_CHANNEL_0 | (UINT32_T)TUYA_AUDIO_DAC_CHANNEL_1):
+        return 2U;
+    default:
+        return 0U;
+    }
+}
+
+/**
+ * @brief Map a DAC channel bitmap to the OEM channel selector.
+ *
+ * @details The bitmap is the only source of truth for the channel; the DAC port
+ *          selects the FIFO, never the side. Matches the OEM contract
+ *          ("chl_num=1: L default, R if set").
+ *
+ * @param[in] ch channel bitmap, already validated by __tkl_aud_dac_chan_count()
+ * @return AUD_DAC_CHL_L / AUD_DAC_CHL_R / AUD_DAC_CHL_LR
+ */
+static aud_dac_chl_t __tkl_aud_dac_chan_to_chl(TUYA_AUDIO_DAC_CHANNEL_E ch)
+{
+    if ((UINT32_T)ch == (UINT32_T)TUYA_AUDIO_DAC_CHANNEL_1) {
+        return AUD_DAC_CHL_R;
+    }
+    if ((UINT32_T)ch == ((UINT32_T)TUYA_AUDIO_DAC_CHANNEL_0 |
+                         (UINT32_T)TUYA_AUDIO_DAC_CHANNEL_1)) {
+        return AUD_DAC_CHL_LR;
+    }
+    return AUD_DAC_CHL_L;
+}
+
+/**
  * @brief Map TKL source enum / sample_rate to OEM aud_dac_source_t
  * @param[in] cfg DAC config
  * @param[out] out resolved OEM source
  * @return OPRT_OK on success
+ * @note TUYA_AUDIO_DAC_BASE_CFG_T no longer carries a source selector, so the
+ *       source is always inferred from sample_rate (the old SRC_AUTO path).
  */
-static OPERATE_RET __tkl_aud_dac_resolve_source(CONST TKL_AUD_DAC_CFG_T *cfg, aud_dac_source_t *out)
+static OPERATE_RET __tkl_aud_dac_resolve_source(CONST TUYA_AUDIO_DAC_BASE_CFG_T *cfg, aud_dac_source_t *out)
 {
-    TKL_AUD_DAC_SRC_E src;
-
     if ((cfg == NULL) || (out == NULL)) {
         return OPRT_INVALID_PARM;
     }
 
-    src = cfg->src;
-    if (src == TKL_AUD_DAC_SRC_AUTO) {
-        switch (cfg->sample_rate) {
-            case 8000:
-            case 16000:
-                src = TKL_AUD_DAC_SRC_VOICE;
-                break;
-            case 44100:
-            case 48000:
-            case 88200:
-            case 96000:
-            case 176400:
-            case 192000:
-            case 352800:
-            case 384000:
-                src = TKL_AUD_DAC_SRC_MEDIA;
-                break;
-            default:
-                TKL_DAC_LOG("AUTO cannot map sample_rate %u\n", cfg->sample_rate);
-                return OPRT_INVALID_PARM;
-        }
-    }
-
-    switch (src) {
-        case TKL_AUD_DAC_SRC_MEDIA:
-            *out = AUD_DAC_SOURCE_A2DP;
-            break;
-        case TKL_AUD_DAC_SRC_VOICE:
+    switch (cfg->sample_rate) {
+        case 8000:
+        case 16000:
             *out = AUD_DAC_SOURCE_CALL;
             break;
-        case TKL_AUD_DAC_SRC_HINT:
-            *out = AUD_DAC_SOURCE_HINT;
+        case 44100:
+        case 48000:
+        case 88200:
+        case 96000:
+        case 176400:
+        case 192000:
+        case 352800:
+        case 384000:
+            *out = AUD_DAC_SOURCE_A2DP;
             break;
         default:
-            TKL_DAC_LOG("unsupported src %d\n", src);
+            TKL_DAC_LOG("cannot map sample_rate %u to a DAC source\n", cfg->sample_rate);
             return OPRT_INVALID_PARM;
     }
+
     return OPRT_OK;
 }
 
@@ -241,7 +275,7 @@ static bk_err_t __tkl_aud_dac_dma_config(TUYA_AUDIO_DAC_PORT_E port)
 #if CONFIG_AUD_DRIVER_V1
     dma_config.dst.dev = DMA_DEV_AUDIO;
 #endif
-    switch (gl_dac_ctx->cfg.chan_num) {
+    switch (__tkl_aud_dac_chan_count(gl_dac_ctx->cfg.dac_chan)) {
         case 1:
             dma_config.dst.width = DMA_DATA_WIDTH_16BITS;
             break;
@@ -251,8 +285,9 @@ static bk_err_t __tkl_aud_dac_dma_config(TUYA_AUDIO_DAC_PORT_E port)
         default:
             break;
     }
-    bk_printf("port: %d, chan_num: %d, sample_bits: %d, frame_size: %d\n",
-              port, gl_dac_ctx->cfg.chan_num, gl_dac_ctx->cfg.sample_bits, frame_size);
+    bk_printf("port: %d, chan: %d, sample_bits: %d, frame_size: %d\n",
+              port, (int)__tkl_aud_dac_chan_count(gl_dac_ctx->cfg.dac_chan),
+              gl_dac_ctx->cfg.sample_bits, frame_size);
     #if CONFIG_AUD_DRIVER_V1
     ret = bk_aud_dac_get_fifo_addr(&dac_port_addr);
     #elif CONFIG_AUD_DRIVER_V2
@@ -371,7 +406,7 @@ static VOID_T __tkl_aud_dac_fill_silence(VOID_T)
  *       playback channel count to one onboard speaker.
  * @note This function must be called before `tkl_aud_dac_start()`.
  */
-OPERATE_RET tkl_aud_dac_init(TUYA_AUDIO_DAC_PORT_E port, TKL_AUD_DAC_CFG_T *config)
+OPERATE_RET tkl_aud_dac_init(TUYA_AUDIO_DAC_PORT_E port, CONST TUYA_AUDIO_DAC_BASE_CFG_T *config)
 {
     if (config == NULL || port > TUYA_AUDIO_DAC_PORT_MAX) {
         return OPRT_INVALID_PARM;
@@ -387,12 +422,19 @@ OPERATE_RET tkl_aud_dac_init(TUYA_AUDIO_DAC_PORT_E port, TKL_AUD_DAC_CFG_T *conf
         return OPRT_INVALID_PARM;
     }
 
+    if (__tkl_aud_dac_chan_count(config->dac_chan) == 0U) {
+        TKL_DAC_LOG("dac: unsupported dac_chan bitmap 0x%x\n",
+                    (unsigned)config->dac_chan);
+        return OPRT_INVALID_PARM;
+    }
+
     if (gl_dac_ctx != NULL) {
         TKL_DAC_LOG("dac already initialized\n");
         return OPRT_COM_ERROR;
     }
 
     bk_err_t ret = BK_OK;
+    UINT32_T chan_cnt = 0U;
 
     bk_printf("dac init, sample_rate %d, sample_bits %d",
               config->sample_rate, config->sample_bits);
@@ -402,7 +444,7 @@ OPERATE_RET tkl_aud_dac_init(TUYA_AUDIO_DAC_PORT_E port, TKL_AUD_DAC_CFG_T *conf
         return OPRT_MALLOC_FAILED;
     }
     os_memset(gl_dac_ctx, 0, sizeof(tkl_aud_dac_ctx_t));
-    os_memcpy(&gl_dac_ctx->cfg, config, sizeof(TKL_AUD_DAC_CFG_T));
+    os_memcpy(&gl_dac_ctx->cfg, config, sizeof(TUYA_AUDIO_DAC_BASE_CFG_T));
     gl_dac_ctx->frame_cb = config->frame_cb;
     gl_dac_ctx->frame_cb_arg = config->args;
     gl_dac_ctx->gain_set = FALSE;
@@ -424,50 +466,33 @@ OPERATE_RET tkl_aud_dac_init(TUYA_AUDIO_DAC_PORT_E port, TKL_AUD_DAC_CFG_T *conf
         gl_dac_ctx = NULL;
         return OPRT_INVALID_PARM;
     }
-    bk_printf("dac source=%d (0=a2dp,1=call,2=hint), src_cfg=%d\r\n",
-              gl_dac_ctx->dac_source, config->src);
+    bk_printf("dac source=%d (0=a2dp,1=call,2=hint)\r\n",
+              gl_dac_ctx->dac_source);
 #endif
 
-    /* Onboard speaker path supports mono (1) or stereo/LR (2). Clamp any other
-     * value to mono. (Was previously forced to 1 for T5's single speaker.) */
-    if (gl_dac_ctx->cfg.chan_num != 1 && gl_dac_ctx->cfg.chan_num != 2) {
-        gl_dac_ctx->cfg.chan_num = 1;
+    /* The channel bitmap is the only source of truth for which side plays;
+     * the port selects the FIFO and must not override it. The bitmap has no
+     * "natural" invalid value the way the old chan_num count did, so validate
+     * instead of clamping. */
+    chan_cnt = __tkl_aud_dac_chan_count(gl_dac_ctx->cfg.dac_chan);
+    if (chan_cnt == 0U) {
+        TKL_DAC_LOG("unsupported dac_chan bitmap: 0x%x\n",
+                    (unsigned)gl_dac_ctx->cfg.dac_chan);
+        ret = OPRT_INVALID_PARM;
+        goto __dac_init_exit;
     }
 
     bk_printf("dac init, sample_rate %d, sample_bits %d",
               config->sample_rate, config->sample_bits);
     /* DAC init */
-#if CONFIG_AUD_DRIVER_V2
-    if (gl_dac_ctx->cfg.chan_num == 1) {
-        if (port == TUYA_AUDIO_DAC_PORT_0) {
-            aud_dac_cfg.dac_chl = AUD_DAC_CHL_L;
-        } else {
-            aud_dac_cfg.dac_chl = AUD_DAC_CHL_R;
-        }
-    } else if (gl_dac_ctx->cfg.chan_num == 2) {
-        aud_dac_cfg.dac_chl = AUD_DAC_CHL_LR;
-        port = 0;  // For stereo, use port 0 for DAC FIFO access
-    } else {
-        TKL_DAC_LOG("unsupported channel num: %d\n", gl_dac_ctx->cfg.chan_num);
-        ret = BK_FAIL;
-        goto __dac_init_exit;
+    aud_dac_cfg.dac_chl = __tkl_aud_dac_chan_to_chl(gl_dac_ctx->cfg.dac_chan);
+    if (chan_cnt == 2U) {
+        port = 0;  /* For stereo, use port 0 for DAC FIFO access */
     }
-#else
-    if (gl_dac_ctx->cfg.chan_num == 1) {
-        if (port == TUYA_AUDIO_DAC_PORT_0) {
-            aud_dac_cfg.dac_chl = AUD_DAC_CHL_L;
-        } else {
-            aud_dac_cfg.dac_chl = AUD_DAC_CHL_R;
-        }
-    } else {
-        aud_dac_cfg.dac_chl = AUD_DAC_CHL_LR;
-        port = 0;  // For stereo, use port 0 for DAC FIFO access
-    }
-#endif
 
-    bk_printf("dac init, sample_rate %d, sample_bits %d, frame_time_ms %d, chan_num %d\n",
+    bk_printf("dac init, sample_rate %d, sample_bits %d, frame_time_ms %d, chan %d\n",
               config->sample_rate, config->sample_bits, config->frame_time_ms,
-              config->chan_num);
+              (int)chan_cnt);
 #if CONFIG_AUD_DRIVER_V1
     /* Gain applied later via tkl_aud_dac_set_gain(); keep OEM default for HW init. */
     aud_dac_cfg.samp_rate = config->sample_rate;
@@ -515,9 +540,9 @@ OPERATE_RET tkl_aud_dac_init(TUYA_AUDIO_DAC_PORT_E port, TKL_AUD_DAC_CFG_T *conf
 
     /* frame_size is the per-frame byte count fed to the DMA/FIFO; it must scale
      * with the channel count (stereo packs an L+R pair per sample instant). The
-     * macro itself only covers one channel, so multiply by chan_num. */
+     * macro itself only covers one channel, so multiply by the derived count. */
     gl_dac_ctx->frame_size = TKL_DAC_FRAME_SIZE_MS(config->sample_rate, config->sample_bits,
-                                                      config->frame_time_ms) * gl_dac_ctx->cfg.chan_num;
+                                                      config->frame_time_ms) * chan_cnt;
     if (gl_dac_ctx->frame_size == 0) {
         TKL_DAC_LOG("dac frame size calc fail\n");
         ret = BK_FAIL;
@@ -697,14 +722,14 @@ OPERATE_RET tkl_aud_dac_stop(TUYA_AUDIO_DAC_PORT_E port)
  */
 static BOOL_T __tkl_aud_dac_gain_is_invalid(INT32_T v)
 {
-    return ((UINT32_T)v == (UINT32_T)AUDIA_DAC_INVALID_GAIN_VALUE) ? TRUE : FALSE;
+    return ((UINT32_T)v == (UINT32_T)AUDIO_DAC_INVALID_GAIN_VALUE) ? TRUE : FALSE;
 }
 
 /**
  * @brief Set the DAC hardware gain.
  * @param[in] port DAC output port (unused on this platform)
  * @param[in] channel TUYA_AUDIO_DAC_CHANNEL_0/1 -> L/R (OEM dig still sets both)
- * @param[in] gain gain[0]=dig, gain[1]=ana; AUDIA_DAC_INVALID_GAIN_VALUE to skip
+ * @param[in] gain gain[0]=dig, gain[1]=ana; AUDIO_DAC_INVALID_GAIN_VALUE to skip
  * @param[in] num 1 (dig only) or 2 (dig then ana)
  * @return OPRT_OK on success
  * @note V2: dig <= BK_AUD_DAC_DIG_GAIN_DB_SILENCE mutes when dig is applied.
@@ -722,8 +747,11 @@ OPERATE_RET tkl_aud_dac_set_gain(TUYA_AUDIO_DAC_PORT_E port, TUYA_AUDIO_DAC_CHAN
         return OPRT_INVALID_PARM;
     }
 
-    /* This SoC exposes L/R as CHANNEL_0/1; higher channels are unsupported. */
-    if ((UINT32_T)channel > (UINT32_T)TUYA_AUDIO_DAC_CHANNEL_1) {
+    /* This SoC exposes L/R as CHANNEL_0/1 only. The enum is a bitmap now
+     * (CHANNEL_n == BIT(n)), so an ordered "> CHANNEL_1" test would let values
+     * like 3 through - test membership instead. */
+    if ((channel != TUYA_AUDIO_DAC_CHANNEL_0) &&
+        (channel != TUYA_AUDIO_DAC_CHANNEL_1)) {
         return OPRT_INVALID_PARM;
     }
 
@@ -835,7 +863,7 @@ OPERATE_RET tkl_aud_dac_set_gain(TUYA_AUDIO_DAC_PORT_E port, TUYA_AUDIO_DAC_CHAN
  * @note Data is copied into the internal DMA ring buffer, so the caller must
  *       ensure that enough free space is available for the requested length.
  */
-OPERATE_RET tkl_aud_dac_write(TUYA_AUDIO_DAC_PORT_E port, UINT8_T *buffer, UINT32_T len)
+OPERATE_RET tkl_aud_dac_write(TUYA_AUDIO_DAC_PORT_E port, CONST UINT8_T *buffer, UINT32_T len)
 {
     UINT32_T write_len;
     UINT32_T free_len;
@@ -855,7 +883,8 @@ OPERATE_RET tkl_aud_dac_write(TUYA_AUDIO_DAC_PORT_E port, UINT8_T *buffer, UINT3
         return OPRT_OS_ADAPTER_DAC_BUSY;
     }
 
-    write_len = ring_buffer_write(&gl_dac_ctx->spk_rb, buffer, len);
+    /* ring_buffer_write takes a mutable pointer but only reads it. */
+    write_len = ring_buffer_write(&gl_dac_ctx->spk_rb, (uint8_t *)(uintptr_t)buffer, len);
     if (write_len != len) {
         TKL_DAC_LOG("ring_buffer_write error %d, expect %d\n", write_len, len);
         return OPRT_COM_ERROR;

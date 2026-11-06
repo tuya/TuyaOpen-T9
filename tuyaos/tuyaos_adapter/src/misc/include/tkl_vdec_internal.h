@@ -70,14 +70,14 @@ typedef struct {
     };
 } TUYA_VDEC_SINK_T;
 
-OPERATE_RET tkl_vdec_init(TUYA_VDEC_HANDLE *handle, const TUYA_VDEC_CFG_T *config);
-OPERATE_RET tkl_vdec_deinit(TUYA_VDEC_HANDLE handle);
-OPERATE_RET tkl_vdec_set_sink(TUYA_VDEC_HANDLE handle, const TUYA_VDEC_SINK_T *sink);
-OPERATE_RET tkl_vdec_set_pp(TUYA_VDEC_HANDLE handle, const TUYA_VDEC_PP_T *pp);
-OPERATE_RET tkl_vdec_start(TUYA_VDEC_HANDLE handle);
-OPERATE_RET tkl_vdec_stop(TUYA_VDEC_HANDLE handle);
-OPERATE_RET tkl_vdec_reset(TUYA_VDEC_HANDLE handle);
-OPERATE_RET tkl_vdec_submit_stream(TUYA_VDEC_HANDLE handle, const TUYA_VCODEC_STREAM_T *stream);
+OPERATE_RET __t9_vdec_init(TUYA_VDEC_HANDLE *handle, const TUYA_VDEC_CFG_T *config);
+OPERATE_RET __t9_vdec_deinit(TUYA_VDEC_HANDLE handle);
+OPERATE_RET __t9_vdec_set_sink(TUYA_VDEC_HANDLE handle, const TUYA_VDEC_SINK_T *sink);
+OPERATE_RET __t9_vdec_set_pp(TUYA_VDEC_HANDLE handle, const TUYA_VDEC_PP_T *pp);
+OPERATE_RET __t9_vdec_start(TUYA_VDEC_HANDLE handle);
+OPERATE_RET __t9_vdec_stop(TUYA_VDEC_HANDLE handle);
+OPERATE_RET __t9_vdec_reset(TUYA_VDEC_HANDLE handle);
+OPERATE_RET __t9_vdec_submit_stream(TUYA_VDEC_HANDLE handle, const TUYA_VCODEC_STREAM_T *stream);
 /**
  * @brief Bytes one decoded picture from this stream will need.
  *
@@ -92,11 +92,11 @@ OPERATE_RET tkl_vdec_submit_stream(TUYA_VDEC_HANDLE handle, const TUYA_VCODEC_ST
  *
  * @return OPRT_OK on success. Others on error, please refer to tuya_error_code.h
  */
-OPERATE_RET tkl_vdec_get_frame_size(TUYA_VDEC_HANDLE handle,
+OPERATE_RET __t9_vdec_get_frame_size(TUYA_VDEC_HANDLE handle,
                                     const TUYA_VCODEC_STREAM_T *stream,
                                     UINT32_T *size);
-OPERATE_RET tkl_vdec_get_handle(TUYA_VDEC_HANDLE handle, VOID **backend_handle);
-OPERATE_RET tkl_vdec_get_flexa_source(TUYA_VDEC_HANDLE handle, TUYA_VCODEC_FLEXA_BUFFER_T *flexa);
+OPERATE_RET __t9_vdec_get_handle(TUYA_VDEC_HANDLE handle, VOID **backend_handle);
+OPERATE_RET __t9_vdec_get_flexa_source(TUYA_VDEC_HANDLE handle, TUYA_VCODEC_FLEXA_BUFFER_T *flexa);
 
 #ifdef __cplusplus
 }

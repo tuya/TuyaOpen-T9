@@ -9,7 +9,6 @@
 #define __TKL_MIPI_CSI_H__
 
 #include "tuya_cloud_types.h"
-#include "tkl_media_types.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -21,13 +20,13 @@ extern "C" {
  *
  *   sensor -> ISP
  *   |
- *   +-- SP (frame mode) -------> ch1   complete frames         get_frame / cb
+ *   +-- secondary path (SP) ----> ch1   complete frames    get_frame / cb
  *   |
- *   \-- MP (NV12, flexa ring) -> ch0   complete MP frames      get_frame / cb
+ *   \-- main path (MP, NV12) ---> ch0   complete frames    get_frame / cb
  *       |
- *       +-- GPU ---------------> ch2   display frames          cb required
+ *       +-- display pipeline ---> ch2   display frames     cb required
  *       |
- *       \-- vcenc -------------> ch3   H264 bitstream          cb required
+ *       \-- H.264 encoder ------> ch3   H.264 bitstream    cb required
  *
  * ------------------------------------------------------------------------- */
 
@@ -53,10 +52,10 @@ typedef struct {
     TUYA_MEDIA_OUTPUT_CFG_T     *outputs;
     TUYA_CAMERA_EVENT_CB event_cb;
     VOID_T           *event_arg;
-} TUYA_MIPI_CSI_CFG_T;
+} TUYA_MIPI_CSI_BASE_CFG_T;
 
 /** Initialize the sensor and pipelines; no output is produced until start(). */
-OPERATE_RET tkl_mipi_csi_init(CONST TUYA_MIPI_CSI_CFG_T *cfg);
+OPERATE_RET tkl_mipi_csi_init(CONST TUYA_MIPI_CSI_BASE_CFG_T *cfg);
 
 /** Start all enabled outputs. Idempotent after init(). */
 OPERATE_RET tkl_mipi_csi_start(VOID_T);

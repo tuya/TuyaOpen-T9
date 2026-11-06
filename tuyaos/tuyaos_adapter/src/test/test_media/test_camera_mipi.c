@@ -26,6 +26,7 @@
 #include "tkl_mipi_csi.h"
 #include "tkl_fs.h"
 #include "tkl_media_buf.h"
+#include "tkl_media_fmt.h"
 #include "tkl_memory.h"
 #include "tkl_mipi_dsi.h"
 #include "tkl_output.h"
@@ -290,7 +291,7 @@ extern BOOL_T test_mipi_lcd_is_open(void);
  * @brief Copy out the next H264 I frame the encoder produces.
  *
  * @param[out] buf        receives a freshly allocated copy; caller releases it
- *                        with tkl_media_buf_free(TUYA_MEDIA_BUF_OWNER_TEST, ...),
+ *                        with __t9_media_buf_free(TUYA_MEDIA_BUF_OWNER_TEST, ...),
  *                        which is what test_image.c's test_image_buf_free() does
  * @param[out] len        receives the byte count
  * @param[in]  timeout_ms how long to wait for an I frame
@@ -347,7 +348,7 @@ OPERATE_RET test_camera_capture_h264_i(UINT8_T **buf, UINT32_T *len, UINT32_T ti
     }
 
     /* The callback's copy is handed straight over - no second copy, and the
-     * caller releases it with tkl_media_buf_free(TUYA_MEDIA_BUF_OWNER_TEST, ..),
+     * caller releases it with __t9_media_buf_free(TUYA_MEDIA_BUF_OWNER_TEST, ..),
      * which is what test_image.c's test_image_buf_free() does. */
     *buf = s_cam_idr_buf;
     *len = s_cam_idr_len;
@@ -515,7 +516,7 @@ static VOID_T test_cam_stream_cb(CONST TUYA_MEDIA_BUF_T *buf)
      * sizing the copy from the frame itself is the only way to never drop one. */
     if (s_cam_idr_want != 0U && s_cam_idr_ready == 0U &&
         buf->format == TUYA_FRAME_FMT_H264_I) {
-        UINT8_T *copy = (UINT8_T *)tkl_media_buf_alloc(TKL_BUF_USE_STREAM,
+        UINT8_T *copy = (UINT8_T *)__t9_media_buf_alloc(TKL_BUF_USE_STREAM,
                                                        buf->length,
                                                        TUYA_MEDIA_BUF_OWNER_TEST);
 
@@ -672,7 +673,7 @@ static uint32_t test_cam_fmt_size(uint32_t fmt, uint16_t w, uint16_t h)
 static OPERATE_RET test_cam_open(uint32_t mp_kinds, uint16_t mp_w, uint16_t mp_h,
                                  uint32_t sp_fmt, uint16_t sp_w, uint16_t sp_h)
 {
-    TUYA_MIPI_CSI_CFG_T cfg;
+    TUYA_MIPI_CSI_BASE_CFG_T cfg;
     /* cfg.outputs points here; tkl_mipi_csi_init() deep-copies the array */
     TUYA_MEDIA_OUTPUT_CFG_T outputs[3];
     UINT8_T output_num = 0U;
@@ -682,12 +683,6 @@ static OPERATE_RET test_cam_open(uint32_t mp_kinds, uint16_t mp_w, uint16_t mp_h
         tkl_log_output("xmipi cam already open, close first\r\n");
         return OPRT_RESOURCE_NOT_READY;
     }
-
-    /* Before anything can allocate a pixel buffer. Every sequence that worked
-     * so far happened to start with "xmipi dsi open_gpu", which brings the slab
-     * heaps up as a side effect; "xmipi cam open frame" needs no panel and asserted
-     * with "type:1 not init" without this. */
-    tkl_media_buf_init();
 
     os_memset(&s_cam, 0, sizeof(s_cam));
     os_memset(&cfg, 0, sizeof(cfg));
@@ -741,7 +736,7 @@ static OPERATE_RET test_cam_open(uint32_t mp_kinds, uint16_t mp_w, uint16_t mp_h
 
     if ((mp_kinds & CAM_KIND_CH2) != 0U) {
         outputs[output_num].channel = TUYA_CAMERA_FRAME_CHANNEL_2;
-        outputs[output_num].rotate = s_cam_rotate;
+        outputs[output_num].rotate = __t9_rotate_from_deg(s_cam_rotate);
         outputs[output_num].width = mp_w;
         outputs[output_num].height = mp_h;
         outputs[output_num].format = TUYA_FRAME_FMT_ARGB8888;
@@ -940,7 +935,7 @@ static VOID_T test_cam_pip_clear(VOID_T)
     }
     osd.w = s_cam_pip.w;
     osd.h = s_cam_pip.h;
-    osd.rotate = s_cam_pip.rotate;
+    osd.rotate = __t9_rotate_from_deg(s_cam_pip.rotate);
     osd.data = NULL;
 
     (void)tkl_mipi_csi_set_osd(TUYA_CAMERA_FRAME_CHANNEL_2, &osd);
@@ -996,7 +991,7 @@ static VOID_T test_cam_pip_task(VOID_T *arg)
             }
             osd.w = frame->width;
             osd.h = frame->height;
-            osd.rotate = s_cam_pip.rotate;
+            osd.rotate = __t9_rotate_from_deg(s_cam_pip.rotate);
             osd.format = (UINT32_T)TUYA_FRAME_FMT_NV12;
             osd.data = frame->buffer;
             t0 = (UINT32_T)tkl_system_get_millisecond();
@@ -1333,7 +1328,7 @@ static OPERATE_RET test_cam_osd_submit(CONST CHAR_T *text, VOID_T *arg)
     }
     osd.w = TEST_OSD_CLOCK_BITMAP_W;
     osd.h = TEST_OSD_CLOCK_BITMAP_H;
-    osd.rotate = s_cam_osd_rotate;
+    osd.rotate = __t9_rotate_from_deg(s_cam_osd_rotate);
     osd.data = test_osd_clock_bitmap(&osd.w, &osd.h);
     if (osd.data == NULL) {
         return OPRT_MALLOC_FAILED;
@@ -1431,7 +1426,7 @@ static OPERATE_RET test_cam_osd_wifi(TUYA_CAMERA_FRAME_CHANNEL_E channel, UINT8_
         osd.dst_y = 72U;
     }
 
-    osd.rotate = 0U;
+    osd.rotate = TUYA_FRAME_ROTATE_0;
     return tkl_mipi_csi_set_osd(channel, &osd);
 }
 

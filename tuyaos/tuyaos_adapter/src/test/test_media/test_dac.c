@@ -117,8 +117,8 @@ static INT32_T test_dac_parse_int(CONST CHAR_T *s)
 /**
  * @brief Apply dig/ana gain via tkl_aud_dac_set_gain
  * @param[in] channel TUYA_AUDIO_DAC_CHANNEL_0/1 (L/R; OEM dig still sets both)
- * @param[in] dig_db digital gain in dB, or AUDIA_DAC_INVALID_GAIN_VALUE to keep
- * @param[in] ana_db analog gain in dB, or AUDIA_DAC_INVALID_GAIN_VALUE to keep
+ * @param[in] dig_db digital gain in dB, or AUDIO_DAC_INVALID_GAIN_VALUE to keep
+ * @param[in] ana_db analog gain in dB, or AUDIO_DAC_INVALID_GAIN_VALUE to keep
  * @return OPRT_OK on success
  */
 static OPERATE_RET test_dac_set_gain(TUYA_AUDIO_DAC_CHANNEL_E channel, INT32_T dig_db, INT32_T ana_db)
@@ -134,10 +134,10 @@ static OPERATE_RET test_dac_set_gain(TUYA_AUDIO_DAC_CHANNEL_E channel, INT32_T d
     gain[1] = ana_db;
     ret = tkl_aud_dac_set_gain(s_dac_ctx.port, channel, gain, DAC_TEST_GAIN_NUM);
     if (ret == OPRT_OK) {
-        if ((UINT32_T)dig_db != (UINT32_T)AUDIA_DAC_INVALID_GAIN_VALUE) {
+        if ((UINT32_T)dig_db != (UINT32_T)AUDIO_DAC_INVALID_GAIN_VALUE) {
             s_dac_ctx.dig_db = dig_db;
         }
-        if ((UINT32_T)ana_db != (UINT32_T)AUDIA_DAC_INVALID_GAIN_VALUE) {
+        if ((UINT32_T)ana_db != (UINT32_T)AUDIO_DAC_INVALID_GAIN_VALUE) {
             s_dac_ctx.ana_db = ana_db;
         }
     }
@@ -181,7 +181,7 @@ static OPERATE_RET test_dac_init(uint32_t sample_rate, uint32_t frame_time_ms,
                                  INT32_T dig_db, INT32_T ana_db, uint8_t chan_num)
 {
     OPERATE_RET ret;
-    TKL_AUD_DAC_CFG_T cfg;
+    TUYA_AUDIO_DAC_BASE_CFG_T cfg;
     uint32_t retry = 0U;
 
     if (sample_rate == 0U || frame_time_ms == 0U) {
@@ -206,7 +206,10 @@ static OPERATE_RET test_dac_init(uint32_t sample_rate, uint32_t frame_time_ms,
     }
 
     os_memset(&cfg, 0, sizeof(cfg));
-    cfg.chan_num = chan_num;
+    cfg.dac_chan = (chan_num == 2U)
+                 ? (TUYA_AUDIO_DAC_CHANNEL_E)((UINT32_T)TUYA_AUDIO_DAC_CHANNEL_0 |
+                                              (UINT32_T)TUYA_AUDIO_DAC_CHANNEL_1)
+                 : TUYA_AUDIO_DAC_CHANNEL_0;
     cfg.sample_bits = DAC_TEST_DEFAULT_SAMPLE_BITS;
     cfg.sample_rate = sample_rate;
     cfg.frame_time_ms = frame_time_ms;
@@ -719,34 +722,36 @@ void cli_tuya_dac_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char *
         if (argc < 3) {
             snprintf(pcWriteBuffer, xWriteBufferLen,
                      "Usage: xdac gain <dig_db|x> [ana_db|x] [ch 0|1]\r\n"
-                     "  x = keep (AUDIA_DAC_INVALID_GAIN_VALUE)\r\n");
+                     "  x = keep (AUDIO_DAC_INVALID_GAIN_VALUE)\r\n");
             return;
         }
         if ((argv[2][0] == 'x' || argv[2][0] == 'X') && argv[2][1] == '\0') {
             dig_keep = TRUE;
-            dig_db = (INT32_T)AUDIA_DAC_INVALID_GAIN_VALUE;
+            dig_db = (INT32_T)AUDIO_DAC_INVALID_GAIN_VALUE;
         } else {
             dig_db = test_dac_parse_int(argv[2]);
         }
         if (argc >= 4) {
             if ((argv[3][0] == 'x' || argv[3][0] == 'X') && argv[3][1] == '\0') {
                 ana_keep = TRUE;
-                ana_db = (INT32_T)AUDIA_DAC_INVALID_GAIN_VALUE;
+                ana_db = (INT32_T)AUDIO_DAC_INVALID_GAIN_VALUE;
             } else {
                 ana_db = test_dac_parse_int(argv[3]);
             }
         } else {
             ana_keep = TRUE;
-            ana_db = (INT32_T)AUDIA_DAC_INVALID_GAIN_VALUE;
+            ana_db = (INT32_T)AUDIO_DAC_INVALID_GAIN_VALUE;
         }
         if (argc >= 5) {
             UINT32_T ch_u = (UINT32_T)test_dac_parse_int(argv[4]);
-            if (ch_u > (UINT32_T)TUYA_AUDIO_DAC_CHANNEL_1) {
+            /* The CLI takes a 0|1 index; TUYA_AUDIO_DAC_CHANNEL_E is a bitmap
+             * now (CHANNEL_n == BIT(n)), so map instead of casting. */
+            if (ch_u > 1U) {
                 snprintf(pcWriteBuffer, xWriteBufferLen,
                          "xdac gain failed: ch must be 0|1\r\n");
                 return;
             }
-            ch = (TUYA_AUDIO_DAC_CHANNEL_E)ch_u;
+            ch = (ch_u == 0U) ? TUYA_AUDIO_DAC_CHANNEL_0 : TUYA_AUDIO_DAC_CHANNEL_1;
         }
 
         ret = test_dac_set_gain(ch, dig_db, ana_db);
@@ -754,7 +759,7 @@ void cli_tuya_dac_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char *
                  "xdac gain %s (%d), ch=%u dig=%s%d ana=%s%d\r\n",
                  (ret == OPRT_OK) ? "ok" : "failed",
                  ret,
-                 (unsigned int)ch,
+                 (unsigned int)((ch == TUYA_AUDIO_DAC_CHANNEL_0) ? 0U : 1U),
                  (dig_keep == TRUE) ? "keep/" : "",
                  (dig_keep == TRUE) ? (int)s_dac_ctx.dig_db : (int)dig_db,
                  (ana_keep == TRUE) ? "keep/" : "",

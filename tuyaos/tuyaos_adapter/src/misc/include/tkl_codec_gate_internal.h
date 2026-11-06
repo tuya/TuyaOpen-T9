@@ -64,7 +64,7 @@ typedef enum {
  *         held by someone else and was not released within @p timeout_ms;
  *         OPRT_INVALID_PARM for a @p which outside the enum
  */
-OPERATE_RET tkl_codec_gate_acquire(TKL_CODEC_GATE_E which, UINT32_T timeout_ms);
+OPERATE_RET __t9_codec_gate_acquire(TKL_CODEC_GATE_E which, UINT32_T timeout_ms);
 
 /**
  * @brief Release one codec core.
@@ -72,14 +72,14 @@ OPERATE_RET tkl_codec_gate_acquire(TKL_CODEC_GATE_E which, UINT32_T timeout_ms);
  * @note Only the owner may call this, and exactly once per acquire().
  *       A @p which outside the enum is ignored.
  */
-VOID_T tkl_codec_gate_release(TKL_CODEC_GATE_E which);
+VOID_T __t9_codec_gate_release(TKL_CODEC_GATE_E which);
 
 /**
  * @brief Whether some session currently holds a codec core.
  *
  * @return TRUE when held, FALSE otherwise (including an out-of-range @p which)
  */
-BOOL_T tkl_codec_gate_is_busy(TKL_CODEC_GATE_E which);
+BOOL_T __t9_codec_gate_is_busy(TKL_CODEC_GATE_E which);
 
 #ifdef __cplusplus
 }

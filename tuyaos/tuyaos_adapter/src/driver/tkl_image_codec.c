@@ -124,7 +124,7 @@ STATIC UINT32_T tkl_image_codec_need_size(TUYA_FRAME_FMT_E format, UINT16_T widt
         return (UINT32_T)width * height * 2U;
     }
 
-    return tkl_pp_output_size(tkl_media_fmt_to_bk(format), width, height);
+    return __t9_pp_output_size(__t9_media_fmt_to_bk(format), width, height);
 }
 
 /* ---------------------------------------------------------------------------
@@ -334,11 +334,11 @@ STATIC OPERATE_RET tkl_image_codec_decode_one(CONST TUYA_IMAGE_CODEC_BUF_T *in, 
      * stream holds it for its whole session - so this decode has to run
      * somewhere else. See tkl_codec_gate_internal.h for why "wait and take turns"
      * is not an option here. */
-    if (tkl_codec_gate_acquire(TKL_CODEC_GATE_DEC, 0U) != OPRT_OK) {
+    if (__t9_codec_gate_acquire(TKL_CODEC_GATE_DEC, 0U) != OPRT_OK) {
         return tkl_image_codec_decode_sw(in, out);
     }
 
-    bk_fmt = tkl_media_fmt_to_bk(out->format);
+    bk_fmt = __t9_media_fmt_to_bk(out->format);
     need_size = tkl_image_codec_need_size(out->format, out->width, out->height);
 
     os_memset(&cfg, 0, sizeof(cfg));
@@ -369,12 +369,12 @@ STATIC OPERATE_RET tkl_image_codec_decode_one(CONST TUYA_IMAGE_CODEC_BUF_T *in, 
 
     if (ret != AVDK_ERR_OK) {
         tkl_log_output("tkl_image: jpeg decode failed: %d\r\n", ret);
-        tkl_codec_gate_release(TKL_CODEC_GATE_DEC);
+        __t9_codec_gate_release(TKL_CODEC_GATE_DEC);
         return tkl_image_codec_map_err(ret);
     }
 
     out->length = need_size;
-    tkl_codec_gate_release(TKL_CODEC_GATE_DEC);
+    __t9_codec_gate_release(TKL_CODEC_GATE_DEC);
     return OPRT_OK;
 }
 
@@ -542,7 +542,7 @@ STATIC OPERATE_RET tkl_image_codec_decode_h264(CONST TUYA_IMAGE_CODEC_BUF_T *in,
 
     /* Sized before anything touches the hardware: the vendor's own check uses
      * bk_decode_pp_output_size(), which accepts a number too small for the PP
-     * DMA (see tkl_pp_output_size). */
+     * DMA (see __t9_pp_output_size). */
     need_size = tkl_image_codec_need_size(out->format, out->width, out->height);
     if (need_size == 0U || out->length < need_size) {
         tkl_log_output("tkl_image: h264 out buffer %u < %u needed\r\n",
@@ -558,12 +558,12 @@ STATIC OPERATE_RET tkl_image_codec_decode_h264(CONST TUYA_IMAGE_CODEC_BUF_T *in,
         return OPRT_INVALID_PARM;
     }
 
-    if (tkl_codec_gate_acquire(TKL_CODEC_GATE_DEC, 0U) != OPRT_OK) {
+    if (__t9_codec_gate_acquire(TKL_CODEC_GATE_DEC, 0U) != OPRT_OK) {
         tkl_log_output("tkl_image: h264 decode refused, decode core busy\r\n");
         return OPRT_TIMEOUT;
     }
 
-    bk_fmt = tkl_media_fmt_to_bk(out->format);
+    bk_fmt = __t9_media_fmt_to_bk(out->format);
 
     os_memset(&cfg, 0, sizeof(cfg));
     cfg.timeout_ms = TUYA_IMAGE_CODEC_DECODE_TIMEOUT_MS;
@@ -591,7 +591,7 @@ STATIC OPERATE_RET tkl_image_codec_decode_h264(CONST TUYA_IMAGE_CODEC_BUF_T *in,
         (void)bk_h264_decode_delete(handle);
     }
 
-    tkl_codec_gate_release(TKL_CODEC_GATE_DEC);
+    __t9_codec_gate_release(TKL_CODEC_GATE_DEC);
 
     if (ret != AVDK_ERR_OK) {
         tkl_log_output("tkl_image: h264 decode failed: %d\r\n", (INT_T)ret);
@@ -696,7 +696,7 @@ STATIC OPERATE_RET tkl_image_codec_decode_pixels(CONST TUYA_IMAGE_CODEC_BUF_T *i
         return OPRT_COM_ERROR;
     }
 
-    tmp = (UINT8_T *)tkl_media_buf_alloc(TKL_BUF_USE_PIXEL, tmp_size,
+    tmp = (UINT8_T *)__t9_media_buf_alloc(TKL_BUF_USE_PIXEL, tmp_size,
                                          TUYA_MEDIA_BUF_OWNER_IMAGE);
     if (tmp == NULL) {
         tkl_log_output("tkl_image: decode needs %u bytes for the %ux%u native "
@@ -716,14 +716,14 @@ STATIC OPERATE_RET tkl_image_codec_decode_pixels(CONST TUYA_IMAGE_CODEC_BUF_T *i
 
     ret = tkl_image_codec_decode_one(in, &native);
     if (ret != OPRT_OK) {
-        tkl_media_buf_free(TUYA_MEDIA_BUF_OWNER_IMAGE, tmp);
+        __t9_media_buf_free(TUYA_MEDIA_BUF_OWNER_IMAGE, tmp);
         return ret;
     }
 
     if (yuv_src == FALSE) {
         /* 4:2:0 native NV12 in hand - straight to the scale/convert leg. */
         ret = tkl_image_codec_scale_convert(&native, out);
-        tkl_media_buf_free(TUYA_MEDIA_BUF_OWNER_IMAGE, tmp);
+        __t9_media_buf_free(TUYA_MEDIA_BUF_OWNER_IMAGE, tmp);
         return ret;
     }
 
@@ -736,7 +736,7 @@ STATIC OPERATE_RET tkl_image_codec_decode_pixels(CONST TUYA_IMAGE_CODEC_BUF_T *i
          * does not resize) - native geometry only. */
         if (out->width != info.width || out->height != info.height) {
             tkl_log_output("tkl_image: YUYV decode output cannot be scaled\r\n");
-            tkl_media_buf_free(TUYA_MEDIA_BUF_OWNER_IMAGE, tmp);
+            __t9_media_buf_free(TUYA_MEDIA_BUF_OWNER_IMAGE, tmp);
             return OPRT_NOT_SUPPORTED;
         }
         ret = tkl_image_codec_nv16_to_yuyv(info.width, info.height,
@@ -744,7 +744,7 @@ STATIC OPERATE_RET tkl_image_codec_decode_pixels(CONST TUYA_IMAGE_CODEC_BUF_T *i
         if (ret == OPRT_OK) {
             out->length = need_size;
         }
-        tkl_media_buf_free(TUYA_MEDIA_BUF_OWNER_IMAGE, tmp);
+        __t9_media_buf_free(TUYA_MEDIA_BUF_OWNER_IMAGE, tmp);
         return ret;
     }
     if (out->format == (UINT32_T)TUYA_FRAME_FMT_NV12 &&
@@ -754,19 +754,19 @@ STATIC OPERATE_RET tkl_image_codec_decode_pixels(CONST TUYA_IMAGE_CODEC_BUF_T *i
         if (ret == OPRT_OK) {
             out->length = need_size;
         }
-        tkl_media_buf_free(TUYA_MEDIA_BUF_OWNER_IMAGE, tmp);
+        __t9_media_buf_free(TUYA_MEDIA_BUF_OWNER_IMAGE, tmp);
         return ret;
     }
 
     tmp_size = tkl_image_codec_need_size((UINT32_T)TUYA_FRAME_FMT_NV12,
                                    info.width, info.height);
-    tmp_nv12 = (UINT8_T *)tkl_media_buf_alloc(TKL_BUF_USE_PIXEL, tmp_size,
+    tmp_nv12 = (UINT8_T *)__t9_media_buf_alloc(TKL_BUF_USE_PIXEL, tmp_size,
                                               TUYA_MEDIA_BUF_OWNER_IMAGE);
     if (tmp_nv12 == NULL) {
         tkl_log_output("tkl_image: 4:2:2 decode needs %u bytes for the %ux%u "
                        "NV12 picture before scaling\r\n",
                        (unsigned int)tmp_size, info.width, info.height);
-        tkl_media_buf_free(TUYA_MEDIA_BUF_OWNER_IMAGE, tmp);
+        __t9_media_buf_free(TUYA_MEDIA_BUF_OWNER_IMAGE, tmp);
         return OPRT_MALLOC_FAILED;
     }
 
@@ -782,8 +782,8 @@ STATIC OPERATE_RET tkl_image_codec_decode_pixels(CONST TUYA_IMAGE_CODEC_BUF_T *i
         ret = tkl_image_codec_scale_convert(&native, out);
     }
 
-    tkl_media_buf_free(TUYA_MEDIA_BUF_OWNER_IMAGE, tmp_nv12);
-    tkl_media_buf_free(TUYA_MEDIA_BUF_OWNER_IMAGE, tmp);
+    __t9_media_buf_free(TUYA_MEDIA_BUF_OWNER_IMAGE, tmp_nv12);
+    __t9_media_buf_free(TUYA_MEDIA_BUF_OWNER_IMAGE, tmp);
     return ret;
 }
 
@@ -1092,7 +1092,7 @@ STATIC OPERATE_RET tkl_image_codec_encode_jpeg(CONST TUYA_IMAGE_CODEC_BUF_T *in,
         /* The software encoder is the only backend that takes YUYV, and it
          * reads YVYU byte order - hand it a swapped copy, the caller's buffer
          * stays untouched. */
-        packed = (UINT8_T *)tkl_media_buf_alloc(TKL_BUF_USE_PIXEL,
+        packed = (UINT8_T *)__t9_media_buf_alloc(TKL_BUF_USE_PIXEL,
                                                 y_plane_size * 2U,
                                                 TUYA_MEDIA_BUF_OWNER_IMAGE);
         if (packed == NULL) {
@@ -1106,7 +1106,7 @@ STATIC OPERATE_RET tkl_image_codec_encode_jpeg(CONST TUYA_IMAGE_CODEC_BUF_T *in,
             ret = tkl_image_codec_jpeg_encode_run(TRUE, in->width, in->height,
                                             packed, quality, out);
         }
-        tkl_media_buf_free(TUYA_MEDIA_BUF_OWNER_IMAGE, packed);
+        __t9_media_buf_free(TUYA_MEDIA_BUF_OWNER_IMAGE, packed);
         return ret;
     }
 
@@ -1197,7 +1197,7 @@ STATIC OPERATE_RET tkl_image_codec_scale_convert(CONST TUYA_IMAGE_CODEC_BUF_T *i
             return ret;
         }
     } else {
-        ret = tkl_pp_open(0U, &pp);
+        ret = __t9_pp_open(0U, &pp);
         if (ret != OPRT_OK) {
             return ret;
         }
@@ -1213,10 +1213,10 @@ STATIC OPERATE_RET tkl_image_codec_scale_convert(CONST TUYA_IMAGE_CODEC_BUF_T *i
         pp_out.size = out->length;
         pp_out.width = out->width;
         pp_out.height = out->height;
-        pp_out.format = tkl_media_fmt_to_bk(out->format);
+        pp_out.format = __t9_media_fmt_to_bk(out->format);
 
-        ret = tkl_pp_process(pp, &pp_in, &pp_out);
-        (void)tkl_pp_close(pp);
+        ret = __t9_pp_process(pp, &pp_in, &pp_out);
+        (void)__t9_pp_close(pp);
         if (ret != OPRT_OK) {
             return ret;
         }
@@ -1237,6 +1237,10 @@ OPERATE_RET tkl_image_codec_convert(CONST TUYA_IMAGE_CODEC_BUF_T *in, TUYA_IMAGE
         out->buffer == NULL || out->length == 0U) {
         return OPRT_INVALID_PARM;
     }
+
+    /* Standalone entry: a caller may run convert() without ever touching the
+     * camera, so the media pool is not necessarily up yet. */
+    __t9_media_buf_init();
 
     if (in->format == (UINT32_T)TUYA_FRAME_FMT_H264 ||
         in->format == (UINT32_T)TUYA_FRAME_FMT_H264_I) {

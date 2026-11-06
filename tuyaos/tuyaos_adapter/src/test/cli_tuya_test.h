@@ -89,6 +89,8 @@ void cli_tuya_image_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char
 void cli_tuya_mipi_cam_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv);
 // void cli_xmbedtls_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv);
 // void cli_xplat_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv);
+/* TKL security self-test: body in test_tkl_security.c; xsecurity <sha|aes|gcm|rsa|all> */
+// void cli_tuya_security_cmd(char *pcWriteBuffer, int xWriteBufferLen, int argc, char **argv);
 #endif // CONFIG_SYS_CPU1
 
 #endif /* !CLI_TUYA_TEST_H */

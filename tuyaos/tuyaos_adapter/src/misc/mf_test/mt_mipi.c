@@ -81,13 +81,13 @@ STATIC CONST UINT32_T s_prbs7_data[127] = {
 /**
  * @brief Bring the frame-buffer slab heaps up before any UNCODED allocation.
  * @return none
- * @note Routed through tkl_media_buf_init(): bk_frame_buffer_init() is
+ * @note Routed through __t9_media_buf_init(): bk_frame_buffer_init() is
  *       destructive and cannot be asked whether the heaps are already up, so
  *       one guard has to own it.
  */
 STATIC VOID_T __mt_mipi_frame_buffer_init_once(VOID_T)
 {
-    tkl_media_buf_init();
+    __t9_media_buf_init();
 }
 
 /**

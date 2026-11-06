@@ -64,7 +64,7 @@ extern BOOL_T test_mipi_lcd_is_open(void);
 #define UVC_OUT_LOG_INTERVAL   30U
 /* Panel geometry for xuvc open display, matching what xmipi dsi open_gpu sets
  * up; the facade scales and rotates the decoded picture into it. */
-#define UVC_OUT_DISPLAY_ROTATE 90U
+#define UVC_OUT_DISPLAY_ROTATE TUYA_FRAME_ROTATE_90
 #define UVC_OUT_DISPLAY_W      640U
 #define UVC_OUT_DISPLAY_H      1024U
 #define UVC_OUT_ENCODE_GOP     40
@@ -396,7 +396,7 @@ static OPERATE_RET test_uvc_osd_submit(CONST CHAR_T *text, VOID_T *arg)
         osd.dst_x = 2U;
         osd.dst_y = 2U;
     }
-    osd.rotate = 0U;
+    osd.rotate = TUYA_FRAME_ROTATE_0;
     osd.data = test_osd_clock_bitmap(&osd.w, &osd.h);
     if (osd.data == NULL) {
         return OPRT_MALLOC_FAILED;
@@ -493,7 +493,7 @@ static OPERATE_RET test_uvc_osd_wifi(TUYA_CAMERA_FRAME_CHANNEL_E channel, UINT8_
         osd.dst_y = 72U;
     }
 
-    osd.rotate = 0U;
+    osd.rotate = TUYA_FRAME_ROTATE_0;
     return tkl_uvc_set_osd(channel, &osd);
 }
 
@@ -554,20 +554,13 @@ static OPERATE_RET test_uvc_out_open(uint32_t kind,
                                      uint8_t port)
 {
     TUYA_MEDIA_OUTPUT_CFG_T outputs[4];
-    TUYA_UVC_CFG_T cfg;
+    TUYA_UVC_BASE_CFG_T cfg;
     UINT8_T output_num = 0U;
     OPERATE_RET ret;
 
     if (s_uvc_out_t.opened == true) {
         return OPRT_RESOURCE_NOT_READY;
     }
-
-    /* Before anything can allocate. The slab heaps are only up if some earlier
-     * command happened to bring them up - "xmipi dsi open_gpu" does it as a side
-     * effect - and xuvc needs neither a panel nor a camera, so without this the
-     * first pool allocation asserts with "type:0 not init". Same call, same
-     * reason, as test_camera.c's xmipi cam open. */
-    tkl_media_buf_init();
 
     os_memset(&s_uvc_out_t, 0, sizeof(s_uvc_out_t));
     s_uvc_out_t.kind = kind;

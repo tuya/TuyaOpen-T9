@@ -14,24 +14,12 @@
 #include <os/mem.h>
 
 #define CONFIG_HAVE_PSRAM 1
-#define CONFIG_HAVE_HSRAM 1
 extern VOID_T *tkl_system_calloc(size_t nitems, size_t size);
 extern VOID_T *tkl_system_realloc(VOID_T* ptr, size_t size);
 extern VOID_T *tkl_system_psram_malloc(CONST SIZE_T size);
 extern VOID_T tkl_system_psram_free(VOID_T* ptr);
 
 extern void bk_printf(const char *fmt, ...);
-
-STATIC BOOL_T s_psram_malloc_force = FALSE;
-VOID_T tkl_system_psram_malloc_force_set(BOOL_T enable)
-{
-    s_psram_malloc_force = enable;
-}
-
-BOOL_T tkl_system_psram_malloc_force_get(VOID_T)
-{
-    return s_psram_malloc_force;
-}
 
 /**
  * @brief Alloc memory of system
@@ -49,14 +37,10 @@ VOID_T* tkl_system_malloc(CONST SIZE_T size)
     // }
 
     VOID_T* ptr = NULL;
-    if (s_psram_malloc_force) {
-        ptr = tkl_system_psram_malloc(size);
-    } else {
-        ptr = hsram_malloc(size);
-        if (NULL == ptr) {
-            bk_printf("tkl_system_malloc failed, size(%d), remain %d, use os_malloc\r\n", size, tkl_system_hsram_get_free_heap_size());
-            ptr = os_malloc(size);
-        }
+    ptr = hsram_malloc(size);
+    if (NULL == ptr) {
+        bk_printf("tkl_system_malloc failed, size(%d), remain %d, use os_malloc\r\n", size, xPortGetHsramFreeHeapSize());
+        ptr = os_malloc(size);
     }
 
     if(NULL == ptr) {
@@ -79,11 +63,7 @@ VOID_T* tkl_system_malloc(CONST SIZE_T size)
  */
 VOID_T tkl_system_free(VOID_T* ptr)
 {
-    if (s_psram_malloc_force) {
-        tkl_system_psram_free(ptr);
-    } else {
-        os_free(ptr);
-    }
+    os_free(ptr);
 }
 
 /**
@@ -124,26 +104,16 @@ VOID_T *tkl_system_calloc(size_t nitems, size_t size)
 {
     void *ptr = NULL;
 
-    if (s_psram_malloc_force) {
-        if (size && nitems > (~(size_t) 0) / size)
-            return NULL;
+    if (size && nitems > (~(size_t) 0) / size)
+        return NULL;
 
-        ptr = psram_zalloc(nitems * size);
-        if (ptr == NULL) {
-            bk_printf("tkl_system_calloc failed, total_size(%d)! nitems = %d size = %d\r\n", nitems * size,nitems,size);
-        }
-    } else {
-        if (size && nitems > (~(size_t) 0) / size)
-            return NULL;
-
-        ptr = hsram_zalloc(nitems * size);
-        if (NULL == ptr) {
-            bk_printf("tkl_system_calloc failed, total_size(%d)! nitems = %d size = %d, use os_zalloc\r\n", nitems * size,nitems,size);
-            ptr = os_zalloc(nitems * size);
-        }
-        if (ptr == NULL) {
-            bk_printf("tkl_system_calloc failed, total_size(%d)! nitems = %d size = %d\r\n", nitems * size,nitems,size);
-        }
+    ptr = hsram_zalloc(nitems * size);
+    if (NULL == ptr) {
+        bk_printf("tkl_system_calloc failed, total_size(%d)! nitems = %d size = %d, use os_zalloc\r\n", nitems * size,nitems,size);
+        ptr = os_zalloc(nitems * size);
+    }
+    if (ptr == NULL) {
+        bk_printf("tkl_system_calloc failed, total_size(%d)! nitems = %d size = %d\r\n", nitems * size,nitems,size);
     }
     return ptr;
 }
@@ -158,69 +128,14 @@ VOID_T *tkl_system_realloc(VOID_T* ptr, size_t size)
 {
     VOID_T *new_ptr;
 
-    if (s_psram_malloc_force) {
-        return bk_psram_realloc(ptr, size);
-    }
     new_ptr = hsram_realloc(ptr, size);
     if (NULL == new_ptr) {
         bk_printf("tkl_system_realloc failed, size(%d), remain %d, use os_realloc\r\n",
-                  size, tkl_system_hsram_get_free_heap_size());
+                  size, xPortGetHsramFreeHeapSize());
         new_ptr = os_realloc(ptr, size);
     }
 
     return new_ptr;
-}
-
-VOID_T* tkl_system_hsram_malloc(CONST SIZE_T size)
-{
-#ifdef CONFIG_HAVE_HSRAM
-    VOID_T *ptr = hsram_malloc(size);
-    if (NULL == ptr) {
-        bk_printf("tkl_hsram_malloc failed, size(%d), remain %d\r\n",
-                size, tkl_system_hsram_get_free_heap_size());
-    }
-    return ptr;
-#else
-    bk_printf("not support %s\r\n", __func__);
-    return NULL;
-#endif
-}
-
-VOID_T tkl_system_hsram_free(VOID_T* ptr)
-{
-#ifdef CONFIG_HAVE_HSRAM
-    hsram_free(ptr);
-#else
-    bk_printf("not support %s\r\n", __func__);
-#endif
-}
-
-VOID_T *tkl_system_hsram_calloc(size_t nitems, size_t size)
-{
-#ifdef CONFIG_HAVE_HSRAM
-    if (size && nitems > (~(size_t) 0) / size)
-        return NULL;
-
-    void *ptr = hsram_zalloc(nitems * size);
-    if (ptr == NULL) {
-        bk_printf("tkl_system_hsram_calloc failed, total_size(%d)! nitems = %d size = %d\r\n",
-                nitems * size, nitems, size);
-    }
-    return ptr;
-#else
-    bk_printf("not support %s\r\n", __func__);
-    return NULL;
-#endif
-}
-
-VOID_T *tkl_system_hsram_realloc(VOID_T* ptr, size_t size)
-{
-#ifdef CONFIG_HAVE_HSRAM
-    return hsram_realloc(ptr, size);
-#else
-    bk_printf("not support %s\r\n", __func__);
-    return NULL;
-#endif
 }
 
 /**
@@ -326,15 +241,3 @@ INT_T tkl_system_psram_get_free_heap_size(VOID_T)
     return 0;
 #endif // CONFIG_HAVE_PSRAM
 }
-
-INT_T tkl_system_hsram_get_free_heap_size(VOID_T)
-{
-#ifdef CONFIG_HAVE_HSRAM
-    return (INT_T)xPortGetHsramFreeHeapSize();
-#else
-    bk_printf("not support %s\r\n", __func__);
-    return 0;
-#endif
-}
-
-

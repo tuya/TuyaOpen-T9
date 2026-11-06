@@ -152,7 +152,7 @@ static bk_pixel_format_t face_test_get_model_input_format(const TUYA_MEDIA_BUF_T
         return BK_PIXEL_FORMAT_UNKNOW;
     }
 
-    bk_fmt = (bk_pixel_format_t)tkl_media_fmt_to_bk(frame->format);
+    bk_fmt = (bk_pixel_format_t)__t9_media_fmt_to_bk(frame->format);
 
     if ((bk_fmt == BK_PIXEL_FORMAT_RGB888 || bk_fmt == BK_PIXEL_FORMAT_BGR888) &&
         frame->size == FACE_TEST_FRAME_SIZE) {

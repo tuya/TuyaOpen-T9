@@ -1,8 +1,22 @@
+/**
+ * @file tkl_aud_adc.c
+ * @brief TKL audio analog (ADC) driver implementation
+ * @version 1.1
+ * @date 2026-10-21
+ * @copyright Copyright (c) Tuya Inc.
+ *
+ * On BK7259 (CONFIG_AUD_DRIVER_V2) the analog and digital mics share one FIFO
+ * and one GDMA channel. All of that - DMA, ring buffer, ISR, digmic_en and the
+ * per-lane gain store - lives in tkl_aud_capture.c, shared with
+ * tkl_aud_dmic.c. This file only keeps the public TKL surface.
+ */
 
 #include <common/bk_include.h>
 #include <os/os.h>
+#include <os/mem.h>
 #include <components/audio_param_ctrl.h>
 
+#if CONFIG_AUD_DRIVER_V2
 #include <driver/aud_adc_types.h>
 #include <driver/aud_adc.h>
 #include <driver/aud_common.h>
@@ -14,9 +28,19 @@
 
 #include "tuya_cloud_types.h"
 #include "tkl_aud_adc.h"
+#include "tkl_aud_capture.h"
+#else
+#include <driver/aud_adc_types.h>
+#include <driver/aud_adc.h>
+#include <driver/aud_common.h>
+#include <driver/dma.h>
+#include <driver/audio_ring_buff.h>
+#include <driver/flash.h>
+#include <driver/flash_types.h>
+#include <components/bk_audio/audio_pipeline/audio_mem.h>
 
-#ifndef TUYA_AUDIO_ADC_CHANNEL_MIC3
-#define TUYA_AUDIO_ADC_CHANNEL_MIC3   ((TUYA_AUDIO_ADC_CHAN_E)3)
+#include "tuya_cloud_types.h"
+#include "tkl_aud_adc.h"
 #endif
 
 extern void bk_printf(const char *fmt, ...);
@@ -24,6 +48,253 @@ extern void bk_printf(const char *fmt, ...);
 #define MODULE_LOG_HELPER(fmt, ...) \
     bk_printf(fmt, ##__VA_ARGS__)
 #define TKL_AUD_ADC_LOG(...) MODULE_LOG_HELPER(__VA_ARGS__)
+
+#define TKL_AUD_ADC_GAIN_NUM               (2U)         /* dig then ana */
+
+/* ===========================================================================
+ * CONFIG_AUD_DRIVER_V2: thin wrapper over the shared capture core
+ * =========================================================================== */
+#if CONFIG_AUD_DRIVER_V2
+
+/**
+ * @brief Check whether gain value means "do not change"
+ * @param[in] v gain value from caller
+ * @return TRUE if invalid/skip
+ */
+STATIC BOOL_T __tkl_aud_adc_gain_is_invalid(INT32_T v)
+{
+    return ((UINT32_T)v == (UINT32_T)AUDIO_ADC_INVALID_GAIN_VALUE) ? TRUE : FALSE;
+}
+
+/**
+ * @brief Whether @p chan names at least one ADC lane and no foreign bit
+ * @param[in] chan channel bitmap from the caller
+ * @return TRUE if the bitmap is usable
+ * @note Only lanes 0..2 exist on this platform, so BIT(3) and every DMIC bit
+ *       are rejected here rather than silently ignored.
+ */
+STATIC BOOL_T __tkl_aud_adc_chan_supported(TUYA_AUDIO_MIC_CHANNEL_E chan)
+{
+    UINT32_T mask = (UINT32_T)chan;
+    UINT32_T supported = (UINT32_T)TUYA_AUDIO_ADC_CHANNEL_0 |
+                         (UINT32_T)TUYA_AUDIO_ADC_CHANNEL_1 |
+                         (UINT32_T)TUYA_AUDIO_ADC_CHANNEL_2;
+
+    return ((mask != 0U) && ((mask & ~supported) == 0U)) ? TRUE : FALSE;
+}
+
+/**
+ * @brief Turn a single ADC channel bit into a lane index
+ * @param[in]  channel channel bitmap with exactly one ADC bit
+ * @param[out] lane    lane index 0..2
+ * @return OPRT_OK on success; OPRT_INVALID_PARM otherwise
+ */
+STATIC OPERATE_RET __tkl_aud_adc_channel_lane(TUYA_AUDIO_MIC_CHANNEL_E channel, UINT32_T *lane)
+{
+    UINT32_T bit = (UINT32_T)channel;
+    UINT32_T idx;
+
+    for (idx = 0U; idx < 3U; idx++) {
+        if (bit == ((UINT32_T)TUYA_AUDIO_ADC_CHANNEL_0 << idx)) {
+            *lane = idx;
+            return OPRT_OK;
+        }
+    }
+
+    return OPRT_INVALID_PARM;
+}
+
+/**
+* @brief Initialize audio ADC
+*
+* @param[in] port   ADC port (unused on this platform)
+* @param[in] config ADC configuration including chan, sample_rate, sample_bits,
+*                   frame_time_ms, upper_cb. Gain is set via tkl_aud_adc_set_gain().
+*
+* @note On BK7259 V2 the onboard 3ch frame layout is [mic1, mic2, mic3] and
+*       @c config->chan names the lanes to deliver (BIT(0)..BIT(2)). The
+*       callback receives only those lanes, interleaved in ascending order.
+*       Re-initializing reconfigures the instance and returns OPRT_OK.
+*
+* @return OPRT_OK on success. Others on error, please refer to tuya_error_code.h
+*/
+OPERATE_RET tkl_aud_adc_init(TUYA_AUDIO_ADC_PORT_E port, CONST TUYA_AUDIO_ADC_BASE_CFG_T *config)
+{
+    TKL_AUD_CAP_REQ_T req;
+
+    if ((config == NULL) || (config->upper_cb == NULL)) {
+        return OPRT_INVALID_PARM;
+    }
+
+    if (port >= TUYA_AUDIO_ADC_PORT_MAX) {
+        return OPRT_INVALID_PARM;
+    }
+
+    if (__tkl_aud_adc_chan_supported(config->chan) != TRUE) {
+        TKL_AUD_ADC_LOG("chan 0x%x not support\n", (unsigned)config->chan);
+        return OPRT_INVALID_PARM;
+    }
+
+    if (config->sample_bits != TUYA_AUDIO_SAMPLE_BITS_16) {
+        TKL_AUD_ADC_LOG("bits: %d not support, only 16bits\n", config->sample_bits);
+        return OPRT_INVALID_PARM;
+    }
+
+    if ((config->sample_rate == 0U) || (config->frame_time_ms == 0U)) {
+        return OPRT_INVALID_PARM;
+    }
+
+    os_memset(&req, 0, sizeof(req));
+    req.sample_rate = config->sample_rate;
+    req.sample_bits = (UINT8_T)config->sample_bits;
+    req.frame_time_ms = config->frame_time_ms;
+    req.upper_cb = config->upper_cb;
+    req.args = config->args;
+    req.chan = config->chan;
+
+    {
+        OPERATE_RET ret;
+
+        if (__t9_aud_cap_user_attached(TKL_AUD_CAP_USER_ADC) == TRUE) {
+            /* Contract: a second init reconfigures the instance and returns OK. */
+            ret = __t9_aud_cap_reopen(TKL_AUD_CAP_USER_ADC, &req);
+        } else {
+            ret = __t9_aud_cap_open(TKL_AUD_CAP_USER_ADC, &req);
+        }
+
+        /* Propagate the core's code verbatim: a lane conflict or a parameter
+         * mismatch must surface as OPRT_INVALID_PARM, not as a generic
+         * OPRT_COM_ERROR that callers cannot act on. */
+        if (ret != OPRT_OK) {
+            TKL_AUD_ADC_LOG("audio analog mic init failed: %d\n", (int)ret);
+            return ret;
+        }
+    }
+
+    TKL_AUD_ADC_LOG("audio analog mic init success, chan=0x%x rate=%u frame_ms=%u\n",
+                    (unsigned)config->chan, config->sample_rate, config->frame_time_ms);
+    return OPRT_OK;
+}
+
+/**
+* @brief Start audio ADC capture
+*
+* @note The shared capture hardware is started by whichever interface starts
+*       first; a second start only raises the reference count.
+*
+* @return OPRT_OK on success. Others on error, please refer to tuya_error_code.h
+*/
+OPERATE_RET tkl_aud_adc_start(TUYA_AUDIO_ADC_PORT_E port)
+{
+    (void)port;
+
+    if (__t9_aud_cap_user_attached(TKL_AUD_CAP_USER_ADC) != TRUE) {
+        return OPRT_COM_ERROR;
+    }
+
+    return __t9_aud_cap_start(TKL_AUD_CAP_USER_ADC);
+}
+
+/**
+* @brief Set audio ADC digital/analog gain for one MIC channel
+*
+* @param[in] port: ADC port (unused on this platform)
+* @param[in] channel: one ADC bit of TUYA_AUDIO_MIC_CHANNEL_E,
+*                     BIT(0)/BIT(1)/BIT(2) -> MIC1/MIC2/MIC3
+* @param[in] gain: gain[0]=dig dB, gain[1]=ana dB (when num>=2). Pass
+*                  AUDIO_ADC_INVALID_GAIN_VALUE to leave dig or ana unchanged.
+* @param[in] num: 1 (dig only) or 2 (dig then ana)
+*
+* @return OPRT_OK on success. Others on error, please refer to tuya_error_code.h
+*/
+OPERATE_RET tkl_aud_adc_set_gain(TUYA_AUDIO_ADC_PORT_E port, TUYA_AUDIO_MIC_CHANNEL_E channel,
+                                 INT32_T gain[], UINT32_T num)
+{
+    BOOL_T set_dig;
+    BOOL_T set_ana;
+    FLOAT_T dig_db = 0.0f;
+    INT32_T ana_db = 0;
+    UINT32_T lane = 0U;
+    OPERATE_RET rt;
+
+    (void)port;
+
+    if (__t9_aud_cap_user_attached(TKL_AUD_CAP_USER_ADC) != TRUE) {
+        return OPRT_COM_ERROR;
+    }
+
+    if ((gain == NULL) || (num == 0U) || (num > TKL_AUD_ADC_GAIN_NUM)) {
+        return OPRT_INVALID_PARM;
+    }
+
+    rt = __tkl_aud_adc_channel_lane(channel, &lane);
+    if (rt != OPRT_OK) {
+        return rt;
+    }
+
+    set_dig = (__tkl_aud_adc_gain_is_invalid(gain[0]) == TRUE) ? FALSE : TRUE;
+    if (num >= 2U) {
+        set_ana = (__tkl_aud_adc_gain_is_invalid(gain[1]) == TRUE) ? FALSE : TRUE;
+    } else {
+        set_ana = FALSE;
+    }
+
+    if ((set_dig == FALSE) && (set_ana == FALSE)) {
+        return OPRT_INVALID_PARM;
+    }
+
+    if (set_dig == TRUE) {
+        dig_db = (FLOAT_T)gain[0];
+    }
+    if (set_ana == TRUE) {
+        ana_db = gain[1];
+    }
+
+    return __t9_aud_cap_set_gain(TKL_AUD_CAP_USER_ADC, lane,
+                                set_dig, dig_db, set_ana, ana_db);
+}
+
+/**
+* @brief Stop audio ADC capture
+*
+* @note The last interface to stop parks the shared stream.
+*
+* @return OPRT_OK on success. Others on error, please refer to tuya_error_code.h
+*/
+OPERATE_RET tkl_aud_adc_stop(TUYA_AUDIO_ADC_PORT_E port)
+{
+    (void)port;
+
+    if (__t9_aud_cap_user_attached(TKL_AUD_CAP_USER_ADC) != TRUE) {
+        return OPRT_COM_ERROR;
+    }
+
+    return __t9_aud_cap_stop(TKL_AUD_CAP_USER_ADC);
+}
+
+/**
+* @brief Deinitialize audio ADC
+*
+* @note Detaches from the shared capture core. The hardware is only released
+*       when the digital interface is not using it either.
+*
+* @return OPRT_OK on success. Others on error, please refer to tuya_error_code.h
+*/
+OPERATE_RET tkl_aud_adc_deinit(TUYA_AUDIO_ADC_PORT_E port)
+{
+    (void)port;
+
+    if (__t9_aud_cap_user_attached(TKL_AUD_CAP_USER_ADC) != TRUE) {
+        return OPRT_OK;
+    }
+
+    return __t9_aud_cap_close(TKL_AUD_CAP_USER_ADC);
+}
+
+/* ===========================================================================
+ * CONFIG_AUD_DRIVER_V1 (LEGACY): analog ADC has its own fifo and DMA
+ * =========================================================================== */
+#else
 
 // sr: sample rate, sb: sample bits, ch: channel num, t: frame time in ms
 #define AUD_ADC_FRAME_SIZE(sr, sb, t, ch)  (((sr) * ((sb) / 8) / 1000) * (ch) * (t))
@@ -39,40 +310,14 @@ extern void bk_printf(const char *fmt, ...);
 #define DMA_BUF_SAFE_INTERVAL    (8)
 #define DMA_BUF_FRAME_CNT        (8)
 
-#define TKL_AUD_ADC_GAIN_NUM               (2U)         /* dig then ana */
-
-#if CONFIG_AUD_DRIVER_V2
-#define TKL_AUD_ADC_DEFAULT_DIG_DB         (16.0f)      /* OEM DEFAULT_AUD_ADC_CONFIG dig_gain */
-#define TKL_AUD_ADC_DEFAULT_ANA_DB         (20)         /* OEM DEFAULT_AUD_ADC_CONFIG ana_gain */
-/*
- * Index of AEC/loopback-reference mic in the 3ch DMA frame [mic1,mic2,mic3].
- *   0 = MIC1 is ref, talk path uses MIC2+MIC3 (this board)
- *   2 = MIC3 is ref, talk path uses MIC1+MIC2 (legacy T9 / mftest)
- * Override via -DTKL_AUD_ADC_AEC_REF_IDX=<n> if needed.
- */
-#ifndef TKL_AUD_ADC_AEC_REF_IDX
-#define TKL_AUD_ADC_AEC_REF_IDX            (2U)
-#endif
-#if (TKL_AUD_ADC_AEC_REF_IDX > 2U)
-#error "TKL_AUD_ADC_AEC_REF_IDX must be 0..2"
-#endif
-#endif
-
 typedef struct {
-    TKL_AUD_ADC_CFG_T   cfg;
+    TUYA_AUDIO_ADC_BASE_CFG_T cfg;
     bool                is_open;
     bool                dma_started;       /* GDMA was started; REPEAT cannot dma_stop */
     uint32_t            dma_frame_size;
     uint8_t             chl_num;
     uint8_t             raw_ch_num;
-#if CONFIG_AUD_DRIVER_V2
-    uint32_t            adc_ch_bitmap;
-    aud_adc_mode_t      adc_mode;
-    float               dig_db[AUD_ADC_CHL_MAX]; /**< Last dig gain per MIC (dB) */
-    int32_t             ana_db[AUD_ADC_CHL_MAX]; /**< Last ana gain per MIC (dB) */
-#else
     uint32_t            dig_reg;           /**< Last dig register gain from set_gain */
-#endif
     BOOL_T              gain_set;          /**< TRUE after first successful set_gain */
     dma_id_t            mic_dma_id;
     RingBufferContext   mic_rb;
@@ -91,181 +336,8 @@ static tkl_aud_adc_ctx_t *gl_adc_ctx = NULL;
  */
 static BOOL_T __tkl_aud_adc_gain_is_invalid(INT32_T v)
 {
-    return ((UINT32_T)v == (UINT32_T)AUDIA_ADC_INVALID_GAIN_VALUE) ? TRUE : FALSE;
+    return ((UINT32_T)v == (UINT32_T)AUDIO_ADC_INVALID_GAIN_VALUE) ? TRUE : FALSE;
 }
-
-#if CONFIG_AUD_DRIVER_V2
-/**
- * @brief Map Tuya MIC channel enum to OEM aud_adc_chl_t
- * @param[in] channel TUYA_AUDIO_ADC_CHANNEL_0/1/2 -> MIC1/2/3
- * @param[out] out OEM channel
- * @return OPRT_OK on success
- */
-static OPERATE_RET __tkl_aud_adc_map_mic_channel(TUYA_AUDIO_ADC_CHANNEL_E channel, aud_adc_chl_t *out)
-{
-    if ((out == NULL) || ((UINT32_T)channel >= (UINT32_T)AUD_ADC_CHL_MAX)) {
-        return OPRT_INVALID_PARM;
-    }
-
-    *out = (aud_adc_chl_t)channel;
-    return OPRT_OK;
-}
-
-/**
- * @brief Apply dig and/or ana gain to one ADC MIC channel
- * @param[in] ch OEM ADC channel
- * @param[in] set_dig TRUE to set digital gain
- * @param[in] dig_db digital gain in dB
- * @param[in] set_ana TRUE to set analog gain
- * @param[in] ana_db analog gain in dB
- * @return OPRT_OK on success
- */
-static OPERATE_RET __tkl_aud_adc_apply_v2_ch_gain(aud_adc_chl_t ch,
-                                                   BOOL_T set_dig, float dig_db,
-                                                   BOOL_T set_ana, int32_t ana_db)
-{
-    if ((UINT32_T)ch >= (UINT32_T)AUD_ADC_CHL_MAX) {
-        return OPRT_INVALID_PARM;
-    }
-
-    if (set_dig == TRUE) {
-        if (dig_db > BK_AUD_ADC_DIG_GAIN_DB_MAX) {
-            dig_db = BK_AUD_ADC_DIG_GAIN_DB_MAX;
-        }
-        if (bk_aud_adc_set_dig_gain_db(ch, dig_db) != BK_OK) {
-            TKL_AUD_ADC_LOG("set dig gain fail, ch=%u\n", (unsigned)ch);
-            return OPRT_COM_ERROR;
-        }
-        gl_adc_ctx->dig_db[ch] = dig_db;
-    }
-
-    if (set_ana == TRUE) {
-        if (ana_db > BK_AUD_ADC_ANA_GAIN_DB_MAX) {
-            ana_db = BK_AUD_ADC_ANA_GAIN_DB_MAX;
-        }
-        if (ana_db < 0) {
-            ana_db = 0;
-        }
-        if (bk_aud_adc_set_ana_gain_db(ch, ana_db) != BK_OK) {
-            TKL_AUD_ADC_LOG("set ana gain fail, ch=%u\n", (unsigned)ch);
-            return OPRT_COM_ERROR;
-        }
-        gl_adc_ctx->ana_db[ch] = ana_db;
-    }
-
-    TKL_AUD_ADC_LOG("adc gain ch=%u dig=%s%.1f ana=%s%d\n",
-                    (unsigned)ch,
-                    (set_dig == TRUE) ? "" : "keep/",
-                    (set_dig == TRUE) ? dig_db : gl_adc_ctx->dig_db[ch],
-                    (set_ana == TRUE) ? "" : "keep/",
-                    (set_ana == TRUE) ? ana_db : gl_adc_ctx->ana_db[ch]);
-    return OPRT_OK;
-}
-
-/**
- * @brief Re-apply stored dig/ana gain for all open MIC channels
- * @return OPRT_OK on success
- */
-static OPERATE_RET __tkl_aud_adc_reapply_v2_gains(VOID_T)
-{
-    for (uint32_t ch = 0; ch < AUD_ADC_CHL_MAX; ch++) {
-        if (!(gl_adc_ctx->adc_ch_bitmap & (1U << ch))) {
-            continue;
-        }
-        if (__tkl_aud_adc_apply_v2_ch_gain((aud_adc_chl_t)ch,
-                                            TRUE, gl_adc_ctx->dig_db[ch],
-                                            TRUE, gl_adc_ctx->ana_db[ch]) != OPRT_OK) {
-            return OPRT_COM_ERROR;
-        }
-    }
-    return OPRT_OK;
-}
-
-/**
- * @brief Re-apply ADC sample rate / mode / bits / gain after a shared HW reset
- * @return OPRT_OK on success
- * @note DAC init also calls bk_aud_hardware_reset(); re-apply before start so
- *       ADC digital path is valid even if another client reset the IP.
- */
-static OPERATE_RET __tkl_aud_adc_reapply_hw_config(VOID_T)
-{
-    bk_err_t ret;
-
-    if (gl_adc_ctx == NULL) {
-        return OPRT_COM_ERROR;
-    }
-
-    ret = bk_aud_adc_set_samp_rate(gl_adc_ctx->cfg.sample_rate);
-    if (ret != BK_OK) {
-        TKL_AUD_ADC_LOG("reapply samp_rate fail, ret=%d rate=%u\n",
-                        ret, gl_adc_ctx->cfg.sample_rate);
-        return OPRT_COM_ERROR;
-    }
-
-    for (uint32_t ch = 0; ch < AUD_ADC_CHL_MAX; ch++) {
-        if (!(gl_adc_ctx->adc_ch_bitmap & (1U << ch))) {
-            continue;
-        }
-        ret = bk_aud_adc_set_mic_mode((aud_adc_chl_t)ch, gl_adc_ctx->adc_mode);
-        if (ret != BK_OK) {
-            TKL_AUD_ADC_LOG("reapply mic_mode fail, ret=%d ch=%u\n", ret, ch);
-            return OPRT_COM_ERROR;
-        }
-        ret = bk_aud_adc_set_bits_width((aud_adc_chl_t)ch, gl_adc_ctx->cfg.sample_bits);
-        if (ret != BK_OK) {
-            TKL_AUD_ADC_LOG("reapply bits fail, ret=%d ch=%u\n", ret, ch);
-            return OPRT_COM_ERROR;
-        }
-    }
-
-    return __tkl_aud_adc_reapply_v2_gains();
-}
-#endif
-
-#if CONFIG_AUD_DRIVER_V2
-static bk_err_t __tkl_aud_adc_start_channels(uint32_t ch_bitmap, uint32_t *started_bitmap)
-{
-    bk_err_t ret = BK_OK;
-    uint32_t local_started = 0;
-
-    for (uint32_t ch = 0; ch < AUD_ADC_CHL_MAX; ch++) {
-        if (!(ch_bitmap & (1U << ch))) {
-            continue;
-        }
-
-        ret = bk_aud_adc_start((aud_adc_chl_t)ch);
-        if (ret != BK_OK) {
-            for (uint32_t stop_ch = 0; stop_ch < AUD_ADC_CHL_MAX; stop_ch++) {
-                if (local_started & (1U << stop_ch)) {
-                    (void)bk_aud_adc_stop((aud_adc_chl_t)stop_ch);
-                }
-            }
-
-            if (started_bitmap != NULL) {
-                *started_bitmap = 0;
-            }
-            return ret;
-        }
-
-        local_started |= (1U << ch);
-    }
-
-    if (started_bitmap != NULL) {
-        *started_bitmap = local_started;
-    }
-
-    return BK_OK;
-}
-
-static void __tkl_aud_adc_stop_channels(uint32_t ch_bitmap)
-{
-    for (uint32_t ch = 0; ch < AUD_ADC_CHL_MAX; ch++) {
-        if (ch_bitmap & (1U << ch)) {
-            (void)bk_aud_adc_stop((aud_adc_chl_t)ch);
-        }
-    }
-}
-#endif
 
 /* ---------------------- flash operation notify ------------------------------ */
 
@@ -279,35 +351,6 @@ static void __tkl_aud_adc_flash_op_notify_handler(uint32_t param, void *args)
      * frequent flash ops starving audio capture.
      */
     return;
-
-#if 0
-    if (gl_adc_ctx == NULL || !gl_adc_ctx->is_open)
-    {
-        return;
-    }
-
-    if (param)
-    {
-        /* REPEAT mode cannot bk_dma_stop(); park dst_pause_addr instead. */
-#if CONFIG_AUD_DRIVER_V2
-        __tkl_aud_adc_stop_channels(gl_adc_ctx->adc_ch_bitmap);
-#else
-        bk_aud_adc_stop();
-#endif
-        ring_buffer_clear(&gl_adc_ctx->mic_rb);
-    }
-    else
-    {
-        bk_dma_start(gl_adc_ctx->mic_dma_id);
-#if CONFIG_AUD_DRIVER_V2
-        if (BK_OK == __tkl_aud_adc_start_channels(gl_adc_ctx->adc_ch_bitmap, NULL)) {
-            bk_aud_adc_enable_used_channel(gl_adc_ctx->adc_ch_bitmap);
-        }
-#else
-        bk_aud_adc_start();
-#endif
-    }
-#endif
 }
 
 /* ---------------------- DMA ISR -------------------------------------------- */
@@ -315,182 +358,56 @@ static void __tkl_aud_adc_flash_op_notify_handler(uint32_t param, void *args)
 /**
  * Turn one chunk already sitting in read_buf into the PCM the caller asked for
  * and hand it to upper_cb.
- *
- * For single channel: extract one lane out of the raw interleaved frame into
- * output_buf. For dual/triple channel: read_buf is already the final PCM.
- *
- * read_size is by value: the compact step below rewrites it.
  */
 static void __tkl_aud_adc_push_frame(uint32_t read_size)
 {
-#if CONFIG_AUD_DRIVER_V2
-    /*
-     * Every 32-bit slot carries one 16-bit sample in its low half. Compact in
-     * place to dense 16-bit so the channel extraction below sees the layout it
-     * expects. Ascending i reads index 2*i >= i, so this never clobbers a slot it
-     * still needs. Mirrors ex_audio_mic_unpack_adc16_from_dma32() in
-     * test_media/test_aud_utils.c.
-     */
-    {
-        int16_t *raw = (int16_t *)gl_adc_ctx->read_buf;
-        uint32_t slots = read_size / 4U;
-        uint32_t i;
+    TUYA_AUDIO_INPUT_BUFFER_T frame;
 
-        for (i = 0U; i < slots; i++) {
-            raw[i] = raw[2U * i];
-        }
-        read_size = slots * (uint32_t)sizeof(int16_t);
-    }
-#endif
+    os_memset(&frame, 0, sizeof(frame));
+    frame.event = TUYA_AUDIO_FRAME_EVENT_ADC_RX;
+    frame.args = gl_adc_ctx->cfg.args;
 
     if (gl_adc_ctx->chl_num == 1)
     {
-#if CONFIG_AUD_DRIVER_V2
-        int16_t *src = (int16_t *)gl_adc_ctx->read_buf;
-        int16_t *dst = (int16_t *)gl_adc_ctx->output_buf;
-        uint32_t frame_pts;
-        uint32_t raw_ch_num = gl_adc_ctx->raw_ch_num;
-
-        if ((raw_ch_num == 0U) || ((read_size & 0x1U) != 0U)) {
-            return;
-        }
-
-        if (raw_ch_num == 1U) {
-            gl_adc_ctx->cfg.upper_cb(TUYA_AUDIO_FRAME_EVENT_ADC_RX,
-                                     gl_adc_ctx->read_buf,
-                                     read_size,
-                                     gl_adc_ctx->cfg.args);
-            return;
-        }
-
-        if (dst == NULL) {
-            return;
-        }
-
-        frame_pts = read_size / (sizeof(int16_t) * raw_ch_num);
-        if ((frame_pts == 0U) || ((frame_pts * sizeof(int16_t)) > gl_adc_ctx->output_buf_size)) {
-            return;
-        }
-
-        /*
-         * Mixed 3ch layout when CHL_0|1|2 are enabled (aec_en=0):
-         * [mic1, mic2, mic3, ...] matching AUD_ADC_CHL_0/1/2 order.
-         * TKL_AUD_ADC_AEC_REF_IDX selects the board AEC/loopback-ref lane.
-         * CHANNEL_MIC3 always means "ref mic", not hard-wired physical MIC3.
-         *   L    -> first talk mic (lowest non-ref index)
-         *   R    -> second talk mic (highest non-ref index)
-         *   MIC3 -> AEC ref (TKL_AUD_ADC_AEC_REF_IDX)
-         */
-        if (raw_ch_num == 3U) {
-            uint32_t mic_idx;
-            uint32_t talk0 = (TKL_AUD_ADC_AEC_REF_IDX == 0U) ? 1U : 0U;
-            uint32_t talk1 = (TKL_AUD_ADC_AEC_REF_IDX == 2U) ? 1U : 2U;
-
-            if (gl_adc_ctx->cfg.chan == TUYA_AUDIO_ADC_CHANNEL_MIC3) {
-                mic_idx = TKL_AUD_ADC_AEC_REF_IDX;
-            } else if (gl_adc_ctx->cfg.chan == TUYA_AUDIO_ADC_CHANNEL_R) {
-                mic_idx = talk1;
-            } else {
-                mic_idx = talk0;
-            }
-            for (uint32_t i = 0; i < frame_pts; i++) {
-                dst[i] = src[i * 3U + mic_idx];
-            }
-        } else {
-            uint32_t lane = (gl_adc_ctx->cfg.chan == TUYA_AUDIO_ADC_CHANNEL_R) ? 1U : 0U;
-
-            for (uint32_t i = 0; i < frame_pts; i++) {
-                dst[i] = src[2U * i + lane];
-            }
-        }
-
-        gl_adc_ctx->cfg.upper_cb(TUYA_AUDIO_FRAME_EVENT_ADC_RX,
-                                 gl_adc_ctx->output_buf,
-                                 frame_pts * sizeof(int16_t),
-                                 gl_adc_ctx->cfg.args);
-#else
         // PCM DATA: LRLRLRLR.....
         int16_t *src = (int16_t *)gl_adc_ctx->read_buf;
         int16_t *dst = (int16_t *)gl_adc_ctx->output_buf;
-        
+        uint32_t offset;
+
         // T5仅支持16位深采样
         uint32_t samples = gl_adc_ctx->output_buf_size / sizeof(int16_t);
-        if (gl_adc_ctx->cfg.chan == TUYA_AUDIO_ADC_CHANNEL_L)
-        {
-            // 提取左声道数据
-            for (uint32_t i = 0; i < samples; i++)
-            {
-                dst[i] = src[2 * i];
-            }
-        }
-        else if (gl_adc_ctx->cfg.chan == TUYA_AUDIO_ADC_CHANNEL_R)
+
+        if ((UINT32_T)gl_adc_ctx->cfg.chan == (UINT32_T)TUYA_AUDIO_ADC_CHANNEL_1)
         {
             // 提取右声道数据
-            for (uint32_t i = 0; i < samples; i++)
-            {
-                dst[i] = src[2 * i + 1];
-            }
-        }
-        else if (gl_adc_ctx->cfg.chan == TUYA_AUDIO_ADC_CHANNEL_MIC3)
-        {
-            TKL_AUD_ADC_LOG("MIC3(AEC ref) not supported on V1 ADC, fallback to L\r\n");
-            for (uint32_t i = 0; i < samples; i++)
-            {
-                dst[i] = src[2 * i];
-            }
+            offset = 1U;
         }
         else
         {
             // 默认左声道数据
-            for (uint32_t i = 0; i < samples; i++)
-            {
-                dst[i] = src[2 * i];
-            }
+            offset = 0U;
         }
-        gl_adc_ctx->cfg.upper_cb(TUYA_AUDIO_FRAME_EVENT_ADC_RX, gl_adc_ctx->output_buf, gl_adc_ctx->output_buf_size, gl_adc_ctx->cfg.args);
-#endif
+
+        for (uint32_t i = 0; i < samples; i++)
+        {
+            dst[i] = src[2 * i + offset];
+        }
+
+        frame.data = gl_adc_ctx->output_buf;
+        frame.data_len = gl_adc_ctx->output_buf_size;
+        frame.chan[0] = gl_adc_ctx->cfg.chan;
+        frame.chan_num = 1U;
     }
     else
     {
-#if CONFIG_AUD_DRIVER_V2
-        if ((gl_adc_ctx->raw_ch_num == 3U) && (gl_adc_ctx->chl_num == 3U)) {
-            gl_adc_ctx->cfg.upper_cb(TUYA_AUDIO_FRAME_EVENT_ADC_RX,
-                                     gl_adc_ctx->read_buf,
-                                     read_size,
-                                     gl_adc_ctx->cfg.args);
-        } else if (gl_adc_ctx->raw_ch_num == 3U) {
-            int16_t *src = (int16_t *)gl_adc_ctx->read_buf;
-            int16_t *dst = (int16_t *)gl_adc_ctx->output_buf;
-            uint32_t frame_pts;
-            uint32_t talk0 = (TKL_AUD_ADC_AEC_REF_IDX == 0U) ? 1U : 0U;
-            uint32_t talk1 = (TKL_AUD_ADC_AEC_REF_IDX == 2U) ? 1U : 2U;
-
-            if ((dst == NULL) || ((read_size & 0x1U) != 0U)) {
-                return;
-            }
-
-            frame_pts = read_size / (sizeof(int16_t) * 3U);
-            if ((frame_pts == 0U) || ((frame_pts * sizeof(int16_t) * 2U) > gl_adc_ctx->output_buf_size)) {
-                return;
-            }
-
-            /* Keep talk mics, drop AEC/loopback-ref lane (TKL_AUD_ADC_AEC_REF_IDX). */
-            for (uint32_t i = 0; i < frame_pts; i++) {
-                dst[2U * i] = src[3U * i + talk0];
-                dst[2U * i + 1U] = src[3U * i + talk1];
-            }
-
-            gl_adc_ctx->cfg.upper_cb(TUYA_AUDIO_FRAME_EVENT_ADC_RX,
-                                     gl_adc_ctx->output_buf,
-                                     frame_pts * sizeof(int16_t) * 2U,
-                                     gl_adc_ctx->cfg.args);
-        } else {
-            gl_adc_ctx->cfg.upper_cb(TUYA_AUDIO_FRAME_EVENT_ADC_RX, gl_adc_ctx->read_buf, read_size, gl_adc_ctx->cfg.args);
-        }
-#else
-        gl_adc_ctx->cfg.upper_cb(TUYA_AUDIO_FRAME_EVENT_ADC_RX, gl_adc_ctx->read_buf, read_size, gl_adc_ctx->cfg.args);
-#endif
+        frame.data = gl_adc_ctx->read_buf;
+        frame.data_len = read_size;
+        frame.chan[0] = TUYA_AUDIO_ADC_CHANNEL_0;
+        frame.chan[1] = TUYA_AUDIO_ADC_CHANNEL_1;
+        frame.chan_num = 2U;
     }
+
+    gl_adc_ctx->cfg.upper_cb(&frame);
 }
 
 /*
@@ -585,20 +502,12 @@ static bk_err_t __tkl_aud_adc_dma_config(void)
     dma_config.mode = DMA_WORK_MODE_REPEAT;
     dma_config.chan_prio = 1;
     dma_config.trans_type = DMA_TRANS_DEFAULT;
-#if CONFIG_AUD_DRIVER_V2
-    dma_config.src.dev = DMA_DEV_AUD_MIC0;
-#else
     dma_config.src.dev = DMA_DEV_AUDIO_RX;
-#endif
     dma_config.dst.dev = DMA_DEV_DTCM;
     dma_config.src.width = DMA_DATA_WIDTH_32BITS;
     dma_config.dst.width = DMA_DATA_WIDTH_32BITS;
 
-#if CONFIG_AUD_DRIVER_V2
-    if (bk_aud_adc_get_fifo_addr(AUD_ADC_MIC_DATA_BUS_0, &adc_port_addr) != BK_OK)
-#else
     if (bk_aud_adc_get_fifo_addr(&adc_port_addr) != BK_OK)
-#endif
     {
         TKL_AUD_ADC_LOG("get adc fifo address failed\n");
         goto exit;
@@ -652,9 +561,6 @@ exit:
 /**
  * @brief Rebuild the ADC GDMA channel without bk_dma_stop()
  * @return BK_OK on success
- * @note REPEAT-mode GDMA src-stalls after analog ADC is stopped while the
- *       channel stays enabled. bk_dma_deinit() (inside deconfig) resets the
- *       channel; that is not the unsupported repeat-mode stop.
  */
 static bk_err_t __tkl_aud_adc_dma_reset(void)
 {
@@ -664,10 +570,6 @@ static bk_err_t __tkl_aud_adc_dma_reset(void)
 
 /**
  * @brief Pause GDMA by parking dst_pause_addr at the ring end
- * @return none
- * @note BK GDMA in REPEAT mode does not support bk_dma_stop(). Clearing the
- *       WRITE ring sets dma_set_dst_pause_addr so the channel stalls without
- *       being disabled.
  */
 static VOID_T __tkl_aud_adc_pause_dma(VOID_T)
 {
@@ -679,29 +581,16 @@ static VOID_T __tkl_aud_adc_pause_dma(VOID_T)
 
 /* ---------------------- Public API ----------------------------------------- */
 
-/**
-* @brief Initialize audio ADC
-*
-* @param[in] config: ADC configuration including chan, sample_rate, sample_bits,
-*                    frame_time_ms, upper_cb. Gain is set via tkl_aud_adc_set_gain().
-*
-* @note This API allocates context, configures ADC hardware, DMA ring buffer,
-*       and registers flash operation notify handler. On BK7259 V2 the onboard
-*       3ch frame layout is [mic1, mic2, mic3]: CHANNEL_L/R/LR select mic1/mic2/both,
-*       CHANNEL_MIC3 selects the AEC-reference mic (index 2). Must be called
-*       before tkl_aud_adc_start.
-*
-* @return OPRT_OK on success. Others on error, please refer to tuya_error_code.h
-*/
-OPERATE_RET tkl_aud_adc_init(TUYA_AUDIO_ADC_PORT_E port, TKL_AUD_ADC_CFG_T *config)
+OPERATE_RET tkl_aud_adc_init(TUYA_AUDIO_ADC_PORT_E port, CONST TUYA_AUDIO_ADC_BASE_CFG_T *config)
 {
-    if (config == NULL) {
+    if ((config == NULL) || (config->upper_cb == NULL)) {
         return OPRT_INVALID_PARM;
     }
 
     if (gl_adc_ctx != NULL) {
-        TKL_AUD_ADC_LOG("adc already initialized\n");
-        return OPRT_COM_ERROR;
+        /* Contract: a second init reconfigures the instance and returns OK. */
+        TKL_AUD_ADC_LOG("adc already initialized, reconfigure\n");
+        (void)tkl_aud_adc_deinit(port);
     }
 
     (void)port;
@@ -710,13 +599,8 @@ OPERATE_RET tkl_aud_adc_init(TUYA_AUDIO_ADC_PORT_E port, TKL_AUD_ADC_CFG_T *conf
     uint8_t chl_num = 2;
     uint8_t raw_ch_num = 2;
     aud_adc_config_t aud_adc_cfg = DEFAULT_AUD_ADC_CONFIG();
-#if CONFIG_AUD_DRIVER_V2
-    uint32_t adc_ch_bitmap = (1U << AUD_ADC_CHL_0);
-    aud_adc_mode_t adc_mode = AUD_ADC_MODE_SIGNAL_END;
-#else
     aud_mic_id_t mic_id = AUD_MIC_BOTH;
     aud_adc_mode_t adc_mode = AUD_ADC_MODE_DIFFEN;
-#endif
 
     gl_adc_ctx = (tkl_aud_adc_ctx_t *)tkl_system_psram_malloc(sizeof(tkl_aud_adc_ctx_t));
     if (gl_adc_ctx == NULL) {
@@ -724,113 +608,41 @@ OPERATE_RET tkl_aud_adc_init(TUYA_AUDIO_ADC_PORT_E port, TKL_AUD_ADC_CFG_T *conf
         return OPRT_MALLOC_FAILED;
     }
     os_memset(gl_adc_ctx, 0, sizeof(tkl_aud_adc_ctx_t));
-    os_memcpy(&gl_adc_ctx->cfg, config, sizeof(TKL_AUD_ADC_CFG_T));
+    os_memcpy(&gl_adc_ctx->cfg, config, sizeof(TUYA_AUDIO_ADC_BASE_CFG_T));
     gl_adc_ctx->gain_set = FALSE;
-#if CONFIG_AUD_DRIVER_V2
-    for (uint32_t ch = 0; ch < AUD_ADC_CHL_MAX; ch++) {
-        gl_adc_ctx->dig_db[ch] = TKL_AUD_ADC_DEFAULT_DIG_DB;
-        gl_adc_ctx->ana_db[ch] = TKL_AUD_ADC_DEFAULT_ANA_DB;
-    }
-#else
     gl_adc_ctx->dig_reg = 0x2DU; /* OEM DEFAULT_AUD_ADC_CONFIG adc_gain */
-#endif
 
-#if CONFIG_AUD_DRIVER_V2
-    switch (config->chan) {
-        case TUYA_AUDIO_ADC_CHANNEL_L:
-            adc_ch_bitmap = (1U << AUD_ADC_CHL_0);
-            chl_num = 1;
-            raw_ch_num = 1;
-            adc_mode = AUD_ADC_MODE_DIFFEN;
-            break;
-        case TUYA_AUDIO_ADC_CHANNEL_R:
-            adc_ch_bitmap = (1U << AUD_ADC_CHL_1);
-            chl_num = 1;
-            raw_ch_num = 1;
-            adc_mode = AUD_ADC_MODE_DIFFEN;
-            break;
-        case TUYA_AUDIO_ADC_CHANNEL_LR:
-            /* Mixed frame: [mic1,mic2,mic3]; callback keeps two talk mics
-             * (drops TKL_AUD_ADC_AEC_REF_IDX). With REF=0 -> [mic2,mic3]. */
-            adc_ch_bitmap = (1U << AUD_ADC_CHL_0) | (1U << AUD_ADC_CHL_1) | (1U << AUD_ADC_CHL_2);
-            adc_mode = AUD_ADC_MODE_DIFFEN;
-            chl_num = 2;
-            raw_ch_num = 3;
-            break;
-        case TUYA_AUDIO_ADC_CHANNEL_MIC3:
-            /* AEC/loopback ref lane: extract TKL_AUD_ADC_AEC_REF_IDX from 3ch DMA. */
-            adc_ch_bitmap = (1U << AUD_ADC_CHL_0) | (1U << AUD_ADC_CHL_1) | (1U << AUD_ADC_CHL_2);
-            adc_mode = AUD_ADC_MODE_DIFFEN;
-            chl_num = 1;
-            raw_ch_num = 3;
-            TKL_AUD_ADC_LOG("chan MIC3(AEC ref): 3ch DMA, output ref idx=%u\r\n",
-                            (unsigned)TKL_AUD_ADC_AEC_REF_IDX);
-            break;
-        case TUYA_AUDIO_ADC_CHANNEL_RAW3:
-            /* Pass through full [mic1, mic2, mic3] frame for dump/analysis. */
-            adc_ch_bitmap = (1U << AUD_ADC_CHL_0) | (1U << AUD_ADC_CHL_1) | (1U << AUD_ADC_CHL_2);
-            adc_mode = AUD_ADC_MODE_DIFFEN;
-            chl_num = 3;
-            raw_ch_num = 3;
-            break;
-        default:
-            TKL_AUD_ADC_LOG("chan %d not support\n", config->chan);
+    {
+        UINT32_T mask = (UINT32_T)config->chan;
+        UINT32_T supported = (UINT32_T)TUYA_AUDIO_ADC_CHANNEL_0 |
+                             (UINT32_T)TUYA_AUDIO_ADC_CHANNEL_1;
+
+        if ((mask == 0U) || ((mask & ~supported) != 0U)) {
+            TKL_AUD_ADC_LOG("chan 0x%x not support\n", (unsigned)mask);
             goto __adc_init_exit;
-    }
-#else
-    switch (config->chan) {
-        case TUYA_AUDIO_ADC_CHANNEL_L:
-        case TUYA_AUDIO_ADC_CHANNEL_R:
-        case TUYA_AUDIO_ADC_CHANNEL_MIC3:
+        }
+
+        if ((mask == (UINT32_T)TUYA_AUDIO_ADC_CHANNEL_0) ||
+            (mask == (UINT32_T)TUYA_AUDIO_ADC_CHANNEL_1)) {
             /* V1 ADC always outputs LR interleaved data on one fifo bus. */
             chl_num = 1;
-            break;
-        case TUYA_AUDIO_ADC_CHANNEL_LR:
+        } else {
             mic_id = AUD_MIC_BOTH;
             adc_mode = AUD_ADC_MODE_DIFFEN;
             chl_num = 2;
-            break;
-        default:
-            TKL_AUD_ADC_LOG("chan %d not support\n", config->chan);
-            goto __adc_init_exit;
+        }
     }
-#endif
 
-    if (config->sample_bits != 16) {
+    if (config->sample_bits != TUYA_AUDIO_SAMPLE_BITS_16) {
         TKL_AUD_ADC_LOG("bits: %d not support, only 16bits\n", config->sample_bits);
         goto __adc_init_exit;
     }
 
     gl_adc_ctx->chl_num = chl_num;
     gl_adc_ctx->raw_ch_num = raw_ch_num;
-#if CONFIG_AUD_DRIVER_V2
-    gl_adc_ctx->adc_ch_bitmap = adc_ch_bitmap;
-    gl_adc_ctx->adc_mode = adc_mode;
-    /* Raw ring bytes per frame: one sample per 32-bit slot, so twice the dense
-     * payload. Compacted back down in __tkl_aud_adc_push_frame(). */
-    gl_adc_ctx->dma_frame_size = AUD_ADC_FRAME_SIZE(config->sample_rate, config->sample_bits, config->frame_time_ms, raw_ch_num) * 2U;
-#else
     /* V1 keeps LR interleaved capture and extracts one channel in ISR. */
     gl_adc_ctx->dma_frame_size = AUD_ADC_FRAME_SIZE(config->sample_rate, config->sample_bits, config->frame_time_ms, 2);
-#endif
 
-#if CONFIG_AUD_DRIVER_V2
-    /* Gain applied later via tkl_aud_adc_set_gain(); keep OEM default dig/ana for HW init. */
-    aud_adc_cfg.chl_num = raw_ch_num;
-    aud_adc_cfg.adc_chl = AUD_ADC_CHL_0;
-    aud_adc_cfg.sample_rate = config->sample_rate;
-    aud_adc_cfg.clk_src = AUD_CLK_APLL;
-    for (uint32_t ch = 0; ch < AUD_ADC_CHL_MAX; ch++) {
-        if (adc_ch_bitmap & (1U << ch)) {
-            aud_adc_cfg.chl_cfg[ch].bits = config->sample_bits;
-            aud_adc_cfg.chl_cfg[ch].adc_mode = adc_mode;
-            aud_adc_cfg.chl_cfg[ch].dig_gain = gl_adc_ctx->dig_db[ch];
-            aud_adc_cfg.chl_cfg[ch].ana_gain = gl_adc_ctx->ana_db[ch];
-        }
-    }
-    TKL_AUD_ADC_LOG("adc config(v2): bitmap=0x%x chl_num=%u raw_ch=%u samp_rate=%u mode=%u dig/ana=OEM default (set_gain later)\n",
-                    adc_ch_bitmap, chl_num, raw_ch_num, aud_adc_cfg.sample_rate, adc_mode);
-#else
     /* Gain applied later via tkl_aud_adc_set_gain(); keep OEM default for HW init. */
     aud_adc_cfg.adc_chl = AUD_ADC_CHL_LR;
     aud_adc_cfg.samp_rate = config->sample_rate;
@@ -841,7 +653,6 @@ OPERATE_RET tkl_aud_adc_init(TUYA_AUDIO_ADC_PORT_E port, TKL_AUD_ADC_CFG_T *conf
                      aud_adc_cfg.adc_chl, aud_adc_cfg.adc_gain, aud_adc_cfg.samp_rate,
                      aud_adc_cfg.clk_src == 1 ? "APLL" : "XTAL",
                      aud_adc_cfg.adc_mode == 1 ? "AUD_ADC_MODE_SIGNAL_END" : "AUD_ADC_MODE_DIFFEN");
-#endif
 
     /*
      * Bring audio common driver (APB + ana defaults) up before digital IP
@@ -856,25 +667,12 @@ OPERATE_RET tkl_aud_adc_init(TUYA_AUDIO_ADC_PORT_E port, TKL_AUD_ADC_CFG_T *conf
         goto __adc_init_exit;
     }
 
-#if CONFIG_AUD_DRIVER_V2
-    for (uint32_t ch = 0; ch < AUD_ADC_CHL_MAX; ch++) {
-        if (!(adc_ch_bitmap & (1U << ch))) {
-            continue;
-        }
-        ret = bk_aud_adc_set_mic_mode((aud_adc_chl_t)ch, adc_mode);
-        if (ret != BK_OK) {
-            TKL_AUD_ADC_LOG("bk_aud_adc_set_mic_mode fail, ret=%d ch=%u mode=%d\n", ret, ch, adc_mode);
-            goto __adc_init_exit;
-        }
-    }
-#else
     ret = bk_aud_adc_set_mic_mode(mic_id, adc_mode);
     if (ret != BK_OK) {
         TKL_AUD_ADC_LOG("bk_aud_adc_set_mic_mode fail, ret %d mic_id %d mode %d\n",
                          ret, mic_id, adc_mode);
         goto __adc_init_exit;
     }
-#endif
 
     ret = __tkl_aud_adc_dma_config();
     if (ret != BK_OK) {
@@ -889,7 +687,7 @@ OPERATE_RET tkl_aud_adc_init(TUYA_AUDIO_ADC_PORT_E port, TKL_AUD_ADC_CFG_T *conf
         goto __adc_init_exit;
     }
 
-    /* output_buf: extraction result (single channel or ref-stripped dual channel). */
+    /* output_buf: extraction result for the single channel case. */
     if (raw_ch_num != chl_num) {
         gl_adc_ctx->output_buf_size = AUD_ADC_FRAME_SIZE(gl_adc_ctx->cfg.sample_rate, gl_adc_ctx->cfg.sample_bits, gl_adc_ctx->cfg.frame_time_ms, chl_num);
         gl_adc_ctx->output_buf = (uint8_t *)tkl_system_psram_malloc(gl_adc_ctx->output_buf_size);
@@ -899,10 +697,8 @@ OPERATE_RET tkl_aud_adc_init(TUYA_AUDIO_ADC_PORT_E port, TKL_AUD_ADC_CFG_T *conf
         }
     }
 
-#if !CONFIG_AUD_DRIVER_V2
     bk_aud_set_ana_mic0_gain(0x08);
     bk_aud_set_ana_mic1_gain(0x08);
-#endif
 
     /* 4.0.1.11 dropped the per-peripheral onboard-mic flash-notify API; the generic
      * registry takes the same void(uint32_t busy, void *args) callback. */
@@ -930,15 +726,6 @@ __adc_init_exit:
     return OPRT_COM_ERROR;
 }
 
-/**
-* @brief Start audio ADC capture
-*
-* @note Starts DMA transfer and ADC hardware. After stop, the GDMA channel is
-*       rebuilt (deinit+init, not dma_stop) so src-stall is cleared.
-*       Safe to call multiple times (idempotent).
-*
-* @return OPRT_OK on success. Others on error, please refer to tuya_error_code.h
-*/
 OPERATE_RET tkl_aud_adc_start(TUYA_AUDIO_ADC_PORT_E port)
 {
     bk_err_t ret = BK_OK;
@@ -965,14 +752,6 @@ OPERATE_RET tkl_aud_adc_start(TUYA_AUDIO_ADC_PORT_E port)
 
     __tkl_aud_adc_pause_dma();
 
-#if CONFIG_AUD_DRIVER_V2
-    /* DAC (or other clients) may have called bk_aud_hardware_reset() after
-     * ADC init; restore rate/mode/gain before enabling the mic path. */
-    if (__tkl_aud_adc_reapply_hw_config() != OPRT_OK) {
-        return OPRT_COM_ERROR;
-    }
-#endif
-
     ret = bk_dma_start(gl_adc_ctx->mic_dma_id);
     if (ret != BK_OK)
     {
@@ -981,14 +760,7 @@ OPERATE_RET tkl_aud_adc_start(TUYA_AUDIO_ADC_PORT_E port)
     }
     gl_adc_ctx->dma_started = true;
 
-#if CONFIG_AUD_DRIVER_V2
-    ret = __tkl_aud_adc_start_channels(gl_adc_ctx->adc_ch_bitmap, NULL);
-    if (ret == BK_OK) {
-        bk_aud_adc_enable_used_channel(gl_adc_ctx->adc_ch_bitmap);
-    }
-#else
     ret = bk_aud_adc_start();
-#endif
     if (ret != BK_OK)
     {
         TKL_AUD_ADC_LOG("adc start fail\n");
@@ -1002,17 +774,7 @@ OPERATE_RET tkl_aud_adc_start(TUYA_AUDIO_ADC_PORT_E port)
     return OPRT_OK;
 }
 
-/**
-* @brief Set audio ADC digital/analog gain for one MIC channel
-*
-* @param[in] port ADC port (unused on this platform)
-* @param[in] channel TUYA_AUDIO_ADC_CHANNEL_0/1/2 -> MIC1/MIC2/MIC3
-* @param[in] gain gain[0]=dig dB, gain[1]=ana dB (num>=2). Use
-*                 AUDIA_ADC_INVALID_GAIN_VALUE to skip dig or ana.
-* @param[in] num 1 (dig only) or 2 (dig then ana)
-* @return OPRT_OK on success
-*/
-OPERATE_RET tkl_aud_adc_set_gain(TUYA_AUDIO_ADC_PORT_E port, TUYA_AUDIO_ADC_CHANNEL_E channel,
+OPERATE_RET tkl_aud_adc_set_gain(TUYA_AUDIO_ADC_PORT_E port, TUYA_AUDIO_MIC_CHANNEL_E channel,
                                  INT32_T gain[], UINT32_T num)
 {
     (void)port;
@@ -1025,53 +787,17 @@ OPERATE_RET tkl_aud_adc_set_gain(TUYA_AUDIO_ADC_PORT_E port, TUYA_AUDIO_ADC_CHAN
         return OPRT_INVALID_PARM;
     }
 
-#if CONFIG_AUD_DRIVER_V2
     {
-        aud_adc_chl_t ch;
-        BOOL_T set_dig;
-        BOOL_T set_ana;
-        float dig_db = 0.0f;
-        int32_t ana_db = 0;
-
-        if (__tkl_aud_adc_map_mic_channel(channel, &ch) != OPRT_OK) {
-            return OPRT_INVALID_PARM;
-        }
-
-        if (!(gl_adc_ctx->adc_ch_bitmap & (1U << (UINT32_T)ch))) {
-            TKL_AUD_ADC_LOG("set_gain: ch=%u not in open bitmap=0x%x\n",
-                            (unsigned)ch, gl_adc_ctx->adc_ch_bitmap);
-            return OPRT_INVALID_PARM;
-        }
-
-        set_dig = (__tkl_aud_adc_gain_is_invalid(gain[0]) == TRUE) ? FALSE : TRUE;
-        if (num >= 2U) {
-            set_ana = (__tkl_aud_adc_gain_is_invalid(gain[1]) == TRUE) ? FALSE : TRUE;
-        } else {
-            set_ana = FALSE;
-        }
-
-        if ((set_dig == FALSE) && (set_ana == FALSE)) {
-            return OPRT_INVALID_PARM;
-        }
-
-        if (set_dig == TRUE) {
-            dig_db = (float)gain[0];
-        }
-        if (set_ana == TRUE) {
-            ana_db = gain[1];
-        }
-
-        if (__tkl_aud_adc_apply_v2_ch_gain(ch, set_dig, dig_db, set_ana, ana_db) != OPRT_OK) {
-            return OPRT_COM_ERROR;
-        }
-        gl_adc_ctx->gain_set = TRUE;
-        return OPRT_OK;
-    }
-#else
-    {
+        UINT32_T mask = (UINT32_T)channel;
         uint32_t hw_gain;
 
-        (void)channel;
+        /* V1 has a single digital gain register shared by both lanes. */
+        if ((mask == 0U) ||
+            ((mask & ~((UINT32_T)TUYA_AUDIO_ADC_CHANNEL_0 |
+                       (UINT32_T)TUYA_AUDIO_ADC_CHANNEL_1)) != 0U)) {
+            return OPRT_INVALID_PARM;
+        }
+
         if (__tkl_aud_adc_gain_is_invalid(gain[0]) == TRUE) {
             return OPRT_INVALID_PARM;
         }
@@ -1091,18 +817,8 @@ OPERATE_RET tkl_aud_adc_set_gain(TUYA_AUDIO_ADC_PORT_E port, TUYA_AUDIO_ADC_CHAN
         gl_adc_ctx->gain_set = TRUE;
         return OPRT_OK;
     }
-#endif
 }
 
-/**
-* @brief Stop audio ADC capture
-*
-* @note Stops ADC hardware. REPEAT mode cannot bk_dma_stop(); the WRITE ring
-*       is cleared to park dst_pause_addr. The channel is rebuilt on the next
-*       start via dma_deinit+init. Safe to call multiple times (idempotent).
-*
-* @return OPRT_OK on success. Others on error, please refer to tuya_error_code.h
-*/
 OPERATE_RET tkl_aud_adc_stop(TUYA_AUDIO_ADC_PORT_E port)
 {
     bk_err_t ret = BK_OK;
@@ -1117,12 +833,7 @@ OPERATE_RET tkl_aud_adc_stop(TUYA_AUDIO_ADC_PORT_E port)
         return OPRT_OK;
     }
 
-#if CONFIG_AUD_DRIVER_V2
-    __tkl_aud_adc_stop_channels(gl_adc_ctx->adc_ch_bitmap);
-    ret = BK_OK;
-#else
     ret = bk_aud_adc_stop();
-#endif
 
     /* Pause GDMA without bk_dma_stop() (unsupported in REPEAT mode). */
     __tkl_aud_adc_pause_dma();
@@ -1138,19 +849,12 @@ OPERATE_RET tkl_aud_adc_stop(TUYA_AUDIO_ADC_PORT_E port)
     return OPRT_OK;
 }
 
-/**
-* @brief Deinitialize audio ADC
-*
-* @note Stops capture if running, releases DMA channel and ring buffer,
-*       unregisters flash operation notify, frees context memory,
-*       and restores CPU frequency.
-*/
-VOID_T tkl_aud_adc_deinit(TUYA_AUDIO_ADC_PORT_E port)
+OPERATE_RET tkl_aud_adc_deinit(TUYA_AUDIO_ADC_PORT_E port)
 {
     (void) port;
     if (gl_adc_ctx == NULL)
     {
-        return;
+        return OPRT_OK;
     }
 
     if (gl_adc_ctx->is_open)
@@ -1160,22 +864,7 @@ VOID_T tkl_aud_adc_deinit(TUYA_AUDIO_ADC_PORT_E port)
 
     __tkl_aud_adc_dma_deconfig();
 
-#if CONFIG_AUD_DRIVER_V2
-    /*
-     * Soft teardown: stop channels and clear ADC module flag, but do NOT call
-     * bk_aud_adc_deinit() → bk_aud_driver_deinit(). The latter zeros
-     * ana_reg20~30 / kills micbias; a following init+start then keeps producing
-     * DMA frames that are all zeros. stop→start without deinit stays healthy.
-     */
-    if (bk_aud_get_module_init_sta(AUD_MODULE_ADC)) {
-        (void)bk_aud_adc_stop(AUD_ADC_CHL_0);
-        (void)bk_aud_adc_stop(AUD_ADC_CHL_1);
-        (void)bk_aud_adc_stop(AUD_ADC_CHL_2);
-        bk_aud_set_module_init_sta(AUD_MODULE_ADC, false);
-    }
-#else
     bk_aud_adc_deinit();
-#endif
 
     mb_flash_unregister_op_notify_cb(__tkl_aud_adc_flash_op_notify_handler);
 
@@ -1189,4 +878,8 @@ VOID_T tkl_aud_adc_deinit(TUYA_AUDIO_ADC_PORT_E port)
     }
     tkl_system_psram_free(gl_adc_ctx);
     gl_adc_ctx = NULL;
+
+    return OPRT_OK;
 }
+
+#endif /* CONFIG_AUD_DRIVER_V2 */
