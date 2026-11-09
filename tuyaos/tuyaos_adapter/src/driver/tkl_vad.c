@@ -80,10 +80,10 @@ OPERATE_RET tkl_vad_init(TKL_VAD_CONFIG_T *config)
         return OPRT_INVALID_PARM;
     }
 
-    if (config->frame_duration_ms != (int)TKL_AF_OUT_FRAME_MS) {
-        tkl_log_output("tkl_vad: input frames are %u ms, not the configured %d ms\r\n", TKL_AF_OUT_FRAME_MS,
-                       config->frame_duration_ms);
-    }
+    /* config->frame_duration_ms is advisory: ai_audio_input passes 10 while
+     * the T9 front end delivers 20 ms blocks, and the library itself works on
+     * 10 ms feature frames inside a 320-sample call. tkl_vad_feed enforces the
+     * only contract that matters, the 640-byte block size. */
 
     if (s_vad_self) {
         s_vad_status  = TKL_VAD_STATUS_NONE;

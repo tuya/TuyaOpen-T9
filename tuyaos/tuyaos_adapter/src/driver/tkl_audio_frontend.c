@@ -42,11 +42,13 @@ extern OPERATE_RET tkl_kws_feed_with_vad(uint8_t *data, uint16_t datalen, uint8_
  * wiring: verify on hardware before trusting a default. MIC0/MIC1 also fix the
  * order the beamformer sees the array in, so swap them if the steering angle
  * behaves mirrored. */
+/* Fallbacks for a build that bypasses the Kconfig-generated -D switches; they
+ * must match the boards/T9/TKL_Kconfig defaults, or the lanes swap silently. */
 #ifndef TKL_AF_MIC0_LANE
-#define TKL_AF_MIC0_LANE (1U)
+#define TKL_AF_MIC0_LANE (0U)
 #endif
 #ifndef TKL_AF_MIC1_LANE
-#define TKL_AF_MIC1_LANE (0U)
+#define TKL_AF_MIC1_LANE (1U)
 #endif
 #ifndef TKL_AF_REF_LANE
 #define TKL_AF_REF_LANE (2U)
@@ -93,8 +95,11 @@ static BOOL_T   s_af_ready = FALSE;
 static BOOL_T   s_aec_on   = FALSE;
 
 /* Capture-reference delay line keeping the AEC reference aligned with the
- * beamformer output. s_ref_delay == 0 means no BF compensation. */
-static int16_t  s_ref_hist[TKL_AF_REF_DELAY_MAX];
+ * beamformer output. s_ref_delay == 0 means no BF compensation. The line holds
+ * s_ref_delay + 1 samples: the write slot is reused only after a full turn,
+ * so reading the slot just advanced past returns the value written exactly
+ * s_ref_delay samples ago. */
+static int16_t  s_ref_hist[TKL_AF_REF_DELAY_MAX + 1U];
 static uint32_t s_ref_w     = 0;
 static uint32_t s_ref_delay = 0;
 
@@ -220,11 +225,11 @@ static void __tkl_af_deinterleave(const int16_t *in)
             s_aec_in[i * TKL_AF_AEC_CHANNELS + 2] = frame[TKL_AF_REF_LANE];
         } else {
             s_ref_hist[s_ref_w] = frame[TKL_AF_REF_LANE];
-            if (++s_ref_w == s_ref_delay) {
+            if (++s_ref_w > s_ref_delay) {
                 s_ref_w = 0U;
             }
-            /* Reading at the write position returns the value from exactly
-             * s_ref_delay samples ago. */
+            /* Reading the slot just advanced past returns the value from
+             * exactly s_ref_delay samples ago. */
             s_aec_in[i * TKL_AF_AEC_CHANNELS + 2] = s_ref_hist[s_ref_w];
         }
     }
