@@ -180,17 +180,21 @@ else()
     # ------------------------------------------------------------------
     # tal_audio_subsys: prebuilt AEC+NS / VAD / KWS algorithm library.
     #
-    # lib/libtal_audio_subsys.a is built for Cortex-M55 hard-float with the TAL
-    # OS backend (tal_malloc / tal_log / tkl_system_get_millisecond), which is
-    # what libtuyaos.a already provides on this core. It is a static C++ archive
-    # with .dtcm_noinit arrays, so it needs no special linker script handling --
-    # the AP linker script already places that section.
+    # include/vad/lib/libtal_audio_subsys.a is built for Cortex-M55 hard-float
+    # with the TAL OS backend (tal_malloc / tal_log /
+    # tkl_system_get_millisecond), which is what libtuyaos.a already provides on
+    # this core. It is a static C++ archive with .dtcm_noinit arrays, so it needs
+    # no special linker script handling -- the AP linker script already places
+    # that section.
     #
-    # The include path and the TKL_AF_WITH_* switches below are added together:
-    # without the archive the sources compile their passthrough / stub paths.
+    # The layout follows the T5AI adapter: the archive sits in a lib/
+    # subdirectory of the feature header directory, and its public headers are
+    # spread over include/{bf,common,kws,pipeline,vad}/ so they share the
+    # adapter's existing include root. The TKL_AF_WITH_* switches below are
+    # added together with the archive: without it the sources compile their
+    # passthrough / stub paths.
     # ------------------------------------------------------------------
-    set(TAL_AUDIO_SUBSYS_DIR ${CMAKE_CURRENT_LIST_DIR}/prebuilt/tal_audio_subsys)
-    list(APPEND incs ${TAL_AUDIO_SUBSYS_DIR}/include)
+    set(TAL_AUDIO_SUBSYS_LIB ${CMAKE_CURRENT_LIST_DIR}/include/vad/lib/libtal_audio_subsys.a)
 
     # TKL security backend implemented on mbedTLS. AP core only: libtuyaos.a
     # (which carries the mbedTLS implementation) is linked for CONFIG_CPU_INDEX
@@ -495,8 +499,8 @@ if(TARGET "${COMPONENT_LIB}")
     # without the library the front end is a mic0 passthrough and VAD/KWS are
     # OPRT_NOT_SUPPORTED stubs.
     if ("${CONFIG_CPU_INDEX}" STREQUAL "1")
-        if(EXISTS "${TAL_AUDIO_SUBSYS_DIR}/lib/libtal_audio_subsys.a")
-            add_prebuilt_library(tal_audio_subsys "${TAL_AUDIO_SUBSYS_DIR}/lib/libtal_audio_subsys.a")
+        if(EXISTS "${TAL_AUDIO_SUBSYS_LIB}")
+            add_prebuilt_library(tal_audio_subsys "${TAL_AUDIO_SUBSYS_LIB}")
             target_link_libraries("${COMPONENT_LIB}" INTERFACE tal_audio_subsys)
             target_compile_definitions("${COMPONENT_LIB}" PRIVATE
                 TKL_AF_WITH_TAL_LIB=1
