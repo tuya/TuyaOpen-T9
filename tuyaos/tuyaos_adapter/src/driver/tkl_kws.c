@@ -76,15 +76,13 @@ static volatile uint32_t s_diag_skip;
 #endif
 
 /* Token IDs come from the embedded model's 40-entry CTC vocabulary. The model
- * is the upstream WeKWS demo "hey tino" (fsmn_tino_epoch66), whose documented
- * sequence is 27,8,22,4,23,10 (h ey t i n ow); see the library README. The
- * threshold is the mean of the per-token peak probabilities: the README's
- * reference recording scores 0.61-0.80, so 0.6 wakes 6/6 with no false hits,
- * while 0.8 misses every one. */
-static const int s_tino_ids[] = {27, 8, 22, 4, 23, 10}; /* hey tino */
+ * is WeKWS "Hey Tuya" (fsmn_hty_epoch141), whose documented sequence is
+ * 27,8,22,5,38,1 (h ey t uy a). The threshold is the mean of the per-token peak
+ * probabilities; the WeKWS reference registers 0.7 for this model. */
+static const int s_hey_tuya_ids[] = {27, 8, 22, 5, 38, 1}; /* hey tuya */
 
 static const audio_subsys_kws_keyword_t s_kws_keywords[] = {
-    {"tino", s_tino_ids, (int)(sizeof(s_tino_ids) / sizeof(s_tino_ids[0])), 0.6f},
+    {"hey tuya", s_hey_tuya_ids, (int)(sizeof(s_hey_tuya_ids) / sizeof(s_hey_tuya_ids[0])), 0.7f},
 };
 
 /* Maps a detected keyword name to the enum the upper layer understands.
@@ -93,7 +91,7 @@ static const struct {
     const char           *name;
     TKL_KWS_WAKEUP_WORD_E word;
 } s_wakeup_word_map[] = {
-    {"tino", TKL_KWS_WAKEUP_TINO},
+    {"hey tuya", TKL_KWS_WAKEUP_HEY_TUYA},
 };
 
 /***********************************************************

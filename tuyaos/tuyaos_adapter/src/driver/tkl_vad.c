@@ -24,6 +24,17 @@
 ***********************************************************/
 #define TKL_VAD_FRAME_SAMPLES (320)
 #define TKL_VAD_INPUT_BYTES   (TKL_VAD_FRAME_SAMPLES * sizeof(int16_t))
+#define TKL_VAD_FRAME_MS      (20)
+
+/* Endpoint defaults when the caller leaves them unset; same values ai_chat_main
+ * passes through ai_audio_input.c. */
+#define TKL_VAD_SPEECH_MIN_MS (200)
+#define TKL_VAD_NOISE_MIN_MS  (1000)
+
+/* The library reports a per-frame probability. Treat one frame as speech above
+ * this value, then latch the published state only after the configured run of
+ * like frames, so a single noisy frame cannot flip the uplink stream. */
+#define TKL_VAD_FRAME_SPEECH_THD (0.6f)
 
 /***********************************************************
 ***********************variable define**********************
@@ -31,6 +42,10 @@
 static void            *s_vad_self    = NULL;
 static TKL_VAD_STATUS_T s_vad_status  = TKL_VAD_STATUS_NONE;
 static BOOL_T           s_vad_started = FALSE;
+static uint32_t         s_vad_speech_min_ms = TKL_VAD_SPEECH_MIN_MS;
+static uint32_t         s_vad_noise_min_ms  = TKL_VAD_NOISE_MIN_MS;
+static uint32_t         s_vad_speech_ms     = 0; /* consecutive speech frames */
+static uint32_t         s_vad_silence_ms    = 0; /* consecutive non-speech frames */
 
 /***********************************************************
 ***********************function define**********************
@@ -85,8 +100,18 @@ OPERATE_RET tkl_vad_init(TKL_VAD_CONFIG_T *config)
      * 10 ms feature frames inside a 320-sample call. tkl_vad_feed enforces the
      * only contract that matters, the 640-byte block size. */
 
+    /* Endpointing parameters, in the same units as T5AI's rnn_vad:
+     * speech_min_ms is how long speech must run before the uplink opens,
+     * noise_min_ms is how long silence must run before it closes again. */
+    s_vad_speech_min_ms = config->speech_min_ms ? config->speech_min_ms : TKL_VAD_SPEECH_MIN_MS;
+    s_vad_noise_min_ms  = config->noise_min_ms ? config->noise_min_ms : TKL_VAD_NOISE_MIN_MS;
+    s_vad_speech_ms     = 0;
+    s_vad_silence_ms    = 0;
+
+    tkl_log_output("tkl_vad: speech_min %u ms, noise_min %u ms\r\n", (unsigned)s_vad_speech_min_ms,
+                   (unsigned)s_vad_noise_min_ms);
+
     if (s_vad_self) {
-        s_vad_status  = TKL_VAD_STATUS_NONE;
         s_vad_started = TRUE;
         return OPRT_OK;
     }
@@ -132,7 +157,30 @@ OPERATE_RET tkl_vad_feed(uint8_t *data, uint32_t len)
         return OPRT_COM_ERROR;
     }
 
-    s_vad_status = result.speech ? TKL_VAD_STATUS_SPEECH : TKL_VAD_STATUS_NONE;
+    {
+        /* Hysteresis on the library's per-frame probability. Opening the
+         * uplink needs speech_min_ms of consecutive speech frames; closing it
+         * needs noise_min_ms of consecutive silence. Without this the raw
+         * windowed output toggles around the threshold and the upper layer
+         * starts/stops the cloud stream every second. */
+        if (result.probability > TKL_VAD_FRAME_SPEECH_THD) {
+            s_vad_silence_ms = 0;
+            if (s_vad_speech_ms < s_vad_speech_min_ms) {
+                s_vad_speech_ms += TKL_VAD_FRAME_MS;
+            }
+            if (s_vad_status != TKL_VAD_STATUS_SPEECH && s_vad_speech_ms >= s_vad_speech_min_ms) {
+                s_vad_status = TKL_VAD_STATUS_SPEECH;
+            }
+        } else {
+            s_vad_speech_ms = 0;
+            if (s_vad_silence_ms < s_vad_noise_min_ms) {
+                s_vad_silence_ms += TKL_VAD_FRAME_MS;
+            }
+            if (s_vad_status != TKL_VAD_STATUS_NONE && s_vad_silence_ms >= s_vad_noise_min_ms) {
+                s_vad_status = TKL_VAD_STATUS_NONE;
+            }
+        }
+    }
 
     return OPRT_OK;
 }
@@ -144,16 +192,22 @@ TKL_VAD_STATUS_T tkl_vad_get_status(void)
 
 OPERATE_RET tkl_vad_start(void)
 {
-    s_vad_status  = TKL_VAD_STATUS_NONE;
-    s_vad_started = TRUE;
+    /* Only the endpoint counters restart. The latched status is kept on
+     * purpose: ai_audio_input_reset() does stop()+start() right after a wake,
+     * and clearing it there would publish a bogus "silence" to the recorder
+     * loop, which then closes the uplink a few milliseconds into the dialog. */
+    s_vad_speech_ms  = 0;
+    s_vad_silence_ms = 0;
+    s_vad_started    = TRUE;
 
     return OPRT_OK;
 }
 
 OPERATE_RET tkl_vad_stop(void)
 {
-    s_vad_status  = TKL_VAD_STATUS_NONE;
-    s_vad_started = FALSE;
+    s_vad_speech_ms  = 0;
+    s_vad_silence_ms = 0;
+    s_vad_started    = FALSE;
 
     return OPRT_OK;
 }

@@ -7,8 +7,8 @@
  * T9 (BK7259) KWS is implemented in src/driver/tkl_kws.c on top of the
  * tal_audio_subsys KWS module. Audio is pushed in by tkl_audio_frontend.c as
  * 20 ms mono blocks and decoded on a dedicated thread. The embedded model is
- * the upstream WeKWS demo "hey tino"; that is the sequence the driver
- * registers and reports as TKL_KWS_WAKEUP_TINO.
+ * WeKWS "Hey Tuya" (fsmn_hty_epoch141); that is the sequence the driver
+ * registers and reports as TKL_KWS_WAKEUP_HEY_TUYA.
  *
  * @copyright Copyright (c) 2021-2026 Tuya Inc. All Rights Reserved.
  *
