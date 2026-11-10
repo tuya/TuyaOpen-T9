@@ -76,8 +76,8 @@ extern void bk_printf(const char *fmt, ...);
 /*
  * All three ADC lanes are captured on every frame:
  *   lane 0/1 = the two analog mics, lane 2 = the speaker loopback used as the
- *   AEC reference. The front end decides which lane is which
- *   (TKL_AF_MIC0_LANE / TKL_AF_MIC1_LANE / TKL_AF_REF_LANE) and feeds a
+ *   AEC reference. The front end decides which lane is which (the lane map in
+ *   tkl_audio_frontend.c) and feeds a
  *   2 mic + 1 ref frame to the AEC interface; this file only asks for the bitmap.
  */
 #define TKL_AUDIO_CAP_CHAN (TUYA_AUDIO_ADC_CHANNEL_0 | TUYA_AUDIO_ADC_CHANNEL_1 | TUYA_AUDIO_ADC_CHANNEL_2)

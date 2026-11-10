@@ -484,16 +484,6 @@ if(TARGET "${COMPONENT_LIB}")
         $<$<COMPILE_LANGUAGE:C>:-Wno-error=implicit-function-declaration>
     )
 
-    # Board audio geometry from the T9 Kconfig. The adapter sources do not
-    # include tuya_kconfig.h, so these have to arrive as -D; the #ifndef
-    # defaults in tkl_audio_frontend.c only cover a missing setting.
-    foreach(_af_var MIC0_LANE MIC1_LANE REF_LANE BF_AZIMUTH_DEG BF_MIC_SPACING_MM)
-        if(DEFINED CONFIG_TKL_AF_${_af_var} AND NOT "${CONFIG_TKL_AF_${_af_var}}" STREQUAL "")
-            target_compile_definitions("${COMPONENT_LIB}" PRIVATE
-                TKL_AF_${_af_var}=${CONFIG_TKL_AF_${_af_var}})
-        endif()
-    endforeach()
-
     # tal_audio_subsys is linked on the AP core only (see the srcs block above).
     # The feature switches mirror it so the sources and the archive never drift:
     # without the library the front end is a mic0 passthrough and VAD/KWS are
