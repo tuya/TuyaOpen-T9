@@ -1758,6 +1758,83 @@ typedef enum {
 } TUYA_FRAME_FMT_E;
 
 typedef enum {
+    TUYA_CAMERA_OUTPUT_YUV422,
+    TUYA_CAMERA_OUTPUT_JPEG,
+    TUYA_CAMERA_OUTPUT_H264,
+    TUYA_CAMERA_OUTPUT_JPEG_YUV422_BOTH,
+    TUYA_CAMERA_OUTPUT_H264_YUV422_BOTH,
+} TUYA_CAMERA_OUTPUT_MODE;
+
+typedef enum {
+    TUYA_DVP_SYNC_MODE_0,      /* hsync: high valid,   vsync: high valid */
+    TUYA_DVP_SYNC_MODE_1,      /* hsync: high valid,   vsync: low valid */
+    TUYA_DVP_SYNC_MODE_2,      /* hsync: low valid,    vsync: high valid */
+    TUYA_DVP_SYNC_MODE_3,      /* hsync: low valid,    vsync: low valid */
+} TUYA_DVP_SYNC_MODE;
+
+typedef struct
+{
+    UINT32_T frame_id;
+    UINT8_T is_frame_complete;
+    UINT8_T is_i_frame;
+    TUYA_FRAME_FMT_E frame_fmt;
+    UINT16_T width;
+	UINT16_T height;
+    UINT32_T data_len;
+    UINT8_T *data;
+    UINT32_T total_frame_len;
+} TUYA_DVP_FRAME_MANAGE_T;
+
+// H.264 编码质量参数
+typedef struct {
+    UINT8_T enable;
+    UINT8_T init_qp;
+    UINT8_T i_min_qp;
+    UINT8_T i_max_qp;
+    UINT8_T p_min_qp;
+    UINT8_T p_max_qp;
+	UINT16_T i_block_bits;
+	UINT16_T p_block_bits;
+} H264_CFG;
+
+// JPEG 编码质量参数
+typedef struct {
+    UINT8_T enable;
+    UINT16_T max_size; // uint: KB
+    UINT16_T min_size; // uint: KB
+} JPEG_CFG;
+
+typedef struct
+{
+    JPEG_CFG jpeg_cfg;
+    H264_CFG h264_cfg;
+} TUYA_DVP_ENCODED_QUALITY;
+
+typedef OPERATE_RET (*DVP_SET_UP_CB)(VOID_T *args);
+typedef TUYA_DVP_FRAME_MANAGE_T *(*DVP_FRAME_ASSIGN_CB)(TUYA_FRAME_FMT_E fmt, VOID_T *args);
+typedef OPERATE_RET (*DVP_FRAME_POST_CB)(TUYA_DVP_FRAME_MANAGE_T *dvp_frame, VOID_T *args);
+
+typedef struct
+{
+    DVP_SET_UP_CB setup_cb;
+    DVP_FRAME_ASSIGN_CB assign_cb;
+    DVP_FRAME_POST_CB post_cb;
+    VOID_T *cb_param;
+    UINT32_T sensor_clk;
+    /*ToDo: Add param which tkl_dvp needed*/
+} TUYA_DVP_TKL_CFG_T;
+
+typedef struct {
+    UINT16_T fps;
+    UINT16_T width;
+    UINT16_T height;
+    TUYA_DVP_SYNC_MODE sync_polarity;
+    TUYA_CAMERA_OUTPUT_MODE output_mode;
+    TUYA_DVP_ENCODED_QUALITY encoded_quality;
+    TUYA_DVP_TKL_CFG_T inter_cfg;
+} TUYA_DVP_CFG_T;
+
+typedef enum {
 	TUYA_FRAME_ROTATE_0,
 	TUYA_FRAME_ROTATE_90,
 	TUYA_FRAME_ROTATE_180,
