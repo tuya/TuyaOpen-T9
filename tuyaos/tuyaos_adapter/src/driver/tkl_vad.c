@@ -192,13 +192,12 @@ TKL_VAD_STATUS_T tkl_vad_get_status(void)
 
 OPERATE_RET tkl_vad_start(void)
 {
-    /* Same contract as T5AI's rnn_vad start/stop: begin from silence, so the
-     * uplink opens on the first real utterance rather than on whatever the
-     * previous session left latched. ai_audio_input_reset() also drops its
-     * cached flag, which keeps this transition from publishing an event. */
+    /* Only the endpoint counters restart. The latched status is kept on
+     * purpose: ai_audio_input_reset() does stop()+start() right after a wake,
+     * and clearing it there would publish a bogus "silence" to the recorder
+     * loop, which then closes the uplink a few milliseconds into the dialog. */
     s_vad_speech_ms  = 0;
     s_vad_silence_ms = 0;
-    s_vad_status     = TKL_VAD_STATUS_NONE;
     s_vad_started    = TRUE;
 
     return OPRT_OK;
@@ -208,7 +207,6 @@ OPERATE_RET tkl_vad_stop(void)
 {
     s_vad_speech_ms  = 0;
     s_vad_silence_ms = 0;
-    s_vad_status     = TKL_VAD_STATUS_NONE;
     s_vad_started    = FALSE;
 
     return OPRT_OK;
