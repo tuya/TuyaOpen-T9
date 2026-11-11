@@ -62,7 +62,7 @@ extern OPERATE_RET tkl_kws_feed_with_vad(uint8_t *data, uint16_t datalen, uint8_
 #define TKL_AF_BF_AZIMUTH_DEG (90)
 #endif
 #ifndef TKL_AF_BF_MIC_SPACING_MM
-#define TKL_AF_BF_MIC_SPACING_MM (30)
+#define TKL_AF_BF_MIC_SPACING_MM (55)
 #endif
 #define TKL_AF_BF_MIC_SPACING_M ((float)TKL_AF_BF_MIC_SPACING_MM / 1000.0f)
 
