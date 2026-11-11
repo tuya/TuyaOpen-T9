@@ -101,7 +101,6 @@ else()
         # src/driver/tkl_video_in.c
         # src/driver/tkl_mic.c
         # src/driver/tkl_speaker.c
-        src/driver/tkl_audio.c
         # src/driver/tkl_cellular.c
         src/driver/tkl_pinmux.c
         # src/driver/tkl_rgb.c
@@ -125,6 +124,10 @@ else()
         src/driver/tkl_aud_dmic.c
         src/driver/tkl_aud_dac.c
         src/driver/tkl_aud_adc.c
+        src/driver/tkl_audio.c
+        src/driver/tkl_audio_frontend.c
+        src/driver/tkl_vad.c
+        src/driver/tkl_kws.c
         # src/driver/tkl_wired.c
         src/driver/tkl_i2s.c
         # src/driver/tkl_dma2d.c
@@ -173,6 +176,25 @@ else()
         include/utilities/src/tuya_list.c
         include/utilities/src/tuya_tools.c
     )
+
+    # ------------------------------------------------------------------
+    # tal_audio_subsys: prebuilt AEC+NS / VAD / KWS algorithm library.
+    #
+    # include/vad/lib/libtal_audio_subsys.a is built for Cortex-M55 hard-float
+    # with the TAL OS backend (tal_malloc / tal_log /
+    # tkl_system_get_millisecond), which is what libtuyaos.a already provides on
+    # this core. It is a static C++ archive with .dtcm_noinit arrays, so it needs
+    # no special linker script handling -- the AP linker script already places
+    # that section.
+    #
+    # The layout follows the T5AI adapter: the archive sits in a lib/
+    # subdirectory of the feature header directory, and its public headers are
+    # spread over include/{bf,common,kws,pipeline,vad}/ so they share the
+    # adapter's existing include root. The TKL_AF_WITH_* switches below are
+    # added together with the archive: without it the sources compile their
+    # passthrough / stub paths.
+    # ------------------------------------------------------------------
+    set(TAL_AUDIO_SUBSYS_LIB ${CMAKE_CURRENT_LIST_DIR}/include/vad/lib/libtal_audio_subsys.a)
 
     # TKL security backend implemented on mbedTLS. AP core only: libtuyaos.a
     # (which carries the mbedTLS implementation) is linked for CONFIG_CPU_INDEX
@@ -461,6 +483,25 @@ if(TARGET "${COMPONENT_LIB}")
         $<$<COMPILE_LANGUAGE:C>:-Wno-error=incompatible-pointer-types>
         $<$<COMPILE_LANGUAGE:C>:-Wno-error=implicit-function-declaration>
     )
+
+    # tal_audio_subsys is linked on the AP core only (see the srcs block above).
+    # The feature switches mirror it so the sources and the archive never drift:
+    # without the library the front end is a mic0 passthrough and VAD/KWS are
+    # OPRT_NOT_SUPPORTED stubs.
+    if ("${CONFIG_CPU_INDEX}" STREQUAL "1")
+        if(EXISTS "${TAL_AUDIO_SUBSYS_LIB}")
+            add_prebuilt_library(tal_audio_subsys "${TAL_AUDIO_SUBSYS_LIB}")
+            target_link_libraries("${COMPONENT_LIB}" INTERFACE tal_audio_subsys)
+            target_compile_definitions("${COMPONENT_LIB}" PRIVATE
+                TKL_AF_WITH_TAL_LIB=1
+                TKL_AF_WITH_VAD=1
+                TKL_AF_WITH_KWS=1
+            )
+            message(STATUS "--------------- tal_audio_subsys: linked ---------------")
+        else()
+            message(STATUS "--------------- tal_audio_subsys: not available, AEC/VAD/KWS off ---------------")
+        endif()
+    endif()
 
     if (CONFIG_TRUSTENGINE)
         # DUBHE runtime window. Mirrors hw_defs in psa_mbedtls/hw.cmake, minus

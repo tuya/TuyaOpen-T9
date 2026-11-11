@@ -1,12 +1,15 @@
 /**
  * @file tkl_vad.h
+ * @brief T9 (BK7259) voice activity detection interface
  * @version 0.1
  * @date 2025-04-15
  *
- * T9 (BK7259) has no VAD implementation. This header only satisfies the
- * unconditional #include in ai_audio_input.c; every call is compiled out
- * because ENABLE_COMP_AI_AUDIO_VAD stays off on T9. Add an implementation
- * only if that config is ever turned on.
+ * T9 (BK7259) VAD is implemented in src/driver/tkl_vad.c on top of the
+ * tal_audio_subsys FSMN-VAD module. It consumes the 20 ms mono blocks the
+ * audio front end produces (tkl_audio_frontend.c), so ai_audio_input.c keeps
+ * working unchanged when ENABLE_COMP_AI_AUDIO_VAD is turned on.
+ *
+ * @copyright Copyright (c) 2025-2026 Tuya Inc. All Rights Reserved.
  */
 
 #ifndef __TKL_VAD_H__
@@ -22,7 +25,6 @@ extern "C" {
 ************************macro define************************
 ***********************************************************/
 
-
 /***********************************************************
 ***********************typedef define***********************
 ***********************************************************/
@@ -33,15 +35,23 @@ typedef struct {
     int      noise_min_ms;
     int      frame_duration_ms;
     float    scale;
-}TKL_VAD_CONFIG_T;
+} TKL_VAD_CONFIG_T;
 
 typedef uint8_t TKL_VAD_STATUS_T;
-#define TKL_VAD_STATUS_NONE 0
+#define TKL_VAD_STATUS_NONE   0
 #define TKL_VAD_STATUS_SPEECH 1
+
+typedef enum {
+    TKL_AUDIO_VAD_HIGH,
+    TKL_AUDIO_VAD_MID,
+    TKL_AUDIO_VAD_LOW,
+} TKL_AUDIO_VAD_THRESHOLD_E;
 
 /***********************************************************
 ********************function declaration********************
 ***********************************************************/
+
+OPERATE_RET tkl_vad_set_threshold(TKL_AUDIO_VAD_THRESHOLD_E level);
 
 OPERATE_RET tkl_vad_init(TKL_VAD_CONFIG_T *config);
 
