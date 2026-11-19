@@ -1239,9 +1239,14 @@ STATIC OPERATE_RET cam_mipi_start(void)
         goto err_start;
     }
 
-    ret = cam_mipi_open_mp_channel();
-    if (ret != OPRT_OK) {
-        goto err_start;
+    if ((tkl_cam_out_ch(TUYA_CAMERA_FRAME_CHANNEL_2) != NULL) ||
+        (tkl_cam_out_ch(TUYA_CAMERA_FRAME_CHANNEL_3) != NULL)) {
+        ret = cam_mipi_open_mp_channel();
+        if (ret != OPRT_OK) {
+            goto err_start;
+        }
+    } else {
+        tkl_log_output("camera MP skipped: no display/encode consumer\r\n");
     }
 
     ret = cam_mipi_open_sp_channel();
