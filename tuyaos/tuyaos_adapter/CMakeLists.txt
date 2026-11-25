@@ -1,3 +1,7 @@
+# Shared ops cards, single source in the core repository.
+# The relative path assumes this platform is checked out at <delivery>/platform/T9.
+set(TUYAOPEN_CORE_PORT_DIR "${CMAKE_CURRENT_LIST_DIR}/../../../../tuyaopen-core/port/tuyaopen")
+
 set(incs
     include
     src/test
@@ -6,6 +10,7 @@ set(incs
     src/security
     src/misc/mf_test
     tuyaopen
+    "${TUYAOPEN_CORE_PORT_DIR}/interface"
     src/test/test_lvgl
     src/test/test_ringbuffer
     # src/test/test_face_recognize
@@ -110,6 +115,7 @@ else()
         src/driver/tkl_uart.c
         src/driver/tkl_flash.c
         tuyaopen/tuyaopen_license.c
+        tuyaopen/netif_ops.c
         # src/driver/tkl_rtc.c
         src/driver/tkl_spi.c
         src/driver/tkl_qspi.c
@@ -135,6 +141,8 @@ else()
         # src/driver/tkl_jpeg_codec.c
         # src/driver/tkl_sdio.c
 
+        # newlib gaps used by the P2P ICE stack (clock_gettime/pipe/gai_strerror)
+        src/misc/libc_compat.c
         src/misc/encrypt.c
         src/misc/fs_init.c
         src/misc/usr_sdio.c
